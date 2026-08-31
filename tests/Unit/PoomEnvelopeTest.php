@@ -92,7 +92,8 @@ final class PoomEnvelopeTest extends TestCase {
 		self::assertStringContainsString( '<SupplierPartID>CcSku-001a</SupplierPartID>', $xml );
 		self::assertStringContainsString( '<SupplierPartAuxiliaryID>123|0</SupplierPartAuxiliaryID>', $xml );
 		self::assertStringContainsString( '<Money currency="ZAR">10.50</Money>', $xml );
-		self::assertStringContainsString( '<Money currency="ZAR">460.00</Money>', $xml, 'header Total = sum of lines' );
+		// 2 x 10.50 + 1 x 250.00 = 271.00 (line cents: 2x1050 + 1x25000 = 27100).
+		self::assertStringContainsString( '<Money currency="ZAR">271.00</Money>', $xml, 'header Total = sum of lines' );
 		self::assertStringContainsString( '<UnitOfMeasure>EA</UnitOfMeasure>', $xml );
 		self::assertStringContainsString( '<Classification domain="UNSPSC">53102500</Classification>', $xml );
 		self::assertStringContainsString( '<ShortName>Blue Overall</ShortName>', $xml );
