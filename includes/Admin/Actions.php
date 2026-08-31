@@ -108,6 +108,19 @@ final class Actions {
 		$ok = $partner_id > 0 && $this->registry->delete( $partner_id );
 
 		if ( $ok ) {
+			// Deleting the connection is the operator's strongest lever:
+			// expire the customer's open sessions and destroy their logins
+			// immediately rather than leaving them live until TTL.
+			$sessions = \POW\Plugin::instance()->sessions();
+
+			if ( null !== $sessions ) {
+				foreach ( $sessions->open_for_partner( $partner_id ) as $open ) {
+					if ( $sessions->transition( $open->id, $open->status, \POW\Sessions\Session::EXPIRED ) && '' !== $open->wp_session_token && $open->user_id > 0 ) {
+						\WP_Session_Tokens::get_instance( $open->user_id )->destroy( $open->wp_session_token );
+					}
+				}
+			}
+
 			$this->audit->write(
 				'partner_deleted',
 				[

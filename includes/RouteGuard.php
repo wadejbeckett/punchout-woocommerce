@@ -146,7 +146,10 @@ final class RouteGuard {
 
 		$partner = $this->registry->find( $session->partner_id );
 
-		return null !== $partner && $partner->is_requisition_only();
+		// Fail CLOSED: a session whose partner row is gone (deleted
+		// mid-session) must not silently upgrade to dual exit — the RFQ
+		// exit already fails closed on the same condition.
+		return null === $partner || $partner->is_requisition_only();
 	}
 
 	private function endpoint_order_id(): int {

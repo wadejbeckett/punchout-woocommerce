@@ -56,7 +56,32 @@ final class Provisioner {
 		$username = $this->username( $partner, $identity );
 		$existing = get_user_by( 'login', $username );
 
-		if ( false !== $existing ) {
+		// The login embeds a slug of the customer's (mutable) name; only
+		// the hash half is identity-stable. If the name was edited since
+		// this buyer's first punchout, find them by the stable meta pair
+		// instead of minting an orphan twin.
+		if ( false === $existing && ! $ephemeral ) {
+			$found = get_users(
+				[
+					'number'     => 1,
+					// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+					'meta_query' => [
+						[
+							'key'   => '_pow_partner_id',
+							'value' => (string) $partner->id,
+						],
+						[
+							'key'   => '_pow_identity',
+							'value' => $identity,
+						],
+					],
+				]
+			);
+
+			$existing = $found[0] ?? false;
+		}
+
+		if ( false !== $existing && $existing instanceof \WP_User ) {
 			update_user_meta( $existing->ID, '_pow_last_seen', time() );
 			delete_user_meta( $existing->ID, '_pow_deactivated' );
 
@@ -130,8 +155,12 @@ final class Provisioner {
 	 * user's open sessions and destroys their recorded logins, so a stale
 	 * tab can neither shop nor punch back.
 	 */
-	public function latest_wins( int $user_id ): void {
+	public function latest_wins( int $user_id, int $except_session_id = 0 ): void {
 		foreach ( $this->sessions->open_for_user( $user_id ) as $open ) {
+			if ( $open->id === $except_session_id ) {
+				continue;
+			}
+
 			$expired = $this->sessions->transition( $open->id, $open->status, Session::EXPIRED );
 
 			if ( $expired && '' !== $open->wp_session_token ) {

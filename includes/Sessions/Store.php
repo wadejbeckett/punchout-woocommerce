@@ -206,6 +206,31 @@ final class Store {
 	}
 
 	/**
+	 * Open sessions belonging to one customer connection — swept when the
+	 * connection is deleted (Admin\Actions::delete_partner).
+	 *
+	 * @return list<Session>
+	 */
+	public function open_for_partner( int $partner_id, int $limit = 500 ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . $this->table() . ' WHERE partner_id = %d AND status IN (%s, %s, %s) LIMIT %d',
+				$partner_id,
+				Session::PENDING,
+				Session::ACTIVE,
+				Session::ORDERED,
+				$limit
+			),
+			ARRAY_A
+		);
+
+		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
+	}
+
+	/**
 	 * Every open session regardless of expiry — the master-switch-off
 	 * sweep (Plugin::on_settings_updated) has to reach them all.
 	 *
