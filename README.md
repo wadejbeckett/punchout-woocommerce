@@ -8,7 +8,7 @@ A buyer clicks the store's catalog tile inside their procurement system; the sys
 
 - **Licence:** AGPL-3.0-or-later (full text in `LICENSE`)
 - **Requires:** PHP 8.2+, WordPress 6.4+, WooCommerce 8.0+
-- **Dependencies:** none. No Composer, no vendor directory, no external packages. B2BKing is an optional integration, never a requirement. Action Scheduler is used for housekeeping when present (it ships inside WooCommerce), with a WP-Cron fallback.
+- **Dependencies:** none. No Composer, no vendor directory, no external packages. Action Scheduler is used for housekeeping when present (it ships inside WooCommerce), with a WP-Cron fallback.
 
 ---
 
@@ -59,7 +59,7 @@ Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. No session e
 
 **Additive, never invasive.** The plugin never overrides, replaces or filters the WooCommerce checkout or any payment gateway. The RFQ exit is an extra button; the pay path is stock WooCommerce with three listeners (order meta tagging, a session-state flip at `woocommerce_payment_complete`, a close-out CTA on the thank-you page). The one exception is deliberate and scoped: partners in `requisition_only` mode get a checkout block — 302 plus a `woocommerce_checkout_process` hard fail — applied only inside that partner's punchout sessions.
 
-**Multi-tenant registry, policy over code.** Every partner difference is a column, not a branch: identities, cXML version, return encoding, exit mode, TTLs, IP allowlist, ALL-CAPS outbound transform, B2BKing mapping. Adding a second buyer is a registry row plus a certification exercise.
+**Multi-tenant registry, policy over code.** Every partner difference is a column, not a branch: identities, cXML version, return encoding, exit mode, TTLs, IP allowlist, ALL-CAPS outbound transform, optional customer-group mapping. Adding a second buyer is a registry row plus a certification exercise.
 
 **Hand-rolled cXML codec on DOMDocument.** The plugin needs exactly four document shapes (parse `PunchOutSetupRequest`/`ProfileRequest`; emit `PunchOutSetupResponse`, `PunchOutOrderMessage`, `Status`). A library (cxml-php) would drag a Composer graph into a no-vendor plugin for four small documents. Parsing is XXE-hardened (entity declarations rejected outright, `LIBXML_NONET`, no runtime DTD fetch) and validates structurally, not against the DTD; the 1.2.071 DTD ships in `includes/Cxml/dtd/` for offline reference.
 
@@ -69,7 +69,7 @@ Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. No session e
 
 **One WP user per (partner, buyer identity).** WooCommerce keys the session — and therefore the cart — on the user ID, so a shared punchout user would merge every concurrent buyer into one basket. Identity comes from the agreed extrinsics (`UserEmail`, then `UniqueUsername`, then `Contact/Email`), falling back to a flagged ephemeral per-session user. Same buyer punching out twice: **latest punchout wins** — the new setup expires the old session and destroys its login.
 
-**One cart, two exits.** The live `WC()->cart` serves both exits, so the POOM quotes exactly the prices the buyer would have paid at checkout — pricing plugins (B2BKing et al.) apply their prices at cart time and the mapper reads the cart's own line totals. Persistent carts are disabled inside punchout sessions and the cart is emptied once at session start.
+**One cart, two exits.** The live `WC()->cart` serves both exits, so the POOM quotes exactly the prices the buyer would have paid at checkout — pricing plugins apply their prices at cart time and the mapper reads the cart's own line totals. Persistent carts are disabled inside punchout sessions and the cart is emptied once at session start.
 
 **Master switch off by default.** A fresh install exposes no pre-auth XML endpoint until an operator has configured a partner and enabled the feature.
 
@@ -116,7 +116,7 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 
 | Table | Holds |
 |---|---|
-| `wp_pow_partners` | Trading-partner registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, B2BKing mapping, TTLs |
+| `wp_pow_partners` | Trading-partner registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, optional customer-group mapping, TTLs |
 | `wp_pow_sessions` | One row per PunchOutSetupRequest: BuyerCookie, BrowserFormPost URL, user, hashed one-time token, exact WP session token, state machine (`pending → active → returned/ordered/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics |
 | `wp_pow_skumap` | Per-partner outbound decoration: SKU override, UOM, UNSPSC — joins on the Woo SKU, owns nothing else |
 | `wp_pow_log` | The audit/compliance trail: every transaction, full POOM XML archives, secrets redacted; retention-trimmed by cron |
@@ -261,4 +261,4 @@ Everything cXML-shaped here was built from the cXML 1.2.071 DTD + Reference Guid
 3. **SameSite punchback** (above): supplier-side obligations are met; the outcome depends on the buyer's platform build and browser policy.
 4. **Exact template dialect**: the parser tolerates the documented fragilities (no DOCTYPE, empty BuyerCookie, timestamps with/without offset, extrinsic placement) — their *Validate settings* run is the first real proof.
 5. **UOM/currency acceptance**: emitted UOM codes must pre-exist in the buyer's D365 or lines fail silently on their side; only their configuration answers this.
-6. **B2BKing range enforcement**: the add-to-cart guard uses WooCommerce's own visibility filter chain plus the `pow_product_in_range` seam. Whether a specific B2BKing setup filters every leak surface (search, direct URL, REST) is a site-deployment test, not a plugin guarantee — verify on staging with a contract-priced catalogue before onboarding a buyer whose pricing is confidential.
+6. **Catalogue-restriction plugins**: the add-to-cart guard uses WooCommerce's own visibility filter chain plus the `pow_product_in_range` seam. Whether a specific third-party restriction setup filters every leak surface (search, direct URL, REST) is a site-deployment test, not a plugin guarantee — verify on staging with a contract-priced catalogue before onboarding a buyer whose pricing is confidential.

@@ -14,7 +14,7 @@ Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dy
 
 PunchOut for WooCommerce lets enterprise buyers "punch out" from their procurement system (Microsoft Dynamics 365 Finance & Operations / Supply Chain Management first; any cXML direct-punchout buyer by configuration) into your WooCommerce store, shop the catalogue at their own prices, and send the basket back into their purchasing workflow as requisition/RFQ lines.
 
-**Multi-tenant by design.** Any number of trading partners, each configured independently: shared secret (sealed at rest), cXML identities, cXML version, cart-return encoding, optional IP allowlist, optional B2BKing company/group mapping, and a per-partner exit mode:
+**Multi-tenant by design.** Any number of trading partners, each configured independently: shared secret (sealed at rest), cXML identities, cXML version, cart-return encoding, optional IP allowlist, and a per-partner exit mode:
 
 * **Requisition only** (default) — buyers can only send the basket back for approval; checkout is blocked inside their punchout sessions.
 * **Dual exit** — the "send for approval" button renders *alongside* the completely untouched standard WooCommerce checkout, so buyers can also pay directly.
@@ -47,9 +47,9 @@ No. For dual-exit partners the standard checkout is untouched; the plugin only l
 
 To the URL the buyer's system supplies in each setup request (`BrowserFormPost`), as an auto-submitting browser form POST carrying the cXML PunchOutOrderMessage in a `cxml-base64` (or `cxml-urlencoded`) hidden field.
 
-= Is B2BKing required? =
+= Do buyers need accounts on my store? =
 
-No. If a partner row is configured with a B2BKing company account and/or customer group and B2BKing is active, buyers are attached as subaccounts and assigned the group through B2BKing's own helper. Without B2BKing the plugin runs on plain WooCommerce.
+No setup on your side. Each buyer is provisioned automatically as an ordinary WordPress user the first time their procurement system punches out, and logged in through a single-use StartPage link — no passwords, no registration forms.
 
 == Changelog ==
 
