@@ -14,7 +14,6 @@ use POW\Admin\Actions as AdminActions;
 use POW\Admin\Details as AdminDetails;
 use POW\Admin\Page as AdminPage;
 use POW\Audit\Log;
-use POW\Buyers\B2BKingBridge;
 use POW\Buyers\Provisioner;
 use POW\Cart\Guard;
 use POW\Cart\PoomMapper;
@@ -32,7 +31,6 @@ use POW\Partners\Registry;
 use POW\Partners\Secrets;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
-use POW\SkuMap\SkuMap;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -64,7 +62,6 @@ final class Plugin {
 
 	private ?Log $audit = null;
 
-	private ?SkuMap $sku_map = null;
 
 	private ?Surface $surface = null;
 
@@ -99,20 +96,18 @@ final class Plugin {
 		$this->registry = new Registry( $secrets );
 		$this->sessions = new Store();
 		$this->audit    = new Log( $this->logger );
-		$this->sku_map  = new SkuMap();
 
-		$bridge      = new B2BKingBridge( $this->logger );
-		$provisioner = new Provisioner( $this->sessions, $bridge, $this->audit, $this->logger );
+		$provisioner = new Provisioner( $this->sessions, $this->audit, $this->logger );
 		$parser      = new Parser();
 		$builder     = new Builder();
-		$mapper      = new PoomMapper( $this->sku_map, $this->settings, $this->logger );
+		$mapper      = new PoomMapper( $this->settings, $this->logger );
 
 		// Admin, schema upgrade, CLI and housekeeping run regardless of the
 		// master switch.
-		( new AdminPage( $this->settings, $this->registry, $this->sku_map, $this->audit ) )->register();
-		( new AdminActions( $this->registry, $this->sku_map, $this->audit ) )->register();
+		( new AdminPage( $this->settings, $this->registry, $this->audit ) )->register();
+		( new AdminActions( $this->registry, $this->audit ) )->register();
 		( new AdminDetails() )->register();
-		( new Cron( $this->sessions, $this->audit, $this->settings, $bridge ) )->register();
+		( new Cron( $this->sessions, $this->audit, $this->settings ) )->register();
 
 		add_action( 'admin_init', [ Installer::class, 'maybe_upgrade' ] );
 		add_action( 'admin_notices', [ $this, 'render_key_notice' ] );
@@ -208,10 +203,6 @@ final class Plugin {
 
 	public function audit(): ?Log {
 		return $this->audit;
-	}
-
-	public function sku_map(): ?SkuMap {
-		return $this->sku_map;
 	}
 
 	public function woocommerce_active(): bool {

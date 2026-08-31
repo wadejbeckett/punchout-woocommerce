@@ -14,17 +14,15 @@ use POW\Audit\Log;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
 use POW\Settings;
-use POW\SkuMap\SkuMap;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Four tabs, core UI only (no custom CSS framework):
+ * Three tabs, core UI only (no custom CSS framework):
  *
  * - Settings: WordPress Settings API over the single pow_settings option —
  *   master switch plus the handful of genuinely needed knobs.
  * - Partners: the trading-partner registry (write-only secrets).
- * - SKU map: per-partner CSV import + listing.
  * - Log: the audit trail, filtered and paged.
  *
  * All writes go through Admin\Actions (admin-post handlers, nonce +
@@ -41,7 +39,6 @@ final class Page {
 	public function __construct(
 		private Settings $settings,
 		private Registry $registry,
-		private SkuMap $sku_map,
 		private Log $audit,
 	) {}
 
@@ -87,7 +84,7 @@ final class Page {
 			'rate_limit_per_min'  => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per partner+IP on /punchout/setup. 0 disables.', 'punchout-woocommerce' ) ],
 			'log_retention_days'  => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
 			'buyer_inactive_days' => [ __( 'Buyer inactivity (days)', 'punchout-woocommerce' ), 'number', __( 'Buyers unseen this long are flagged inactive (never deleted).', 'punchout-woocommerce' ) ],
-			'default_unspsc'      => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'Classification fallback for cart lines without a SKU-map row.', 'punchout-woocommerce' ) ],
+			'default_unspsc'      => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'UNSPSC commodity classification stamped on every returned cart line; procurement systems use it to route requisition lines to a purchasing category. Agree the value with the buyer.', 'punchout-woocommerce' ) ],
 		];
 
 		foreach ( $fields as $key => [ $label, $type, $help ] ) {
@@ -202,9 +199,6 @@ final class Page {
 			case 'partners':
 				$this->render_partners();
 				break;
-			case 'skumap':
-				$this->render_skumap();
-				break;
 			case 'log':
 				$this->render_log();
 				break;
@@ -232,7 +226,6 @@ final class Page {
 		$tabs = [
 			'settings' => __( 'Settings', 'punchout-woocommerce' ),
 			'partners' => __( 'Trading partners', 'punchout-woocommerce' ),
-			'skumap'   => __( 'SKU map', 'punchout-woocommerce' ),
 			'log'      => __( 'Log', 'punchout-woocommerce' ),
 		];
 
@@ -471,16 +464,6 @@ final class Page {
 		);
 
 		$this->form_row(
-			__( 'B2BKing company account (user ID)', 'punchout-woocommerce' ),
-			sprintf( '<input type="number" class="small-text" name="b2bking_company_user_id" value="%d" min="0" /><p class="description">%s</p>', (int) ( $partner->b2bking_company_user_id ?? 0 ), esc_html__( 'Optional. Buyers become B2BKing subaccounts of this company account.', 'punchout-woocommerce' ) )
-		);
-
-		$this->form_row(
-			__( 'B2BKing customer group (ID)', 'punchout-woocommerce' ),
-			sprintf( '<input type="number" class="small-text" name="b2bking_group_id" value="%d" min="0" /><p class="description">%s</p>', (int) ( $partner->b2bking_group_id ?? 0 ), esc_html__( 'Optional. Assigned via B2BKing\'s own helper so pricing and visibility follow the group.', 'punchout-woocommerce' ) )
-		);
-
-		$this->form_row(
 			__( 'Token TTL / session TTL (s)', 'punchout-woocommerce' ),
 			sprintf(
 				'<input type="number" class="small-text" name="token_ttl" value="%d" min="30" /> / <input type="number" class="small-text" name="session_ttl" value="%d" min="300" />',
@@ -514,72 +497,6 @@ final class Page {
 		}
 
 		return $html . '</select>';
-	}
-
-	/* ---------------------------------------------------------------------
-	 * SKU map tab
-	 * ------------------------------------------------------------------ */
-
-	private function render_skumap(): void {
-		$partners   = $this->registry->all();
-		$partner_id = isset( $_GET['partner'] ) ? absint( $_GET['partner'] ) : ( $partners[0]->id ?? 0 ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-
-		if ( [] === $partners ) {
-			echo '<p>' . esc_html__( 'Add a trading partner first.', 'punchout-woocommerce' ) . '</p>';
-			return;
-		}
-
-		echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '">';
-		echo '<input type="hidden" name="page" value="' . esc_attr( self::SLUG ) . '" /><input type="hidden" name="tab" value="skumap" />';
-		echo '<label>' . esc_html__( 'Partner:', 'punchout-woocommerce' ) . ' <select name="partner">';
-
-		foreach ( $partners as $partner ) {
-			printf( '<option value="%d"%s>%s</option>', (int) $partner->id, selected( $partner_id, $partner->id, false ), esc_html( $partner->name ) );
-		}
-
-		echo '</select></label> ';
-		submit_button( __( 'Switch', 'punchout-woocommerce' ), 'secondary', '', false );
-		echo '</form>';
-
-		echo '<h2>' . esc_html__( 'Import CSV', 'punchout-woocommerce' ) . '</h2>';
-		echo '<p class="description">' . esc_html__( 'Columns: sku, partner_sku, uom_code, unspsc, active(1/0). Header row optional. Existing rows are updated in place.', 'punchout-woocommerce' ) . '</p>';
-		echo '<form method="post" enctype="multipart/form-data" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
-		echo '<input type="hidden" name="action" value="pow_import_skumap" />';
-		printf( '<input type="hidden" name="partner" value="%d" />', $partner_id );
-		wp_nonce_field( 'pow_import_skumap' );
-		echo '<input type="file" name="pow_csv" accept=".csv,text/csv" required /> ';
-		submit_button( __( 'Import', 'punchout-woocommerce' ), 'primary', 'submit', false );
-		echo '</form>';
-
-		$paged  = isset( $_GET['paged'] ) ? max( 1, absint( $_GET['paged'] ) ) : 1; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		$result = $this->sku_map->all( $partner_id, $paged );
-
-		if ( [] === $result['rows'] ) {
-			echo '<p>' . esc_html__( 'No SKU map rows for this partner yet. Unmapped SKUs fall back to the raw store SKU, unit EA and the default UNSPSC.', 'punchout-woocommerce' ) . '</p>';
-			return;
-		}
-
-		echo '<table class="widefat striped"><thead><tr>';
-
-		foreach ( [ 'SKU', __( 'Partner SKU', 'punchout-woocommerce' ), __( 'UOM', 'punchout-woocommerce' ), 'UNSPSC', __( 'Active', 'punchout-woocommerce' ) ] as $head ) {
-			echo '<th>' . esc_html( $head ) . '</th>';
-		}
-
-		echo '</tr></thead><tbody>';
-
-		foreach ( $result['rows'] as $row ) {
-			echo '<tr>';
-			echo '<td><code>' . esc_html( (string) $row['sku'] ) . '</code></td>';
-			echo '<td><code>' . esc_html( (string) ( $row['partner_sku'] ?? '' ) ) . '</code></td>';
-			echo '<td>' . esc_html( (string) $row['uom_code'] ) . '</td>';
-			echo '<td>' . esc_html( (string) ( $row['unspsc'] ?? '' ) ) . '</td>';
-			echo '<td>' . ( ! empty( $row['active'] ) ? esc_html__( 'yes', 'punchout-woocommerce' ) : esc_html__( 'no', 'punchout-woocommerce' ) ) . '</td>';
-			echo '</tr>';
-		}
-
-		echo '</tbody></table>';
-
-		$this->pagination( $result['total'], 100, $paged, 'skumap', [ 'partner' => $partner_id ] );
 	}
 
 	/* ---------------------------------------------------------------------

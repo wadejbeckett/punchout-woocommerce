@@ -11,7 +11,6 @@ declare( strict_types = 1 );
 namespace POW;
 
 use POW\Audit\Log;
-use POW\Buyers\B2BKingBridge;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
 
@@ -25,7 +24,7 @@ defined( 'ABSPATH' ) || exit;
  *   the thank-you page, scope §5.4);
  * - buyers unseen for N days flagged inactive — flagged, never deleted,
  *   because they carry order attribution — their sessions torn down and
- *   the per-user B2BKing visibility transient cleared;
+ *   pow_buyer_deactivated fired for site glue to clean up after;
  * - audit-table retention trim.
  *
  * Runs through Action Scheduler when WooCommerce provides it (reliable,
@@ -40,7 +39,6 @@ final class Cron {
 		private Store $sessions,
 		private Log $audit,
 		private Settings $settings,
-		private B2BKingBridge $bridge,
 	) {}
 
 	public function register(): void {
@@ -125,7 +123,15 @@ final class Cron {
 
 			update_user_meta( $user_id, '_pow_deactivated', 1 );
 			\WP_Session_Tokens::get_instance( $user_id )->destroy_all();
-			$this->bridge->cleanup_transients( $user_id );
+
+			/**
+			 * Fires when a dormant punchout buyer is deactivated, so site
+			 * glue can undo whatever pow_buyer_provisioned set up (group
+			 * membership, cached visibility, etc.).
+			 *
+			 * @param int $user_id Deactivated buyer user ID.
+			 */
+			do_action( 'pow_buyer_deactivated', $user_id );
 
 			$this->audit->write(
 				'buyer_deactivated',

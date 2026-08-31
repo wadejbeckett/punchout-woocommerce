@@ -220,8 +220,6 @@ final class Registry {
 			'gateway_allowlist',
 			'company_profile',
 			'ip_allowlist',
-			'b2bking_company_user_id',
-			'b2bking_group_id',
 			'session_ttl',
 			'token_ttl',
 		];
@@ -256,7 +254,7 @@ final class Registry {
 			}
 		}
 
-		foreach ( [ 'b2bking_company_user_id', 'b2bking_group_id', 'session_ttl', 'token_ttl' ] as $int_col ) {
+		foreach ( [ 'session_ttl', 'token_ttl' ] as $int_col ) {
 			if ( isset( $data[ $int_col ] ) ) {
 				$data[ $int_col ] = max( 0, (int) $data[ $int_col ] );
 			}

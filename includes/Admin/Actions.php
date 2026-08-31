@@ -13,7 +13,6 @@ namespace POW\Admin;
 use POW\Audit\Log;
 use POW\Partners\Registry;
 use POW\Partners\Secrets;
-use POW\SkuMap\SkuMap;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -27,7 +26,6 @@ final class Actions {
 
 	public function __construct(
 		private Registry $registry,
-		private SkuMap $sku_map,
 		private Log $audit,
 	) {}
 
@@ -36,7 +34,6 @@ final class Actions {
 		add_action( 'admin_post_pow_delete_partner', [ $this, 'delete_partner' ] );
 		add_action( 'admin_post_pow_rotate_partner', [ $this, 'rotate_partner' ] );
 		add_action( 'admin_post_pow_close_rotation', [ $this, 'close_rotation' ] );
-		add_action( 'admin_post_pow_import_skumap', [ $this, 'import_skumap' ] );
 	}
 
 	public function save_partner(): void {
@@ -60,8 +57,6 @@ final class Actions {
 			'return_encoding'         => sanitize_key( (string) ( $posted['return_encoding'] ?? 'base64' ) ),
 			'allcaps_transform'       => isset( $posted['allcaps_transform'] ) ? 1 : 0,
 			'ip_allowlist'            => $this->cidrs_to_json( (string) ( $posted['ip_allowlist'] ?? '' ) ),
-			'b2bking_company_user_id' => absint( $posted['b2bking_company_user_id'] ?? 0 ),
-			'b2bking_group_id'        => absint( $posted['b2bking_group_id'] ?? 0 ),
 			'token_ttl'               => absint( $posted['token_ttl'] ?? 300 ),
 			'session_ttl'             => absint( $posted['session_ttl'] ?? 14400 ),
 		];
@@ -171,63 +166,6 @@ final class Actions {
 		}
 
 		$this->finish( 'partners', $ok ? __( 'Rotation window closed; only the current secret is accepted.', 'punchout-woocommerce' ) : __( 'Close failed.', 'punchout-woocommerce' ), $ok ? 'success' : 'error' );
-	}
-
-	public function import_skumap(): void {
-		$this->authorise( 'pow_import_skumap' );
-
-		$partner_id = absint( $_POST['partner'] ?? 0 );
-
-		if ( 0 === $partner_id || null === $this->registry->find( $partner_id ) ) {
-			$this->finish( 'skumap', __( 'Unknown trading partner.', 'punchout-woocommerce' ), 'error' );
-		}
-
-		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- tmp_name is a server-generated path, validated below.
-		$tmp = isset( $_FILES['pow_csv']['tmp_name'] ) ? (string) $_FILES['pow_csv']['tmp_name'] : '';
-
-		if ( '' === $tmp || ! is_uploaded_file( $tmp ) ) {
-			$this->finish( 'skumap', __( 'No CSV file received.', 'punchout-woocommerce' ), 'error' );
-		}
-
-		$handle = fopen( $tmp, 'r' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
-
-		if ( false === $handle ) {
-			$this->finish( 'skumap', __( 'Could not read the uploaded file.', 'punchout-woocommerce' ), 'error' );
-		}
-
-		$rows  = [];
-		$limit = 20000;
-
-		while ( count( $rows ) < $limit && false !== ( $row = fgetcsv( $handle, 4096 ) ) ) {
-			$rows[] = array_map( static fn( $v ): string => (string) $v, $row );
-		}
-
-		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
-
-		$result = $this->sku_map->import_rows( $partner_id, $rows );
-
-		$this->audit->write(
-			'skumap_import',
-			[
-				'partner_id' => $partner_id,
-				'user_id'    => get_current_user_id(),
-				'result'     => 'ok',
-				'detail'     => $result,
-			]
-		);
-
-		$this->finish(
-			'skumap',
-			sprintf(
-				/* translators: 1: imported row count, 2: skipped row count */
-				__( 'SKU map import: %1$d rows imported, %2$d skipped.', 'punchout-woocommerce' ),
-				$result['imported'],
-				$result['skipped']
-			),
-			'success',
-			'',
-			[ 'partner' => $partner_id ]
-		);
 	}
 
 	/* ---------------------------------------------------------------------

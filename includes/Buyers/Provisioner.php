@@ -34,7 +34,6 @@ final class Provisioner {
 
 	public function __construct(
 		private Store $sessions,
-		private B2BKingBridge $bridge,
 		private Log $audit,
 		private Logger $logger,
 	) {}
@@ -61,9 +60,8 @@ final class Provisioner {
 			update_user_meta( $existing->ID, '_pow_last_seen', time() );
 			delete_user_meta( $existing->ID, '_pow_deactivated' );
 
-			// Re-apply the partner's B2BKing config in case it changed
-			// since first sight.
-			$this->bridge->attach( $existing->ID, $partner );
+			/** This hook is documented below, at the new-user call site. */
+			do_action( 'pow_buyer_provisioned', $existing->ID, $partner, false );
 
 			return $existing->ID;
 		}
@@ -103,7 +101,17 @@ final class Provisioner {
 			update_user_meta( $user_id, '_pow_ephemeral', 1 );
 		}
 
-		$this->bridge->attach( $user_id, $partner );
+		/**
+		 * Fires every time a punchout buyer is provisioned — on first
+		 * creation and on every later punchout by the same buyer, so site
+		 * glue can (re-)apply pricing-group or membership mapping for any
+		 * B2B/marketplace plugin. The plugin itself is pricing-agnostic.
+		 *
+		 * @param int     $user_id Buyer user ID (role punchout_buyer).
+		 * @param Partner $partner Trading partner the buyer belongs to.
+		 * @param bool    $is_new  True only on first creation.
+		 */
+		do_action( 'pow_buyer_provisioned', $user_id, $partner, true );
 
 		$this->audit->write(
 			'buyer_provisioned',
