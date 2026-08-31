@@ -329,6 +329,15 @@ final class Plugin {
 			$this->logger->error( 'POW_SECRET_KEY is defined but not a valid base64 32-byte key; using derived fallback' );
 		}
 
+		// Fallback derivation. wp_salt('auth') is only config-backed when
+		// AUTH_KEY/AUTH_SALT are defined in wp-config; on installs missing
+		// them WordPress auto-generates DB-stored salts, and the sealed
+		// registry then offers no protection against a DB dump. Surfaced
+		// as an error so the operator knows the stated guarantee is absent.
+		if ( ! defined( 'AUTH_KEY' ) || ! defined( 'AUTH_SALT' ) ) {
+			$this->logger->error( 'Sealing-key fallback is derived from DATABASE-stored salts (AUTH_KEY/AUTH_SALT missing from wp-config.php); a DB dump can decrypt stored customer secrets. Define POW_SECRET_KEY.' );
+		}
+
 		return hash( 'sha256', 'pow-sealing-key|' . wp_salt( 'auth' ), true );
 	}
 }

@@ -268,8 +268,6 @@ final class SetupEndpoint {
 			return;
 		}
 
-		$this->provisioner->latest_wins( $user_id );
-
 		$issued  = Tokens::issue();
 		$expires = gmdate( 'Y-m-d H:i:s', time() + $partner->token_ttl );
 
@@ -301,6 +299,12 @@ final class SetupEndpoint {
 			$this->respond( $this->status_doc( 409, 'Duplicate payloadID', $partner->cxml_version ) );
 			return;
 		}
+
+		// Latest-punchout-wins AFTER the new row exists (sparing it): the
+		// sweep must never run for a setup that then fails to create its
+		// session — a concurrent twin or failed insert would strand the
+		// buyer with every session expired and nothing to redeem.
+		$this->provisioner->latest_wins( $user_id, $session_id );
 
 		$start_url = home_url( '/punchout/start/' . $issued['token'] );
 

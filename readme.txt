@@ -55,6 +55,9 @@ No setup on your side. Each buyer is provisioned automatically as an ordinary Wo
 
 = 0.2.1 =
 * Security/correctness pass from the pre-certification adversarial review:
+* Deleting a customer connection now expires that customer's live sessions immediately, and a session whose connection is gone fails closed (requisition-only) instead of open.
+* Renaming a customer no longer orphans its buyers: returning buyers are matched by their stable identity, not just the name-derived login.
+* Latest-punchout-wins now runs after the new session exists, so a concurrent duplicate setup can no longer strand the buyer with nothing to redeem.
 * Fixed cxml-urlencoded cart returns being corrupted by attribute escaping (base64 was never affected).
 * POOM Total now always equals the sum of the emitted line prices.
 * Blocks (Store API) checkout: order tagging/session linkage now fire, and requisition-only sessions are blocked there too.
