@@ -59,6 +59,11 @@ final class B2BKingBridge {
 		update_user_meta( $user_id, 'b2bking_account_type', 'subaccount' );
 		update_user_meta( $user_id, 'b2bking_account_parent', (string) $company_user_id );
 
+		// The cXML shared-secret exchange IS the approval; without this,
+		// B2BKing's approval sweep wp_logout()s the buyer on their first
+		// page view ('no' is its registration-hook default).
+		update_user_meta( $user_id, 'b2bking_account_approved', 'approved' );
+
 		// The parent's subaccount list drives B2BKing's own group cascade;
 		// append (never rewrite) so admin-managed subaccounts survive.
 		$list = (string) get_user_meta( $company_user_id, 'b2bking_subaccounts_list', true );
