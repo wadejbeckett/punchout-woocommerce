@@ -121,7 +121,7 @@ final class SetupEndpoint {
 		$message   = $this->parser->parse( $body );
 		$body_hash = hash( 'sha256', $body );
 
-		// Resolve the trading partner by the Sender credential; failures
+		// Resolve the customer connection by the Sender credential; failures
 		// are all the same generic 401 with no detail (scope §7).
 		$partner = $this->registry->find_by_sender( $message->sender_domain, $message->sender_identity );
 

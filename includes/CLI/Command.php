@@ -30,7 +30,7 @@ final class Command {
 	}
 
 	/**
-	 * List trading partners.
+	 * List customers.
 	 *
 	 * ## EXAMPLES
 	 *
@@ -61,7 +61,7 @@ final class Command {
 		}
 
 		if ( [] === $rows ) {
-			WP_CLI::log( 'No trading partners configured.' );
+			WP_CLI::log( 'No customers configured.' );
 			return;
 		}
 

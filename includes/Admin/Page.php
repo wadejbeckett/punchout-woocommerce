@@ -22,7 +22,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * - Settings: WordPress Settings API over the single pow_settings option —
  *   master switch plus the handful of genuinely needed knobs.
- * - Partners: the trading-partner registry (write-only secrets).
+ * - Customers: the customer-connection registry (write-only secrets).
  * - Log: the audit trail, filtered and paged.
  *
  * All writes go through Admin\Actions (admin-post handlers, nonce +
@@ -80,8 +80,8 @@ final class Page {
 			'enabled'             => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
 			'landing_page_id'     => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
 			'token_ttl'           => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300.', 'punchout-woocommerce' ) ],
-			'session_ttl'         => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). Partners can override both TTLs per row.', 'punchout-woocommerce' ) ],
-			'rate_limit_per_min'  => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per partner+IP on /punchout/setup. 0 disables.', 'punchout-woocommerce' ) ],
+			'session_ttl'         => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). Each customer connection can override both TTLs.', 'punchout-woocommerce' ) ],
+			'rate_limit_per_min'  => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 disables.', 'punchout-woocommerce' ) ],
 			'log_retention_days'  => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
 			'buyer_inactive_days' => [ __( 'Buyer inactivity (days)', 'punchout-woocommerce' ), 'number', __( 'Buyers unseen this long are flagged inactive (never deleted).', 'punchout-woocommerce' ) ],
 			'default_unspsc'      => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'UNSPSC commodity classification stamped on every returned cart line; procurement systems use it to route requisition lines to a purchasing category. Agree the value with the buyer.', 'punchout-woocommerce' ) ],
@@ -225,7 +225,7 @@ final class Page {
 	private function render_tabs( string $active ): void {
 		$tabs = [
 			'settings' => __( 'Settings', 'punchout-woocommerce' ),
-			'partners' => __( 'Trading partners', 'punchout-woocommerce' ),
+			'partners' => __( 'Customers', 'punchout-woocommerce' ),
 			'log'      => __( 'Log', 'punchout-woocommerce' ),
 		];
 
@@ -276,7 +276,7 @@ final class Page {
 	}
 
 	/* ---------------------------------------------------------------------
-	 * Partners tab
+	 * Customers tab
 	 * ------------------------------------------------------------------ */
 
 	private function render_partners(): void {
@@ -291,13 +291,13 @@ final class Page {
 		printf(
 			'<p><a href="%s" class="button button-primary">%s</a></p>',
 			esc_url( $this->tab_url( 'partners', [ 'action' => 'new' ] ) ),
-			esc_html__( 'Add trading partner', 'punchout-woocommerce' )
+			esc_html__( 'Add customer', 'punchout-woocommerce' )
 		);
 
 		$partners = $this->registry->all();
 
 		if ( [] === $partners ) {
-			echo '<p>' . esc_html__( 'No trading partners configured yet.', 'punchout-woocommerce' ) . '</p>';
+			echo '<p>' . esc_html__( 'No customers connected yet.', 'punchout-woocommerce' ) . '</p>';
 			return;
 		}
 
@@ -347,20 +347,20 @@ final class Page {
 			printf(
 				'<a href="%s" onclick="return confirm(%s)">%s</a>',
 				esc_url( $delete_url ),
-				esc_attr( (string) wp_json_encode( __( 'Delete this trading partner? Sessions and log rows are kept.', 'punchout-woocommerce' ) ) ),
+				esc_attr( (string) wp_json_encode( __( 'Delete this customer connection? Sessions and log rows are kept.', 'punchout-woocommerce' ) ) ),
 				esc_html__( 'Delete', 'punchout-woocommerce' )
 			);
 			echo '</td></tr>';
 		}
 
 		echo '</tbody></table>';
-		echo '<p class="description">' . esc_html__( 'Endpoint for all partners: POST /punchout/setup (raw cXML). Give each partner the setup URL, your To/From identities and their shared secret.', 'punchout-woocommerce' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'Endpoint for all customers: POST /punchout/setup (raw cXML). Give each customer the setup URL, your To/From identities and their shared secret.', 'punchout-woocommerce' ) . '</p>';
 	}
 
 	private function render_partner_form( ?Partner $partner ): void {
 		$is_new = null === $partner;
 
-		echo '<h2>' . ( $is_new ? esc_html__( 'Add trading partner', 'punchout-woocommerce' ) : esc_html( $partner->name ) ) . '</h2>';
+		echo '<h2>' . ( $is_new ? esc_html__( 'Add customer', 'punchout-woocommerce' ) : esc_html( $partner->name ) ) . '</h2>';
 		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
 		echo '<input type="hidden" name="action" value="pow_save_partner" />';
 		printf( '<input type="hidden" name="partner" value="%d" />', $is_new ? 0 : (int) $partner->id );
@@ -452,7 +452,7 @@ final class Page {
 			sprintf(
 				'<label><input type="checkbox" name="allcaps_transform" value="1" %s /> %s</label>',
 				checked( true, (bool) ( $partner->allcaps_transform ?? false ), false ),
-				esc_html__( 'Uppercase every text field pushed back to this partner (SKU, descriptions, unit). The store catalogue is never modified.', 'punchout-woocommerce' )
+				esc_html__( 'Uppercase every text field pushed back to this customer (SKU, descriptions, unit). The store catalogue is never modified.', 'punchout-woocommerce' )
 			)
 		);
 
@@ -460,7 +460,7 @@ final class Page {
 
 		$this->form_row(
 			__( 'IP allowlist (CIDR, one per line)', 'punchout-woocommerce' ),
-			sprintf( '<textarea name="ip_allowlist" rows="3" class="regular-text" placeholder="203.0.113.0/24">%s</textarea><p class="description">%s</p>', esc_textarea( $cidrs ), esc_html__( 'Optional. Empty = no IP restriction on /punchout/setup for this partner.', 'punchout-woocommerce' ) )
+			sprintf( '<textarea name="ip_allowlist" rows="3" class="regular-text" placeholder="203.0.113.0/24">%s</textarea><p class="description">%s</p>', esc_textarea( $cidrs ), esc_html__( 'Optional. Empty = no IP restriction on /punchout/setup for this customer.', 'punchout-woocommerce' ) )
 		);
 
 		$this->form_row(
@@ -473,7 +473,7 @@ final class Page {
 		);
 
 		echo '</table>';
-		submit_button( $is_new ? __( 'Add partner', 'punchout-woocommerce' ) : __( 'Save partner', 'punchout-woocommerce' ) );
+		submit_button( $is_new ? __( 'Add customer', 'punchout-woocommerce' ) : __( 'Save customer', 'punchout-woocommerce' ) );
 		echo '</form>';
 	}
 
@@ -512,7 +512,7 @@ final class Page {
 
 		echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '">';
 		echo '<input type="hidden" name="page" value="' . esc_attr( self::SLUG ) . '" /><input type="hidden" name="tab" value="log" />';
-		echo '<label>' . esc_html__( 'Partner:', 'punchout-woocommerce' ) . ' <select name="partner"><option value="0">' . esc_html__( 'All', 'punchout-woocommerce' ) . '</option>';
+		echo '<label>' . esc_html__( 'Customer:', 'punchout-woocommerce' ) . ' <select name="partner"><option value="0">' . esc_html__( 'All', 'punchout-woocommerce' ) . '</option>';
 
 		foreach ( $this->registry->all() as $partner ) {
 			printf( '<option value="%d"%s>%s</option>', (int) $partner->id, selected( $partner_id, $partner->id, false ), esc_html( $partner->name ) );
@@ -543,7 +543,7 @@ final class Page {
 
 		echo '<table class="widefat striped"><thead><tr>';
 
-		foreach ( [ __( 'Time (UTC)', 'punchout-woocommerce' ), __( 'Event', 'punchout-woocommerce' ), __( 'Dir', 'punchout-woocommerce' ), __( 'Partner', 'punchout-woocommerce' ), __( 'Session', 'punchout-woocommerce' ), __( 'Result', 'punchout-woocommerce' ), __( 'Detail', 'punchout-woocommerce' ) ] as $head ) {
+		foreach ( [ __( 'Time (UTC)', 'punchout-woocommerce' ), __( 'Event', 'punchout-woocommerce' ), __( 'Dir', 'punchout-woocommerce' ), __( 'Customer', 'punchout-woocommerce' ), __( 'Session', 'punchout-woocommerce' ), __( 'Result', 'punchout-woocommerce' ), __( 'Detail', 'punchout-woocommerce' ) ] as $head ) {
 			echo '<th>' . esc_html( $head ) . '</th>';
 		}
 

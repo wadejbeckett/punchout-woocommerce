@@ -95,7 +95,7 @@ final class Actions {
 
 		$this->finish(
 			'partners',
-			$ok ? __( 'Trading partner saved.', 'punchout-woocommerce' ) : __( 'Saving failed — is the Sender identity unique?', 'punchout-woocommerce' ),
+			$ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : __( 'Saving failed — is the Sender identity unique?', 'punchout-woocommerce' ),
 			$ok ? 'success' : 'error',
 			$generated
 		);
@@ -118,7 +118,7 @@ final class Actions {
 			);
 		}
 
-		$this->finish( 'partners', $ok ? __( 'Trading partner deleted.', 'punchout-woocommerce' ) : __( 'Delete failed.', 'punchout-woocommerce' ), $ok ? 'success' : 'error' );
+		$this->finish( 'partners', $ok ? __( 'Customer deleted.', 'punchout-woocommerce' ) : __( 'Delete failed.', 'punchout-woocommerce' ), $ok ? 'success' : 'error' );
 	}
 
 	public function rotate_partner(): void {
