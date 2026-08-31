@@ -165,7 +165,14 @@ final class Plugin {
 			return null;
 		}
 
-		$this->current_session = $this->sessions->find_for_login( $user->ID, wp_get_session_token() );
+		// `ordered` still counts as a live session: the login survives
+		// checkout until the close-out (or cron) tears it down, and the
+		// thank-you close-out CTA needs the session resolvable (§9.7).
+		$this->current_session = $this->sessions->find_for_login(
+			$user->ID,
+			wp_get_session_token(),
+			[ Session::ACTIVE, Session::ORDERED ]
+		);
 
 		return $this->current_session;
 	}
