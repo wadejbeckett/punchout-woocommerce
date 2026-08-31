@@ -13,7 +13,7 @@ namespace POW;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Creates the four custom tables (scope §4) and the punchout_buyer role.
+ * Creates the three custom tables (scope §4) and the punchout_buyer role.
  *
  * Custom indexed tables rather than options/postmeta, per the connector's
  * reasoning: sessions and audit rows are queried on every punchout request
@@ -29,7 +29,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '1';
+	public const DB_VERSION     = '2';
 	public const DB_VERSION_KEY = 'pow_db_version';
 
 	public const ROLE = 'punchout_buyer';
@@ -44,12 +44,6 @@ final class Installer {
 		global $wpdb;
 
 		return $wpdb->prefix . 'pow_sessions';
-	}
-
-	public static function skumap_table(): string {
-		global $wpdb;
-
-		return $wpdb->prefix . 'pow_skumap';
 	}
 
 	public static function log_table(): string {
@@ -92,7 +86,32 @@ final class Installer {
 
 		self::install_schema();
 		self::register_role();
+		self::drop_retired_columns();
 		update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
+	}
+
+	/**
+	 * v2 retired two features into extension points: partner group mapping
+	 * became the pow_buyer_provisioned hook, and the SKU map (buyer-side
+	 * part numbers are the buyer's own concern) became the pow_poom_lines
+	 * filter. dbDelta never drops anything, so the leftovers are removed
+	 * explicitly (guarded — MySQL has no DROP COLUMN IF EXISTS).
+	 */
+	private static function drop_retired_columns(): void {
+		global $wpdb;
+
+		$table = self::partners_table();
+
+		foreach ( [ 'b2bking_company_user_id', 'b2bking_group_id' ] as $column ) {
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( null !== $wpdb->get_var( $wpdb->prepare( "SHOW COLUMNS FROM {$table} LIKE %s", $column ) ) ) {
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				$wpdb->query( "ALTER TABLE {$table} DROP COLUMN {$column}" );
+			}
+		}
+
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'pow_skumap' );
 	}
 
 	/**
@@ -122,7 +141,6 @@ final class Installer {
 		$charset_collate = $wpdb->get_charset_collate();
 		$partners        = self::partners_table();
 		$sessions        = self::sessions_table();
-		$skumap          = self::skumap_table();
 		$log             = self::log_table();
 
 		// Trading-partner registry (scope §4.1). One row per buyer-side
@@ -153,8 +171,6 @@ final class Installer {
 			gateway_allowlist TEXT NULL,
 			company_profile TEXT NULL,
 			ip_allowlist TEXT NULL,
-			b2bking_company_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-			b2bking_group_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
 			session_ttl INT UNSIGNED NOT NULL DEFAULT 14400,
 			token_ttl INT UNSIGNED NOT NULL DEFAULT 300,
 			created DATETIME NULL,
@@ -204,24 +220,6 @@ final class Installer {
 			KEY expires (expires)
 		) {$charset_collate};";
 
-		// Per-partner SKU / UOM / UNSPSC decoration (scope §4.3). Joins on
-		// the WooCommerce SKU — the same join key the connector's phase-2
-		// mapping uses — and owns ONLY the outbound-cXML decoration, never
-		// the OrderMation identity mapping.
-		$sql_skumap = "CREATE TABLE {$skumap} (
-			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-			partner_id BIGINT UNSIGNED NOT NULL,
-			sku VARCHAR(190) NOT NULL,
-			partner_sku VARCHAR(190) NULL,
-			uom_code VARCHAR(8) NOT NULL DEFAULT 'EA',
-			unspsc VARCHAR(12) NULL,
-			active TINYINT NOT NULL DEFAULT 1,
-			created DATETIME NULL,
-			updated DATETIME NULL,
-			PRIMARY KEY  (id),
-			UNIQUE KEY partner_sku_key (partner_id, sku)
-		) {$charset_collate};";
-
 		// Audit / compliance trail (scope §4.4). WooCommerce log files
 		// rotate away; this is a financial integration and the dispute
 		// evidence (prices quoted to a named buyer at a timestamp) must
@@ -249,7 +247,6 @@ final class Installer {
 
 		dbDelta( $sql_partners );
 		dbDelta( $sql_sessions );
-		dbDelta( $sql_skumap );
 		dbDelta( $sql_log );
 	}
 }

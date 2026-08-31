@@ -50,8 +50,6 @@ final class Partner {
 		public readonly ?string $gateway_allowlist,
 		public readonly ?string $company_profile,
 		public readonly ?string $ip_allowlist,
-		public readonly int $b2bking_company_user_id,
-		public readonly int $b2bking_group_id,
 		public readonly int $session_ttl,
 		public readonly int $token_ttl,
 	) {}
@@ -82,8 +80,6 @@ final class Partner {
 			gateway_allowlist: isset( $row['gateway_allowlist'] ) && '' !== (string) $row['gateway_allowlist'] ? (string) $row['gateway_allowlist'] : null,
 			company_profile: isset( $row['company_profile'] ) && '' !== (string) $row['company_profile'] ? (string) $row['company_profile'] : null,
 			ip_allowlist: isset( $row['ip_allowlist'] ) && '' !== (string) $row['ip_allowlist'] ? (string) $row['ip_allowlist'] : null,
-			b2bking_company_user_id: (int) ( $row['b2bking_company_user_id'] ?? 0 ),
-			b2bking_group_id: (int) ( $row['b2bking_group_id'] ?? 0 ),
 			session_ttl: max( 60, (int) ( $row['session_ttl'] ?? 14400 ) ),
 			token_ttl: max( 30, (int) ( $row['token_ttl'] ?? 300 ) ),
 		);

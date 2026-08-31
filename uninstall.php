@@ -36,7 +36,7 @@ remove_role( 'punchout_buyer' );
 
 wp_clear_scheduled_hook( 'pow_gc' );
 
-foreach ( [ 'pow_partners', 'pow_sessions', 'pow_skumap', 'pow_log' ] as $suffix ) {
+foreach ( [ 'pow_partners', 'pow_sessions', 'pow_skumap', 'pow_log' ] as $suffix ) { // pow_skumap: retired in v2, dropped here for sites that never ran the migration.
 	$table = $wpdb->prefix . $suffix;
 
 	// Table name is built from $wpdb->prefix and a hard-coded suffix, never

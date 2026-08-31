@@ -89,7 +89,7 @@ final class Guard {
 		 * Filter whether a product is inside the punchout buyer's range.
 		 *
 		 * The default combines WC visibility (which catalogue-visibility
-		 * plugins such as B2BKing hook) with purchasability; sites with
+		 * plugins hook) with purchasability; sites with
 		 * stricter contract-range rules tighten it here.
 		 *
 		 * @param bool                  $allowed    Default decision.

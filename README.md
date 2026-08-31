@@ -79,7 +79,7 @@ Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. No session e
 punchout-woocommerce/
 ├── punchout-woocommerce.php        Plugin header, constants, bootstrap, HPOS declare,
 │                                   pow()/pow_is_punchout()/pow_return_button() helpers
-├── uninstall.php                   Drops the four tables, options, role; keeps buyer users
+├── uninstall.php                   Drops the tables, options, role; keeps buyer users
 ├── readme.txt                      WordPress plugin directory format
 ├── bin/build-zip.sh                Builds the distributable zip (runtime files only)
 ├── phpunit.xml.dist
@@ -92,7 +92,7 @@ punchout-woocommerce/
     ├── Autoloader.php              PSR-4-style spl_autoload, no Composer
     ├── Plugin.php                  Container / wiring, master-switch gating
     ├── Settings.php                The single option (global knobs only)
-    ├── Installer.php               dbDelta schema (4 tables), punchout_buyer role
+    ├── Installer.php               dbDelta schema (3 tables), punchout_buyer role
     ├── Logger.php                  wc_get_logger() wrapper, redacts credentials
     ├── Cron.php                    Session GC, buyer deactivation, log retention
     ├── RouteGuard.php              Session-scoped access control (302s, checkout block)
@@ -100,10 +100,9 @@ punchout-woocommerce/
     ├── Partners/                   Partner row, Registry (CRUD/auth), Secrets (sodium)
     ├── Sessions/                   Session row+state machine, Store, Tokens, ReplayPolicy
     ├── Http/                       Router, Setup/Start/Return endpoints, RateLimiter
-    ├── Buyers/                     Provisioner, optional B2BKingBridge
+    ├── Buyers/                     Provisioner (fires pow_buyer_provisioned for site glue)
     ├── Cart/                       Guard, Surface (button/shortcode), PoomMapper
     ├── Checkout/PayExit.php        Pay-path listeners (tag, flip, close-out CTA)
-    ├── SkuMap/SkuMap.php           Per-partner SKU/UOM/UNSPSC decoration, CSV import
     ├── Audit/Log.php               Compliance trail (wp_pow_log)
     ├── Support/                    Ip (CIDR), Templates (theme-overridable rendering)
     ├── Admin/                      Page (4 tabs, Settings API) + Actions (admin-post)
@@ -118,7 +117,6 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 |---|---|
 | `wp_pow_partners` | Trading-partner registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, optional customer-group mapping, TTLs |
 | `wp_pow_sessions` | One row per PunchOutSetupRequest: BuyerCookie, BrowserFormPost URL, user, hashed one-time token, exact WP session token, state machine (`pending → active → returned/ordered/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics |
-| `wp_pow_skumap` | Per-partner outbound decoration: SKU override, UOM, UNSPSC — joins on the Woo SKU, owns nothing else |
 | `wp_pow_log` | The audit/compliance trail: every transaction, full POOM XML archives, secrets redacted; retention-trimmed by cron |
 
 ---
@@ -138,7 +136,7 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 
 ## Install
 
-1. Copy the `punchout-woocommerce` directory into `wp-content/plugins/` (or build a zip with `bin/build-zip.sh` and upload it). Activate. Activation creates the four tables and the `punchout_buyer` role, and schedules nothing.
+1. Copy the `punchout-woocommerce` directory into `wp-content/plugins/` (or build a zip with `bin/build-zip.sh` and upload it). Activate. Activation creates the three tables and the `punchout_buyer` role, and schedules nothing.
 2. Put the sealing key in `wp-config.php` **before** storing partner secrets (changing the key later invalidates every stored secret):
 
 ```bash
@@ -188,7 +186,7 @@ Punchout onboarding is a data exchange plus a certification session against the 
 | The cXML version their system emits | codec config |
 | **SameSite/Chrome-80 punchback remediation status**, in writing, with evidence of a successful cross-site cart return from a non-Microsoft supplier | the top integration risk — see below |
 | Test tenant access, a named D365 admin/partner contact, a certification window | certification is only possible against their tenant |
-| Exact UOM codes and currency configured in their D365 | UOM/currency mismatches are silent line-level failures; feed the SKU map |
+| Exact UOM codes and currency configured in their D365 | UOM/currency mismatches are silent line-level failures; lines ship UOM EA — rewrite via the `pow_poom_lines` filter if a buyer needs different codes |
 | Agreed extrinsic names and value sources (`UserEmail`, `UniqueUsername`, …) | buyer identity mapping |
 | Which cart-return encoding their basket wizard accepts (`cxml-base64` / `cxml-urlencoded`) | undocumented by Microsoft; per-partner switch, settle empirically on day one |
 | Whether an empty PunchOutOrderMessage closes a session cleanly (and whether `SupplierOrderInfo` is retained in their cart message log) | pay-path close-out behaviour |

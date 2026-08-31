@@ -14,7 +14,6 @@ use POW\Cxml\Money;
 use POW\Logger;
 use POW\Partners\Partner;
 use POW\Settings;
-use POW\SkuMap\SkuMap;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -22,7 +21,7 @@ defined( 'ABSPATH' ) || exit;
  * Maps the live cart to ItemIn line data (scope §6.2).
  *
  * The cart's line totals ARE the negotiated prices — pricing plugins
- * (B2BKing et al.) apply them at cart time via woocommerce_product_get_price,
+ * apply them at cart time via woocommerce_product_get_price,
  * which is exactly why the one-basket design exists: the POOM quotes the
  * same numbers the buyer would have paid at checkout.
  *
@@ -34,7 +33,6 @@ defined( 'ABSPATH' ) || exit;
 final class PoomMapper {
 
 	public function __construct(
-		private SkuMap $sku_map,
 		private Settings $settings,
 		private Logger $logger,
 	) {}
@@ -43,23 +41,21 @@ final class PoomMapper {
 	 * Build POOM line data from the current cart.
 	 *
 	 * A line with no SKU is a catalogue-hygiene failure: skipped, logged,
-	 * surfaced to the buyer before handoff (scope §9.4). A SKU with no map
-	 * row still returns (raw SKU, UOM EA, default classification) — the
-	 * gap is logged for the map owner, but blocking the buyer over our
-	 * mapping gap is worse.
+	 * surfaced to the buyer before handoff (scope §9.4). Lines carry the
+	 * raw store SKU — mapping to the buyer's internal part numbers is the
+	 * buyer's own concern; sites that must rewrite lines anyway have the
+	 * pow_poom_lines filter.
 	 *
 	 * @return array{
 	 *   items: list<array<string, mixed>>,
 	 *   total_cents: int,
 	 *   currency: string,
 	 *   skipped: list<string>,
-	 *   unmapped: list<string>,
 	 * }
 	 */
 	public function from_cart( Partner $partner ): array {
 		$items       = [];
 		$skipped     = [];
-		$unmapped    = [];
 		$total_cents = 0;
 		$currency    = get_woocommerce_currency();
 
@@ -71,7 +67,6 @@ final class PoomMapper {
 				'total_cents' => 0,
 				'currency'    => $currency,
 				'skipped'     => [],
-				'unmapped'    => [],
 			];
 		}
 
@@ -96,16 +91,6 @@ final class PoomMapper {
 				continue;
 			}
 
-			$map = $this->sku_map->find( $partner->id, $sku );
-
-			if ( null === $map ) {
-				$unmapped[] = $sku;
-				$this->logger->warning( 'POOM line has no SKU map row; emitting raw SKU', [ 'sku' => $sku, 'partner' => $partner->id ] );
-			}
-
-			$partner_sku = $map['partner_sku'] ?? null;
-			$out_sku     = null !== $partner_sku ? $partner_sku : $sku;
-
 			// Ex-tax line total after discounts; ONE conversion through the
 			// Money boundary per line, unit price derived from it.
 			$line_cents = Money::to_cents( (float) ( $cart_item['line_total'] ?? 0 ) );
@@ -123,15 +108,9 @@ final class PoomMapper {
 
 			$total_cents += $line_cents;
 
-			$classification = $map['unspsc'] ?? null;
-
-			if ( null === $classification ) {
-				$classification = (string) $this->settings->get( 'default_unspsc', '' );
-			}
-
 			$items[] = [
 				'quantity'         => $quantity,
-				'supplier_part_id' => $out_sku,
+				'supplier_part_id' => $sku,
 				// Durable line correlation: exact rebuild key if re-entry
 				// is ever enabled, and it round-trips into any resulting
 				// cXML PO (scope §6.2).
@@ -139,8 +118,8 @@ final class PoomMapper {
 				'unit_price_cents' => $unit_cents,
 				'description'      => $product->get_name(),
 				'short_name'       => $product->get_name(),
-				'uom'              => $map['uom_code'] ?? 'EA',
-				'classification'   => $classification,
+				'uom'              => 'EA',
+				'classification'   => (string) $this->settings->get( 'default_unspsc', '' ),
 			];
 		}
 
@@ -154,7 +133,7 @@ final class PoomMapper {
 		/**
 		 * Filter the assembled POOM line set before the document is built.
 		 *
-		 * @param array   $result  items/total_cents/currency/skipped/unmapped.
+		 * @param array   $result  items/total_cents/currency/skipped.
 		 * @param Partner $partner Trading partner.
 		 */
 		return (array) apply_filters(
@@ -164,7 +143,6 @@ final class PoomMapper {
 				'total_cents' => $total_cents,
 				'currency'    => $currency,
 				'skipped'     => $skipped,
-				'unmapped'    => $unmapped,
 			],
 			$partner
 		);
