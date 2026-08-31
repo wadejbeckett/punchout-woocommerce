@@ -1,0 +1,12 @@
+# Runtime / environment
+.secrets
+*.log
+node_modules/
+vendor/
+.DS_Store
+*.local.php
+
+# Test artefacts
+.phpunit.result.cache
+.phpunit.cache/
+composer.lock
