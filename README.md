@@ -2,7 +2,7 @@
 
 An AGPLv3 WordPress plugin that makes a WooCommerce store a **cXML PunchOut supplier site** for enterprise procurement buyers — Microsoft Dynamics 365 Finance & Operations / Supply Chain Management first, any direct-cXML buyer by configuration.
 
-A buyer clicks the store's catalog tile inside their procurement system; the system POSTs a cXML `PunchOutSetupRequest` to the store; the plugin authenticates it by shared secret, provisions a per-buyer user, and returns a one-time StartPage URL that auto-logs the buyer's browser in. The buyer shops the ordinary WooCommerce cart at their configured prices, then exits by sending the basket back to their purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines for internal approval) — or, where the partner's policy allows it, by paying through the completely untouched standard WooCommerce checkout.
+A buyer clicks the store's catalog tile inside their procurement system; the system POSTs a cXML `PunchOutSetupRequest` to the store; the plugin authenticates it by shared secret, provisions a per-buyer user, and returns a one-time StartPage URL that auto-logs the buyer's browser in. The buyer shops the ordinary WooCommerce cart at their configured prices, then exits by sending the basket back to their purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines for internal approval) — or, where the customer's policy allows it, by paying through the completely untouched standard WooCommerce checkout.
 
 **Status: complete build, not yet certified against a live buyer tenant.** Every layer is implemented and the protocol/security core is unit-tested, but no cXML document has been exchanged with a real Dynamics 365 environment — see [Untested against a real D365 tenant](#untested-against-a-real-d365-tenant) before any production onboarding.
 
@@ -26,7 +26,7 @@ The plugin encodes real integration knowledge — the D365 punchout dialect, its
 Buyer's procurement system         The store (this plugin)              Buyer's browser
         │ 1. POST /punchout/setup        │                                     │
         │    text/xml PunchOutSetupReq   │                                     │
-        │───────────────────────────────▶│ 2. authenticate partner             │
+        │───────────────────────────────▶│ 2. authenticate customer            │
         │                                │    (hash_equals, dual-slot)         │
         │                                │    provision/locate buyer user      │
         │                                │    create session row (pending)     │
@@ -46,7 +46,7 @@ Buyer's procurement system         The store (this plugin)              Buyer's 
         │                                │    (a) "Send for approval"          │
         │                                │        → POST /punchout/return      │
         │                                │    (b) stock Woo checkout           │
-        │                                │        (dual_exit partners only)    │
+        │                                │        (dual_exit customers only)   │
         │ 9. browser POSTs the cXML PunchOutOrderMessage (cxml-base64          │
         │    hidden field) top-level to the BrowserFormPost URL; the           │
         │    store login is destroyed either way                               │
@@ -57,9 +57,9 @@ Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. No session e
 
 ### Key design decisions
 
-**Additive, never invasive.** The plugin never overrides, replaces or filters the WooCommerce checkout or any payment gateway. The RFQ exit is an extra button; the pay path is stock WooCommerce with three listeners (order meta tagging, a session-state flip at `woocommerce_payment_complete`, a close-out CTA on the thank-you page). The one exception is deliberate and scoped: partners in `requisition_only` mode get a checkout block — 302 plus a `woocommerce_checkout_process` hard fail — applied only inside that partner's punchout sessions.
+**Additive, never invasive.** The plugin never overrides, replaces or filters the WooCommerce checkout or any payment gateway. The RFQ exit is an extra button; the pay path is stock WooCommerce with three listeners (order meta tagging, a session-state flip at `woocommerce_payment_complete`, a close-out CTA on the thank-you page). The one exception is deliberate and scoped: customers in `requisition_only` mode get a checkout block — 302 plus a `woocommerce_checkout_process` hard fail — applied only inside that customer's punchout sessions.
 
-**Multi-tenant registry, policy over code.** Every partner difference is a column, not a branch: identities, cXML version, return encoding, exit mode, TTLs, IP allowlist, ALL-CAPS outbound transform, optional customer-group mapping. Adding a second buyer is a registry row plus a certification exercise.
+**Multi-tenant registry, policy over code.** Every customer difference is a column, not a branch: identities, cXML version, return encoding, exit mode, TTLs, IP allowlist, ALL-CAPS outbound transform, optional customer-group mapping. Adding a second buyer is a registry row plus a certification exercise.
 
 **Hand-rolled cXML codec on DOMDocument.** The plugin needs exactly four document shapes (parse `PunchOutSetupRequest`/`ProfileRequest`; emit `PunchOutSetupResponse`, `PunchOutOrderMessage`, `Status`). A library (cxml-php) would drag a Composer graph into a no-vendor plugin for four small documents. Parsing is XXE-hardened (entity declarations rejected outright, `LIBXML_NONET`, no runtime DTD fetch) and validates structurally, not against the DTD; the 1.2.071 DTD ships in `includes/Cxml/dtd/` for offline reference.
 
@@ -67,11 +67,11 @@ Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. No session e
 
 **cXML failures inside HTTP 200.** The setup endpoint answers `Status` codes (`401` auth, `406` invalid, `409` replay, `450` unsupported, `500`, `550` rate-limited) in an HTTP 200 — procurement clients read the envelope, and an HTTP 4xx alongside a valid response has broken real integrations.
 
-**One WP user per (partner, buyer identity).** WooCommerce keys the session — and therefore the cart — on the user ID, so a shared punchout user would merge every concurrent buyer into one basket. Identity comes from the agreed extrinsics (`UserEmail`, then `UniqueUsername`, then `Contact/Email`), falling back to a flagged ephemeral per-session user. Same buyer punching out twice: **latest punchout wins** — the new setup expires the old session and destroys its login.
+**One WP user per (customer, buyer identity).** WooCommerce keys the session — and therefore the cart — on the user ID, so a shared punchout user would merge every concurrent buyer into one basket. Identity comes from the agreed extrinsics (`UserEmail`, then `UniqueUsername`, then `Contact/Email`), falling back to a flagged ephemeral per-session user. Same buyer punching out twice: **latest punchout wins** — the new setup expires the old session and destroys its login.
 
 **One cart, two exits.** The live `WC()->cart` serves both exits, so the POOM quotes exactly the prices the buyer would have paid at checkout — pricing plugins apply their prices at cart time and the mapper reads the cart's own line totals. Persistent carts are disabled inside punchout sessions and the cart is emptied once at session start.
 
-**Master switch off by default.** A fresh install exposes no pre-auth XML endpoint until an operator has configured a partner and enabled the feature.
+**Master switch off by default.** A fresh install exposes no pre-auth XML endpoint until an operator has configured a customer and enabled the feature.
 
 ### File tree
 
@@ -115,7 +115,7 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 
 | Table | Holds |
 |---|---|
-| `wp_pow_partners` | Trading-partner registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, optional customer-group mapping, TTLs |
+| `wp_pow_partners` | Customer-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, optional customer-group mapping, TTLs |
 | `wp_pow_sessions` | One row per PunchOutSetupRequest: BuyerCookie, BrowserFormPost URL, user, hashed one-time token, exact WP session token, state machine (`pending → active → returned/ordered/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics |
 | `wp_pow_log` | The audit/compliance trail: every transaction, full POOM XML archives, secrets redacted; retention-trimmed by cron |
 
@@ -127,8 +127,8 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 - **The secret exists in exactly one place** — the inbound setup comparison. The builder has no code path that writes a `SharedSecret` node, and the unit suite asserts its absence on both POOM variants (browser-transported Messages carry an identity-only Sender by DTD rule).
 - **StartPage tokens** are 256-bit random, URL-safe, single-use (an atomic one-query status flip), short-TTL, and stored only as SHA-256. Invalid/expired/used all produce the same detail-free 403.
 - **Replay**: `UNIQUE(partner_id, payloadID)` plus written-down semantics — a duplicate with an identical body while `pending` replays the stored response byte-identically (legitimate retry); any duplicate after token redemption is a cXML 409.
-- **Sessions**: the exact WP session token created at auto-login is recorded, so either exit destroys *that* login only; auth-cookie expiry is the partner's session TTL (default 4 h), and cron reaps stragglers.
-- **Pre-auth surface** is `/punchout/setup` alone: 2 MB body cap, content-type check, XXE hardening, per-(partner, IP) rate limiting, optional per-partner CIDR allowlist, generic 401s.
+- **Sessions**: the exact WP session token created at auto-login is recorded, so either exit destroys *that* login only; auth-cookie expiry is the customer's session TTL (default 4 h), and cron reaps stragglers.
+- **Pre-auth surface** is `/punchout/setup` alone: 2 MB body cap, content-type check, XXE hardening, per-(customer, IP) rate limiting, optional per-customer CIDR allowlist, generic 401s.
 - **Pricing-leak guards**: every `/punchout/*` response sends `no-store` + `X-Robots-Tag: noindex`; the handoff page is never cacheable; add-to-cart validates range server-side (hiding a button is not access control); the route guard 302s punchout sessions away from account surfaces and other users' orders. Add `Disallow: /punchout/` to robots.txt at deployment (see runbook) — the plugin does not rewrite robots.txt itself.
 - **Audit**: every setup, token redemption, login, rejected add-to-cart, cart send (full XML), order, payment event, rotation and GC action lands in `wp_pow_log` with secrets redacted — WooCommerce log files rotate away; the dispute evidence (prices quoted to a named buyer at a timestamp) must not.
 
@@ -137,14 +137,14 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 ## Install
 
 1. Copy the `punchout-woocommerce` directory into `wp-content/plugins/` (or build a zip with `bin/build-zip.sh` and upload it). Activate. Activation creates the three tables and the `punchout_buyer` role, and schedules nothing.
-2. Put the sealing key in `wp-config.php` **before** storing partner secrets (changing the key later invalidates every stored secret):
+2. Put the sealing key in `wp-config.php` **before** storing customer secrets (changing the key later invalidates every stored secret):
 
 ```bash
 wp punchout generate-key
 # → define( 'POW_SECRET_KEY', '…' );  — paste into wp-config.php
 ```
 
-3. Configure at **WooCommerce ▸ PunchOut**: add a trading partner (generate the shared secret from the form — it is shown exactly once), then enable the master switch on the Settings tab.
+3. Configure at **WooCommerce ▸ PunchOut**: add a customer (generate the shared secret from the form — it is shown exactly once), then enable the master switch on the Settings tab.
 4. Prove the plumbing before involving the buyer: POST a sample `PunchOutSetupRequest` at `/punchout/setup` from the shell and check the Log tab (a local punchout simulator such as `punchout-simulator` or `cxml-tester` drives the full loop).
 
 ### Settings

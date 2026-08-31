@@ -29,7 +29,7 @@ final class Settings {
 	private const DEFAULTS = [
 		// Master switch. Off by default so a fresh install exposes no
 		// pre-auth XML endpoint until an operator has configured at least
-		// one trading partner and flipped it on.
+		// one customer connection and flipped it on.
 		'enabled'             => 'no',
 
 		// Default TTLs; each partner row can override its own.

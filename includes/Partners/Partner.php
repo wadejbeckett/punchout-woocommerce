@@ -13,7 +13,7 @@ namespace POW\Partners;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * One configured trading partner (buyer-side tenant).
+ * One configured customer connection (buyer-side tenant).
  *
  * Immutable snapshot of a registry row; all persistence goes through
  * Registry. `mode` is the per-partner exit policy:
