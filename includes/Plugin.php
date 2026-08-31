@@ -11,6 +11,7 @@ declare( strict_types = 1 );
 namespace POW;
 
 use POW\Admin\Actions as AdminActions;
+use POW\Admin\Details as AdminDetails;
 use POW\Admin\Page as AdminPage;
 use POW\Audit\Log;
 use POW\Buyers\B2BKingBridge;
@@ -110,6 +111,7 @@ final class Plugin {
 		// master switch.
 		( new AdminPage( $this->settings, $this->registry, $this->sku_map, $this->audit ) )->register();
 		( new AdminActions( $this->registry, $this->sku_map, $this->audit ) )->register();
+		( new AdminDetails() )->register();
 		( new Cron( $this->sessions, $this->audit, $this->settings, $bridge ) )->register();
 
 		add_action( 'admin_init', [ Installer::class, 'maybe_upgrade' ] );

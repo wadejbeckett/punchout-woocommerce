@@ -8,7 +8,7 @@ Stable tag: 0.1.0
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
-Make your WooCommerce store a cXML PunchOut supplier site for enterprise procurement buyers (Microsoft Dynamics 365 first).
+Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first).
 
 == Description ==
 
