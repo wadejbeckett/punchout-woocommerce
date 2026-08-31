@@ -206,6 +206,30 @@ final class Store {
 	}
 
 	/**
+	 * Every open session regardless of expiry — the master-switch-off
+	 * sweep (Plugin::on_settings_updated) has to reach them all.
+	 *
+	 * @return list<Session>
+	 */
+	public function all_open( int $limit = 500 ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . $this->table() . ' WHERE status IN (%s, %s, %s) LIMIT %d',
+				Session::PENDING,
+				Session::ACTIVE,
+				Session::ORDERED,
+				$limit
+			),
+			ARRAY_A
+		);
+
+		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
+	}
+
+	/**
 	 * Sessions past their expiry that cron must reap.
 	 *
 	 * @return list<Session>

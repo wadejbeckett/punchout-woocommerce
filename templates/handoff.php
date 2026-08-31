@@ -52,7 +52,13 @@ defined( 'ABSPATH' ) || exit;
 		?>
 	</p>
 	<form method="post" action="<?php echo esc_url( $action_url ); ?>" id="pow-handoff-form">
-		<input type="hidden" name="<?php echo esc_attr( $field_name ); ?>" value="<?php echo esc_attr( $field_value ); ?>" />
+		<input type="hidden" name="<?php echo esc_attr( $field_name ); ?>" value="<?php
+			// esc_attr() never double-encodes, so a packed payload containing
+			// entities (&amp;, &#233; from the us-ascii pack) would be decoded
+			// ONCE by the browser and POSTed as raw markup — malformed XML at
+			// the buyer. double_encode=true round-trips byte-exactly.
+			echo htmlspecialchars( $field_value, ENT_QUOTES, 'UTF-8', true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		?>" />
 		<button type="submit" class="pow-handoff-submit"><?php echo esc_html( $button ); ?></button>
 	</form>
 	<script>document.getElementById( 'pow-handoff-form' ).submit();</script>

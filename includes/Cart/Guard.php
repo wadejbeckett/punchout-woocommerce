@@ -64,11 +64,13 @@ final class Guard {
 			return;
 		}
 
+		// Latch only after the empty actually ran: on requests where the
+		// cart is not loaded (REST/admin), leaving cart_ready=0 keeps the
+		// one-shot armed for the first real storefront request.
 		if ( function_exists( 'WC' ) && null !== WC()->cart ) {
 			WC()->cart->empty_cart( true );
+			$this->sessions->update( $session->id, [ 'cart_ready' => 1 ] );
 		}
-
-		$this->sessions->update( $session->id, [ 'cart_ready' => 1 ] );
 	}
 
 	/**

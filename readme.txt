@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.2
-Stable tag: 0.2.0
+Stable tag: 0.2.1
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -52,6 +52,17 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 No setup on your side. Each buyer is provisioned automatically as an ordinary WordPress user the first time their procurement system punches out, and logged in through a single-use StartPage link — no passwords, no registration forms.
 
 == Changelog ==
+
+= 0.2.1 =
+* Security/correctness pass from the pre-certification adversarial review:
+* Fixed cxml-urlencoded cart returns being corrupted by attribute escaping (base64 was never affected).
+* POOM Total now always equals the sum of the emitted line prices.
+* Blocks (Store API) checkout: order tagging/session linkage now fire, and requisition-only sessions are blocked there too.
+* Punchout buyer accounts can no longer use password login or password reset — the one-time StartPage link is their only door.
+* Turning the master switch off now expires all live punchout sessions immediately.
+* Unknown-sender rate limiting is enforced; the pre-auth audit archive is capped at 64 KB per request.
+* Secret redaction in archived XML tolerates closing-tag whitespace and case.
+* The one-shot punchout cart empty no longer disarms on requests where the cart is not loaded.
 
 = 0.2.0 =
 * Buyer group/pricing mapping is now the pow_buyer_provisioned / pow_buyer_deactivated hooks — the plugin ships no third-party plugin glue and works with any (or no) B2B/pricing stack.

@@ -42,6 +42,11 @@ final class PayExit {
 	public function register(): void {
 		add_action( 'woocommerce_checkout_create_order', [ $this, 'tag_order' ], 10, 1 );
 		add_action( 'woocommerce_checkout_order_processed', [ $this, 'link_order' ], 10, 1 );
+
+		// The blocks checkout goes through the Store API, which never fires
+		// the two legacy hooks above — it has its own pair.
+		add_action( 'woocommerce_store_api_checkout_update_order_meta', [ $this, 'tag_order' ], 10, 1 );
+		add_action( 'woocommerce_store_api_checkout_order_processed', [ $this, 'link_order' ], 10, 1 );
 		add_action( 'woocommerce_payment_complete', [ $this, 'payment_complete' ] );
 		add_action( 'woocommerce_order_status_failed', [ $this, 'payment_failed' ] );
 		add_action( 'woocommerce_thankyou', [ $this, 'render_closeout' ], 20 );
@@ -70,9 +75,14 @@ final class PayExit {
 	 * status stays `active` until payment confirms — a declined buyer must
 	 * still be able to retry on order-pay inside the session (scope §9.7).
 	 *
-	 * @param int $order_id New order id.
+	 * @param int|\WC_Order $order_id New order id (legacy hook) or the
+	 *                                 order itself (Store API hook).
 	 */
 	public function link_order( $order_id ): void {
+		if ( $order_id instanceof \WC_Order ) {
+			$order_id = $order_id->get_id();
+		}
+
 		$session = $this->plugin->current_session();
 
 		if ( null === $session ) {

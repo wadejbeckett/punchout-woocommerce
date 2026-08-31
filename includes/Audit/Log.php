@@ -74,7 +74,7 @@ final class Log {
 	 */
 	public static function redact_xml( string $xml ): string {
 		return (string) preg_replace(
-			'#(<SharedSecret[^>]*>).*?(</SharedSecret>)#s',
+			'#(<SharedSecret\b[^>]*>).*?(</SharedSecret\s*>)#is',
 			'$1[redacted]$2',
 			$xml
 		);
