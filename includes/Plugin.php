@@ -116,6 +116,16 @@ final class Plugin {
 			Command::register( $this );
 		}
 
+		// Always-on hardening — deliberately registered BEFORE the master
+		// switch gate so it holds even while punchout is disabled:
+		// punchout_buyer accounts must never gain a standing password login
+		// (their only door is the one-time StartPage token), and flipping
+		// the switch off must tear down live sessions, not strand them
+		// logged in with every guard unhooked.
+		add_filter( 'allow_password_reset', [ $this, 'deny_buyer_password_reset' ], 10, 2 );
+		add_filter( 'wp_authenticate_user', [ $this, 'deny_buyer_password_login' ] );
+		add_action( 'update_option_' . Settings::OPTION_KEY, [ $this, 'on_settings_updated' ], 10, 2 );
+
 		if ( ! $this->enabled() ) {
 			return;
 		}
@@ -207,6 +217,59 @@ final class Plugin {
 
 	public function woocommerce_active(): bool {
 		return class_exists( \WooCommerce::class ) && function_exists( 'wc_get_product' );
+	}
+
+	/**
+	 * @param bool $allow   Whether the reset may proceed.
+	 * @param int  $user_id User requesting the reset.
+	 * @return bool
+	 */
+	public function deny_buyer_password_reset( $allow, $user_id ) {
+		$user = get_userdata( (int) $user_id );
+
+		return $user && in_array( Installer::ROLE, (array) $user->roles, true ) ? false : $allow;
+	}
+
+	/**
+	 * @param \WP_User|\WP_Error $user Authentication candidate.
+	 * @return \WP_User|\WP_Error
+	 */
+	public function deny_buyer_password_login( $user ) {
+		if ( $user instanceof \WP_User && in_array( Installer::ROLE, (array) $user->roles, true ) ) {
+			return new \WP_Error(
+				'pow_no_password_login',
+				__( 'This account can only sign in through its procurement system.', 'punchout-woocommerce' )
+			);
+		}
+
+		return $user;
+	}
+
+	/**
+	 * Master switch turned off: expire every open session and destroy its
+	 * recorded login, so "disabled" means disabled immediately rather than
+	 * at each session's TTL.
+	 *
+	 * @param mixed $old Previous option value.
+	 * @param mixed $new New option value.
+	 */
+	public function on_settings_updated( $old, $new ): void {
+		$was = is_array( $old ) && 'yes' === ( $old['enabled'] ?? '' );
+		$now = is_array( $new ) && 'yes' === ( $new['enabled'] ?? '' );
+
+		if ( ! $was || $now || null === $this->sessions ) {
+			return;
+		}
+
+		foreach ( $this->sessions->all_open( 500 ) as $open ) {
+			if ( $this->sessions->transition( $open->id, $open->status, Session::EXPIRED ) ) {
+				if ( '' !== $open->wp_session_token && $open->user_id > 0 ) {
+					\WP_Session_Tokens::get_instance( $open->user_id )->destroy( $open->wp_session_token );
+				}
+			}
+		}
+
+		$this->audit?->write( 'master_disabled', [ 'result' => 'sessions_swept' ] );
 	}
 
 	/**

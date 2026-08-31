@@ -37,6 +37,7 @@ final class RouteGuard {
 	public function register(): void {
 		add_action( 'template_redirect', [ $this, 'guard' ], 1 );
 		add_action( 'woocommerce_checkout_process', [ $this, 'block_checkout_process' ] );
+		add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'block_store_api_checkout' ] );
 		add_action( 'login_init', [ $this, 'guard_login_screen' ] );
 	}
 
@@ -90,6 +91,26 @@ final class RouteGuard {
 	 * Second layer of the requisition_only block: even a crafted POST to
 	 * the checkout processor hard-fails (scope §5.4).
 	 */
+	/**
+	 * The blocks checkout never runs woocommerce_checkout_process — it
+	 * posts to the Store API. Same policy, that route's own veto point.
+	 *
+	 * @throws \Automattic\WooCommerce\StoreApi\Exceptions\RouteException When a requisition_only session tries to check out.
+	 */
+	public function block_store_api_checkout(): void {
+		if ( ! $this->requisition_only() ) {
+			return;
+		}
+
+		$message = __( 'Checkout is not available in this catalog session. Please use "Send to your purchasing system for approval".', 'punchout-woocommerce' );
+
+		if ( class_exists( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class ) ) {
+			throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', esc_html( $message ), 403 );
+		}
+
+		wp_die( esc_html( $message ), 403 ); // Unreachable on any Woo new enough to serve the Store API.
+	}
+
 	public function block_checkout_process(): void {
 		if ( $this->requisition_only() && function_exists( 'wc_add_notice' ) ) {
 			wc_add_notice(

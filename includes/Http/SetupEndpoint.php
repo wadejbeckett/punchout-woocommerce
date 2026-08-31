@@ -109,11 +109,15 @@ final class SetupEndpoint {
 
 		$body = $this->read_body();
 
+		// Pre-auth archive: this row is written before the sender is
+		// authenticated, so an anonymous client must not be able to store
+		// 2 MB per request. Real setup requests are a few KB; 64 KB keeps
+		// full evidence for anything legitimate.
 		$this->audit->write(
 			'setup_rx',
 			[
 				'direction' => 'in',
-				'xml'       => $body,
+				'xml'       => strlen( $body ) > 65536 ? substr( $body, 0, 65536 ) . "\n<!-- pow: pre-auth archive capped at 64 KB -->" : $body,
 				'ip'        => $ip,
 			]
 		);
@@ -126,9 +130,14 @@ final class SetupEndpoint {
 		$partner = $this->registry->find_by_sender( $message->sender_domain, $message->sender_identity );
 
 		if ( null === $partner || ! $partner->is_active() ) {
-			// Unknown senders still consume a rate-limit bucket so
-			// credential scanning cannot hammer the parser for free.
-			$this->rate_limiter->allow( 'unknown|' . $ip );
+			// Unknown senders consume (and are bounded by) their own
+			// rate-limit bucket so credential scanning cannot hammer the
+			// parser — or flood the audit table — for free.
+			if ( ! $this->rate_limiter->allow( 'unknown|' . $ip ) ) {
+				$this->respond( $this->status_doc( 550, 'Too many requests', '1.2.008' ) );
+				return;
+			}
+
 			$this->deny_auth( $message, $ip, 'unknown sender' );
 			return;
 		}

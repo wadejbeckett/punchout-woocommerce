@@ -106,7 +106,12 @@ final class PoomMapper {
 			 */
 			$unit_cents = (int) apply_filters( 'pow_poom_unit_price_cents', $unit_cents, $cart_item, $partner, $product );
 
-			$total_cents += $line_cents;
+			// Total is accumulated from the EMITTED unit prices, not the raw
+			// cart line totals: per-line rounding (100.00/3) and the unit
+			// price filter would otherwise make Total disagree with
+			// sum(UnitPrice x quantity) — the only reconstruction a receiver
+			// can perform, since ItemIn carries no extended amount.
+			$total_cents += (int) round( $unit_cents * $quantity );
 
 			$items[] = [
 				'quantity'         => $quantity,
