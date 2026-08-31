@@ -57,6 +57,7 @@ No setup on your side. Each buyer is provisioned automatically as an ordinary Wo
 * Buyer group/pricing mapping is now the pow_buyer_provisioned / pow_buyer_deactivated hooks — the plugin ships no third-party plugin glue and works with any (or no) B2B/pricing stack.
 * Removed the SKU map: returned lines always carry the store's own SKU; buyer-side part-number mapping belongs in the buyer's procurement system. Sites that must rewrite lines have the pow_poom_lines filter.
 * "View details" modal on the Plugins screen, rendered from this readme.
+* The RFQ exit button now auto-injects on the blocks cart as well as the classic cart.
 
 = 0.1.0 =
 * Initial release: multi-tenant partner registry, setup/start/return endpoints, ProfileRequest support, one-time login, cart-to-POOM RFQ exit, empty-POOM close-out, pay-exit session lifecycle, ALL-CAPS outbound transform, audit log, WP-CLI tooling, unit-tested codec.

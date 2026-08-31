@@ -26,10 +26,12 @@ defined( 'ABSPATH' ) || exit;
  * partner's punchout sessions only (their sanctioned single exit); the
  * hard block behind it lives in RouteGuard.
  *
- * Three placement paths, most flexible first:
+ * Four placement paths, most flexible first:
  * - [punchout_return_button] shortcode (builders, widgets);
  * - pow_return_button() PHP helper (theme code);
- * - automatic injection on the cart page (woocommerce_proceed_to_checkout).
+ * - automatic injection on the classic cart page (woocommerce_proceed_to_checkout);
+ * - automatic injection on the blocks cart (render_block on the
+ *   proceed-to-checkout block).
  */
 final class Surface {
 
@@ -41,6 +43,7 @@ final class Surface {
 	public function register(): void {
 		add_shortcode( 'punchout_return_button', [ $this, 'shortcode' ] );
 		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
+		add_filter( 'render_block_woocommerce/proceed-to-checkout-block', [ $this, 'filter_blocks_proceed' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
 	}
 
@@ -80,6 +83,30 @@ final class Surface {
 
 	public function render_cart_button(): void {
 		echo $this->markup(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within.
+	}
+
+	/**
+	 * Blocks cart (Woo 8.3+ default): the proceed-to-checkout block is a
+	 * server-rendered wrapper that React hydrates internally, so appending
+	 * a SIBLING here survives hydration. Dual exit appends beside the stock
+	 * button; requisition_only replaces the wrapper outright so the
+	 * checkout button never mounts — presentation only, RouteGuard owns
+	 * the hard block either way.
+	 */
+	public function filter_blocks_proceed( string $block_content ): string {
+		$session = $this->plugin->current_session();
+
+		if ( null === $session ) {
+			return $block_content;
+		}
+
+		$partner = $this->registry->find( $session->partner_id );
+
+		if ( null !== $partner && $partner->is_requisition_only() ) {
+			return $this->markup();
+		}
+
+		return $block_content . $this->markup();
 	}
 
 	/**
