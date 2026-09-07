@@ -85,6 +85,7 @@ punchout-woocommerce/
 ├── phpunit.xml.dist
 ├── templates/                      Theme-overridable buyer-facing surfaces
 │   ├── return-button.php           The "send for approval" cart button
+│   ├── abandon-button.php          The "return without a basket" control
 │   ├── closeout-button.php         The pay-path close-out CTA
 │   └── handoff.php                 The auto-submitting cart-return page
 ├── tests/                          Pure-PHP unit suite (no WordPress) + shim runner
@@ -207,14 +208,22 @@ Three equivalent ways; all render only inside an active punchout session and out
 - PHP: `pow_return_button();` in any template
 - Automatic: injected on the cart page after the checkout button (`woocommerce_proceed_to_checkout`, priority 30)
 
-Markup comes from `templates/return-button.php` — override it by copying to `{theme}/punchout-woocommerce/return-button.php`, or point the `pow_template_return-button` filter anywhere. Same pattern for `handoff.php` and `closeout-button.php`.
+Markup comes from `templates/return-button.php` — override it by copying to `{theme}/punchout-woocommerce/return-button.php`, or point the `pow_template_return-button` filter anywhere. Same pattern for `handoff.php`, `closeout-button.php` and `abandon-button.php`.
+
+## Leaving without a basket
+
+`[punchout_abandon_button]` (or `pow_abandon_button();`) renders the mid-session abandon control — a POST of an empty PunchOutOrderMessage, the cXML cancel semantic, so the buyer's procurement application learns the session ended with no items. Same endpoint, same nonce and the same authorisation checks as the cart return; it has no automatic placement, because no core hook means "the session chrome". Label filter: `pow_abandon_button_label`.
+
+Both controls are submit buttons inside real forms, never links, and both are placed in a builder's global header or footer as often as on the cart — i.e. outside the `.woocommerce` wrapper most themes hang their button styling off. The plugin therefore adds a generic default-button class for the active theme where one exists; `pow_button_classes` replaces the whole list.
 
 ## Extension points
 
 | Hook | Type | Purpose |
 |---|---|---|
 | `pow_return_button_label` | filter | RFQ button text |
-| `pow_template_{return-button,handoff,closeout-button}` | filter | Replace any buyer-facing template |
+| `pow_abandon_button_label` | filter | "Return without a basket" text |
+| `pow_button_classes` | filter | Class list of either exit control (`$classes, $base, $themed`) |
+| `pow_template_{return-button,abandon-button,handoff,closeout-button}` | filter | Replace any buyer-facing template |
 | `pow_handoff_copy` / `pow_closeout_copy` / `pow_expired_token_message` | filter | Buyer-facing strings |
 | `pow_buyer_identity` | filter | Change how buyer identity is derived from the setup request |
 | `pow_product_in_range` | filter | Tighten the add-to-cart range check (e.g. a contract-range rule) |
@@ -223,7 +232,7 @@ Markup comes from `templates/return-button.php` — override it by copying to `{
 | `pow_start_redirect` | filter | Post-login destination |
 | `pow_client_ip` | filter | Trust a proxy header for rate limiting / allowlists / audit |
 | `pow_route_guard` | action | Extend the blocked-surface set inside punchout sessions |
-| `pow_is_punchout()` | function | Presentation gating for themes/builders (never access control) |
+| `pow_is_punchout()` | function | Presentation gating for themes/builders (never access control). Namespaced: call it as `POW\pow_is_punchout()`, or check `function_exists( 'POW\\pow_is_punchout' )` — the unqualified name does not exist. |
 
 ## WP-CLI
 

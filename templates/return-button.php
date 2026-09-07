@@ -13,6 +13,7 @@
  * @var string $action_url Form action (the /punchout/return endpoint).
  * @var string $nonce      Nonce value for the pow_return action.
  * @var string $label      Button label (pow_return_button_label filter).
+ * @var string $classes    Button class attribute (pow_button_classes filter).
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -23,7 +24,7 @@ defined( 'ABSPATH' ) || exit;
 <form method="post" action="<?php echo esc_url( $action_url ); ?>" class="pow-return-form">
 	<input type="hidden" name="pow_mode" value="cart" />
 	<input type="hidden" name="pow_nonce" value="<?php echo esc_attr( $nonce ); ?>" />
-	<button type="submit" class="button alt wp-element-button pow-return-button">
+	<button type="submit" class="<?php echo esc_attr( $classes ); ?>">
 		<?php echo esc_html( $label ); ?>
 	</button>
 </form>

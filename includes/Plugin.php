@@ -191,6 +191,13 @@ final class Plugin {
 		return null !== $this->surface ? $this->surface->markup() : '';
 	}
 
+	/**
+	 * The "return without a basket" markup for the current session ('' outside one).
+	 */
+	public function abandon_button_markup(): string {
+		return null !== $this->surface ? $this->surface->abandon_markup() : '';
+	}
+
 	public function enabled(): bool {
 		return 'yes' === (string) $this->settings()->get( 'enabled', 'no' );
 	}
