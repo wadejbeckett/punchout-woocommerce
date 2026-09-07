@@ -102,7 +102,7 @@ final class RouteGuard {
 			return;
 		}
 
-		$message = __( 'Checkout is not available in this catalog session. Please use "Send to your purchasing system for approval".', 'punchout-woocommerce' );
+		$message = __( 'Checkout is not available in this catalog session. Please use "Punchout".', 'punchout-woocommerce' );
 
 		if ( class_exists( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class ) ) {
 			throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', esc_html( $message ), 403 );
@@ -114,7 +114,7 @@ final class RouteGuard {
 	public function block_checkout_process(): void {
 		if ( $this->requisition_only() && function_exists( 'wc_add_notice' ) ) {
 			wc_add_notice(
-				__( 'Checkout is not available in this catalog session. Please use "Send to your purchasing system for approval".', 'punchout-woocommerce' ),
+				__( 'Checkout is not available in this catalog session. Please use "Punchout".', 'punchout-woocommerce' ),
 				'error'
 			);
 		}

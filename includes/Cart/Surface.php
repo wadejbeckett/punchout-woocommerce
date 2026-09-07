@@ -73,7 +73,7 @@ final class Surface {
 		 */
 		$label = (string) apply_filters(
 			'pow_return_button_label',
-			__( 'Send to your purchasing system for approval', 'punchout-woocommerce' )
+			__( 'Punchout', 'punchout-woocommerce' )
 		);
 
 		return Templates::render(
