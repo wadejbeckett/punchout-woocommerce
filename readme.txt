@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.2
-Stable tag: 0.2.1
+Stable tag: 0.2.2
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -52,6 +52,11 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 No setup on your side. Each buyer is provisioned automatically as an ordinary WordPress user the first time their procurement system punches out, and logged in through a single-use StartPage link — no passwords, no registration forms.
 
 == Changelog ==
+
+= 0.2.2 =
+* New: [punchout_abandon_button] / pow_abandon_button() — the mid-session "return without a basket" control (empty PunchOutOrderMessage), previously only available on the pay path's close-out.
+* Fix: the exit controls are styled by the active theme when placed in a global header or footer, outside the .woocommerce wrapper. New pow_button_classes filter.
+* New: pow_abandon_button_label filter, templates/abandon-button.php.
 
 = 0.2.1 =
 * Security/correctness pass from the pre-certification adversarial review:
