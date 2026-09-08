@@ -2,7 +2,7 @@
 
 An AGPLv3 WordPress plugin that makes a WooCommerce store a **cXML PunchOut supplier site** for enterprise procurement buyers — Microsoft Dynamics 365 Finance & Operations / Supply Chain Management first, any direct-cXML buyer by configuration.
 
-A buyer clicks the store's catalog tile inside their procurement system; the system POSTs a cXML `PunchOutSetupRequest` to the store; the plugin authenticates it by shared secret, provisions a per-buyer user, and returns a one-time StartPage URL that auto-logs the buyer's browser in. The buyer shops the ordinary WooCommerce cart at their configured prices, then exits by sending the basket back to their purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines for internal approval) — or, where the customer's policy allows it, by paying through the completely untouched standard WooCommerce checkout.
+A buyer clicks the store's catalog tile inside their procurement system; the system POSTs a cXML `PunchOutSetupRequest` to the store; the plugin authenticates it by shared secret, provisions a per-buyer user, and returns a one-time StartPage URL that auto-logs the buyer's browser in. The buyer shops the ordinary WooCommerce cart at their configured prices, then exits by sending the cart back to their purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines for internal approval) — or, where the customer's policy allows it, by paying through the completely untouched standard WooCommerce checkout.
 
 **Status: complete build, not yet certified against a live buyer tenant.** Every layer is implemented and the protocol/security core is unit-tested, but no cXML document has been exchanged with a real Dynamics 365 environment — see [Untested against a real D365 tenant](#untested-against-a-real-d365-tenant) before any production onboarding.
 
@@ -67,7 +67,7 @@ Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. No session e
 
 **cXML failures inside HTTP 200.** The setup endpoint answers `Status` codes (`401` auth, `406` invalid, `409` replay, `450` unsupported, `500`, `550` rate-limited) in an HTTP 200 — procurement clients read the envelope, and an HTTP 4xx alongside a valid response has broken real integrations.
 
-**One WP user per (customer, buyer identity).** WooCommerce keys the session — and therefore the cart — on the user ID, so a shared punchout user would merge every concurrent buyer into one basket. Identity comes from the agreed extrinsics (`UserEmail`, then `UniqueUsername`, then `Contact/Email`), falling back to a flagged ephemeral per-session user. Same buyer punching out twice: **latest punchout wins** — the new setup expires the old session and destroys its login.
+**One WP user per (customer, buyer identity).** WooCommerce keys the session — and therefore the cart — on the user ID, so a shared punchout user would merge every concurrent buyer into one cart. Identity comes from the agreed extrinsics (`UserEmail`, then `UniqueUsername`, then `Contact/Email`), falling back to a flagged ephemeral per-session user. Same buyer punching out twice: **latest punchout wins** — the new setup expires the old session and destroys its login.
 
 **One cart, two exits.** The live `WC()->cart` serves both exits, so the POOM quotes exactly the prices the buyer would have paid at checkout — pricing plugins apply their prices at cart time and the mapper reads the cart's own line totals. Persistent carts are disabled inside punchout sessions and the cart is emptied once at session start.
 
@@ -85,7 +85,7 @@ punchout-woocommerce/
 ├── phpunit.xml.dist
 ├── templates/                      Theme-overridable buyer-facing surfaces
 │   ├── return-button.php           The "send for approval" cart button
-│   ├── abandon-button.php          The "return without a basket" control
+│   ├── abandon-button.php          The "return without a cart" control
 │   ├── closeout-button.php         The pay-path close-out CTA
 │   └── handoff.php                 The auto-submitting cart-return page
 ├── tests/                          Pure-PHP unit suite (no WordPress) + shim runner
@@ -159,6 +159,8 @@ wp punchout generate-key
 | Setup rate limit | 30/min | Per partner+IP on `/punchout/setup`; 0 disables |
 | Log retention | 400 days | Audit-table trim horizon |
 | Buyer inactivity | 90 days | Flag (never delete) unseen buyers |
+| Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |
+| Cancel button label | "Return without a cart" | Text on the abandon control; blank = the default |
 | Default UNSPSC | empty | Classification fallback for unmapped SKUs |
 
 ---
@@ -210,9 +212,11 @@ Three equivalent ways; all render only inside an active punchout session and out
 
 Markup comes from `templates/return-button.php` — override it by copying to `{theme}/punchout-woocommerce/return-button.php`, or point the `pow_template_return-button` filter anywhere. Same pattern for `handoff.php`, `closeout-button.php` and `abandon-button.php`.
 
-## Leaving without a basket
+Label: the **Punchout button label** setting (blank = "Punchout"), or the `pow_return_button_label` filter, which runs after it — so a filter always wins over the saved value.
 
-`[punchout_abandon_button]` (or `pow_abandon_button();`) renders the mid-session abandon control — a POST of an empty PunchOutOrderMessage, the cXML cancel semantic, so the buyer's procurement application learns the session ended with no items. Same endpoint, same nonce and the same authorisation checks as the cart return; it has no automatic placement, because no core hook means "the session chrome". Label filter: `pow_abandon_button_label`.
+## Leaving without a cart
+
+`[punchout_abandon_button]` (or `pow_abandon_button();`) renders the mid-session abandon control — a POST of an empty PunchOutOrderMessage, the cXML cancel semantic, so the buyer's procurement application learns the session ended with no items. Same endpoint, same nonce and the same authorisation checks as the cart return; it has no automatic placement, because no core hook means "the session chrome". Label: the **Cancel button label** setting, or the `pow_abandon_button_label` filter, which runs after it.
 
 Both controls are submit buttons inside real forms, never links, and both are placed in a builder's global header or footer as often as on the cart — i.e. outside the `.woocommerce` wrapper most themes hang their button styling off. The plugin therefore adds a generic default-button class for the active theme where one exists; `pow_button_classes` replaces the whole list.
 
@@ -220,8 +224,8 @@ Both controls are submit buttons inside real forms, never links, and both are pl
 
 | Hook | Type | Purpose |
 |---|---|---|
-| `pow_return_button_label` | filter | RFQ button text |
-| `pow_abandon_button_label` | filter | "Return without a basket" text |
+| `pow_return_button_label` | filter | RFQ button text (applied after the setting) |
+| `pow_abandon_button_label` | filter | "Return without a cart" text (applied after the setting) |
 | `pow_button_classes` | filter | Class list of either exit control (`$classes, $base, $themed`) |
 | `pow_template_{return-button,abandon-button,handoff,closeout-button}` | filter | Replace any buyer-facing template |
 | `pow_handoff_copy` / `pow_closeout_copy` / `pow_expired_token_message` | filter | Buyer-facing strings |
@@ -257,7 +261,7 @@ wp punchout gc                # run housekeeping now
 - **Ariba network hops, CredentialMac, client certificates, `ds:Signature`**: only direct punchout with SharedSecret auth is implemented.
 - **Invoicing (`InvoiceDetailRequest`), order-status write-back, catalog uploads**: out of scope.
 - **Checkout prefill / per-partner gateway filtering / shipping policy wiring**: deliberately omitted — the client requirement is that the pay path be *stock* WooCommerce with no checkout-flow filters. The registry keeps `gateway_allowlist` / `company_profile` columns so this can become policy later without a schema change.
-- **A parallel requisition basket**: rejected by design; the live cart is the single source of truth for both exits.
+- **A parallel requisition cart**: rejected by design; the live cart is the single source of truth for both exits.
 
 ## Untested against a real D365 tenant
 

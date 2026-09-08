@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       PunchOut for WooCommerce
  * Plugin URI:        https://github.com/wadejbeckett/punchout-woocommerce
- * Description:       Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first). Multi-tenant customer registry, one-time StartPage login, and an additive "send for approval" cart exit that returns the basket as an RFQ (PunchOutOrderMessage).
- * Version:           0.2.3
+ * Description:       Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first). Multi-tenant customer registry, one-time StartPage login, and an additive "send for approval" cart exit that returns the cart as an RFQ (PunchOutOrderMessage).
+ * Version:           0.2.4
  * Requires at least: 6.4
  * Requires PHP:      8.2
  * Author:            Noiz
@@ -39,7 +39,7 @@ namespace POW;
 
 defined( 'ABSPATH' ) || exit;
 
-const VERSION     = '0.2.2';
+const VERSION     = '0.2.4';
 const PLUGIN_FILE = __FILE__;
 
 define( 'POW_PLUGIN_FILE', __FILE__ );
@@ -119,7 +119,7 @@ function pow_return_button( bool $display = true ): string {
 }
 
 /**
- * Render (or return) the "return without a basket" control for the current
+ * Render (or return) the "return without a cart" control for the current
  * punchout session. Outputs nothing outside an active session.
  *
  * Also available as the [punchout_abandon_button] shortcode.

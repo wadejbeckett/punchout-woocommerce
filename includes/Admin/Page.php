@@ -77,14 +77,16 @@ final class Page {
 		);
 
 		$fields = [
-			'enabled'             => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
-			'landing_page_id'     => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
-			'token_ttl'           => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300.', 'punchout-woocommerce' ) ],
-			'session_ttl'         => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). Each customer connection can override both TTLs.', 'punchout-woocommerce' ) ],
-			'rate_limit_per_min'  => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 disables.', 'punchout-woocommerce' ) ],
-			'log_retention_days'  => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
-			'buyer_inactive_days' => [ __( 'Buyer inactivity (days)', 'punchout-woocommerce' ), 'number', __( 'Buyers unseen this long are flagged inactive (never deleted).', 'punchout-woocommerce' ) ],
-			'default_unspsc'      => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'UNSPSC commodity classification stamped on every returned cart line; procurement systems use it to route requisition lines to a purchasing category. Agree the value with the buyer.', 'punchout-woocommerce' ) ],
+			'enabled'              => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
+			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
+			'return_button_label'  => [ __( 'Punchout button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button that sends the cart back to the buyer\'s purchasing system. Blank uses the default: “Punchout”.', 'punchout-woocommerce' ) ],
+			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Return without a cart”.', 'punchout-woocommerce' ) ],
+			'token_ttl'            => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300.', 'punchout-woocommerce' ) ],
+			'session_ttl'          => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). Each customer connection can override both TTLs.', 'punchout-woocommerce' ) ],
+			'rate_limit_per_min'   => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 disables.', 'punchout-woocommerce' ) ],
+			'log_retention_days'   => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
+			'buyer_inactive_days'  => [ __( 'Buyer inactivity (days)', 'punchout-woocommerce' ), 'number', __( 'Buyers unseen this long are flagged inactive (never deleted).', 'punchout-woocommerce' ) ],
+			'default_unspsc'       => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'UNSPSC commodity classification stamped on every returned cart line; procurement systems use it to route requisition lines to a purchasing category. Agree the value with the buyer.', 'punchout-woocommerce' ) ],
 		];
 
 		foreach ( $fields as $key => [ $label, $type, $help ] ) {
@@ -167,15 +169,17 @@ final class Page {
 		$input = is_array( $input ) ? $input : [];
 
 		return [
-			'enabled'             => ( isset( $input['enabled'] ) && 'yes' === $input['enabled'] ) ? 'yes' : 'no',
-			'landing_page_id'     => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
-			'token_ttl'           => max( 30, (int) ( $input['token_ttl'] ?? 300 ) ),
-			'session_ttl'         => max( 300, (int) ( $input['session_ttl'] ?? 14400 ) ),
-			'rate_limit_per_min'  => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
-			'log_retention_days'  => max( 1, (int) ( $input['log_retention_days'] ?? 400 ) ),
-			'buyer_inactive_days' => max( 0, (int) ( $input['buyer_inactive_days'] ?? 90 ) ),
-			'default_unspsc'      => sanitize_text_field( (string) ( $input['default_unspsc'] ?? '' ) ),
-			'log_level'           => in_array( $input['log_level'] ?? '', [ 'debug', 'info', 'warning', 'error' ], true ) ? (string) $input['log_level'] : 'info',
+			'enabled'              => ( isset( $input['enabled'] ) && 'yes' === $input['enabled'] ) ? 'yes' : 'no',
+			'landing_page_id'      => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
+			'return_button_label'  => sanitize_text_field( (string) ( $input['return_button_label'] ?? '' ) ),
+			'abandon_button_label' => sanitize_text_field( (string) ( $input['abandon_button_label'] ?? '' ) ),
+			'token_ttl'            => max( 30, (int) ( $input['token_ttl'] ?? 300 ) ),
+			'session_ttl'          => max( 300, (int) ( $input['session_ttl'] ?? 14400 ) ),
+			'rate_limit_per_min'   => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
+			'log_retention_days'   => max( 1, (int) ( $input['log_retention_days'] ?? 400 ) ),
+			'buyer_inactive_days'  => max( 0, (int) ( $input['buyer_inactive_days'] ?? 90 ) ),
+			'default_unspsc'       => sanitize_text_field( (string) ( $input['default_unspsc'] ?? '' ) ),
+			'log_level'            => in_array( $input['log_level'] ?? '', [ 'debug', 'info', 'warning', 'error' ], true ) ? (string) $input['log_level'] : 'info',
 		];
 	}
 

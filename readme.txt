@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.2
-Stable tag: 0.2.2
+Stable tag: 0.2.4
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -12,11 +12,11 @@ Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dy
 
 == Description ==
 
-PunchOut for WooCommerce lets enterprise buyers "punch out" from their procurement system (Microsoft Dynamics 365 Finance & Operations / Supply Chain Management first; any cXML direct-punchout buyer by configuration) into your WooCommerce store, shop the catalogue at their own prices, and send the basket back into their purchasing workflow as requisition/RFQ lines.
+PunchOut for WooCommerce lets enterprise buyers "punch out" from their procurement system (Microsoft Dynamics 365 Finance & Operations / Supply Chain Management first; any cXML direct-punchout buyer by configuration) into your WooCommerce store, shop the catalogue at their own prices, and send the cart back into their purchasing workflow as requisition/RFQ lines.
 
 **Multi-tenant by design.** Any number of customers, each connection configured independently: shared secret (sealed at rest), cXML identities, cXML version, cart-return encoding, optional IP allowlist, and a per-customer exit mode:
 
-* **Requisition only** (default) — buyers can only send the basket back for approval; checkout is blocked inside their punchout sessions.
+* **Requisition only** (default) — buyers can only send the cart back for approval; checkout is blocked inside their punchout sessions.
 * **Dual exit** — the "send for approval" button renders *alongside* the completely untouched standard WooCommerce checkout, so buyers can also pay directly.
 
 **Additive, never invasive.** The plugin adds endpoints, a role, and a cart button. It does not override, replace or filter the WooCommerce checkout or any payment gateway.
@@ -43,7 +43,7 @@ Any buyer that speaks direct cXML PunchOut over HTTPS with shared-secret authent
 
 No. For dual-exit customers the standard checkout is untouched; the plugin only listens (order meta tagging, session lifecycle). For requisition-only customers, checkout is blocked *inside that customer's punchout sessions only* — ordinary shoppers are never affected.
 
-= Where does the returned basket go? =
+= Where does the returned cart go? =
 
 To the URL the buyer's system supplies in each setup request (`BrowserFormPost`), as an auto-submitting browser form POST carrying the cXML PunchOutOrderMessage in a `cxml-base64` (or `cxml-urlencoded`) hidden field.
 
@@ -52,6 +52,11 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 No setup on your side. Each buyer is provisioned automatically as an ordinary WordPress user the first time their procurement system punches out, and logged in through a single-use StartPage link — no passwords, no registration forms.
 
 == Changelog ==
+
+= 0.2.4 =
+* New: the two exit controls' labels are editable at WooCommerce > PunchOut > Settings — "Punchout button label" and "Cancel button label". Blank keeps the default; the pow_return_button_label / pow_abandon_button_label filters still run last.
+* Change: the cancel control's default label is now "Return without a cart" (was "Return without a basket").
+* Change: buyer- and admin-facing wording says "cart" throughout, matching WooCommerce's own terminology.
 
 = 0.2.2 =
 * New: [punchout_abandon_button] / pow_abandon_button() — the mid-session "return without a basket" control (empty PunchOutOrderMessage), previously only available on the pay path's close-out.

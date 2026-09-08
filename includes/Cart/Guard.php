@@ -21,7 +21,7 @@ defined( 'ABSPATH' ) || exit;
  * Three cart behaviours scoped strictly to active punchout sessions
  * (scope §5.3/§6.1); nothing here touches ordinary shoppers:
  *
- * - Persistent cart disabled: last week's basket must never resurrect
+ * - Persistent cart disabled: last week's cart must never resurrect
  *   into a fresh punchout session.
  * - The cart is emptied once, on the first authenticated request of a
  *   `create` session (deferred from the login request, where WC()->cart

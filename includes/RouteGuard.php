@@ -102,7 +102,7 @@ final class RouteGuard {
 			return;
 		}
 
-		$message = __( 'Checkout is not available in this catalog session. Please use "Punchout".', 'punchout-woocommerce' );
+		$message = $this->checkout_blocked_message();
 
 		if ( class_exists( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class ) ) {
 			throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', esc_html( $message ), 403 );
@@ -113,11 +113,30 @@ final class RouteGuard {
 
 	public function block_checkout_process(): void {
 		if ( $this->requisition_only() && function_exists( 'wc_add_notice' ) ) {
-			wc_add_notice(
-				__( 'Checkout is not available in this catalog session. Please use "Punchout".', 'punchout-woocommerce' ),
-				'error'
-			);
+			wc_add_notice( $this->checkout_blocked_message(), 'error' );
 		}
+	}
+
+	/**
+	 * The requisition-only refusal, naming the exit control by whatever
+	 * the operator called it — the Punchout button label setting, then
+	 * the same filter the button itself passes through, so the message
+	 * always points at the control the buyer can actually see.
+	 */
+	private function checkout_blocked_message(): string {
+		$label = (string) apply_filters(
+			'pow_return_button_label',
+			$this->settings->button_label(
+				'return_button_label',
+				__( 'Punchout', 'punchout-woocommerce' )
+			)
+		);
+
+		return sprintf(
+			/* translators: %s: label of the punchout exit button */
+			__( 'Checkout is not available in this catalog session. Please use "%s".', 'punchout-woocommerce' ),
+			$label
+		);
 	}
 
 	/**
