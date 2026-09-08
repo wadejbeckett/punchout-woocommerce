@@ -1,6 +1,6 @@
 # Test suite
 
-Pure-PHP unit tests for the layers that carry the protocol and security guarantees: the cXML codec (parser, builder, form packing, money boundary), one-time tokens, replay policy, the session state machine, secret sealing/dual-slot verification, CIDR matching, the rate-limit window, and the per-partner ALL-CAPS transform. **No WordPress, WooCommerce or database is required or loaded** — the classes under test call no WP functions (that separation is a design rule, not an accident).
+Pure-PHP unit tests for the layers that carry the protocol and security guarantees: the cXML codec (parser, builder, form packing, money boundary), one-time tokens, replay policy, the session state machine, secret sealing/dual-slot verification, CIDR matching, the rate-limit window, the per-partner ALL-CAPS transform, and the exit-control label resolution (setting, default, filter order). **No WordPress, WooCommerce or database is required or loaded** — the classes under test call no WP functions (that separation is a design rule, not an accident).
 
 ## Running
 

@@ -1,6 +1,6 @@
 <?php
 /**
- * The mid-session "return without a basket" control.
+ * The mid-session "return without a cart" control.
  *
  * Rendered only inside an active punchout session, via
  * [punchout_abandon_button] or pow_abandon_button(). Posts an empty

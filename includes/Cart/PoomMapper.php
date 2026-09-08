@@ -22,7 +22,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * The cart's line totals ARE the negotiated prices — pricing plugins
  * apply them at cart time via woocommerce_product_get_price,
- * which is exactly why the one-basket design exists: the POOM quotes the
+ * which is exactly why the one-cart design exists: the POOM quotes the
  * same numbers the buyer would have paid at checkout.
  *
  * Unit price policy (default, filterable): the line total after discounts,

@@ -30,34 +30,42 @@ final class Settings {
 		// Master switch. Off by default so a fresh install exposes no
 		// pre-auth XML endpoint until an operator has configured at least
 		// one customer connection and flipped it on.
-		'enabled'             => 'no',
+		'enabled'              => 'no',
 
 		// Default TTLs; each partner row can override its own.
-		'token_ttl'           => 300,     // StartPage token, seconds (~5 min).
-		'session_ttl'         => 14400,   // Punchout login, seconds (4 h).
+		'token_ttl'            => 300,     // StartPage token, seconds (~5 min).
+		'session_ttl'          => 14400,   // Punchout login, seconds (4 h).
 
 		// /punchout/setup rate limit: requests per rolling minute for one
 		// (partner|unknown-sender, IP) pair.
-		'rate_limit_per_min'  => 30,
+		'rate_limit_per_min'   => 30,
 
 		// Audit-table retention. The scope treats the log as dispute
 		// evidence, so the default keeps a year-plus before cron trims.
-		'log_retention_days'  => 400,
+		'log_retention_days'   => 400,
 
 		// Days without a punchout login before a buyer user is flagged
 		// inactive by cron (flagged, never deleted — order attribution).
-		'buyer_inactive_days' => 90,
+		'buyer_inactive_days'  => 90,
 
 		// Page the buyer lands on after auto-login, and is 302'd back to by
 		// the route guard. 0 = the shop page.
-		'landing_page_id'     => 0,
+		'landing_page_id'      => 0,
+
+		// Buyer-facing labels for the two session exit controls. Empty
+		// means "use the translated default" — the defaults themselves
+		// cannot live in a constant because they are translatable. The
+		// pow_return_button_label / pow_abandon_button_label filters still
+		// run last, so code can override either one.
+		'return_button_label'  => '',
+		'abandon_button_label' => '',
 
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends
 		// it to the item description (scope §4.3).
-		'default_unspsc'      => '',
+		'default_unspsc'       => '',
 
-		'log_level'           => 'info',
+		'log_level'            => 'info',
 	];
 
 	/**
@@ -90,6 +98,33 @@ final class Settings {
 
 	public function int( string $key ): int {
 		return (int) $this->get( $key, 0 );
+	}
+
+	/**
+	 * The saved label for a buyer-facing control, or the supplied default.
+	 *
+	 * The defaults are translatable, so they are passed in by the caller
+	 * rather than held in DEFAULTS. Callers apply their label filter to
+	 * the result, never before it, so filtered code always wins.
+	 *
+	 * @param string $key     Setting key holding the operator's override.
+	 * @param string $default Translated fallback label.
+	 */
+	public function button_label( string $key, string $default ): string {
+		return self::resolve_label( $this->get( $key, '' ), $default );
+	}
+
+	/**
+	 * Resolution rule for a label setting: a non-blank saved value wins,
+	 * anything else (unset, empty, whitespace, non-string) falls back.
+	 *
+	 * @param mixed  $stored  Raw saved value.
+	 * @param string $default Translated fallback label.
+	 */
+	public static function resolve_label( mixed $stored, string $default ): string {
+		$stored = is_string( $stored ) ? trim( $stored ) : '';
+
+		return '' !== $stored ? $stored : $default;
 	}
 
 	/**

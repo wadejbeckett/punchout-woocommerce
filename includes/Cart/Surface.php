@@ -28,7 +28,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * Two controls, one endpoint: the cart return (mode=cart) and the
  * mid-session abandon (mode=empty, the cXML cancel semantic — "return
- * without a basket"). Both are presentation only; ReturnEndpoint owns
+ * without a cart"). Both are presentation only; ReturnEndpoint owns
  * every authorisation check.
  *
  * Four placement paths for the return button, most flexible first:
@@ -69,11 +69,17 @@ final class Surface {
 		/**
 		 * Filter the RFQ exit button label.
 		 *
+		 * Applied to the operator's saved label (or the default when that
+		 * is blank), so a filter always has the last word.
+		 *
 		 * @param string $label Button text.
 		 */
 		$label = (string) apply_filters(
 			'pow_return_button_label',
-			__( 'Punchout', 'punchout-woocommerce' )
+			$this->plugin->settings()->button_label(
+				'return_button_label',
+				__( 'Punchout', 'punchout-woocommerce' )
+			)
 		);
 
 		return Templates::render(
@@ -105,11 +111,17 @@ final class Surface {
 		/**
 		 * Filter the abandon control's label.
 		 *
+		 * Applied to the operator's saved label (or the default when that
+		 * is blank), so a filter always has the last word.
+		 *
 		 * @param string $label Button text.
 		 */
 		$label = (string) apply_filters(
 			'pow_abandon_button_label',
-			__( 'Return without a basket', 'punchout-woocommerce' )
+			$this->plugin->settings()->button_label(
+				'abandon_button_label',
+				__( 'Return without a cart', 'punchout-woocommerce' )
+			)
 		);
 
 		return Templates::render(

@@ -111,7 +111,7 @@ final class ReturnEndpoint {
 			foreach ( $mapped['skipped'] as $name ) {
 				$notices[] = sprintf(
 					/* translators: %s: product name */
-					__( '"%s" could not be included (no SKU) and was left out of the returned basket.', 'punchout-woocommerce' ),
+					__( '"%s" could not be included (no SKU) and was left out of the returned cart.', 'punchout-woocommerce' ),
 					$name
 				);
 			}
@@ -217,8 +217,8 @@ final class ReturnEndpoint {
 		$copy = apply_filters(
 			'pow_handoff_copy',
 			[
-				'heading' => __( 'Returning your basket…', 'punchout-woocommerce' ),
-				'copy'    => __( 'Your basket is being sent back to your purchasing system. You should land back in your purchasing application within a few seconds. If you see a sign-in page instead, sign in and open the catalog again from your purchasing system, quoting the support reference below.', 'punchout-woocommerce' ),
+				'heading' => __( 'Returning your cart…', 'punchout-woocommerce' ),
+				'copy'    => __( 'Your cart is being sent back to your purchasing system. You should land back in your purchasing application within a few seconds. If you see a sign-in page instead, sign in and open the catalog again from your purchasing system, quoting the support reference below.', 'punchout-woocommerce' ),
 				'button'  => __( 'Continue to your purchasing system', 'punchout-woocommerce' ),
 			],
 			$session
