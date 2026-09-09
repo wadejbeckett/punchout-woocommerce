@@ -29,7 +29,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '4';
+	public const DB_VERSION     = '5';
 	public const DB_VERSION_KEY = 'pow_db_version';
 	// Routing changes independently of the table schema.
 	public const REWRITE_VERSION = '1';
@@ -164,7 +164,7 @@ final class Installer {
 
 		// Trading-partner registry (scope §4.1). One row per buyer-side
 		// tenant; the (sender_domain, sender_identity) pair is the auth
-		// lookup key for inbound PunchOutSetupRequests. `mode` is the
+		// lookup key for inbound PunchOutSetupRequests. `mode` retains the
 		// client-required per-partner flag: requisition_only (RFQ exit only,
 		// checkout blocked for that partner's punchout sessions) or
 		// dual_exit (RFQ button plus the untouched stock checkout).
@@ -186,6 +186,7 @@ final class Installer {
 			deployment_mode VARCHAR(16) NOT NULL DEFAULT 'test',
 			return_encoding VARCHAR(16) NOT NULL DEFAULT 'base64',
 			mode VARCHAR(32) NOT NULL DEFAULT 'requisition_only',
+			exit_policy VARCHAR(32) NOT NULL DEFAULT 'inherit',
 			allow_reentry TINYINT NOT NULL DEFAULT 0,
 			allcaps_transform TINYINT NOT NULL DEFAULT 0,
 			gateway_allowlist TEXT NULL,
@@ -280,6 +281,15 @@ final class Installer {
 		) {$charset_collate};";
 
 		dbDelta( $sql_partners );
+		$exit_column = $wpdb->get_results( "SHOW COLUMNS FROM {$partners} LIKE 'exit_policy'", ARRAY_A );
+		if ( '' !== $wpdb->last_error || count( $exit_column ?? [] ) !== 1 ) { throw new \RuntimeException( 'Exit policy schema upgrade failed.' ); }
+		// A single statement is atomic and retryable while the schema marker remains below five.
+		// Never remigrate on activation or a subsequent upgrade once the marker is five.
+		if ( (int) get_option( self::DB_VERSION_KEY, '0' ) < 5 ) {
+			if ( false === $wpdb->query( "UPDATE {$partners} SET exit_policy = CASE WHEN mode = 'dual_exit' THEN 'punchout_and_checkout' ELSE 'punchout_only' END WHERE exit_policy = 'inherit'" ) ) {
+				throw new \RuntimeException( 'Exit policy migration failed.' );
+			}
+		}
 		dbDelta( $sql_sessions );
 		dbDelta( $sql_log );
 	}

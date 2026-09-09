@@ -10,6 +10,7 @@ declare( strict_types = 1 );
 
 namespace POW\Orders;
 
+use POW\Addresses\QuoteAddress;
 use POW\Audit\Log;
 use POW\Logger;
 use POW\Partners\Partner;
@@ -142,10 +143,13 @@ final class QuoteOrder {
 				$this->add_line( $order, self::line_args( (array) $item ) );
 			}
 
-			$shipping = $this->shipping_for( $session, $partner );
+			// The return winner owns these prepared values. An explicit null also suppresses all mutable legacy lookups; only callers lacking the key retain the original fallback.
+			$shipping = array_key_exists( 'delivery_destination', $poom_lines )
+				? ( QuoteAddress::payload( $poom_lines['delivery_destination'] ) ?? [ 'address' => [], 'code' => '', 'source' => 'none' ] )
+				: $this->shipping_for( $session, $partner );
 
 			if ( [] !== $shipping['address'] ) {
-				$this->set_shipping( $order, $shipping['address'] );
+				$this->set_shipping( $order, $shipping['address'], array_key_exists( 'delivery_destination', $poom_lines ) );
 			}
 
 			// Stored as strings: that is what WooCommerce writes back after
@@ -614,11 +618,12 @@ final class QuoteOrder {
 	 *
 	 * @param array<string, mixed> $address WC-style address fields.
 	 */
-	private function set_shipping( \WC_Order $order, array $address ): void {
+	private function set_shipping( \WC_Order $order, array $address, bool $include_empty = false ): void {
 		$props = [];
 
 		foreach ( self::SHIPPING_FIELDS as $field ) {
-			if ( isset( $address[ $field ] ) && is_scalar( $address[ $field ] ) && '' !== (string) $address[ $field ] ) {
+			// Prepared complete snapshots must also clear defaults supplied by creation hooks. Legacy partial addresses keep their existing nonempty-only behavior.
+			if ( isset( $address[ $field ] ) && is_scalar( $address[ $field ] ) && ( $include_empty || '' !== (string) $address[ $field ] ) ) {
 				$props[ 'shipping_' . $field ] = (string) $address[ $field ];
 			}
 		}

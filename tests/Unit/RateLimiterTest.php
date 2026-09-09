@@ -107,6 +107,7 @@ final class RateLimiterTest extends TestCase {
 
 	public function test_public_settings_preserve_positive_values_and_secure_defaults(): void {
 		$admin = ( new \ReflectionClass( \POW\Admin\Page::class ) )->newInstanceWithoutConstructor();
+		( new \ReflectionProperty( $admin, 'settings' ) )->setValue( $admin, new \POW\Settings() );
 		self::assertSame( 120, ( new \POW\Settings() )->int( 'edge_rate_limit_per_min' ) );
 		self::assertSame( 120, $admin->sanitize_settings( [] )['edge_rate_limit_per_min'] );
 		foreach ( [ 1, 3, 9, 30 ] as $configured ) {

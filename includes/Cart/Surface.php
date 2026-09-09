@@ -202,7 +202,7 @@ final class Surface {
 
 		$partner = $this->registry->find( $session->partner_id );
 
-		if ( null !== $partner && $partner->is_requisition_only() ) {
+		if ( null === $partner || \POW\Checkout\ExitPolicy::CHECKOUT !== ( new \POW\Checkout\ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() ) ) {
 			return $this->markup();
 		}
 
@@ -223,7 +223,7 @@ final class Surface {
 
 		$partner = $this->registry->find( $session->partner_id );
 
-		if ( null !== $partner && $partner->is_requisition_only() ) {
+		if ( null === $partner || \POW\Checkout\ExitPolicy::CHECKOUT !== ( new \POW\Checkout\ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() ) ) {
 			remove_action( 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 );
 		}
 	}

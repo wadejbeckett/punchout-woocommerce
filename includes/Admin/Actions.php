@@ -10,6 +10,7 @@ declare( strict_types = 1 );
 
 namespace POW\Admin;
 
+use POW\Checkout\ExitPolicy;
 use POW\Audit\Log;
 use POW\Partners\Registry;
 use POW\Partners\Registration;
@@ -34,10 +35,19 @@ final class Actions {
 		add_action( 'admin_post_pow_approve_partner', [ $this, 'approve_partner' ] );
 		add_action( 'admin_post_pow_reset_partner', [ $this, 'reset_partner' ] );
 		add_action( 'admin_post_pow_associate_partner', [ $this, 'associate_partner' ] );
+		add_action( 'admin_post_pow_save_buyer_exit', [ $this, 'save_buyer_exit' ] );
 		add_action( 'admin_post_pow_save_partner', [ $this, 'save_partner' ] );
 		add_action( 'admin_post_pow_delete_partner', [ $this, 'delete_partner' ] );
 		add_action( 'admin_post_pow_rotate_partner', [ $this, 'rotate_partner' ] );
 		add_action( 'admin_post_pow_close_rotation', [ $this, 'close_rotation' ] );
+	}
+
+	public function save_buyer_exit(): void {
+		$id = $this->posted_partner();
+		$this->authorise( 'pow_buyer_exit_' . $id );
+		$result = ( new ExitPolicy( new \POW\Settings(), $this->registry ) )->save_buyer( $id, get_current_user_id(), absint( $_POST['buyer'] ?? 0 ), (string) wp_unslash( $_POST['exit_policy'] ?? '' ) );
+		if ( true === $result ) { $this->record( 'buyer_exit_policy_saved', $id, [ 'buyer_user_id' => absint( $_POST['buyer'] ?? 0 ) ] ); }
+		$this->finish( 'partners', true === $result ? __( 'Buyer restriction saved.', 'punchout-woocommerce' ) : $result->get_error_message(), true === $result ? 'success' : 'error' );
 	}
 
 	public function save_partner(): void {
@@ -49,7 +59,6 @@ final class Actions {
 		$data = [
 			'name'                    => sanitize_text_field( (string) ( $posted['name'] ?? '' ) ),
 			'status'                  => sanitize_key( (string) ( $posted['status'] ?? 'active' ) ),
-			'mode'                    => sanitize_key( (string) ( $posted['mode'] ?? '' ) ),
 			'sender_domain'           => sanitize_text_field( (string) ( $posted['sender_domain'] ?? '' ) ),
 			'sender_identity'         => sanitize_text_field( (string) ( $posted['sender_identity'] ?? '' ) ),
 			'from_domain'             => sanitize_text_field( (string) ( $posted['from_domain'] ?? '' ) ),
@@ -64,6 +73,9 @@ final class Actions {
 			'token_ttl'               => absint( $posted['token_ttl'] ?? 300 ),
 			'session_ttl'             => absint( $posted['session_ttl'] ?? 14400 ),
 		];
+
+		if ( array_key_exists( 'exit_policy', $posted ) ) { $data['exit_policy'] = ExitPolicy::normalise( $posted['exit_policy'] ); }
+		elseif ( array_key_exists( 'mode', $posted ) ) { $data['mode'] = sanitize_key( (string) $posted['mode'] ); }
 
 		if ( '' === $data['name'] || '' === $data['sender_domain'] || '' === $data['sender_identity'] ) {
 			$this->finish( 'partners', __( 'Name and Sender credential are required.', 'punchout-woocommerce' ), 'error' );

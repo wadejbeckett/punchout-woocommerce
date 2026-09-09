@@ -236,6 +236,8 @@ if ( ! function_exists( 'get_option' ) ) {
 	 * @return mixed
 	 */
 	function get_option( string $name, $default = false ) { // phpcs:ignore
+		// Fault readers must be present at bootstrap: PHP caches namespace fallbacks after first use.
+		if ( isset( $GLOBALS['pow_test_option_readers'][ $name ] ) ) { return ( $GLOBALS['pow_test_option_readers'][ $name ] )( $default ); }
 		return $GLOBALS['pow_test_options'][ $name ] ?? $default;
 	}
 }

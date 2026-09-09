@@ -150,6 +150,8 @@ final class Plugin {
 		add_filter( 'wp_authenticate_user', [ $this, 'deny_buyer_password_login' ] );
 		add_action( 'update_option_' . Settings::OPTION_KEY, [ $this, 'on_settings_updated' ], 10, 2 );
 
+		( new RouteGuard( $this, $this->registry, $this->settings ) )->register();
+
 		if ( ! $this->enabled() ) {
 			return;
 		}
@@ -169,7 +171,7 @@ final class Plugin {
 
 		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
 		( new PayExit( $this, $this->sessions, $this->audit ) )->register();
-		( new RouteGuard( $this, $this->registry, $this->settings ) )->register();
+
 	}
 
 	/**

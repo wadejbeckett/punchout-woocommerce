@@ -11,20 +11,13 @@ declare( strict_types = 1 );
 namespace POW;
 
 use POW\Partners\Registry;
+use POW\Checkout\ExitPolicy;
+use POW\Sessions\Session;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Scoping guard, not a checkout block (scope §5.5): active ONLY inside a
- * punchout session, it 302s the buyer away from surfaces a punchout
- * login must not reach (account pages, other users' orders) and — for
- * requisition_only partners only — re-arms the checkout block as
- * belt-and-braces (template_redirect 302 + woocommerce_checkout_process
- * hard fail).
- *
- * Ordinary shoppers never enter this code path; presentation conditions
- * (theme render logics) remain display-only — this guard is the access
- * control behind them.
+ * Keeps punchout logins on permitted surfaces and enforces the fresh exit hierarchy at native order/payment boundaries. Ordinary shoppers retain native behavior; paid-order information remains separate from permission to make another payment.
  */
 final class RouteGuard {
 
@@ -38,6 +31,12 @@ final class RouteGuard {
 		add_action( 'template_redirect', [ $this, 'guard' ], 1 );
 		add_action( 'woocommerce_checkout_process', [ $this, 'block_checkout_process' ] );
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'block_store_api_checkout' ] );
+		add_action( 'woocommerce_checkout_create_order', [ $this, 'enforce_order' ], PHP_INT_MAX );
+		add_action( 'woocommerce_checkout_order_processed', [ $this, 'enforce_order' ], PHP_INT_MAX );
+		add_action( 'woocommerce_store_api_checkout_update_order_meta', [ $this, 'enforce_order' ], PHP_INT_MAX );
+		add_action( 'woocommerce_store_api_checkout_order_processed', [ $this, 'enforce_order' ], PHP_INT_MAX );
+		add_action( 'woocommerce_rest_checkout_process_payment_with_context', [ $this, 'enforce_payment_context' ], -9999 );
+		add_action( 'woocommerce_before_pay_action', [ $this, 'enforce_pay_action' ], -9999 );
 		add_action( 'login_init', [ $this, 'guard_login_screen' ] );
 	}
 
@@ -62,15 +61,13 @@ final class RouteGuard {
 		if ( $endpoint_order_id > 0 && function_exists( 'wc_get_order' ) ) {
 			$order = wc_get_order( $endpoint_order_id );
 
-			if ( $order && (int) $order->get_customer_id() !== get_current_user_id() ) {
+			if ( ! $order || (int) $order->get_customer_id() !== get_current_user_id() || ( is_wc_endpoint_url( 'order-pay' ) && ! $this->checkout_allowed( $order ) ) ) {
 				$this->redirect_to_landing();
 				return;
 			}
 		}
 
-		// requisition_only partners: checkout is 302-blocked (order-pay /
-		// order-received stay reachable — they only exist for dual_exit
-		// partners' orders anyway).
+		// Ordinary checkout follows current entitlement; order-pay has its own payment check above, while owned order-received information remains reachable.
 		if ( $this->requisition_only() && function_exists( 'is_checkout' ) && is_checkout() && 0 === $endpoint_order_id ) {
 			$target = function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : $this->settings->landing_url();
 			wp_safe_redirect( $target, 302 );
@@ -97,8 +94,8 @@ final class RouteGuard {
 	 *
 	 * @throws \Automattic\WooCommerce\StoreApi\Exceptions\RouteException When a requisition_only session tries to check out.
 	 */
-	public function block_store_api_checkout(): void {
-		if ( ! $this->requisition_only() ) {
+	public function block_store_api_checkout( $order = null ): void {
+		if ( $this->checkout_allowed( $order instanceof \WC_Order ? $order : null ) ) {
 			return;
 		}
 
@@ -156,20 +153,51 @@ final class RouteGuard {
 		}
 	}
 
-	private function requisition_only(): bool {
-		$session = $this->plugin->current_session();
+	private function requisition_only(): bool { return ! $this->checkout_allowed(); }
 
-		if ( null === $session ) {
-			return false;
-		}
-
-		$partner = $this->registry->find( $session->partner_id );
-
-		// Fail CLOSED: a session whose partner row is gone (deleted
-		// mid-session) must not silently upgrade to dual exit — the RFQ
-		// exit already fails closed on the same condition.
-		return null === $partner || $partner->is_requisition_only();
+	/** Fresh authorization at every order/payment boundary, including orphaned buyer logins. */
+	public function checkout_allowed( ?\WC_Order $order = null ): bool {
+		try {
+			$actor = get_current_user_id();
+			$user = $actor > 0 ? get_userdata( $actor ) : false;
+			$session = $this->plugin->current_session();
+			$buyer = $user && ( in_array( Installer::ROLE, (array) $user->roles, true ) || get_user_meta( $actor, '_pow_partner_id', true ) );
+			$tagged = $order && ( $order->get_meta( '_pow_session' ) || $order->get_meta( '_pow_partner' ) );
+			if ( ! $buyer && ! $session && ! $tagged ) { return true; }
+			if ( ! $this->plugin->enabled() || ! $session || $session->user_id !== $actor ) { return false; }
+			$fresh = $this->plugin->sessions()?->find_for_login( $actor, wp_get_session_token(), [ Session::ACTIVE ] );
+			if ( ! $fresh || $fresh->id !== $session->id || $fresh->partner_id !== $session->partner_id || ! $fresh->expires || strtotime( $fresh->expires . ' UTC' ) <= time() ) { return false; }
+			$partner = $this->registry->find( $fresh->partner_id );
+			if ( ! $partner || ExitPolicy::CHECKOUT !== ( new ExitPolicy( $this->settings, $this->registry ) )->effective( $partner, $actor ) ) { return false; }
+			if ( $order ) {
+				if ( (int) $order->get_customer_id() !== $actor || $order->is_paid() ) { return false; }
+				if ( $order->get_meta( '_pow_session' ) && (int) $order->get_meta( '_pow_session' ) !== $fresh->id ) { return false; }
+				if ( $order->get_meta( '_pow_partner' ) && (int) $order->get_meta( '_pow_partner' ) !== $partner->id ) { return false; }
+			}
+			return true;
+		} catch ( \Throwable $e ) { return false; }
 	}
+
+	/** Woo catches this exception in classic creation and both Store API submission paths, including zero totals. */
+	public function enforce_order( $order ): void {
+		if ( is_numeric( $order ) ) { $order = wc_get_order( (int) $order ); }
+		if ( ! $this->checkout_allowed( $order instanceof \WC_Order ? $order : null ) ) {
+			if ( class_exists( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class ) ) {
+				throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', $this->checkout_blocked_message(), 403 );
+			}
+			throw new \Exception( $this->checkout_blocked_message() );
+		}
+	}
+
+	/** This native hook is outside Woo's try/catch: terminate before any customer or gateway mutation. */
+	public function enforce_pay_action( $order ): void {
+		if ( ! $this->checkout_allowed( $order instanceof \WC_Order ? $order : null ) ) {
+			wp_die( esc_html( $this->checkout_blocked_message() ), '', [ 'response' => 403 ] );
+		}
+	}
+
+	/** Store API payment integrations run after this early veto, without changing payment-complete callbacks. */
+	public function enforce_payment_context( $context ): void { $this->enforce_order( $context->order ); }
 
 	private function endpoint_order_id(): int {
 		if ( ! function_exists( 'is_wc_endpoint_url' ) ) {

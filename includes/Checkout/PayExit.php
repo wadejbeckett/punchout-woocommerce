@@ -19,17 +19,7 @@ use POW\Support\Templates;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * The pay-now path IS stock WooCommerce — this class never overrides,
- * replaces or filters checkout or any payment gateway (client requirement
- * 2026-08-31). It only listens:
- *
- * - tags orders created inside a punchout session (HPOS-safe CRUD meta);
- * - flips the session active -> ordered at woocommerce_payment_complete —
- *   payment confirmation, not order creation, is the flip (gateways
- *   confirm asynchronously; every §9.7 state is handled);
- * - offers the close-out CTA on the order-received page (empty POOM +
- *   SupplierOrderInfo). If the buyer never clicks it, cron tears the
- *   session down at TTL — the documented fallback.
+ * Uses stock WooCommerce checkout and gateways when ExitPolicy permits payment. Tagging and linkage recheck entitlement before mutating a punchout order. Native payment-complete notifications remain independent of later policy changes: an already received payment can still reach the same buyer's paid closeout. Session expiry remains the fallback when that buyer never closes out.
  */
 final class PayExit {
 
@@ -64,6 +54,8 @@ final class PayExit {
 			return;
 		}
 
+		$this->enforce_order( $order );
+
 		$order->update_meta_data( '_pow_session', (string) $session->id );
 		$order->update_meta_data( '_pow_partner', (string) $session->partner_id );
 		$order->update_meta_data( '_pow_buyer_cookie', $session->buyer_cookie );
@@ -89,6 +81,8 @@ final class PayExit {
 			return;
 		}
 
+		$this->enforce_order( wc_get_order( (int) $order_id ) );
+
 		$this->sessions->update( $session->id, [ 'order_id' => (int) $order_id ] );
 
 		$this->audit->write(
@@ -101,6 +95,12 @@ final class PayExit {
 				'result'     => 'ok',
 			]
 		);
+	}
+
+	private function enforce_order( $order ): void {
+		$registry = $this->plugin->registry();
+		if ( ! $registry || ! $order instanceof \WC_Order ) { throw new \Exception( __( 'Checkout is not available in this catalog session.', 'punchout-woocommerce' ) ); }
+		( new \POW\RouteGuard( $this->plugin, $registry, $this->plugin->settings() ) )->enforce_order( $order );
 	}
 
 	/**
@@ -169,6 +169,9 @@ final class PayExit {
 		if ( null === $session || $session->order_id !== (int) $order_id ) {
 			return;
 		}
+
+		$order = wc_get_order( (int) $order_id );
+		if ( ! $order || ! $order->is_paid() || (int) $order->get_customer_id() !== get_current_user_id() || $session->user_id !== get_current_user_id() || (int) $order->get_meta( '_pow_session' ) !== $session->id ) { return; }
 
 		/**
 		 * Filter the close-out CTA strings.
