@@ -29,9 +29,9 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '3';
+	public const DB_VERSION     = '4';
 	public const DB_VERSION_KEY = 'pow_db_version';
-	// Routing changes independently of the table schema (v3 already exists).
+	// Routing changes independently of the table schema.
 	public const REWRITE_VERSION = '1';
 	public const REWRITE_VERSION_KEY = 'pow_rewrite_version';
 
@@ -193,6 +193,17 @@ final class Installer {
 			ip_allowlist TEXT NULL,
 			session_ttl INT UNSIGNED NOT NULL DEFAULT 14400,
 			token_ttl INT UNSIGNED NOT NULL DEFAULT 300,
+			delivery_code_prefix VARCHAR(24) NOT NULL DEFAULT '',
+			delivery_code_extrinsic_name VARCHAR(64) NOT NULL DEFAULT 'DeliveryAddressCode',
+			emit_ship_to TINYINT NOT NULL DEFAULT 0,
+			emit_delivery_code TINYINT NOT NULL DEFAULT 0,
+			emit_delivery_line TINYINT NOT NULL DEFAULT 0,
+			delivery_unknown_policy VARCHAR(24) NOT NULL DEFAULT 'require_rate',
+			delivery_notes_policy VARCHAR(32) NOT NULL DEFAULT 'off',
+			freight_supplier_part_id VARCHAR(190) NOT NULL DEFAULT 'DELIVERY',
+			freight_uom VARCHAR(8) NOT NULL DEFAULT 'EA',
+			freight_classification_domain VARCHAR(64) NOT NULL DEFAULT 'supplier',
+			freight_classification VARCHAR(64) NOT NULL DEFAULT 'freight',
 			created DATETIME NULL,
 			updated DATETIME NULL,
 			PRIMARY KEY  (id),
@@ -231,6 +242,8 @@ final class Installer {
 			extrinsics TEXT NULL,
 			itemout_lines TEXT NULL,
 			cart_ready TINYINT NOT NULL DEFAULT 0,
+			delivery_choice TEXT NULL,
+			delivery_confirmation TEXT NULL,
 			created DATETIME NULL,
 			expires DATETIME NULL,
 			PRIMARY KEY  (id),
