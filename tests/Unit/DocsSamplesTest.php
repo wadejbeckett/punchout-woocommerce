@@ -39,6 +39,9 @@ final class DocsSamplesTest extends TestCase {
 		self::assertSame( Samples::parsed()->payload_id, $annotations['payloadID'] );
 		self::assertSame( Samples::parsed()->browser_form_post, $annotations['BrowserFormPost/URL'] );
 		self::assertArrayHasKey( 'Sender/Credential/Identity', $annotations );
+
+		// Machine tokens only: the renderer translates, Samples does not.
+		self::assertSame( 'present', $annotations['ShipTo'] );
 	}
 
 	public function test_fixture_carries_a_shared_secret_that_is_never_rendered(): void {
@@ -58,6 +61,10 @@ final class DocsSamplesTest extends TestCase {
 		self::assertStringNotContainsString( 'SharedSecret', $poom );
 		self::assertSame( 2, substr_count( $poom, '<ItemIn ' ) );
 		self::assertStringContainsString( 'currency="ZAR"', $poom );
+
+		// The prose total and the document's Total come off the same lines.
+		self::assertStringContainsString( '<Total><Money currency="ZAR">' . Samples::poom_total() . '</Money></Total>', $poom );
+		self::assertSame( '599.00', Samples::poom_total() );
 	}
 
 	/**
