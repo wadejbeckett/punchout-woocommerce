@@ -102,17 +102,27 @@ final class Plugin {
 		$builder     = new Builder();
 		$mapper      = new PoomMapper( $this->settings, $this->logger );
 
+		// Built before the master-switch gate because housekeeping needs it:
+		// the retention sweep that cancels unconverted quotes runs in the
+		// hourly job, which is registered whatever the switch says.
+		$quotes = new \POW\Orders\QuoteOrder( $this->sessions, $this->audit, $this->settings, $this->logger );
+
 		// Admin, schema upgrade, CLI and housekeeping run regardless of the
 		// master switch.
 		( new AdminPage( $this->settings, $this->registry, $this->audit ) )->register();
 		( new AdminActions( $this->registry, $this->audit ) )->register();
 		( new AdminDetails() )->register();
-		( new Cron( $this->sessions, $this->audit, $this->settings ) )->register();
+		( new Cron( $this->sessions, $this->audit, $this->settings, $quotes ) )->register();
 
 		// Outside the master-switch gate: a shop that switches punchout off
 		// must still render and list the Punchout Quote orders it already
-		// has, or they drop out of the orders screen entirely.
+		// has, or they drop out of the orders screen entirely — and must
+		// still be able to convert them, which is the same argument.
 		( new \POW\Orders\Status() )->register();
+
+		if ( is_admin() ) {
+			$quotes->register_admin();
+		}
 
 		// The [punchout_docs] page is registered before the master-switch
 		// gate on purpose: a buyer reads the integration documentation
@@ -146,7 +156,6 @@ final class Plugin {
 		$rate_limiter    = new RateLimiter( $this->settings->int( 'rate_limit_per_min' ) );
 		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $provisioner, $parser, $builder, $rate_limiter, $this->audit );
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
-		$quotes          = new \POW\Orders\QuoteOrder( $this->sessions, $this->audit, $this->settings, $this->logger );
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes );
 
 		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint ) )->register();

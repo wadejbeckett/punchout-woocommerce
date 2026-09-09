@@ -29,6 +29,12 @@ defined( 'ABSPATH' ) || exit;
  * (DESIGN §6) — and the document itself lands later, via attach_poom(),
  * because it does not exist until the build has run.
  *
+ * The admin half is the other end of the same life: register_admin()
+ * offers "Convert Punchout Quote to order" on the order screen, and
+ * expire() — called from the hourly housekeeping job — cancels quotes
+ * nobody converted within the retention window. Neither ever deletes an
+ * order.
+ *
  * The rules the order is built from are pure and unit-tested without
  * WordPress:
  *
@@ -54,6 +60,21 @@ final class QuoteOrder {
 	public const META_SESSION_ID    = '_pow_session_id';
 	public const META_PARTNER_ID    = '_pow_partner_id';
 	public const META_DELIVERY_CODE = '_pow_delivery_code';
+
+	/**
+	 * The order-screen action key. It has to survive sanitize_title()
+	 * unchanged, because the meta box fires
+	 * woocommerce_order_action_ . sanitize_title( $action )
+	 * (class-wc-meta-box-order-actions.php:184) — a key that gets
+	 * rewritten registers a hook nothing ever fires.
+	 */
+	public const CONVERT_ACTION = 'pow_convert_quote';
+
+	/**
+	 * Statuses a conversion may target: the three the settings screen
+	 * offers, and the ones a not-yet-paid order legitimately moves to.
+	 */
+	private const CONVERT_STATUSES = [ 'pending', 'processing', 'on-hold' ];
 
 	/** Transient that throttles the failure notice to one an hour. */
 	private const FAIL_NOTICE_KEY = 'pow_quote_fail_notice';
@@ -225,6 +246,156 @@ final class QuoteOrder {
 				]
 			);
 		}
+	}
+
+	/**
+	 * The order-screen wiring: the "Convert Punchout Quote to order"
+	 * action, and the handler that services it.
+	 *
+	 * Both hooks belong to WooCommerce's order-actions meta box, so this
+	 * is called in admin context only. It is registered outside the
+	 * master switch for the same reason the status is: quotes already
+	 * taken must stay convertible after punchout is switched off.
+	 */
+	public function register_admin(): void {
+		add_filter( 'woocommerce_order_actions', [ $this, 'add_order_action' ], 10, 2 );
+		add_action( 'woocommerce_order_action_' . self::CONVERT_ACTION, [ $this, 'convert' ] );
+	}
+
+	/**
+	 * Offer the conversion on a quote and on nothing else.
+	 *
+	 * The order argument is optional because the filter has not always
+	 * carried one: with no order there is nothing to judge, so the action
+	 * is not offered rather than offered blindly.
+	 *
+	 * @param array<string, string> $actions Order actions.
+	 * @return array<string, string>
+	 */
+	public function add_order_action( array $actions, ?\WC_Order $order = null ): array {
+		if ( null === $order || Status::SLUG !== $order->get_status() ) {
+			return $actions;
+		}
+
+		$actions[ self::CONVERT_ACTION ] = __( 'Convert Punchout Quote to order', 'punchout-woocommerce' );
+
+		return $actions;
+	}
+
+	/**
+	 * Move one quote to the configured status.
+	 *
+	 * The status guard is not redundant with add_order_action(): offering
+	 * the action and servicing it are separate hooks, so the handler is
+	 * reachable from a stale order screen or a hand-built request on an
+	 * order that is no longer a quote — and converting a paid order back
+	 * to "pending payment" would be a real loss.
+	 *
+	 * update_status() rather than set_status() + save(): this runs on the
+	 * admin's own request, not inside a punchout return, so the write is
+	 * the point and core's own transition hooks should fire.
+	 */
+	public function convert( \WC_Order $order ): void {
+		if ( Status::SLUG !== $order->get_status() ) {
+			return;
+		}
+
+		$status = $this->convert_status();
+
+		$order->update_status(
+			$status,
+			sprintf(
+				/* translators: %s: order status slug the quote was converted to */
+				__( 'Punchout Quote converted to a live order (status: %s). The cXML basket returned to the buyer is still stored on this order.', 'punchout-woocommerce' ),
+				$status
+			)
+		);
+
+		$this->audit->write(
+			'quote_order_converted',
+			[
+				'partner_id' => (int) $order->get_meta( self::META_PARTNER_ID ),
+				'session_id' => (int) $order->get_meta( self::META_SESSION_ID ),
+				'user_id'    => get_current_user_id(),
+				'order_id'   => (int) $order->get_id(),
+				'result'     => 'ok',
+				'detail'     => [ 'status' => $status ],
+			]
+		);
+	}
+
+	/**
+	 * The status a conversion targets, clamped to the three the settings
+	 * screen offers. A saved value outside that set — an old option row,
+	 * a filtered update, a hand-edited database — falls back to pending
+	 * rather than moving the order somewhere that sends mail or moves
+	 * stock unasked.
+	 */
+	public function convert_status(): string {
+		$status = (string) $this->settings->get( 'quote_convert_status', 'pending' );
+
+		return in_array( $status, self::CONVERT_STATUSES, true ) ? $status : 'pending';
+	}
+
+	/**
+	 * Retention (DESIGN §1): quote orders older than quote_retention_days
+	 * are moved to cancelled — never deleted. The audit log stays the
+	 * canonical record, and the order itself keeps its basket XML.
+	 *
+	 * Moving to cancelled restores no stock: wc_maybe_increase_stock_levels
+	 * returns early unless the order's _reduced_stock flag is set, and a
+	 * quote never reduced any (wc-stock-functions.php:136-155).
+	 */
+	public function expire(): int {
+		$cutoff = self::retention_cutoff( $this->settings->int( 'quote_retention_days' ), time() );
+
+		if ( '' === $cutoff || ! function_exists( 'wc_get_orders' ) ) {
+			return 0;
+		}
+
+		$order_ids = wc_get_orders(
+			[
+				'status'       => Status::SLUG,
+				'date_created' => '<' . $cutoff,
+				'limit'        => 100,
+				'return'       => 'ids',
+				'orderby'      => 'date',
+				'order'        => 'ASC',
+			]
+		);
+
+		$moved = 0;
+
+		foreach ( (array) $order_ids as $order_id ) {
+			$order = wc_get_order( (int) $order_id );
+
+			if ( ! $order ) {
+				continue;
+			}
+
+			$order->update_status(
+				'cancelled',
+				sprintf(
+					/* translators: %d: retention days */
+					__( 'Cancelled automatically: this Punchout Quote was not converted within %d days. The returned basket is still stored on this order.', 'punchout-woocommerce' ),
+					$this->settings->int( 'quote_retention_days' )
+				)
+			);
+
+			$this->audit->write(
+				'quote_order_expired',
+				[
+					'order_id'   => (int) $order_id,
+					'session_id' => (int) $order->get_meta( self::META_SESSION_ID ),
+					'partner_id' => (int) $order->get_meta( self::META_PARTNER_ID ),
+					'result'     => 'retention',
+				]
+			);
+
+			++$moved;
+		}
+
+		return $moved;
 	}
 
 	/**

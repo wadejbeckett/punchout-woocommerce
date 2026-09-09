@@ -4,12 +4,14 @@ Pure-PHP unit tests for the layers that carry the protocol and security guarante
 
 Order creation is the one exception, and it is stubbed, not integrated: `tests/Support/wc-stubs.php` records what was set on the order. It proves our rules, not WooCommerce's — which lines, at which price, with which meta, status, note and delivery address, and that a failure returns 0 without blocking the basket. Nothing here proves WooCommerce's own behaviour (no stock movement, no transactional email); that rests on the cited core source and the staging checks.
 
-Two stub files load from `bootstrap.php`, and they own disjoint symbol sets — the `function_exists`/`class_exists` guards protect each symbol individually, but two files claiming one symbol makes the winning body depend on require order. Check the other file before adding to either:
+Three support files load from `bootstrap.php`. The two stub files own disjoint symbol sets — the `function_exists`/`class_exists` guards protect each symbol individually, but two files claiming one symbol makes the winning body depend on require order. Check the other file before adding to either:
 
 | File | Owns |
 |---|---|
-| `Support/wp-stubs.php` | the WordPress surface: `__`, `_x`, `_n_noop`, the `esc_*` family, `apply_filters`, `locate_template`, the nonce pair, `nocache_headers`, `wp_unslash`, `sanitize_text_field`, `wp_strip_all_tags`, `get_option`, the transient pair, `wp_mail`, `HOUR_IN_SECONDS`, `is_wp_error` and the class `WP_Error` |
+| `Support/wp-stubs.php` | the WordPress surface: `__`, `_x`, `_n_noop`, the `esc_*` family, `apply_filters`, `locate_template`, the nonce pair, `nocache_headers`, `wp_unslash`, `sanitize_text_field`, `sanitize_title`, `wp_strip_all_tags`, `get_option`, the transient pair, `wp_mail`, `get_current_user_id`, `HOUR_IN_SECONDS`, `is_wp_error` and the class `WP_Error` |
 | `Support/wc-stubs.php` | the WooCommerce surface: `get_woocommerce_currency`, `WC`, `wc_create_order`, `wc_get_order`, `wc_get_product`, and the classes `WC_Order`, `WC_Order_Item_Product`, `WC_Product`, `WC_Customer`, `POW_Test_WC` |
+
+The third, `Support/quote-doubles.php`, is not a stub file: it holds the four service doubles a `QuoteOrder` is constructed with (`QuoteOrderTestStore`, `QuoteOrderTestLog`, `QuoteOrderTestSettings`, `QuoteOrderTestLogger`). They live there because two suites now build one, and the standalone runner requires each test file only when it reaches it — doubles declared inside one test file do not exist yet for the file that sorts before it. It extends plugin classes, so the bootstrap loads it after the autoloader.
 
 `Settings`, `Logger`, `Sessions\Store` and `Audit\Log` are deliberately **not** `final`: a service a WordPress-free suite must double cannot be sealed, and a `final` keyword that only exists to block a test double is a testability defect rather than a design rule. No method of theirs is overridden in production.
 

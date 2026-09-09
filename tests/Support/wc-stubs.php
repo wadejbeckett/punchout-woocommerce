@@ -124,6 +124,21 @@ if ( ! class_exists( 'WC_Order' ) ) {
 			return $this->status;
 		}
 
+		/**
+		 * The real update_status() sets the status, records the note and
+		 * saves; the save is what the stub leaves out, because these tests
+		 * assert on the object rather than on a database.
+		 */
+		public function update_status( string $status, string $note = '' ): bool {
+			$this->set_status( $status );
+
+			if ( '' !== $note ) {
+				$this->add_order_note( $note );
+			}
+
+			return true;
+		}
+
 		public function set_currency( string $currency ): void {
 			$this->currency = $currency;
 		}
