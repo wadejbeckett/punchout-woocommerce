@@ -255,3 +255,28 @@ if ( ! function_exists( 'wp_mail' ) ) {
 		return true;
 	}
 }
+
+if ( ! class_exists( 'WP_Error' ) ) {
+	/** Just enough of the WordPress error object to carry a message. */
+	class WP_Error { // phpcs:ignore
+
+		public function __construct( private string $code = '', private string $message = '' ) {}
+
+		public function get_error_code(): string {
+			return $this->code;
+		}
+
+		public function get_error_message(): string {
+			return $this->message;
+		}
+	}
+}
+
+if ( ! function_exists( 'is_wp_error' ) ) {
+	/**
+	 * @param mixed $thing Value to test.
+	 */
+	function is_wp_error( $thing ): bool { // phpcs:ignore
+		return $thing instanceof WP_Error;
+	}
+}

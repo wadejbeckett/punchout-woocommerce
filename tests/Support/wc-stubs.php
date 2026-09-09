@@ -10,11 +10,12 @@
  * Symbol ownership (the guards protect each symbol individually, but two
  * files claiming one symbol makes the winning body depend on require
  * order): this file owns the WooCommerce surface only —
- * get_woocommerce_currency, wc_create_order, wc_get_order, wc_get_product
- * and the classes WC_Order, WC_Order_Item_Product, WC_Product. The
- * WordPress surface, apply_filters included, belongs to
- * Support/wp-stubs.php, which loads first. Check the other file before
- * adding anything to either.
+ * get_woocommerce_currency, WC, wc_create_order, wc_get_order,
+ * wc_get_product and the classes WC_Order, WC_Order_Item_Product,
+ * WC_Product, WC_Customer and the WC() container. The WordPress surface,
+ * apply_filters and WP_Error included, belongs to Support/wp-stubs.php,
+ * which loads first. Check the other file before adding anything to
+ * either.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -95,8 +96,8 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		/** @var list<string> */
 		public array $notes = [];
 
-		/** @var array<string, array<string, string>> */
-		public array $shipping = [];
+		/** @var array<string, string> */
+		public array $props = [];
 
 		/** @var list<bool> */
 		public array $totals_calls = [];
@@ -105,6 +106,9 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		public string $currency    = '';
 		public int $customer_id    = 0;
 		public bool $saved         = false;
+
+		/** Set by a test to prove the callers survive a failing save. */
+		public bool $save_throws = false;
 
 		public function __construct( public int $id = 0 ) {}
 
@@ -129,10 +133,13 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		}
 
 		/**
-		 * @param array<string, string> $address Address fields.
+		 * The HPOS-friendly setter: shipping_* and billing_* props are
+		 * columns of their own, so the stub keeps them as it is given them.
+		 *
+		 * @param array<string, string> $props Order props.
 		 */
-		public function set_address( array $address, string $type = 'billing' ): void {
-			$this->shipping[ $type ] = $address;
+		public function set_props( array $props ): void {
+			$this->props = array_merge( $this->props, $props );
 		}
 
 		public function update_meta_data( string $key, mixed $value ): void {
@@ -187,6 +194,10 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		}
 
 		public function save(): int {
+			if ( $this->save_throws ) {
+				throw new \RuntimeException( 'order save failed' );
+			}
+
 			$this->saved = true;
 
 			return $this->id;
@@ -196,10 +207,18 @@ if ( ! class_exists( 'WC_Order' ) ) {
 
 if ( ! function_exists( 'wc_create_order' ) ) {
 	/**
+	 * Returns WC_Order, or the WP_Error the real function returns when the
+	 * insert fails — pow_test_create_order_error holds the message.
+	 *
 	 * @param array<string, mixed> $args Order args.
+	 * @return WC_Order|WP_Error
 	 */
-	function wc_create_order( array $args = [] ): WC_Order { // phpcs:ignore
+	function wc_create_order( array $args = [] ) { // phpcs:ignore
 		static $next = 1000;
+
+		if ( isset( $GLOBALS['pow_test_create_order_error'] ) ) {
+			return new WP_Error( 'db_error', (string) $GLOBALS['pow_test_create_order_error'] );
+		}
 
 		$order = new WC_Order( ++$next );
 		$order->set_customer_id( (int) ( $args['customer_id'] ?? 0 ) );
@@ -224,5 +243,43 @@ if ( ! function_exists( 'wc_get_product' ) ) {
 	 */
 	function wc_get_product( int $id ): ?WC_Product { // phpcs:ignore
 		return $GLOBALS['pow_test_products'][ $id ] ?? null;
+	}
+}
+
+if ( ! class_exists( 'WC_Customer' ) ) {
+	/** The saved shipping address, and nothing else. */
+	class WC_Customer { // phpcs:ignore
+
+		/**
+		 * @param array<string, string> $shipping Saved shipping fields.
+		 */
+		public function __construct( private array $shipping = [] ) {}
+
+		/**
+		 * @return array<string, string>
+		 */
+		public function get_shipping(): array {
+			return $this->shipping;
+		}
+	}
+}
+
+if ( ! class_exists( 'POW_Test_WC' ) ) {
+	/**
+	 * Stand-in for the WooCommerce singleton. Both properties are null
+	 * until a test sets one, which is what a request outside the shop
+	 * context looks like.
+	 */
+	class POW_Test_WC { // phpcs:ignore
+
+		public ?WC_Customer $customer = null;
+
+		public mixed $cart = null;
+	}
+}
+
+if ( ! function_exists( 'WC' ) ) {
+	function WC(): POW_Test_WC { // phpcs:ignore
+		return $GLOBALS['pow_test_wc'] ??= new POW_Test_WC();
 	}
 }
