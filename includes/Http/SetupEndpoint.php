@@ -78,6 +78,7 @@ final class SetupEndpoint {
 		private Builder $builder,
 		private RateLimiter $rate_limiter,
 		private Log $audit,
+		private RateLimiter $edge_limiter,
 	) {}
 
 	public function handle(): void {
@@ -126,6 +127,12 @@ final class SetupEndpoint {
 	}
 
 	private function handle_inner( string $ip ): void {
+		// Pre-resolution, per-IP budget: refuse body reads, XML parsing and pre-auth archive rows once exhausted. Do not audit this rejection: avoiding that write is the purpose of the edge limit.
+		if ( ! $this->edge_limiter->allow( 'edge|' . $ip ) ) {
+			$this->respond( $this->status_doc( self::STATUS_RATE_LIMITED, self::STATUS_REASONS[ self::STATUS_RATE_LIMITED ] ) );
+			return;
+		}
+
 		$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) );
 
 		if ( 'POST' !== $method ) {
@@ -161,9 +168,7 @@ final class SetupEndpoint {
 		$partner = $this->registry->find_by_sender( $message->sender_domain, $message->sender_identity );
 
 		if ( null === $partner || ! $partner->is_active() ) {
-			// Unknown senders consume (and are bounded by) their own
-			// rate-limit bucket so credential scanning cannot hammer the
-			// parser — or flood the audit table — for free.
+			// Unknown senders share a downstream budget per IP. Body reads, parsing and the pre-auth archive have already happened; the edge bucket above bounds those costs.
 			if ( ! $this->rate_limiter->allow( 'unknown|' . $ip ) ) {
 				$this->respond( $this->status_doc( self::STATUS_RATE_LIMITED, 'Too many requests', '1.2.008' ) );
 				return;

@@ -21,7 +21,7 @@
  * @var string                $poom           The PunchOutOrderMessage sample.
  * @var string                $poom_total     Formatted total of the sample basket.
  * @var string                $cxml_version   cXML version of the samples.
- * @var int                   $rate_limit     Setup requests allowed per minute (0 = no limit).
+ * @var int                   $rate_limit     Configured setup requests per minute (nonpositive = default 30).
  * @var list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string}> $connections Per-connection block; empty unless privileged.
  * @var string                $self_test      Pre-rendered self-test box.
  * @var bool                  $privileged     Whether the viewer is a store administrator.
@@ -190,19 +190,15 @@ defined( 'ABSPATH' ) || exit;
 	</table>
 
 	<h3><?php esc_html_e( 'Rate limits and IP allowlisting', 'punchout-woocommerce' ); ?></h3>
-	<?php if ( $rate_limit > 0 ) : ?>
-		<p>
-			<?php
-			printf(
-				/* translators: %d: setup requests allowed per minute. */
-				esc_html__( 'The setup endpoint accepts %d requests per minute per connection and source address. Over that, it answers cXML Status 550 and nothing else happens; back off and retry. Tell us in advance if a load test needs the limit raised.', 'punchout-woocommerce' ),
-				(int) $rate_limit
-			);
-			?>
-		</p>
-	<?php else : ?>
-		<p><?php esc_html_e( 'No rate limit is currently configured on the setup endpoint. It answers cXML Status 550 when one is in force and a connection exceeds it.', 'punchout-woocommerce' ); ?></p>
-	<?php endif; ?>
+	<p>
+		<?php
+		printf(
+			/* translators: %d: setup requests allowed per minute. */
+			esc_html__( 'The setup endpoint accepts %d requests per minute per connection and source address. Over that, it answers cXML Status 550 and nothing else happens; back off and retry. Tell us in advance if a load test needs the limit raised.', 'punchout-woocommerce' ),
+			\POW\Http\RateLimiter::public_limit( (int) $rate_limit, 30 )
+		);
+		?>
+	</p>
 	<p><?php esc_html_e( 'A connection can also be restricted to a list of source addresses or CIDR ranges. Send us the ranges your procurement system sends from, and tell us before they change: a request from outside the list is refused as an authentication failure, deliberately indistinguishable from a wrong secret.', 'punchout-woocommerce' ); ?></p>
 
 	<h3><?php esc_html_e( 'Rotating the shared secret', 'punchout-woocommerce' ); ?></h3>

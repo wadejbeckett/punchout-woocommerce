@@ -153,8 +153,9 @@ final class Plugin {
 		}
 
 		// Buyer-facing runtime.
-		$rate_limiter    = new RateLimiter( $this->settings->int( 'rate_limit_per_min' ) );
-		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $provisioner, $parser, $builder, $rate_limiter, $this->audit );
+		$rate_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'rate_limit_per_min' ), 30 ) );
+		$edge_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'edge_rate_limit_per_min' ), 120 ) );
+		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $provisioner, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter );
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes );
 
