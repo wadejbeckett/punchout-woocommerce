@@ -171,10 +171,10 @@ XML;
 	/**
 	 * Sample basket total in cents, summed from items().
 	 */
-	private static function total_cents(): int {
+	private static function total_cents( ?array $items = null ): int {
 		$total = 0;
 
-		foreach ( self::items() as $item ) {
+		foreach ( $items ?? self::items() as $item ) {
 			$total += (int) round( $item['unit_price_cents'] * $item['quantity'] );
 		}
 
@@ -186,33 +186,51 @@ XML;
 	 * cart in items().
 	 */
 	public static function poom(): string {
-		return ( new Builder() )->poom(
-			[
-				'version'             => self::VERSION,
-				'payload_id'          => self::PAYLOAD_ID,
-				'timestamp'           => self::TIMESTAMP,
-				'deployment_mode'     => 'test',
-				'from'                => [
-					'domain'   => 'DUNS',
-					'identity' => 'SUPPLIER-DUNS',
-				],
-				'to'                  => [
-					'domain'   => 'NetworkId',
-					'identity' => 'AN01000000123-T',
-				],
-				'sender'              => [
-					'domain'   => 'DUNS',
-					'identity' => 'SUPPLIER-DUNS',
-				],
-				'user_agent'          => 'PunchOut for WooCommerce',
-				'buyer_cookie'        => self::parsed()->buyer_cookie,
-				'operation_allowed'   => 'create',
-				'currency'            => self::CURRENCY,
-				'total_cents'         => self::total_cents(),
-				'supplier_order_info' => null,
-				'items'               => self::items(),
-			]
-		);
+		return ( new Builder() )->poom( self::poom_args() );
+	}
+
+	/** Neutral opted-in example; receipt still requires the purchasing system's agreed mapping. */
+	public static function delivery_poom( string $version = self::VERSION ): string {
+		$args = self::poom_args();
+		$args['version'] = $version;
+		$args['ship_to'] = [ 'name' => 'Example Company Receiving', 'deliver_to' => [ 'Example Buyer' ], 'street' => [ '1 Example Road' ], 'city' => 'Cape Town', 'state' => 'WC', 'postal_code' => '8001', 'iso_country' => 'ZA' ];
+		$args['delivery_code'] = 'BUYER-001';
+		$args['emit_ship_to'] = true;
+		$args['emit_delivery_code'] = true;
+		$args['delivery_notes'] = 'Please deliver to the receiving desk.';
+		$args['delivery_notes_policy'] = 'item_detail_extrinsic';
+		$args['items'][] = [ 'line_type' => 'freight', 'quantity' => 1, 'supplier_part_id' => 'DELIVERY', 'aux_id' => '', 'unit_price_cents' => 3500, 'description' => 'Delivery estimate', 'uom' => 'EA', 'classification_domain' => 'supplier', 'classification' => 'freight' ];
+		$args['total_cents'] = self::total_cents( $args['items'] );
+		return ( new Builder() )->poom( $args );
+	}
+
+	/** Shared deterministic envelope and merchandise, never parsed from generated XML. */
+	private static function poom_args(): array {
+		return [
+			'version'             => self::VERSION,
+			'payload_id'          => self::PAYLOAD_ID,
+			'timestamp'           => self::TIMESTAMP,
+			'deployment_mode'     => 'test',
+			'from'                => [
+				'domain'   => 'DUNS',
+				'identity' => 'SUPPLIER-DUNS',
+			],
+			'to'                  => [
+				'domain'   => 'NetworkId',
+				'identity' => 'AN01000000123-T',
+			],
+			'sender'              => [
+				'domain'   => 'DUNS',
+				'identity' => 'SUPPLIER-DUNS',
+			],
+			'user_agent'          => 'PunchOut for WooCommerce',
+			'buyer_cookie'        => self::parsed()->buyer_cookie,
+			'operation_allowed'   => 'create',
+			'currency'            => self::CURRENCY,
+			'total_cents'         => self::total_cents(),
+			'supplier_order_info' => null,
+			'items'               => self::items(),
+		];
 	}
 
 	/** Formatted total of the sample basket, for the page's prose. */
