@@ -5,8 +5,9 @@
  * code can always override either.
  *
  * Only the resolution rule is unit-testable here — Surface::markup()
- * itself needs WordPress. The filter step is modelled with a local
- * apply_filters stub that mirrors the one line Surface composes.
+ * itself needs WordPress. The filter step is modelled with the bootstrap's
+ * apply_filters stub (tests/Support/wp-stubs.php), which runs one callback
+ * per hook out of $GLOBALS['pow_test_filters'].
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -16,22 +17,6 @@ declare( strict_types = 1 );
 
 use PHPUnit\Framework\TestCase;
 use POW\Settings;
-
-if ( ! function_exists( 'apply_filters' ) ) {
-	/**
-	 * Stub of the WordPress hook runner: one callback per hook, enough to
-	 * prove ordering. Never defined when real WordPress is loaded.
-	 *
-	 * @param string $hook  Hook name.
-	 * @param mixed  $value Value to filter.
-	 * @return mixed
-	 */
-	function apply_filters( string $hook, mixed $value ): mixed {
-		$callback = $GLOBALS['pow_test_filters'][ $hook ] ?? null;
-
-		return null === $callback ? $value : $callback( $value );
-	}
-}
 
 final class ButtonLabelTest extends TestCase {
 
