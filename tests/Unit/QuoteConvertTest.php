@@ -14,6 +14,16 @@ use POW\Orders\Status;
 
 final class QuoteConvertTest extends TestCase {
 
+	protected function setUp(): void {
+		QuoteOrderTestLog::$written = [];
+		$GLOBALS['pow_test_current_user_id'] = 17;
+	}
+
+	protected function tearDown(): void {
+		QuoteOrderTestLog::$written = [];
+		unset( $GLOBALS['pow_test_current_user_id'] );
+	}
+
 	private function quotes( string $configured ): QuoteOrder {
 		$settings = new QuoteConvertTestSettings();
 
@@ -27,6 +37,7 @@ final class QuoteConvertTest extends TestCase {
 
 		$order->set_status( $status );
 		$order->update_meta_data( QuoteOrder::META_SESSION_ID, 42 );
+		$order->update_meta_data( QuoteOrder::META_PARTNER_ID, 23 );
 
 		return $order;
 	}
@@ -61,6 +72,14 @@ final class QuoteConvertTest extends TestCase {
 		self::assertSame( 'processing', $order->get_status() );
 		self::assertCount( 1, $order->notes );
 		self::assertSame( 'quote_order_converted', QuoteOrderTestLog::$written[0][0] );
+		self::assertCount( 1, QuoteOrderTestLog::$written );
+		$context = QuoteOrderTestLog::$written[0][1];
+		self::assertSame( 23, $context['partner_id'] );
+		self::assertSame( 42, $context['session_id'] );
+		self::assertSame( 17, $context['user_id'] );
+		self::assertSame( 4321, $context['order_id'] );
+		self::assertSame( 'ok', $context['result'] );
+		self::assertSame( [ 'status' => 'processing' ], $context['detail'] );
 	}
 
 	public function test_convert_leaves_a_non_quote_alone(): void {
@@ -70,6 +89,37 @@ final class QuoteConvertTest extends TestCase {
 
 		self::assertSame( 'processing', $order->get_status() );
 		self::assertSame( [], $order->notes );
+		self::assertSame( [], QuoteOrderTestLog::$written );
+	}
+
+	public function test_convert_false_is_audited_as_failure(): void {
+		$order = $this->order( Status::SLUG );
+		$order->update_status_result = false;
+
+		$this->quotes( 'processing' )->convert( $order );
+
+		self::assertSame( Status::SLUG, $order->get_status() );
+		self::assertSame( [], $order->notes );
+		self::assertCount( 1, QuoteOrderTestLog::$written );
+		self::assertSame( 'quote_order_convert_failed', QuoteOrderTestLog::$written[0][0] );
+		self::assertSame( 'error', QuoteOrderTestLog::$written[0][1]['result'] );
+		self::assertSame( 17, QuoteOrderTestLog::$written[0][1]['user_id'] );
+		self::assertSame( 4321, QuoteOrderTestLog::$written[0][1]['order_id'] );
+	}
+
+	public function test_convert_contains_exception_and_error_without_success_audit(): void {
+		foreach ( [ new RuntimeException( 'write failed' ), new Error( 'hook failed' ) ] as $error ) {
+			QuoteOrderTestLog::$written = [];
+			$order = $this->order( Status::SLUG );
+			$order->update_status_error = $error;
+
+			$this->quotes( 'on-hold' )->convert( $order );
+
+			self::assertCount( 1, QuoteOrderTestLog::$written );
+			self::assertSame( 'quote_order_convert_failed', QuoteOrderTestLog::$written[0][0] );
+			self::assertSame( 'error', QuoteOrderTestLog::$written[0][1]['result'] );
+			self::assertSame( Status::SLUG, $order->get_status() );
+		}
 	}
 }
 

@@ -217,7 +217,7 @@ final class Page {
 			// anything else (completed, refunded, another custom status)
 			// falls back to pending rather than skipping the shop's own
 			// fulfilment path.
-			'quote_convert_status' => in_array( $input['quote_convert_status'] ?? '', [ 'pending', 'processing', 'on-hold' ], true ) ? (string) $input['quote_convert_status'] : 'pending',
+			'quote_convert_status' => in_array( $input['quote_convert_status'] ?? '', \POW\Orders\QuoteOrder::CONVERT_STATUSES, true ) ? (string) $input['quote_convert_status'] : 'pending',
 			'quote_retention_days' => max( 0, (int) ( $input['quote_retention_days'] ?? 90 ) ),
 			'log_level'            => in_array( $input['log_level'] ?? '', [ 'debug', 'info', 'warning', 'error' ], true ) ? (string) $input['log_level'] : 'info',
 		];
