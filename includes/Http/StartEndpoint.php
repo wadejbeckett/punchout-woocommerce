@@ -39,74 +39,54 @@ final class StartEndpoint {
 	) {}
 
 	public function handle( string $token ): void {
-		$session = $this->sessions->redeem_token( Tokens::hash( $token ) );
-
-		if ( null === $session ) {
-			$this->audit->write(
-				'token_reject',
-				[
-					'direction' => 'in',
-					'result'    => '403',
-					'ip'        => $this->client_ip(),
-				]
-			);
-			$this->deny();
-			return;
-		}
-
-		$partner = $this->registry->find( $session->partner_id );
-		$user    = get_user_by( 'id', $session->user_id );
-
-		if ( null === $partner || false === $user || ! in_array( Installer::ROLE, (array) $user->roles, true ) ) {
-			// A redeemed token pointing at a missing/ineligible user is an
-			// operator error (deleted user, deleted partner) — same
-			// detail-free page either way.
-			$this->deny();
-			return;
-		}
-
-		$session_ttl = $partner->session_ttl;
-
-		// Punchout logins get the partner's session TTL (~4h), not WP's
-		// two-day default. The filter is added just-in-time so it scopes
-		// to exactly this wp_set_auth_cookie() call.
-		add_filter(
-			'auth_cookie_expiration',
-			static fn (): int => $session_ttl,
-			999
-		);
-
-		wp_set_current_user( $user->ID );
-
-		// Create the WP session token explicitly and record it, so
-		// teardown at either exit destroys exactly THIS login and no other
-		// (gotcha 8; scope §4.2 wp_session_token).
-		$manager  = \WP_Session_Tokens::get_instance( $user->ID );
-		$wp_token = $manager->create( time() + $session_ttl );
-
-		wp_set_auth_cookie( $user->ID, false, '', $wp_token );
-
-		$this->sessions->update(
-			$session->id,
-			[
-				'wp_session_token' => $wp_token,
-				'expires'          => gmdate( 'Y-m-d H:i:s', time() + $session_ttl ),
-			]
-		);
-
-		update_user_meta( $user->ID, '_pow_last_seen', time() );
-
-		$this->audit->write(
-			'token_redeem',
-			[
-				'partner_id' => $partner->id,
-				'session_id' => $session->id,
-				'user_id'    => $user->ID,
-				'direction'  => 'in',
-				'result'     => 'ok',
-				'ip'         => $this->client_ip(),
-			]
-		);
+		$session = null;
+		$logged_in = false;
+		try {
+			$located = $this->sessions->find_by_token_hash( Tokens::hash( $token ) );
+			if ( $located ) {
+				$this->registry->with_partner_lock( $located->partner_id, function () use ( $token, $located, &$session, &$logged_in ) {
+					$pending = $this->sessions->find_by_token_hash( Tokens::hash( $token ) );
+					$partner = $this->registry->find( $located->partner_id );
+					if ( ! $pending || $pending->partner_id !== $located->partner_id || $pending->status !== \POW\Sessions\Session::PENDING || ! $pending->expires || $pending->expires <= gmdate( 'Y-m-d H:i:s' ) || ! $partner || ! $partner->is_active() ) { return; }
+					$user = get_userdata( $pending->user_id );
+					if ( ! $user || ! in_array( Installer::ROLE, (array) $user->roles, true ) || (int) get_user_meta( $user->ID, '_pow_partner_id', true ) !== $partner->id || get_user_meta( $user->ID, '_pow_deactivated', true ) ) { return; }
+					$session = $this->sessions->redeem_token( Tokens::hash( $token ) );
+					if ( ! $session ) { return; }
+					try {
+						$expiration = time() + $partner->session_ttl;
+						$wp_token = wp_generate_password( 43, false, false );
+						if ( ! $this->sessions->bind_login( $session->id, $wp_token, gmdate( 'Y-m-d H:i:s', $expiration ) ) ) { throw new \RuntimeException( 'Login binding failed.' ); }
+						$session = $this->sessions->find( $session->id );
+						$info = apply_filters( 'attach_session_information', [], $user->ID );
+						$info['expiration'] = $expiration;
+						$info['login'] = time();
+						if ( ! empty( $_SERVER['REMOTE_ADDR'] ) ) { $info['ip'] = $_SERVER['REMOTE_ADDR']; }
+						if ( ! empty( $_SERVER['HTTP_USER_AGENT'] ) ) { $info['ua'] = wp_unslash( $_SERVER['HTTP_USER_AGENT'] ); }
+						wp_cache_delete( $user->ID, 'user_meta' );
+						\WP_Session_Tokens::get_instance( $user->ID )->update( $wp_token, $info );
+						if ( ! $this->sessions->login_valid_checked( $session ) ) { throw new \RuntimeException( 'Login persistence failed.' ); }
+						$ttl_filter = static fn(): int => $partner->session_ttl;
+						add_filter( 'auth_cookie_expiration', $ttl_filter, 999 );
+						try {
+							wp_set_current_user( $user->ID );
+							wp_set_auth_cookie( $user->ID, false, '', $wp_token );
+							$logged_in = true;
+						} finally { remove_filter( 'auth_cookie_expiration', $ttl_filter, 999 ); }
+					} catch ( \Throwable $e ) {
+						if ( ! $this->sessions->expire_locked( $session ) ) {
+							$this->registry->transition_status( $partner->id, \POW\Partners\Partner::STATUS_ACTIVE, [ 'status' => \POW\Partners\Partner::STATUS_DISABLED ] );
+						}
+						wp_clear_auth_cookie();
+						wp_set_current_user( 0 );
+					}
+				} );
+			}
+		} catch ( \Throwable $e ) { /* No unconfirmed token is exposed; recorded references support recovery. */ }
+		try {
+			$this->audit->write_checked( $logged_in ? 'token_redeem' : 'token_reject', [ 'partner_id' => $session?->partner_id ?? 0, 'session_id' => $session?->id ?? 0, 'user_id' => $session?->user_id ?? 0, 'result' => $logged_in ? 'ok' : '403', 'ip' => $this->client_ip() ] );
+		} catch ( \Throwable $e ) { /* Diagnostics cannot undo confirmed login. */ }
+		if ( ! $logged_in || ! $session ) { $this->deny(); return; }
+		update_user_meta( $session->user_id, '_pow_last_seen', time() );
 
 		$target = $this->redirect_target( $session->selected_item );
 

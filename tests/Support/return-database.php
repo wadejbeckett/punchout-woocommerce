@@ -8,6 +8,11 @@
 declare( strict_types = 1 );
 
 final class ReturnDatabase {
+	public string $partner_status = 'active';
+	public string $last_error = '';
+	private bool $suppressed = false;
+	public function suppress_errors( bool $suppress = true ): bool { $old = $this->suppressed; $this->suppressed = $suppress; return $old; }
+	public function get_var( string $sql ): mixed { if ( str_contains( $sql, 'GET_LOCK(' ) || str_contains( $sql, 'RELEASE_LOCK(' ) ) { return '1'; } throw new RuntimeException( 'Unexpected scalar query' ); }
 	public string $prefix = 'wp_';
 	public array $session = [ 'id' => 42, 'partner_id' => 7, 'user_id' => 99, 'wp_session_token' => 'test-login', 'status' => 'active', 'order_id' => 0, 'buyer_cookie' => 'basket-reference', 'browser_form_post_url' => 'https://buyer.example.test/return' ];
 	public array $queries = [];
@@ -23,7 +28,7 @@ final class ReturnDatabase {
 		return $sql;
 	}
 	public function get_row( string $sql, string $format ): ?array {
-		if ( str_contains( $sql, 'wp_pow_partners' ) ) { return [ 'id' => 7, 'name' => 'Example buyer', 'status' => 'active' ]; }
+		if ( str_contains( $sql, 'wp_pow_partners' ) ) { return [ 'id' => 7, 'name' => 'Example buyer', 'status' => $this->partner_status ]; }
 		if ( str_contains( $sql, 'wp_session_token' ) && ( ! str_contains( $sql, "wp_session_token = 'test-login'" ) || ! str_contains( $sql, "'" . $this->session['status'] . "'" ) ) ) { return null; }
 		return $this->session;
 	}

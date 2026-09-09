@@ -356,9 +356,15 @@ if ( ! function_exists( 'wp_clear_auth_cookie' ) ) {
 }
 if ( ! class_exists( 'WP_Session_Tokens' ) ) {
 	class WP_Session_Tokens {
-		public static function get_instance( int $user_id ): self { return new self(); }
-		public function destroy( string $token ): void { $GLOBALS['pow_test_destroyed_tokens'][] = $token; }
+		public function __construct( private int $user_id = 0 ) {}
+		public static function get_instance( int $user_id ): self { return new self( $user_id ); }
+		public function verify( string $token ): bool { return ! empty( $GLOBALS['pow_test_session_tokens'][ $this->user_id ][ $token ] ); }
+		public function update( string $token, array $info ): void { $GLOBALS['pow_test_session_tokens'][ $this->user_id ][ $token ] = $info; }
+		public function destroy( string $token ): void { $GLOBALS['pow_test_destroyed_tokens'][] = $token; unset( $GLOBALS['pow_test_session_tokens'][ $this->user_id ][ $token ] ); }
 	}
+}
+if ( ! function_exists( 'wp_cache_delete' ) ) {
+	function wp_cache_delete( mixed $key, string $group = '' ): bool { return true; }
 }
 if ( ! function_exists( 'wp_json_encode' ) ) {
 	function wp_json_encode( mixed $value ): string|false { return json_encode( $value ); }

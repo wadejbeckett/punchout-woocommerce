@@ -73,15 +73,10 @@ final class Cron {
 
 	private function expire_sessions(): void {
 		foreach ( $this->sessions->expired_open() as $session ) {
-			if ( ! $this->sessions->transition( $session->id, $session->status, Session::EXPIRED ) ) {
-				continue;
-			}
+			$registry = Plugin::instance()->registry();
+			if ( ! $registry || ! $this->sessions->expire_and_destroy( $session, $registry ) ) { continue; }
 
-			if ( '' !== $session->wp_session_token && $session->user_id > 0 ) {
-				\WP_Session_Tokens::get_instance( $session->user_id )->destroy( $session->wp_session_token );
-			}
-
-			$this->audit->write(
+			$this->audit->write_checked(
 				'session_expired',
 				[
 					'partner_id' => $session->partner_id,
@@ -126,8 +121,26 @@ final class Cron {
 		foreach ( $query->get_results() as $user_id ) {
 			$user_id = (int) $user_id;
 
-			update_user_meta( $user_id, '_pow_deactivated', 1 );
-			\WP_Session_Tokens::get_instance( $user_id )->destroy_all();
+			$registry = Plugin::instance()->registry();
+			$partner_id = (int) get_user_meta( $user_id, '_pow_partner_id', true );
+			if ( ! $registry || $partner_id <= 0 ) { continue; }
+			try {
+				$clean = $registry->with_partner_lock( $partner_id, function () use ( $user_id, $partner_id ) {
+					update_user_meta( $user_id, '_pow_deactivated', 1 );
+					if ( ! get_user_meta( $user_id, '_pow_deactivated', true ) ) { return false; }
+					$after = 0;
+					$ok = true;
+					while ( $rows = $this->sessions->revocation_batch( $partner_id, $after ) ) {
+						foreach ( $rows as $row ) {
+							if ( $row->id <= $after ) { return false; }
+							$after = $row->id;
+							if ( $row->user_id === $user_id ) { $ok = $this->sessions->expire_locked( $row ) && $ok; }
+						}
+					}
+					return $ok;
+				} );
+			} catch ( \Throwable $e ) { $clean = false; }
+			if ( ! $clean ) { continue; }
 
 			/**
 			 * Fires when a dormant punchout buyer is deactivated, so site

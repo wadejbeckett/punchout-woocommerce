@@ -23,6 +23,88 @@ defined( 'ABSPATH' ) || exit;
  */
 class Store {
 
+	public function find_by_token_hash( string $hash ): ?Session {
+		global $wpdb;
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE one_time_token_hash = %s', $hash ), ARRAY_A );
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
+		return $row ? Session::from_row( $row ) : null;
+	}
+
+	/** Keyset pagination includes terminal rows whose recorded login may still exist. */
+	public function revocation_batch( int $partner_id, int $after_id = 0, int $limit = 500 ): array {
+		global $wpdb;
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			'SELECT * FROM ' . $this->table() . " WHERE partner_id = %d AND id > %d AND (status IN (%s,%s,%s) OR (wp_session_token IS NOT NULL AND wp_session_token <> '')) ORDER BY id ASC LIMIT %d",
+			$partner_id, $after_id, Session::PENDING, Session::ACTIVE, Session::ORDERED, max( 1, min( 500, $limit ) )
+		), ARRAY_A );
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session revocation lookup failed.' ); }
+		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
+	}
+
+	/** Bind first: a crash must never leave a valid native token without a recorded reference. */
+	public function bind_login( int $id, string $token, string $expires ): bool {
+		global $wpdb;
+		if ( '' === $token ) { return false; }
+		$ok = $wpdb->query( $wpdb->prepare(
+			'UPDATE ' . $this->table() . " SET wp_session_token = %s, expires = %s WHERE id = %d AND status = %s AND (wp_session_token IS NULL OR wp_session_token = '')",
+			$token, $expires, $id, Session::ACTIVE
+		) );
+		$fresh = 1 === $ok ? $this->find( $id ) : null;
+		return $fresh && $fresh->wp_session_token === $token && $fresh->expires === $expires && $fresh->status === Session::ACTIVE;
+	}
+
+	/** Caller holds the partner lock; invalidate native token-map cache before every read/write. */
+	public function login_valid_checked( Session $session ): bool {
+		global $wpdb;
+		if ( $session->user_id <= 0 || '' === $session->wp_session_token ) { return false; }
+		$wpdb->last_error = '';
+		wp_cache_delete( $session->user_id, 'user_meta' );
+		$valid = \WP_Session_Tokens::get_instance( $session->user_id )->verify( $session->wp_session_token );
+		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Login verification failed.' ); }
+		return $valid;
+	}
+
+	/** Native destroy() is void: fresh verification, not its return, confirms revocation. */
+	public function destroy_login_checked( Session $session ): bool {
+		global $wpdb;
+		if ( '' === $session->wp_session_token ) { return true; }
+		if ( $session->user_id <= 0 ) { return false; }
+		try {
+			if ( ! $this->login_valid_checked( $session ) ) { return true; }
+			wp_cache_delete( $session->user_id, 'user_meta' );
+			$wpdb->last_error = '';
+			\WP_Session_Tokens::get_instance( $session->user_id )->destroy( $session->wp_session_token );
+			$write_failed = '' !== $wpdb->last_error;
+			return ! $write_failed && ! $this->login_valid_checked( $session );
+		} catch ( \Throwable $e ) { return false; }
+	}
+
+	/** Under the partner lock, retry one contested transition and always attempt token cleanup. */
+	public function expire_locked( Session $session ): bool {
+		$expired = false;
+		try {
+			for ( $attempt = 0; $attempt < 2; ++$attempt ) {
+				$fresh = $this->find( $session->id );
+				if ( ! $fresh || $fresh->partner_id !== $session->partner_id ) { break; }
+				$session = $fresh;
+				if ( ! in_array( $fresh->status, [ Session::PENDING, Session::ACTIVE, Session::ORDERED ], true ) ) { $expired = true; break; }
+				if ( $this->transition( $fresh->id, $fresh->status, Session::EXPIRED ) ) {
+					$confirmed = $this->find( $fresh->id );
+					$expired = $confirmed && $confirmed->status === Session::EXPIRED;
+					break;
+				}
+			}
+		} catch ( \Throwable $e ) { $expired = false; }
+		$destroyed = $this->destroy_login_checked( $session );
+		return $expired && $destroyed;
+	}
+
+	/** Existing cleanup callers share the lifecycle lock and exact-token implementation. */
+	public function expire_and_destroy( Session $session, \POW\Partners\Registry $registry ): bool {
+		try { return $registry->with_partner_lock( $session->partner_id, fn() => $this->expire_locked( $session ) ); }
+		catch ( \Throwable $e ) { return false; }
+	}
+
 	private function table(): string {
 		return Installer::sessions_table();
 	}
@@ -33,6 +115,7 @@ class Store {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE id = %d', $id ), ARRAY_A );
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return $row ? Session::from_row( $row ) : null;
 	}
 
@@ -102,6 +185,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return $row ? Session::from_row( $row ) : null;
 	}
 
@@ -135,6 +219,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return $row ? Session::from_row( $row ) : null;
 	}
 
@@ -202,6 +287,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return $row ? Session::from_row( $row ) : null;
 	}
 
@@ -226,6 +312,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
 	}
 
@@ -251,6 +338,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
 	}
 
@@ -275,6 +363,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
 	}
 
@@ -299,6 +388,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
 	}
 
@@ -315,6 +405,7 @@ class Store {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return $row ? Session::from_row( $row ) : null;
 	}
 }

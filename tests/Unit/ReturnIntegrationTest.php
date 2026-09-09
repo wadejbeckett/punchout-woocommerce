@@ -30,6 +30,8 @@ final class ReturnIntegrationTest extends TestCase {
 		}
 		$this->post = $_POST; $this->server = $_SERVER;
 		$GLOBALS['wpdb'] = $this->db = new ReturnDatabase();
+		$this->db->session['expires'] = gmdate( 'Y-m-d H:i:s', time() + 3600 );
+		$GLOBALS['pow_test_session_tokens'][99]['test-login'] = [ 'expiration' => time() + 3600 ];
 		$GLOBALS['pow_test_current_user_id'] = 99;
 		$GLOBALS['pow_test_roles'] = [ POW\Installer::ROLE ];
 		$GLOBALS['pow_test_valid_nonce'] = 'valid';
@@ -85,6 +87,12 @@ final class ReturnIntegrationTest extends TestCase {
 		try { $this->response(); } catch ( RuntimeException $e ) { self::assertSame( 'template failed', $e->getMessage() ); }
 		self::assertSame( 'active', $this->db->session['status'] ); self::assertSame( [], $GLOBALS['pow_test_orders'] );
 	}
+	public function test_partner_disabled_after_mapping_cannot_return_a_stale_snapshot(): void {
+		$GLOBALS['pow_test_filters']['pow_handoff_copy'] = function ( $copy ) { $this->db->partner_status = 'disabled'; return $copy; };
+		$this->response();
+		self::assertSame( [], $GLOBALS['pow_test_orders'] );
+		self::assertSame( 'active', $this->db->session['status'] );
+	}
 	public function test_missing_template_does_not_consume_session_or_create_quote(): void {
 		$GLOBALS['pow_test_filters']['pow_template_handoff'] = static fn() => '/missing-handoff-template.php';
 		$this->response();
@@ -129,6 +137,7 @@ final class ReturnIntegrationTest extends TestCase {
 			$this->db->session['status'] = $status;
 			$this->db->session['order_id'] = 'ordered' === $status ? 777 : 0;
 			if ( 'ordered' === $status ) { $GLOBALS['pow_test_orders'][777] = new WC_Order(777); }
+			$GLOBALS['pow_test_session_tokens'][99]['test-login'] = [ 'expiration' => time() + 3600 ];
 			$response = $this->response(); self::assertStringContainsString( 'pow-handoff-form', $response );
 			self::assertSame( 'closed', $this->db->session['status'] );
 		}
