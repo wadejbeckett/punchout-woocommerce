@@ -74,7 +74,7 @@ final class QuoteOrder {
 	 * Statuses a conversion may target: the three the settings screen
 	 * offers, and the ones a not-yet-paid order legitimately moves to.
 	 */
-	private const CONVERT_STATUSES = [ 'pending', 'processing', 'on-hold' ];
+	public const CONVERT_STATUSES = [ 'pending', 'processing', 'on-hold' ];
 
 	/** Transient that throttles the failure notice to one an hour. */
 	private const FAIL_NOTICE_KEY = 'pow_quote_fail_notice';
@@ -296,40 +296,45 @@ final class QuoteOrder {
 	 * the point and core's own transition hooks should fire.
 	 */
 	public function convert( \WC_Order $order ): void {
-		if ( Status::SLUG !== $order->get_status() ) {
-			return;
+		$context = [];
+
+		try {
+			$context['order_id'] = (int) $order->get_id();
+			$context['user_id'] = get_current_user_id();
+
+			if ( Status::SLUG !== $order->get_status() ) {
+				return;
+			}
+
+			$context['partner_id'] = (int) $order->get_meta( self::META_PARTNER_ID );
+			$context['session_id'] = (int) $order->get_meta( self::META_SESSION_ID );
+			$status = $this->convert_status();
+			$context['detail'] = [ 'status' => $status ];
+
+			// Native real-order effects, including stock reduction for processing/on-hold, are intentional.
+			$updated = $order->update_status(
+				$status,
+				sprintf(
+					/* translators: %s: order status slug the quote was converted to */
+					__( 'Punchout Quote converted to a live order (status: %s). The cXML basket returned to the buyer is still stored on this order.', 'punchout-woocommerce' ),
+					$status
+				)
+			);
+
+			if ( ! $updated ) {
+				$this->transition_failure( 'quote_order_convert_failed', $context, 'status_update_failed' );
+				return;
+			}
+
+			$context['result'] = 'ok';
+			$this->audit->write( 'quote_order_converted', $context );
+		} catch ( \Throwable $e ) {
+			$this->transition_failure( 'quote_order_convert_failed', $context, 'operation_failed' );
 		}
-
-		$status = $this->convert_status();
-
-		$order->update_status(
-			$status,
-			sprintf(
-				/* translators: %s: order status slug the quote was converted to */
-				__( 'Punchout Quote converted to a live order (status: %s). The cXML basket returned to the buyer is still stored on this order.', 'punchout-woocommerce' ),
-				$status
-			)
-		);
-
-		$this->audit->write(
-			'quote_order_converted',
-			[
-				'partner_id' => (int) $order->get_meta( self::META_PARTNER_ID ),
-				'session_id' => (int) $order->get_meta( self::META_SESSION_ID ),
-				'user_id'    => get_current_user_id(),
-				'order_id'   => (int) $order->get_id(),
-				'result'     => 'ok',
-				'detail'     => [ 'status' => $status ],
-			]
-		);
 	}
 
 	/**
-	 * The status a conversion targets, clamped to the three the settings
-	 * screen offers. A saved value outside that set — an old option row,
-	 * a filtered update, a hand-edited database — falls back to pending
-	 * rather than moving the order somewhere that sends mail or moves
-	 * stock unasked.
+	 * The status a conversion targets, clamped to the settings screen's supported values. An invalid saved value falls back to pending. Conversion uses normal WooCommerce transitions: processing/on-hold may reduce stock, and native email and fulfilment hooks remain enabled.
 	 */
 	public function convert_status(): string {
 		$status = (string) $this->settings->get( 'quote_convert_status', 'pending' );
@@ -342,60 +347,91 @@ final class QuoteOrder {
 	 * are moved to cancelled — never deleted. The audit log stays the
 	 * canonical record, and the order itself keeps its basket XML.
 	 *
-	 * Moving to cancelled restores no stock: wc_maybe_increase_stock_levels
-	 * returns early unless the order's _reduced_stock flag is set, and a
-	 * quote never reduced any (wc-stock-functions.php:136-155).
+	 * Cancellation uses native stock restoration only if stock was previously reduced. A quote created by this plugin has not reduced stock; recheck each fetched status so converted orders are left alone.
 	 */
 	public function expire(): int {
-		$cutoff = self::retention_cutoff( $this->settings->int( 'quote_retention_days' ), time() );
-
-		if ( '' === $cutoff || ! function_exists( 'wc_get_orders' ) ) {
+		if ( ! function_exists( 'wc_get_orders' ) || ! function_exists( 'wc_get_order' ) ) {
 			return 0;
 		}
 
-		$order_ids = wc_get_orders(
-			[
-				'status'       => Status::SLUG,
-				'date_created' => '<' . $cutoff,
-				'limit'        => 100,
-				'return'       => 'ids',
-				'orderby'      => 'date',
-				'order'        => 'ASC',
-			]
-		);
+		try {
+			$days = $this->settings->int( 'quote_retention_days' );
+			$cutoff = self::retention_cutoff( $days, time() );
+
+			if ( '' === $cutoff ) {
+				return 0;
+			}
+
+			// wc_get_orders date strings compare whole days; Unix timestamps compare UTC seconds.
+			$order_ids = wc_get_orders(
+				[
+					'status'       => Status::SLUG,
+					'date_created' => '<' . strtotime( $cutoff . ' UTC' ),
+					'limit'        => 100,
+					'return'       => 'ids',
+					'orderby'      => 'date',
+					'order'        => 'ASC',
+				]
+			);
+		} catch ( \Throwable $e ) {
+			$this->transition_failure( 'quote_order_expire_failed', [], 'query_failed' );
+			return 0;
+		}
 
 		$moved = 0;
 
 		foreach ( (array) $order_ids as $order_id ) {
-			$order = wc_get_order( (int) $order_id );
+			$context = [ 'order_id' => (int) $order_id ];
 
-			if ( ! $order ) {
-				continue;
+			try {
+				$order = wc_get_order( (int) $order_id );
+
+				if ( ! $order instanceof \WC_Order || Status::SLUG !== $order->get_status() ) {
+					continue;
+				}
+
+				$context['session_id'] = (int) $order->get_meta( self::META_SESSION_ID );
+				$context['partner_id'] = (int) $order->get_meta( self::META_PARTNER_ID );
+				$updated = $order->update_status(
+					'cancelled',
+					sprintf(
+						/* translators: %d: retention days */
+						__( 'Cancelled automatically: this Punchout Quote was not converted within %d days. The returned basket is still stored on this order.', 'punchout-woocommerce' ),
+						$days
+					)
+				);
+
+				if ( ! $updated ) {
+					$this->transition_failure( 'quote_order_expire_failed', $context, 'status_update_failed' );
+					continue;
+				}
+
+				$context['result'] = 'retention';
+				$this->audit->write( 'quote_order_expired', $context );
+				++$moved;
+			} catch ( \Throwable $e ) {
+				$this->transition_failure( 'quote_order_expire_failed', $context, 'operation_failed' );
 			}
-
-			$order->update_status(
-				'cancelled',
-				sprintf(
-					/* translators: %d: retention days */
-					__( 'Cancelled automatically: this Punchout Quote was not converted within %d days. The returned basket is still stored on this order.', 'punchout-woocommerce' ),
-					$this->settings->int( 'quote_retention_days' )
-				)
-			);
-
-			$this->audit->write(
-				'quote_order_expired',
-				[
-					'order_id'   => (int) $order_id,
-					'session_id' => (int) $order->get_meta( self::META_SESSION_ID ),
-					'partner_id' => (int) $order->get_meta( self::META_PARTNER_ID ),
-					'result'     => 'retention',
-				]
-			);
-
-			++$moved;
 		}
 
 		return $moved;
+	}
+
+	/** Record failure without re-reading a broken order or exposing third-party exception text. */
+	private function transition_failure( string $event, array $context, string $reason ): void {
+		$context['result'] = 'error';
+		$context['detail']['error'] = $reason;
+
+		try {
+			$this->audit->write( $event, $context );
+		} catch ( \Throwable $e ) {
+			// A failed audit backend must not abort the remaining retention candidates.
+			try {
+				$this->logger->error( 'Quote order transition could not be audited', [ 'event' => $event, 'order' => $context['order_id'] ?? 0 ] );
+			} catch ( \Throwable $logging_error ) {
+				// Both reporting backends are unavailable; preserve the caller's failure containment.
+			}
+		}
 	}
 
 	/**

@@ -1,6 +1,6 @@
 <?php
 /**
- * Minimal WooCommerce stubs for the order-creation tests.
+ * Minimal WooCommerce stubs for quote creation, conversion and retention tests.
  *
  * Loaded from bootstrap.php and guarded throughout: under a real
  * WooCommerce bootstrap this file defines nothing. Only the surface
@@ -10,7 +10,7 @@
  * Symbol ownership (the guards protect each symbol individually, but two
  * files claiming one symbol makes the winning body depend on require
  * order): this file owns the WooCommerce surface only —
- * get_woocommerce_currency, WC, wc_create_order, wc_get_order,
+ * get_woocommerce_currency, WC, wc_create_order, wc_get_order, wc_get_orders,
  * wc_get_product and the classes WC_Order, WC_Order_Item_Product,
  * WC_Product, WC_Customer and the WC() container. The WordPress surface,
  * apply_filters and WP_Error included, belongs to Support/wp-stubs.php,
@@ -110,6 +110,10 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		/** Set by a test to prove the callers survive a failing save. */
 		public bool $save_throws = false;
 
+		/** Control the persistence boundary without simulating core transition hooks. */
+		public bool $update_status_result = true;
+		public ?\Throwable $update_status_error = null;
+
 		public function __construct( public int $id = 0 ) {}
 
 		public function get_id(): int {
@@ -130,6 +134,14 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		 * assert on the object rather than on a database.
 		 */
 		public function update_status( string $status, string $note = '' ): bool {
+			if ( null !== $this->update_status_error ) {
+				throw $this->update_status_error;
+			}
+
+			if ( ! $this->update_status_result ) {
+				return false;
+			}
+
 			$this->set_status( $status );
 
 			if ( '' !== $note ) {
@@ -250,11 +262,28 @@ if ( ! function_exists( 'wc_get_order' ) ) {
 	 * the database, so callers have to survive it failing.
 	 */
 	function wc_get_order( int $id ): ?WC_Order { // phpcs:ignore
+		if ( isset( $GLOBALS['pow_test_get_order_errors'][ $id ] ) ) {
+			throw $GLOBALS['pow_test_get_order_errors'][ $id ];
+		}
+
 		if ( isset( $GLOBALS['pow_test_get_order_error'] ) ) {
 			throw new \RuntimeException( (string) $GLOBALS['pow_test_get_order_error'] );
 		}
 
 		return $GLOBALS['pow_test_orders'][ $id ] ?? null;
+	}
+}
+
+if ( ! function_exists( 'wc_get_orders' ) ) {
+	/** Records query arguments and returns fixture ids; does not emulate a database query. */
+	function wc_get_orders( array $args = [] ): array { // phpcs:ignore
+		$GLOBALS['pow_test_order_queries'][] = $args;
+
+		if ( isset( $GLOBALS['pow_test_get_orders_error'] ) ) {
+			throw $GLOBALS['pow_test_get_orders_error'];
+		}
+
+		return $GLOBALS['pow_test_query_order_ids'] ?? [];
 	}
 }
 
