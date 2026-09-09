@@ -22,7 +22,7 @@ defined( 'ABSPATH' ) || exit;
  * in wp-config.php as POW_SECRET_KEY so a database dump alone cannot
  * decrypt the registry (scope §7). See Partners\Secrets.
  */
-final class Settings {
+class Settings {
 
 	public const OPTION_KEY = 'pow_settings';
 
@@ -64,6 +64,12 @@ final class Settings {
 		// The DTD requires at least one Classification; D365 only appends
 		// it to the item description (scope §4.3).
 		'default_unspsc'       => '',
+
+		// Status a Punchout Quote order moves to when an operator converts
+		// it into a real order, and how long an unconverted quote is kept
+		// before the housekeeping job cancels it (0 = keep for ever).
+		'quote_convert_status' => 'pending',
+		'quote_retention_days' => 90,
 
 		'log_level'            => 'info',
 	];

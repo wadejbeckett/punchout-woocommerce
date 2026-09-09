@@ -15,6 +15,7 @@ use POW\Cart\PoomMapper;
 use POW\Cxml\Builder;
 use POW\Cxml\FormPack;
 use POW\Installer;
+use POW\Orders\QuoteOrder;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
 use POW\Sessions\Session;
@@ -49,6 +50,7 @@ final class ReturnEndpoint {
 		private PoomMapper $mapper,
 		private Builder $builder,
 		private Log $audit,
+		private QuoteOrder $quotes,
 	) {}
 
 	/**
@@ -123,6 +125,16 @@ final class ReturnEndpoint {
 			];
 		}
 
+		// The quote order is created between the mapping and the build, so
+		// it carries exactly the lines the buyer's system is about to be
+		// quoted (DESIGN §1). The empty/close-out path creates nothing: an
+		// empty POOM is a cancel, and $session->order_id there already
+		// points at a paid Woo order. A failure here returns 0 and never
+		// stops the basket going back (DESIGN §6).
+		$quote_order_id = 'cart' === $mode
+			? $this->quotes->create_for_session( $session, $partner, $mapped )
+			: 0;
+
 		$supplier_order_info = null;
 
 		if ( 'empty' === $mode && $session->order_id > 0 && function_exists( 'wc_get_order' ) ) {
@@ -159,6 +171,10 @@ final class ReturnEndpoint {
 			]
 		);
 
+		if ( $quote_order_id > 0 ) {
+			$this->quotes->attach_poom( $quote_order_id, $poom_xml );
+		}
+
 		// Transition BEFORE rendering: if the guarded update loses a race
 		// (double-submit), the second request lands on the expired page
 		// instead of sending a second POOM.
@@ -177,7 +193,7 @@ final class ReturnEndpoint {
 				'partner_id' => $partner->id,
 				'session_id' => $session->id,
 				'user_id'    => $user->ID,
-				'order_id'   => $session->order_id,
+				'order_id'   => $quote_order_id > 0 ? $quote_order_id : $session->order_id,
 				'direction'  => 'out',
 				'result'     => 'ok',
 				'detail'     => [

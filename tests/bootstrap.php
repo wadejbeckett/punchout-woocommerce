@@ -8,6 +8,10 @@
  * satisfy the file guards, and Support/wp-stubs.php supplies the one
  * WordPress function those layers do call.
  *
+ * The one exception is quote-order creation, which cannot be proved
+ * without an order object: Support/wc-stubs.php records what was set on a
+ * stub WC_Order. It proves our rules, not WooCommerce's.
+ *
  * @package POW
  * @license AGPL-3.0-or-later
  */
@@ -23,6 +27,10 @@ require_once __DIR__ . '/Support/testcase-shim.php';
 
 // Under WordPress these stubs define nothing.
 require_once __DIR__ . '/Support/wp-stubs.php';
+
+// Under WooCommerce these stubs define nothing. Loaded after wp-stubs so
+// the WordPress surface is claimed there and this file stays WooCommerce.
+require_once __DIR__ . '/Support/wc-stubs.php';
 
 require_once dirname( __DIR__ ) . '/includes/Autoloader.php';
 

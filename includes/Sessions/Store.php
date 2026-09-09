@@ -21,7 +21,7 @@ defined( 'ABSPATH' ) || exit;
  * set), so two concurrent requests cannot both win a transition — the
  * atomic token redemption in particular is one query (scope §7).
  */
-final class Store {
+class Store {
 
 	private function table(): string {
 		return Installer::sessions_table();

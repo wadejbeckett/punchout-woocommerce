@@ -15,6 +15,12 @@
  * nocache_headers() records its call count in pow_test_nocache_headers,
  * because a CLI run cannot see headers but can see that the page asked.
  *
+ * The option, transient and mail stubs are recorders on the same
+ * pattern: get_option reads pow_test_options, the transient pair shares
+ * pow_test_transients, and wp_mail appends to pow_test_mail instead of
+ * sending — which is how a throttle that must mail once, not once per
+ * failure, can be proved.
+ *
  * Three stubs read a $GLOBALS key so a test can steer them: __() consults
  * pow_test_translations (proving a string really goes through
  * translation, which an identity stub cannot), apply_filters runs one
@@ -190,5 +196,62 @@ if ( ! function_exists( 'sanitize_text_field' ) ) {
 if ( ! function_exists( 'wp_strip_all_tags' ) ) {
 	function wp_strip_all_tags( string $text ): string { // phpcs:ignore
 		return strip_tags( $text );
+	}
+}
+
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+	define( 'HOUR_IN_SECONDS', 3600 );
+}
+
+if ( ! function_exists( 'get_option' ) ) {
+	/**
+	 * Options a test declared in pow_test_options; everything else is
+	 * unset, which is what a fresh install looks like.
+	 *
+	 * @param mixed $default Fallback when unset.
+	 * @return mixed
+	 */
+	function get_option( string $name, $default = false ) { // phpcs:ignore
+		return $GLOBALS['pow_test_options'][ $name ] ?? $default;
+	}
+}
+
+if ( ! function_exists( 'get_transient' ) ) {
+	/**
+	 * Transients live in pow_test_transients for the run. Expiry is not
+	 * simulated: a test that needs one to lapse unsets the key.
+	 *
+	 * @return mixed false when unset, as WordPress returns.
+	 */
+	function get_transient( string $key ) { // phpcs:ignore
+		return $GLOBALS['pow_test_transients'][ $key ] ?? false;
+	}
+}
+
+if ( ! function_exists( 'set_transient' ) ) {
+	/**
+	 * @param mixed $value      Value to store.
+	 * @param int   $expiration Ignored; see get_transient.
+	 */
+	function set_transient( string $key, $value, int $expiration = 0 ): bool { // phpcs:ignore
+		$GLOBALS['pow_test_transients'][ $key ] = $value;
+
+		return true;
+	}
+}
+
+if ( ! function_exists( 'wp_mail' ) ) {
+	/**
+	 * Records the message rather than sending it, so a test can count
+	 * what a throttle let through.
+	 */
+	function wp_mail( string $to, string $subject, string $message ): bool { // phpcs:ignore
+		$GLOBALS['pow_test_mail'][] = [
+			'to'      => $to,
+			'subject' => $subject,
+			'message' => $message,
+		];
+
+		return true;
 	}
 }

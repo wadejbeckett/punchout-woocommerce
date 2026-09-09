@@ -92,9 +92,22 @@ final class Page {
 			'log_retention_days'   => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
 			'buyer_inactive_days'  => [ __( 'Buyer inactivity (days)', 'punchout-woocommerce' ), 'number', __( 'Buyers unseen this long are flagged inactive (never deleted).', 'punchout-woocommerce' ) ],
 			'default_unspsc'       => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'UNSPSC commodity classification stamped on every returned cart line; procurement systems use it to route requisition lines to a purchasing category. Agree the value with the buyer.', 'punchout-woocommerce' ) ],
+			'quote_convert_status' => [
+				__( 'Convert quotes to', 'punchout-woocommerce' ),
+				'select',
+				__( 'Status a Punchout Quote order moves to when you convert it from the order screen.', 'punchout-woocommerce' ),
+				[
+					'pending'    => __( 'Pending payment', 'punchout-woocommerce' ),
+					'processing' => __( 'Processing', 'punchout-woocommerce' ),
+					'on-hold'    => __( 'On hold', 'punchout-woocommerce' ),
+				],
+			],
+			'quote_retention_days' => [ __( 'Quote retention (days)', 'punchout-woocommerce' ), 'number', __( 'Punchout Quote orders not converted within this many days are cancelled by the housekeeping job (never deleted). 0 keeps them for ever.', 'punchout-woocommerce' ) ],
 		];
 
-		foreach ( $fields as $key => [ $label, $type, $help ] ) {
+		foreach ( $fields as $key => $field ) {
+			[ $label, $type, $help ] = $field;
+
 			add_settings_field(
 				'pow_' . $key,
 				$label,
@@ -105,6 +118,7 @@ final class Page {
 					'key'       => $key,
 					'type'      => $type,
 					'help'      => $help,
+					'options'   => $field[3] ?? [],
 					'label_for' => 'pow_' . $key,
 				]
 			);
@@ -141,6 +155,21 @@ final class Page {
 						'option_none_value' => '0',
 					]
 				);
+				break;
+
+			case 'select':
+				printf( '<select id="%s" name="%s">', esc_attr( $id ), esc_attr( $name ) );
+
+				foreach ( (array) ( $args['options'] ?? [] ) as $option => $option_label ) {
+					printf(
+						'<option value="%s" %s>%s</option>',
+						esc_attr( (string) $option ),
+						selected( (string) $option, (string) $value, false ),
+						esc_html( (string) $option_label )
+					);
+				}
+
+				echo '</select>';
 				break;
 
 			case 'number':
@@ -184,6 +213,12 @@ final class Page {
 			'log_retention_days'   => max( 1, (int) ( $input['log_retention_days'] ?? 400 ) ),
 			'buyer_inactive_days'  => max( 0, (int) ( $input['buyer_inactive_days'] ?? 90 ) ),
 			'default_unspsc'       => sanitize_text_field( (string) ( $input['default_unspsc'] ?? '' ) ),
+			// A quote converts into a status an operator can still act on;
+			// anything else (completed, refunded, another custom status)
+			// falls back to pending rather than skipping the shop's own
+			// fulfilment path.
+			'quote_convert_status' => in_array( $input['quote_convert_status'] ?? '', [ 'pending', 'processing', 'on-hold' ], true ) ? (string) $input['quote_convert_status'] : 'pending',
+			'quote_retention_days' => max( 0, (int) ( $input['quote_retention_days'] ?? 90 ) ),
 			'log_level'            => in_array( $input['log_level'] ?? '', [ 'debug', 'info', 'warning', 'error' ], true ) ? (string) $input['log_level'] : 'info',
 		];
 	}
