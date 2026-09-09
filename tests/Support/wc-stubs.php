@@ -230,7 +230,15 @@ if ( ! function_exists( 'wc_create_order' ) ) {
 }
 
 if ( ! function_exists( 'wc_get_order' ) ) {
+	/**
+	 * Throws when pow_test_get_order_error is set: the real lookup goes to
+	 * the database, so callers have to survive it failing.
+	 */
 	function wc_get_order( int $id ): ?WC_Order { // phpcs:ignore
+		if ( isset( $GLOBALS['pow_test_get_order_error'] ) ) {
+			throw new \RuntimeException( (string) $GLOBALS['pow_test_get_order_error'] );
+		}
+
 		return $GLOBALS['pow_test_orders'][ $id ] ?? null;
 	}
 }

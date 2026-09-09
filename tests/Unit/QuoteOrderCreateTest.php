@@ -29,7 +29,7 @@ final class QuoteOrderCreateTest extends TestCase {
 		$GLOBALS['pow_test_mail']       = [];
 		$GLOBALS['pow_test_wc']         = new POW_Test_WC();
 
-		unset( $GLOBALS['pow_test_create_order_error'] );
+		unset( $GLOBALS['pow_test_create_order_error'], $GLOBALS['pow_test_get_order_error'] );
 
 		QuoteOrderTestStore::$updates = [];
 		QuoteOrderTestLog::$written   = [];
@@ -247,6 +247,25 @@ final class QuoteOrderCreateTest extends TestCase {
 
 		self::assertSame( $order_id, $again );
 		self::assertCount( 1, $GLOBALS['pow_test_orders'] );
+		self::assertSame( 'quote_order_reused', QuoteOrderTestLog::$written[1][0] );
+		self::assertSame( $order_id, QuoteOrderTestLog::$written[1][1]['order_id'] );
+	}
+
+	/**
+	 * The reuse check reads the database, and it runs while the buyer's
+	 * basket is waiting: a lookup that throws is a failed quote, not a
+	 * failed return.
+	 */
+	public function test_a_throwing_reuse_check_never_reaches_the_caller(): void {
+		$GLOBALS['pow_test_options']['admin_email'] = 'ops@example.com';
+		$GLOBALS['pow_test_get_order_error']        = 'order lookup exploded';
+
+		self::assertSame( 0, $this->quotes->create_for_session( $this->session( [ 'order_id' => 1001 ] ), $this->partner(), $this->lines() ) );
+
+		self::assertSame( [], $GLOBALS['pow_test_orders'], 'nothing was created' );
+		self::assertSame( 'quote_order_failed', QuoteOrderTestLog::$written[0][0] );
+		self::assertSame( 0, QuoteOrderTestLog::$written[0][1]['order_id'] );
+		self::assertStringContainsString( 'order lookup exploded', QuoteOrderTestLog::$written[0][1]['detail']['error'] );
 	}
 
 	/**
