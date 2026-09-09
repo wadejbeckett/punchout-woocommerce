@@ -65,6 +65,8 @@ final class Session {
 		public readonly bool $cart_ready,
 		public readonly ?string $created,
 		public readonly ?string $expires,
+		public readonly ?string $delivery_choice_json = null,
+		public readonly ?string $delivery_confirmation_json = null,
 	) {}
 
 	/**
@@ -93,7 +95,26 @@ final class Session {
 			cart_ready: ! empty( $row['cart_ready'] ),
 			created: self::nullable( $row, 'created' ),
 			expires: self::nullable( $row, 'expires' ),
+			delivery_choice_json: self::delivery_column( $row, 'delivery_choice' ),
+			delivery_confirmation_json: self::delivery_column( $row, 'delivery_confirmation' ),
 		);
+	}
+
+	/** A snapshot decoder only: Resolver must freshly authorize an active selection. */
+	public function delivery_choice(): ?array {
+		return null === $this->delivery_choice_json ? null : \POW\Addresses\DeliveryData::choice( $this->delivery_choice_json, $this->partner_id );
+	}
+
+	/** Historical structured consent; current cart, policy and address eligibility are checked separately. */
+	public function delivery_confirmation(): ?array {
+		return null === $this->delivery_confirmation_json ? null : \POW\Addresses\DeliveryData::confirmation( $this->delivery_confirmation_json, $this->id, $this->user_id, $this->delivery_choice() );
+	}
+
+	private static function delivery_column( array $row, string $key ): ?string {
+		if ( ! array_key_exists( $key, $row ) || null === $row[ $key ] ) { return null; }
+		if ( ! is_string( $row[ $key ] ) ) { throw new \DomainException( 'delivery_choice' === $key ? 'Invalid stored delivery selection.' : 'Invalid stored delivery confirmation.' ); }
+		// Empty, invalid and oversized strings remain present, and the decoder refuses them.
+		return $row[ $key ];
 	}
 
 	/**

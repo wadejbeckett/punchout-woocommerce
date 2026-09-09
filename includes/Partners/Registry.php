@@ -395,6 +395,7 @@ final class Registry {
 	 * @return array<string, mixed>
 	 */
 	private function sanitise( array $data ): array {
+		$delivery = Partner::normalise_delivery_config( $data );
 		$allowed = [
 			'name',
 			'status',
@@ -459,6 +460,8 @@ final class Registry {
 			}
 		}
 
+		// Leave lifecycle fields on their existing path; delivery flags reach wpdb as explicit 0/1.
+		foreach ( $delivery as $key => $value ) { $data[ $key ] = is_bool( $value ) ? (int) $value : $value; }
 		return $data;
 	}
 }
