@@ -39,6 +39,32 @@ final class SetupEndpoint {
 
 	private const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB hard cap (scope §3).
 
+	/**
+	 * cXML Status codes this endpoint emits. HTTP is always 200; the
+	 * failure lives in the cXML Status (a 400 alongside a valid StartPage
+	 * broke a real integration, gotcha 6). Public: Docs\Reference builds
+	 * the buyer-facing table from STATUS_REASONS, so the documented set
+	 * and the emitted set cannot diverge.
+	 */
+	public const STATUS_OK           = 200;
+	public const STATUS_AUTH_FAILED  = 401;
+	public const STATUS_INVALID      = 406;
+	public const STATUS_DUPLICATE    = 409;
+	public const STATUS_UNSUPPORTED  = 450;
+	public const STATUS_INTERNAL     = 500;
+	public const STATUS_RATE_LIMITED = 550;
+
+	/** @var array<int, string> Canonical Status/@text for each code. */
+	public const STATUS_REASONS = [
+		self::STATUS_OK           => 'success',
+		self::STATUS_AUTH_FAILED  => 'Authentication failed',
+		self::STATUS_INVALID      => 'Invalid document',
+		self::STATUS_DUPLICATE    => 'Duplicate payloadID',
+		self::STATUS_UNSUPPORTED  => 'Not supported',
+		self::STATUS_INTERNAL     => 'Internal error',
+		self::STATUS_RATE_LIMITED => 'Too many requests',
+	];
+
 	public function __construct(
 		private Registry $registry,
 		private Store $sessions,
@@ -75,7 +101,7 @@ final class SetupEndpoint {
 					'ip'        => $ip,
 				]
 			);
-			$this->respond( $this->status_doc( 500, 'Internal error' ) );
+			$this->respond( $this->status_doc( self::STATUS_INTERNAL, 'Internal error' ) );
 		}
 	}
 
@@ -91,20 +117,20 @@ final class SetupEndpoint {
 				'ip'        => $this->client_ip(),
 			]
 		);
-		$this->respond( $this->status_doc( 450, 'Not implemented' ) );
+		$this->respond( $this->status_doc( self::STATUS_UNSUPPORTED, 'Not implemented' ) );
 	}
 
 	private function handle_inner( string $ip ): void {
 		$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) );
 
 		if ( 'POST' !== $method ) {
-			throw new ParseException( 'POST required', 406 );
+			throw new ParseException( 'POST required', self::STATUS_INVALID );
 		}
 
 		$content_type = strtolower( (string) ( $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '' ) );
 
 		if ( ! str_contains( $content_type, 'xml' ) ) {
-			throw new ParseException( 'Content-Type must be text/xml', 406 );
+			throw new ParseException( 'Content-Type must be text/xml', self::STATUS_INVALID );
 		}
 
 		$body = $this->read_body();
@@ -134,7 +160,7 @@ final class SetupEndpoint {
 			// rate-limit bucket so credential scanning cannot hammer the
 			// parser — or flood the audit table — for free.
 			if ( ! $this->rate_limiter->allow( 'unknown|' . $ip ) ) {
-				$this->respond( $this->status_doc( 550, 'Too many requests', '1.2.008' ) );
+				$this->respond( $this->status_doc( self::STATUS_RATE_LIMITED, 'Too many requests', '1.2.008' ) );
 				return;
 			}
 
@@ -154,7 +180,7 @@ final class SetupEndpoint {
 					'ip'         => $ip,
 				]
 			);
-			$this->respond( $this->status_doc( 550, 'Too many requests', $partner->cxml_version ) );
+			$this->respond( $this->status_doc( self::STATUS_RATE_LIMITED, 'Too many requests', $partner->cxml_version ) );
 			return;
 		}
 
@@ -208,14 +234,14 @@ final class SetupEndpoint {
 					'ip'         => $ip,
 				]
 			);
-			$this->respond( $this->status_doc( 450, 'Operation not supported', $partner->cxml_version ) );
+			$this->respond( $this->status_doc( self::STATUS_UNSUPPORTED, 'Operation not supported', $partner->cxml_version ) );
 			return;
 		}
 
 		// The punchback target the handoff form will POST to; anything but
 		// plain http(s) is refused before it can reach a template.
 		if ( ! preg_match( '#^https?://#i', $message->browser_form_post ) ) {
-			throw new ParseException( 'BrowserFormPost URL must be http(s)', 406 );
+			throw new ParseException( 'BrowserFormPost URL must be http(s)', self::STATUS_INVALID );
 		}
 
 		$payload_id = '' !== $message->payload_id ? $message->payload_id : 'noid-' . substr( $body_hash, 0, 32 );
@@ -255,7 +281,7 @@ final class SetupEndpoint {
 					'ip'         => $ip,
 				]
 			);
-			$this->respond( $this->status_doc( 409, 'Duplicate payloadID', $partner->cxml_version ) );
+			$this->respond( $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
 			return;
 		}
 
@@ -264,7 +290,7 @@ final class SetupEndpoint {
 		$user_id = $this->provisioner->provision( $partner, $message );
 
 		if ( 0 === $user_id ) {
-			$this->respond( $this->status_doc( 500, 'Provisioning failed', $partner->cxml_version ) );
+			$this->respond( $this->status_doc( self::STATUS_INTERNAL, 'Provisioning failed', $partner->cxml_version ) );
 			return;
 		}
 
@@ -296,7 +322,7 @@ final class SetupEndpoint {
 		if ( 0 === $session_id ) {
 			// Lost a race on the UNIQUE(partner_id, payload_id) key: the
 			// concurrent twin owns the row now, so this duplicate is a 409.
-			$this->respond( $this->status_doc( 409, 'Duplicate payloadID', $partner->cxml_version ) );
+			$this->respond( $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
 			return;
 		}
 
@@ -362,25 +388,25 @@ final class SetupEndpoint {
 		);
 
 		// Generic wording regardless of the actual reason (scope §7).
-		$this->respond( $this->status_doc( 401, 'Authentication failed', $partner?->cxml_version ?? $message->version ) );
+		$this->respond( $this->status_doc( self::STATUS_AUTH_FAILED, 'Authentication failed', $partner?->cxml_version ?? $message->version ) );
 	}
 
 	private function read_body(): string {
 		$stream = fopen( 'php://input', 'r' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
 
 		if ( false === $stream ) {
-			throw new ParseException( 'Unreadable request body', 406 );
+			throw new ParseException( 'Unreadable request body', self::STATUS_INVALID );
 		}
 
 		$body = stream_get_contents( $stream, self::MAX_BODY_BYTES + 1 );
 		fclose( $stream ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 
 		if ( false === $body || '' === $body ) {
-			throw new ParseException( 'Empty request body', 406 );
+			throw new ParseException( 'Empty request body', self::STATUS_INVALID );
 		}
 
 		if ( strlen( $body ) > self::MAX_BODY_BYTES ) {
-			throw new ParseException( 'Request body exceeds limit', 406 );
+			throw new ParseException( 'Request body exceeds limit', self::STATUS_INVALID );
 		}
 
 		return $body;
