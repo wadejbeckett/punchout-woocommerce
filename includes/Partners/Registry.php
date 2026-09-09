@@ -24,6 +24,9 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Registry {
 
+	/** Shared across Registry instances on this request/connection. */
+	private static array $partner_locks = [];
+
 	public function __construct( private Secrets $secrets ) {}
 
 	private function table(): string {
@@ -36,6 +39,7 @@ final class Registry {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE id = %d', $id ), ARRAY_A );
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Partner lookup failed.' ); }
 		return $row ? Partner::from_row( $row ) : null;
 	}
 
@@ -56,6 +60,7 @@ final class Registry {
 			ARRAY_A
 		);
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Partner lookup failed.' ); }
 		return $row ? Partner::from_row( $row ) : null;
 	}
 
@@ -73,6 +78,7 @@ final class Registry {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE owner_user_id = %d ORDER BY id DESC LIMIT 1', $user_id ), ARRAY_A );
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Partner lookup failed.' ); }
 		return $row ? Partner::from_row( $row ) : null;
 	}
 
@@ -88,6 +94,7 @@ final class Registry {
 	public function with_owner_lock( int $user_id, callable $operation ): mixed {
 		global $wpdb;
 
+		if ( self::$partner_locks ) { throw new \LogicException( 'Owner lock must precede partner lock.' ); }
 		if ( $user_id <= 0 ) {
 			throw new \InvalidArgumentException( 'Invalid registration owner.' );
 		}
@@ -119,6 +126,80 @@ final class Registry {
 		}
 	}
 
+
+	/** Database critical section shared by lifecycle, setup, start and return. */
+	public function with_partner_lock( int $id, callable $operation ): mixed {
+		global $wpdb;
+		if ( $id <= 0 ) { throw new \InvalidArgumentException( 'Invalid partner.' ); }
+		$key = $this->partner_lock_key( $id );
+		if ( isset( self::$partner_locks[ $key ] ) ) {
+			++self::$partner_locks[ $key ];
+			try { return $operation(); } finally { --self::$partner_locks[ $key ]; }
+		}
+		$previous = $wpdb->suppress_errors( true );
+		$acquired = false;
+		try {
+			$acquired = '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $key, 5 ) );
+			if ( ! $acquired ) { throw new \RuntimeException( 'Partner lock unavailable.' ); }
+			self::$partner_locks[ $key ] = 1;
+			return $operation();
+		} finally {
+			unset( self::$partner_locks[ $key ] );
+			try {
+				if ( $acquired && '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $key ) ) ) {
+					throw new \RuntimeException( 'Partner lock release unconfirmed.' );
+				}
+			} finally { $wpdb->suppress_errors( $previous ); }
+		}
+	}
+
+	private function partner_lock_key( int $id ): string {
+		return 'pow_partner_' . substr( hash( 'sha256', ( defined( 'DB_NAME' ) ? DB_NAME : '' ) . '|' . $this->table() . '|' . $id ), 0, 52 );
+	}
+
+	/** A lifecycle write must be conditional, changed once, and freshly confirmed. */
+	public function transition_status( int $id, string $expected, array $fields, string $secret = '' ): bool {
+		global $wpdb;
+		if ( ! isset( self::$partner_locks[ $this->partner_lock_key( $id ) ] ) ) { return false; }
+		$data = $this->sanitise( $fields );
+		foreach ( [ 'secret_previous', 'secret_rotated_at' ] as $key ) {
+			if ( array_key_exists( $key, $fields ) ) { $data[ $key ] = $fields[ $key ]; }
+		}
+		if ( '' !== $secret ) { $data['secret_current'] = $this->secrets->seal( $secret ); }
+		$data['updated'] = gmdate( 'Y-m-d H:i:s' );
+		$before = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE id = %d', $id ), ARRAY_A );
+		if ( '' !== ( $wpdb->last_error ?? '' ) || ! $before || $before['status'] !== $expected ) { return false; }
+		try {
+			if ( 1 !== $wpdb->update( $this->table(), $data, [ 'id' => $id, 'status' => $expected ] ) ) { return false; }
+			if ( $this->matches_fields( $id, $data ) ) { return true; }
+		} catch ( \Throwable $e ) { /* An unconfirmed issuance must not install an undisclosed credential. */ }
+		if ( '' !== $secret ) {
+			$restore = [];
+			foreach ( $data as $key => $value ) { $restore[ $key ] = $before[ $key ]; }
+			// Compensate only this exact issuance, while still holding the lock.
+			if ( false === $wpdb->update( $this->table(), $restore, [ 'id' => $id, 'secret_current' => $data['secret_current'] ] ) || ! $this->matches_fields( $id, $restore ) ) {
+				throw new \RuntimeException( 'Credential restoration unconfirmed.' );
+			}
+		}
+		return false;
+	}
+
+	private function matches_fields( int $id, array $expected ): bool {
+		global $wpdb;
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE id = %d', $id ), ARRAY_A );
+		if ( ! $row || '' !== ( $wpdb->last_error ?? '' ) ) { return false; }
+		foreach ( $expected as $key => $value ) {
+			if ( (string) ( $row[ $key ] ?? '' ) !== (string) $value ) { return false; }
+		}
+		return true;
+	}
+
+	private function rotation_actor( Partner $partner ): bool {
+		$actor = get_current_user_id();
+		$user = $actor > 0 ? get_userdata( $actor ) : false;
+		return $user && ( user_can( $user, 'manage_woocommerce' ) || ( $partner->is_owned_by( $actor ) && user_can( $user, 'read' ) && ! in_array( Installer::ROLE, (array) $user->roles, true ) && ! get_user_meta( $actor, '_pow_partner_id', true ) ) );
+	}
+
 	/**
 	 * @return list<Partner>
 	 */
@@ -128,6 +209,7 @@ final class Registry {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$rows = $wpdb->get_results( 'SELECT * FROM ' . $this->table() . ' ORDER BY name ASC', ARRAY_A );
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Partner list lookup failed.' ); }
 		return array_map( [ Partner::class, 'from_row' ], $rows ?: [] );
 	}
 
@@ -142,6 +224,7 @@ final class Registry {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE status = %s ORDER BY created ASC', Partner::STATUS_PENDING ), ARRAY_A );
 
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Partner list lookup failed.' ); }
 		return array_map( [ Partner::class, 'from_row' ], $rows ?: [] );
 	}
 
@@ -176,24 +259,26 @@ final class Registry {
 	 */
 	public function update( int $id, array $data, string $secret = '' ): bool {
 		global $wpdb;
-
-		$data = $this->sanitise( $data );
-
-		if ( '' !== $secret ) {
-			$data['secret_current'] = $this->secrets->seal( $secret );
-		}
-
-		$data['updated'] = gmdate( 'Y-m-d H:i:s' );
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
-		return false !== $wpdb->update( $this->table(), $data, [ 'id' => $id ] );
+		try {
+			return $this->with_partner_lock( $id, function () use ( $id, $data, $secret, $wpdb ) {
+				$partner = $this->find( $id );
+				if ( null === $partner ) { return false; }
+				$data = $this->sanitise( $data );
+				// Ordinary saves cannot approve pending or revive a fenced connection.
+				if ( ! $partner->is_active() ) { $data['status'] = $partner->status; $secret = ''; }
+				if ( '' !== $secret ) { $data['secret_current'] = $this->secrets->seal( $secret ); }
+				$data['updated'] = gmdate( 'Y-m-d H:i:s' );
+				return false !== $wpdb->update( $this->table(), $data, [ 'id' => $id ] ) && $this->matches_fields( $id, $data );
+			} );
+		} catch ( \Throwable $e ) { return false; }
 	}
 
 	public function delete( int $id ): bool {
 		global $wpdb;
 
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
-		return false !== $wpdb->delete( $this->table(), [ 'id' => $id ] );
+		try {
+			return $this->with_partner_lock( $id, fn() => 1 === $wpdb->delete( $this->table(), [ 'id' => $id ] ) && null === $this->find( $id ) );
+		} catch ( \Throwable $e ) { return false; }
 	}
 
 	/**
@@ -205,46 +290,28 @@ final class Registry {
 	 *                     caller, never stored unsealed — or null.
 	 */
 	public function rotate( int $id ): ?string {
-		global $wpdb;
-
-		$partner = $this->find( $id );
-
-		if ( null === $partner ) {
-			return null;
-		}
-
-		$new_secret = Secrets::generate_secret();
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
-		$ok = $wpdb->update(
-			$this->table(),
-			[
-				'secret_previous'   => $partner->secret_current,
-				'secret_current'    => $this->secrets->seal( $new_secret ),
-				'secret_rotated_at' => gmdate( 'Y-m-d H:i:s' ),
-				'updated'           => gmdate( 'Y-m-d H:i:s' ),
-			],
-			[ 'id' => $id ]
-		);
-
-		return false !== $ok ? $new_secret : null;
+		$issued = null;
+		try {
+			$this->with_partner_lock( $id, function () use ( $id, &$issued ) {
+				$p = $this->find( $id );
+				if ( ! $p || ! $p->is_active() || '' !== $p->secret_previous || ! $this->rotation_actor( $p ) ) { return; }
+				$secret = Secrets::generate_secret();
+				if ( $this->transition_status( $id, Partner::STATUS_ACTIVE, [ 'secret_previous' => $p->secret_current, 'secret_rotated_at' => gmdate( 'Y-m-d H:i:s' ) ], $secret ) ) { $issued = $secret; }
+			} );
+		} catch ( \Throwable $e ) { /* A confirmed issuance survives a release error. */ }
+		return $issued;
 	}
 
 	/**
 	 * Close the rotation window: clear the previous slot.
 	 */
 	public function close_rotation( int $id ): bool {
-		global $wpdb;
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
-		return false !== $wpdb->update(
-			$this->table(),
-			[
-				'secret_previous' => '',
-				'updated'         => gmdate( 'Y-m-d H:i:s' ),
-			],
-			[ 'id' => $id ]
-		);
+		try {
+			return $this->with_partner_lock( $id, function () use ( $id ) {
+				$p = $this->find( $id );
+				return $p && $p->is_active() && $this->rotation_actor( $p ) && ( '' === $p->secret_previous || $this->transition_status( $id, Partner::STATUS_ACTIVE, [ 'secret_previous' => '' ] ) );
+			} );
+		} catch ( \Throwable $e ) { return false; }
 	}
 
 	/**
@@ -255,18 +322,12 @@ final class Registry {
 	 */
 	public function revoke_secret( int $id ): bool {
 		global $wpdb;
-
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
-		return false !== $wpdb->update(
-			$this->table(),
-			[
-				'secret_current'    => '',
-				'secret_previous'   => '',
-				'secret_rotated_at' => gmdate( 'Y-m-d H:i:s' ),
-				'updated'           => gmdate( 'Y-m-d H:i:s' ),
-			],
-			[ 'id' => $id ]
-		);
+		try {
+			return $this->with_partner_lock( $id, function () use ( $id, $wpdb ) {
+				$data = [ 'secret_current' => '', 'secret_previous' => '' ];
+				return false !== $wpdb->update( $this->table(), $data, [ 'id' => $id ] ) && $this->matches_fields( $id, $data );
+			} );
+		} catch ( \Throwable $e ) { return false; }
 	}
 
 	/**

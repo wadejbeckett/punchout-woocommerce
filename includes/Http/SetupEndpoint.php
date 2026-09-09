@@ -87,23 +87,23 @@ final class SetupEndpoint {
 		try {
 			$this->handle_inner( $ip );
 		} catch ( ParseException $e ) {
-			$this->audit->write(
+			$this->audit_event(
 				'setup_fail',
 				[
 					'direction' => 'in',
 					'result'    => (string) $e->cxml_status,
-					'detail'    => [ 'error' => $e->getMessage() ],
+					'detail'    => [ 'error' => 'Request processing failed' ],
 					'ip'        => $ip,
 				]
 			);
 			$this->respond( $this->status_doc( $e->cxml_status, $e->getMessage() ) );
 		} catch ( \Throwable $e ) {
-			$this->audit->write(
+			$this->audit_event(
 				'setup_fail',
 				[
 					'direction' => 'in',
 					'result'    => '500',
-					'detail'    => [ 'error' => $e->getMessage() ],
+					'detail'    => [ 'error' => 'Request processing failed' ],
 					'ip'        => $ip,
 				]
 			);
@@ -115,7 +115,7 @@ final class SetupEndpoint {
 	 * cXML 450 for the not-built /punchout/order endpoint (option O2).
 	 */
 	public function not_implemented(): void {
-		$this->audit->write(
+		$this->audit_event(
 			'po_rx',
 			[
 				'direction' => 'in',
@@ -151,7 +151,7 @@ final class SetupEndpoint {
 		// authenticated, so an anonymous client must not be able to store
 		// 2 MB per request. Real setup requests are a few KB; 64 KB keeps
 		// full evidence for anything legitimate.
-		$this->audit->write(
+		$this->audit_event(
 			'setup_rx',
 			[
 				'direction' => 'in',
@@ -179,7 +179,7 @@ final class SetupEndpoint {
 		}
 
 		if ( ! $this->rate_limiter->allow( $partner->id . '|' . $ip ) ) {
-			$this->audit->write(
+			$this->audit_event(
 				'setup_fail',
 				[
 					'partner_id' => $partner->id,
@@ -211,10 +211,11 @@ final class SetupEndpoint {
 				$partner->cxml_version,
 				Builder::payload_id( $this->host() ),
 				Builder::timestamp(),
-				home_url( '/punchout/setup' )
+				Router::setup_url()
 			);
 
-			$this->audit->write(
+			$response = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $response ) { $this->fresh_authorized( $partner, $message, $ip ); return $response; } );
+			$this->audit_event(
 				'profile_rx',
 				[
 					'partner_id' => $partner->id,
@@ -233,7 +234,7 @@ final class SetupEndpoint {
 		// registry parameterises but this build does not service (scope
 		// §2.5, option O1): D365 F&O sends operation="create" only.
 		if ( 'create' !== $message->operation ) {
-			$this->audit->write(
+			$this->audit_event(
 				'setup_fail',
 				[
 					'partner_id' => $partner->id,
@@ -262,36 +263,14 @@ final class SetupEndpoint {
 		$existing = $this->sessions->find_by_payload( $partner->id, $payload_id );
 		$decision = ReplayPolicy::decide( $existing?->status, $existing?->body_hash, $body_hash );
 
-		if ( ReplayPolicy::DECISION_REPLAY === $decision && null !== $existing && null !== $existing->response_xml ) {
-			$this->audit->write(
-				'setup_ok',
-				[
-					'partner_id' => $partner->id,
-					'session_id' => $existing->id,
-					'direction'  => 'out',
-					'payload_id' => $payload_id,
-					'result'     => 'replay',
-					'ip'         => $ip,
-				]
-			);
-			$this->respond( $existing->response_xml );
-			return;
-		}
-
 		if ( ReplayPolicy::DECISION_NEW !== $decision ) {
-			$this->audit->write(
-				'setup_fail',
-				[
-					'partner_id' => $partner->id,
-					'session_id' => $existing?->id ?? 0,
-					'direction'  => 'in',
-					'payload_id' => $payload_id,
-					'result'     => '409',
-					'detail'     => [ 'error' => 'duplicate payloadID' ],
-					'ip'         => $ip,
-				]
-			);
-			$this->respond( $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
+			$replay = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash ) {
+				$this->fresh_authorized( $partner, $message, $ip );
+				$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
+				return $current && $current->expires && $current->expires > gmdate( 'Y-m-d H:i:s' ) && ReplayPolicy::DECISION_REPLAY === ReplayPolicy::decide( $current->status, $current->body_hash, $body_hash ) && $current->response_xml ? $current : null;
+			} );
+			$this->audit_event( $replay ? 'setup_ok' : 'setup_fail', [ 'partner_id' => $partner->id, 'session_id' => $replay?->id ?? 0, 'direction' => 'out', 'payload_id' => $payload_id, 'result' => $replay ? 'ok' : '409', 'detail' => [ 'replay' => (bool) $replay ], 'ip' => $ip ] );
+			$this->respond( $replay ? $replay->response_xml : $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
 			return;
 		}
 
@@ -307,56 +286,65 @@ final class SetupEndpoint {
 		$issued  = Tokens::issue();
 		$expires = gmdate( 'Y-m-d H:i:s', time() + $partner->token_ttl );
 
-		$session_id = $this->sessions->create(
-			[
-				'partner_id'            => $partner->id,
-				'buyer_cookie'          => $message->buyer_cookie,
-				'operation'             => $message->operation,
-				'browser_form_post_url' => $message->browser_form_post,
-				'selected_item'         => null !== $message->selected_item ? (string) wp_json_encode( $message->selected_item ) : null,
-				'ship_to'               => $message->ship_to_xml,
-				'user_id'               => $user_id,
-				'one_time_token_hash'   => $issued['hash'],
-				'status'                => Session::PENDING,
-				'payload_id'            => $payload_id,
-				'body_hash'             => $body_hash,
-				'cxml_version'          => $message->version,
-				'deployment_mode'       => $message->deployment_mode,
-				'extrinsics'            => (string) wp_json_encode( $message->extrinsics ),
-				'itemout_lines'         => [] !== $message->item_out ? (string) wp_json_encode( $message->item_out ) : null,
-				'cart_ready'            => 0,
-				'expires'               => $expires,
-			]
-		);
-
-		if ( 0 === $session_id ) {
-			// Lost a race on the UNIQUE(partner_id, payload_id) key: the
-			// concurrent twin owns the row now, so this duplicate is a 409.
-			$this->respond( $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
-			return;
-		}
-
-		// Latest-punchout-wins AFTER the new row exists (sparing it): the
-		// sweep must never run for a setup that then fails to create its
-		// session — a concurrent twin or failed insert would strand the
-		// buyer with every session expired and nothing to redeem.
-		$this->provisioner->latest_wins( $user_id, $session_id );
-
 		$start_url = home_url( '/punchout/start/' . $issued['token'] );
+		$response = $this->builder->setup_response( $partner->cxml_version, Builder::payload_id( $this->host() ), Builder::timestamp(), $start_url );
+		$session_id = 0;
+		$response = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash, $user_id, $issued, $expires, $response, &$session_id ) {
+			$this->fresh_authorized( $partner, $message, $ip );
+			$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
+			if ( $current ) {
+				if ( $current->expires && $current->expires > gmdate( 'Y-m-d H:i:s' ) && ReplayPolicy::DECISION_REPLAY === ReplayPolicy::decide( $current->status, $current->body_hash, $body_hash ) && $current->response_xml ) { $session_id = $current->id; return $current->response_xml; }
+				throw new ParseException( 'Duplicate payloadID', self::STATUS_DUPLICATE );
+			}
+			try {
+				$session_id = $this->sessions->create(
+				[
+					'partner_id'            => $partner->id,
+					'buyer_cookie'          => $message->buyer_cookie,
+					'operation'             => $message->operation,
+					'browser_form_post_url' => $message->browser_form_post,
+					'selected_item'         => null !== $message->selected_item ? (string) wp_json_encode( $message->selected_item ) : null,
+					'ship_to'               => $message->ship_to_xml,
+					'user_id'               => $user_id,
+					'one_time_token_hash'   => $issued['hash'],
+					'status'                => Session::PENDING,
+					'payload_id'            => $payload_id,
+					'body_hash'             => $body_hash,
+					'cxml_version'          => $message->version,
+					'deployment_mode'       => $message->deployment_mode,
+					'extrinsics'            => (string) wp_json_encode( $message->extrinsics ),
+					'itemout_lines'         => [] !== $message->item_out ? (string) wp_json_encode( $message->item_out ) : null,
+					'cart_ready'            => 0,
+					'expires'               => $expires,
+					'response_xml'          => $response,
+				]
+				);
+				if ( $session_id <= 0 ) { throw new ParseException( 'Session creation failed', self::STATUS_INTERNAL ); }
+				$created = $this->sessions->find( $session_id );
+				if ( ! $created || $created->response_xml !== $response || $created->status !== Session::PENDING ) { throw new ParseException( 'Session creation unconfirmed', self::STATUS_INTERNAL ); }
+				// Provisioning hooks already ran outside the lock; only exact cleanup runs here.
+				foreach ( $this->sessions->open_for_user( $user_id ) as $older ) {
+					if ( $older->id === $session_id ) { continue; }
+					if ( $older->partner_id !== $partner->id || ! $this->sessions->expire_locked( $older ) ) {
+						$this->sessions->expire_locked( $created );
+						$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+						throw new ParseException( 'Session cleanup failed', self::STATUS_INTERNAL );
+					}
+					$this->audit_event( 'session_expired', [ 'partner_id' => $partner->id, 'session_id' => $older->id, 'user_id' => $user_id, 'result' => 'superseded' ] );
+				}
+			} catch ( \Throwable $e ) {
+				$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+				if ( $session_id > 0 ) {
+					$failed = $this->sessions->find( $session_id );
+					if ( $failed ) { $this->sessions->expire_locked( $failed ); }
+				}
+				throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
+			}
 
-		$response = $this->builder->setup_response(
-			$partner->cxml_version,
-			Builder::payload_id( $this->host() ),
-			Builder::timestamp(),
-			$start_url
-		);
+			return $response;
+		} );
 
-		// Stored verbatim for the pending-state replay rule; the one-time
-		// token inside it is a bearer credential, but the row already
-		// holds its hash and the URL dies at first redemption.
-		$this->sessions->update( $session_id, [ 'response_xml' => $response ] );
-
-		$this->audit->write(
+		$this->audit_event(
 			'setup_ok',
 			[
 				'partner_id' => $partner->id,
@@ -381,8 +369,21 @@ final class SetupEndpoint {
 	 * Helpers
 	 * ------------------------------------------------------------------ */
 
+	/** Must run inside the partner lock immediately before a setup result is committed. */
+	private function fresh_authorized( Partner $snapshot, SetupMessage $message, string $ip ): void {
+		$current = $this->registry->find_by_sender( $message->sender_domain, $message->sender_identity );
+		if ( ! $current || $current->id !== $snapshot->id || ! $current->is_active() || ! $this->registry->ip_allowed( $current, $ip ) || null === $this->registry->verify_secret( $current, (string) $message->shared_secret ) ) {
+			throw new ParseException( 'Authentication failed', self::STATUS_AUTH_FAILED );
+		}
+	}
+
+	private function audit_event( string $event, array $context ): void {
+		try { $this->audit->write_checked( $event, $context ); }
+		catch ( \Throwable $e ) { /* Diagnostics cannot undo a confirmed setup result. */ }
+	}
+
 	private function deny_auth( SetupMessage $message, string $ip, string $reason, ?Partner $partner = null ): void {
-		$this->audit->write(
+		$this->audit_event(
 			'setup_fail',
 			[
 				'partner_id' => $partner?->id ?? 0,

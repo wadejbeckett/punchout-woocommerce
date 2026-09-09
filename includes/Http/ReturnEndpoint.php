@@ -172,9 +172,23 @@ final class ReturnEndpoint {
 
 		// This conditional transition is the only winner selection. A losing request
 		// never creates or attaches a quote, even if it read an earlier active snapshot.
-		$transitioned = 'cart' === $mode
-			? $this->sessions->transition( $session->id, Session::ACTIVE, Session::RETURNED )
-			: $this->sessions->transition( $session->id, $session->status, Session::CLOSED );
+		$transitioned = false;
+		try {
+			$this->registry->with_partner_lock( $partner->id, function () use ( $partner, $session, $mode, $user, &$transitioned ) {
+				$fresh_partner = $this->registry->find( $partner->id );
+				$fresh = $this->sessions->find( $session->id );
+				if ( ! $fresh_partner || ! $fresh_partner->is_active() || ! $fresh || $fresh->partner_id !== $partner->id || $fresh->user_id !== (int) $user->ID || ! $fresh->expires || $fresh->expires <= gmdate( 'Y-m-d H:i:s' ) || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) || ! $this->sessions->login_valid_checked( $fresh ) ) { return; }
+				$expected = 'cart' === $mode ? Session::ACTIVE : $session->status;
+				if ( $fresh->status !== $expected ) { return; }
+				$transitioned = $this->sessions->transition( $fresh->id, $expected, 'cart' === $mode ? Session::RETURNED : Session::CLOSED );
+				if ( $transitioned && ! $this->sessions->destroy_login_checked( $fresh ) ) {
+					$fenced = $this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+					$this->audit_best_effort( 'return_login_cleanup_failed', [ 'partner_id' => $partner->id, 'session_id' => $session->id, 'user_id' => $user->ID, 'result' => $fenced ? 'disabled' : 'fence_unconfirmed' ] );
+				}
+			} );
+		} catch ( \Throwable $e ) {
+			$this->audit_best_effort( 'return_boundary_failed', [ 'partner_id' => $partner->id, 'session_id' => $session->id, 'result' => 'error' ] );
+		}
 
 		if ( ! $transitioned ) {
 			$this->expired_page();
@@ -275,10 +289,6 @@ final class ReturnEndpoint {
 	 * Destroy exactly this login, clear cookies, empty the cart.
 	 */
 	private function teardown( int $user_id, Session $session ): void {
-		if ( '' !== $session->wp_session_token ) {
-			\WP_Session_Tokens::get_instance( $user_id )->destroy( $session->wp_session_token );
-		}
-
 		wp_clear_auth_cookie();
 
 		if ( function_exists( 'WC' ) && null !== WC()->cart ) {

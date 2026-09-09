@@ -291,15 +291,26 @@ final class Plugin {
 			return;
 		}
 
-		foreach ( $this->sessions->all_open( 500 ) as $open ) {
-			if ( $this->sessions->transition( $open->id, $open->status, Session::EXPIRED ) ) {
-				if ( '' !== $open->wp_session_token && $open->user_id > 0 ) {
-					\WP_Session_Tokens::get_instance( $open->user_id )->destroy( $open->wp_session_token );
-				}
+		$ok = null !== $this->registry;
+		try {
+			foreach ( $this->registry?->all() ?? [] as $partner ) {
+				$clean = $this->registry->with_partner_lock( $partner->id, function () use ( $partner ) {
+					$after = 0;
+					$clean = true;
+					while ( $rows = $this->sessions->revocation_batch( $partner->id, $after ) ) {
+						foreach ( $rows as $row ) {
+							if ( $row->id <= $after ) { return false; }
+							$after = $row->id;
+							$clean = $this->sessions->expire_locked( $row ) && $clean;
+						}
+					}
+					return $clean;
+				} );
+				$ok = $clean && $ok;
 			}
-		}
-
-		$this->audit?->write( 'master_disabled', [ 'result' => 'sessions_swept' ] );
+			$ok = [] === $this->sessions->all_open( 1 ) && $ok;
+		} catch ( \Throwable $e ) { $ok = false; }
+		$this->audit?->write_checked( 'master_disabled', [ 'result' => $ok ? 'sessions_swept' : 'cleanup_incomplete' ] );
 	}
 
 	/**

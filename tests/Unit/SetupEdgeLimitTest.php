@@ -144,7 +144,7 @@ final class SetupEdgeLimitTest extends TestCase {
 		$endpoint = $this->endpoint( 1 );
 		self::assertSame( 500, $this->request( $endpoint, $this->valid_body( 'known' ) ) );
 		self::assertSame( 1, $provisions );
-		self::assertSame( 'Test stopped at buyer identity resolution', $this->audit->rows[1][1]['detail']['error'] );
+		self::assertSame( 'Request processing failed', $this->audit->rows[1][1]['detail']['error'] );
 		self::assertCount( 2, $this->database->lookups ); // Partner resolution and replay lookup both executed.
 		$rows = $this->audit->rows;
 		$counters = $this->downstream;
@@ -187,6 +187,7 @@ final class SetupEdgeLimitTest extends TestCase {
 final class SetupEdgeAudit extends Log {
 	public array $rows = [];
 	public function __construct() {}
+	public function write_checked( string $event, array $context = [] ): bool { $this->write( $event, $context ); return true; }
 	public function write( string $event, array $context = [] ): void {
 		$this->rows[] = [ $event, $context ];
 	}

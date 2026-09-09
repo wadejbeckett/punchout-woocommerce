@@ -161,14 +161,11 @@ final class Provisioner {
 				continue;
 			}
 
-			$expired = $this->sessions->transition( $open->id, $open->status, Session::EXPIRED );
-
-			if ( $expired && '' !== $open->wp_session_token ) {
-				\WP_Session_Tokens::get_instance( $user_id )->destroy( $open->wp_session_token );
-			}
+			$registry = \POW\Plugin::instance()->registry();
+			$expired = $registry && $this->sessions->expire_and_destroy( $open, $registry );
 
 			if ( $expired ) {
-				$this->audit->write(
+				$this->audit->write_checked(
 					'session_expired',
 					[
 						'partner_id' => $open->partner_id,

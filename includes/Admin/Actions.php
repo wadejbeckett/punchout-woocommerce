@@ -76,12 +76,20 @@ final class Actions {
 		}
 
 		if ( $partner_id > 0 ) {
-			$ok = $this->registry->update( $partner_id, $data, $secret );
+			$ok = false;
+			try {
+				$ok = $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $data, $secret, &$generated ) {
+					$current = $this->registry->find( $partner_id );
+					if ( ! $current || ! $current->is_active() ) { $secret = ''; $generated = ''; }
+					return $this->registry->update( $partner_id, $data, $secret );
+				} );
+			} catch ( \Throwable $e ) { $generated = ''; }
 		} else {
 			$partner_id = $this->registry->insert( $data, $secret );
 			$ok         = $partner_id > 0;
 		}
 
+		if ( ! $ok ) { $generated = ''; }
 		if ( $ok ) {
 			$this->audit->write(
 				'partner_saved',
@@ -105,22 +113,27 @@ final class Actions {
 		$partner_id = absint( $_GET['partner'] ?? 0 );
 		$this->authorise( 'pow_delete_' . $partner_id, 'get' );
 
-		$ok = $partner_id > 0 && $this->registry->delete( $partner_id );
-
-		if ( $ok ) {
-			// Deleting the connection is the operator's strongest lever:
-			// expire the customer's open sessions and destroy their logins
-			// immediately rather than leaving them live until TTL.
-			$sessions = \POW\Plugin::instance()->sessions();
-
-			if ( null !== $sessions ) {
-				foreach ( $sessions->open_for_partner( $partner_id ) as $open ) {
-					if ( $sessions->transition( $open->id, $open->status, \POW\Sessions\Session::EXPIRED ) && '' !== $open->wp_session_token && $open->user_id > 0 ) {
-						\WP_Session_Tokens::get_instance( $open->user_id )->destroy( $open->wp_session_token );
+		$ok = false;
+		try {
+			$ok = $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id ) {
+				$partner = $this->registry->find( $partner_id );
+				$sessions = \POW\Plugin::instance()->sessions();
+				if ( ! $partner || ! $sessions ) { return false; }
+				if ( \POW\Partners\Partner::STATUS_DISABLED !== $partner->status && ! $this->registry->transition_status( $partner_id, $partner->status, [ 'status' => \POW\Partners\Partner::STATUS_DISABLED ] ) ) { return false; }
+				if ( ! $this->registry->revoke_secret( $partner_id ) ) { return false; }
+				$after = 0;
+				$clean = true;
+				while ( $rows = $sessions->revocation_batch( $partner_id, $after ) ) {
+					foreach ( $rows as $row ) {
+						if ( $row->id <= $after ) { return false; }
+						$after = $row->id;
+						$clean = $sessions->expire_locked( $row ) && $clean;
 					}
 				}
-			}
-
+				return $clean && [] === $sessions->open_for_partner( $partner_id, 1 ) && $this->registry->delete( $partner_id );
+			} );
+		} catch ( \Throwable $e ) { $ok = false; }
+		if ( $ok ) {
 			$this->audit->write(
 				'partner_deleted',
 				[
