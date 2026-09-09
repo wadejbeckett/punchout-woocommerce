@@ -117,6 +117,10 @@ abstract class TestCase {
 		self::check( is_array( $array ) && array_key_exists( $key, $array ), $message ?: 'Failed asserting that array has the key ' . self::export( $key ) );
 	}
 
+	public static function assertContains( mixed $needle, mixed $haystack, string $message = '' ): void {
+		self::check( is_iterable( $haystack ) && in_array( $needle, is_array( $haystack ) ? $haystack : iterator_to_array( $haystack ), true ), $message ?: 'Failed asserting that iterable contains ' . self::export( $needle ) );
+	}
+
 	public static function assertInstanceOf( string $class, mixed $actual, string $message = '' ): void {
 		self::check( $actual instanceof $class, $message ?: 'Failed asserting instance of ' . $class );
 	}
@@ -131,6 +135,10 @@ abstract class TestCase {
 
 	public static function assertStringNotContainsString( string $needle, string $haystack, string $message = '' ): void {
 		self::check( ! str_contains( $haystack, $needle ), $message ?: 'Failed asserting that string does NOT contain ' . self::export( $needle ) );
+	}
+
+	public static function assertStringStartsWith( string $prefix, string $string, string $message = '' ): void {
+		self::check( str_starts_with( $string, $prefix ), $message ?: 'Failed asserting that ' . self::export( $string ) . ' starts with ' . self::export( $prefix ) );
 	}
 
 	public static function assertMatchesRegularExpression( string $pattern, string $string, string $message = '' ): void {
