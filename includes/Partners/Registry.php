@@ -77,6 +77,49 @@ final class Registry {
 	}
 
 	/**
+	 * Serialize submission and explicit legacy association for one ordinary owner.
+	 * The Sender UNIQUE key separately arbitrates claims by different owners.
+	 * Native connection-scoped locks work even before an owner has a row.
+	 * Callers must keep the operation bounded and send mail only after it returns.
+	 *
+	 * @throws \InvalidArgumentException Invalid owner.
+	 * @throws \RuntimeException Lock unavailable or release unconfirmed.
+	 */
+	public function with_owner_lock( int $user_id, callable $operation ): mixed {
+		global $wpdb;
+
+		if ( $user_id <= 0 ) {
+			throw new \InvalidArgumentException( 'Invalid registration owner.' );
+		}
+
+		// Server-wide namespace, bounded below MySQL's 64-character name limit.
+		$name = 'pow_owner_' . hash( 'sha256', ( defined( 'DB_NAME' ) ? DB_NAME : '' ) . '|' . $this->table() . '|' . $user_id );
+		$name = substr( $name, 0, 64 );
+		$previous = $wpdb->suppress_errors( true );
+		$acquired = false;
+		try {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+			$acquired = '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $name, 5 ) );
+			if ( ! $acquired ) {
+				throw new \RuntimeException( 'Registration owner lock unavailable.' );
+			}
+			return $operation();
+		} finally {
+			try {
+				if ( $acquired ) {
+					// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+					$released = $wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $name ) );
+					if ( '1' !== (string) $released ) {
+						throw new \RuntimeException( 'Registration owner lock release unconfirmed.' );
+					}
+				}
+			} finally {
+				$wpdb->suppress_errors( $previous );
+			}
+		}
+	}
+
+	/**
 	 * @return list<Partner>
 	 */
 	public function all(): array {

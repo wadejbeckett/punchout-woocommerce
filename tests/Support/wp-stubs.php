@@ -363,3 +363,27 @@ if ( ! class_exists( 'WP_Session_Tokens' ) ) {
 if ( ! function_exists( 'wp_json_encode' ) ) {
 	function wp_json_encode( mixed $value ): string|false { return json_encode( $value ); }
 }
+
+if ( ! function_exists( 'get_userdata' ) ) {
+	/** Explicit ordinary-account fixtures; missing users must fail authorization. */
+	function get_userdata( int $user_id ): object|false {
+		return $GLOBALS['pow_test_users'][ $user_id ] ?? false;
+	}
+}
+if ( ! function_exists( 'user_can' ) ) {
+	function user_can( mixed $user, string $capability, mixed ...$args ): bool {
+		$user = is_object( $user ) ? $user : get_userdata( (int) $user );
+		return $user && ! empty( $user->allcaps[ $capability ] );
+	}
+}
+if ( ! function_exists( 'get_user_meta' ) ) {
+	function get_user_meta( int $user_id, string $key = '', bool $single = false ): mixed {
+		$value = $GLOBALS['pow_test_user_meta'][ $user_id ][ $key ] ?? null;
+		return $single ? ( $value ?? '' ) : ( null === $value ? [] : [ $value ] );
+	}
+}
+if ( ! function_exists( 'admin_url' ) ) {
+	function admin_url( string $path = '' ): string {
+		return 'https://shop.example.test/wp-admin/' . $path;
+	}
+}
