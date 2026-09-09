@@ -113,6 +113,10 @@ abstract class TestCase {
 		self::check( is_countable( $haystack ) && count( $haystack ) === $expected, $message ?: 'Failed asserting count of ' . $expected );
 	}
 
+	public static function assertArrayHasKey( string|int $key, mixed $array, string $message = '' ): void {
+		self::check( is_array( $array ) && array_key_exists( $key, $array ), $message ?: 'Failed asserting that array has the key ' . self::export( $key ) );
+	}
+
 	public static function assertInstanceOf( string $class, mixed $actual, string $message = '' ): void {
 		self::check( $actual instanceof $class, $message ?: 'Failed asserting instance of ' . $class );
 	}
