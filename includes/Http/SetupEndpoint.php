@@ -37,7 +37,12 @@ defined( 'ABSPATH' ) || exit;
  */
 final class SetupEndpoint {
 
-	private const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MB hard cap (scope §3).
+	/**
+	 * 2 MB hard cap on the request body (scope §3). Public: Docs\SelfTest
+	 * refuses an oversized paste with the same limit rather than a
+	 * second copy of the number.
+	 */
+	public const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 	/**
 	 * cXML Status codes this endpoint emits. HTTP is always 200; the
