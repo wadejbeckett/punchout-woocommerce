@@ -22,12 +22,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * The WooCommerce order a punchout return leaves behind.
  *
- * create_for_session() is the WordPress half: it runs between the cart
- * mapping and the basket build (DESIGN §1), so the order carries exactly
- * the lines and prices the buyer's system was quoted. It can never block
- * that basket — a failure is logged, audited, notified and swallowed
- * (DESIGN §6) — and the document itself lands later, via attach_poom(),
- * because it does not exist until the build has run.
+ * create_for_session() is the WordPress half: the endpoint prepares the XML and handoff, then claims the return before the winner optionally creates a quote from the same mapped lines and prices. Construction starts in native auto-draft and promotes only after completion; attach_poom() then stores the already-prepared XML. Quote failures cannot block the prepared handoff, and cancellation, logging, audit and notification are individually best effort.
  *
  * The admin half is the other end of the same life: register_admin()
  * offers "Convert Punchout Quote to order" on the order screen, and
@@ -100,10 +95,9 @@ final class QuoteOrder {
 	 * @return int Order id, or 0 when creation failed (reporting is best effort).
 	 */
 	public function create_for_session( Session $session, Partner $partner, array $poom_lines ): int {
-		// Held outside the try so the catch can cancel a part-built order:
-		// wc_create_order(), add_product() and calculate_totals() each
-		// persist, so a throw halfway through would otherwise leave a
-		// payable wc-pending order in the shop.
+		// Keep the object for best-effort cleanup. Native auto-draft staging starts
+		// at the first insert, so even a creation hook that throws before returning
+		// the object cannot strand a payable order or an incomplete actionable quote.
 		$order = null;
 
 		try {
@@ -129,11 +123,17 @@ final class QuoteOrder {
 				return $existing;
 			}
 
-			$order = wc_create_order( [ 'customer_id' => $session->user_id ] );
+			$order = wc_create_order( [ 'customer_id' => $session->user_id, 'status' => 'auto-draft' ] );
 
 			if ( ! $order instanceof \WC_Order ) {
-				// wc_create_order() returns a WP_Error; it does not throw.
+				// A creation failure can return WP_Error or throw from an extension.
 				throw new \RuntimeException( 'quote_creation_failed' );
+			}
+
+			$staged = $order->get_id() > 0 ? wc_get_order( (int) $order->get_id() ) : false;
+
+			if ( ! $staged instanceof \WC_Order || 'auto-draft' !== $staged->get_status() || 'auto-draft' !== $order->get_status() ) {
+				throw new \RuntimeException( 'quote_staging_failed' );
 			}
 
 			$order->set_currency( (string) ( $poom_lines['currency'] ?? get_woocommerce_currency() ) );
@@ -161,13 +161,9 @@ final class QuoteOrder {
 			// number the buyer's system received.
 			$order->calculate_totals( false );
 
-			// Status set last: wc_create_order() saves the order as pending,
-			// so the only transition core sees is pending -> punchout-quote.
-			// Neither end of that pair is on a hook that moves stock or
-			// sends mail (wc-stock-functions.php:124-127 binds only
-			// completed/processing/on-hold and payment_complete;
-			// class-wc-emails.php:91 lists fixed X_to_Y pairs, none of
-			// which names a custom status).
+			// Promote only the completed construction. Both native stores defer their
+			// new-order hook until this promotion; no payable intermediate status is
+			// needed. Keep native conversion hooks unchanged for the later real order.
 			$order->set_status( Status::SLUG );
 
 			$order_id = (int) $order->save();
@@ -477,9 +473,10 @@ final class QuoteOrder {
 	}
 
 	/**
-	 * The failure path (DESIGN §6). Cancels whatever was already
-	 * persisted, records the failure everywhere it belongs, and returns
-	 * the 0 the caller treats as "no quote".
+	 * Attempt cancellation and reporting, then return 0 (no completed quote).
+	 * A hook can fail after insertion but before returning the order object: no
+	 * known ID does not prove no row exists. Abandoned auto-drafts remain subject
+	 * to native CPT/HPOS cleanup after a week; they are not durable audit evidence.
 	 *
 	 * @param \WC_Order|\WP_Error|null $order Whatever wc_create_order() left us with.
 	 */
@@ -499,7 +496,7 @@ final class QuoteOrder {
 				'detail'     => [
 					'error'        => $error,
 					'order_id'     => $order_id,
-					'cancellation' => $order_id > 0 ? ( $cancelled ? 'confirmed' : 'unconfirmed' ) : 'not_needed',
+					'cancellation' => $cancelled ? 'confirmed' : 'unconfirmed',
 				],
 			]
 		);
@@ -706,7 +703,7 @@ final class QuoteOrder {
 					: __( 'order #%d was left part-built; cancellation is not confirmed and needs checking', 'punchout-woocommerce' ),
 				$order_id
 			)
-			: __( 'no order was created', 'punchout-woocommerce' );
+			: __( 'no order ID was returned; initial persistence and cancellation are unconfirmed', 'punchout-woocommerce' );
 
 		$sent = wp_mail(
 			$to,
