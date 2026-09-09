@@ -32,6 +32,23 @@ class Log {
 		return Installer::log_table();
 	}
 
+	/** Latest matching successful setup (including idempotent replay), or no history. SQL failure is not absence. */
+	public function last_success( int $partner_id, string $event = 'setup_ok' ): ?string {
+		global $wpdb;
+
+		if ( $partner_id <= 0 ) { return null; }
+		$previous = $wpdb->suppress_errors( true );
+		try {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+			$ts = $wpdb->get_var( $wpdb->prepare(
+				'SELECT ts FROM ' . $this->table() . ' WHERE partner_id = %d AND event = %s AND result IN (%s, %s) ORDER BY id DESC LIMIT 1',
+				$partner_id, $event, 'ok', 'replay'
+			) );
+			if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Setup history could not be read.' ); }
+			return null !== $ts && '' !== (string) $ts ? (string) $ts : null;
+		} finally { $wpdb->suppress_errors( $previous ); }
+	}
+
 	/**
 	 * Append an audit row and mirror it to the operational log.
 	 *

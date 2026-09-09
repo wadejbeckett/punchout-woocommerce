@@ -3,6 +3,7 @@
  * Opt-in native registration lifecycle regressions; creates invented local fixtures.
  * Run with a bootstrapped plugin in a disposable local WordPress installation:
  * POW_NATIVE_TESTS=disposable wp --user=<fixture-admin> eval-file tests/Integration/RegistrationLifecycleNative.php
+ * Set POW_NATIVE_CASES=credential-recovery for only compound recovery cases and the existing release regression.
  * No unit stubs, transports, secret output or fixture deletion.
  *
  * @package POW
@@ -17,10 +18,85 @@ function t4_native_admin(): int { return $GLOBALS['pow_native_registration_admin
 $r=POW\Plugin::instance()->registry();$store=new POW\Sessions\Store();$log=new POW\Audit\Log(new POW\Logger(new POW\Settings()));$svc=new POW\Partners\Registration($r,$store,$log);wp_set_current_user(t4_native_admin());
 $GLOBALS['pow_native_registration_pass']=0;$GLOBALS['pow_native_registration_fail']=0;
 function t4_native_check($v){if(!$v)throw new RuntimeException('assertion');}
-function t4_native_case($name,$fn){try{$fn();echo "PASS $name\n";$GLOBALS['pow_native_registration_pass']++;}catch(Throwable $e){echo "FAIL $name ".get_class($e)."\n";$GLOBALS['pow_native_registration_fail']++;}}
+function t4_native_case($name,$fn){if('credential-recovery'===getenv('POW_NATIVE_CASES')&&!str_starts_with($name,'credential recovery ')&&!str_starts_with($name,'native lock release failure'))return;try{$fn();echo "PASS $name\n";$GLOBALS['pow_native_registration_pass']++;}catch(Throwable $e){echo "FAIL $name ".get_class($e)."\n";$GLOBALS['pow_native_registration_fail']++;}}
 function t4_native_fixture($pending=false){global $r,$svc; $suffix=bin2hex(random_bytes(6));$owner=wp_insert_user(['user_login'=>'fault-owner-'.$suffix,'user_email'=>'owner-'.$suffix.'@example.invalid','user_pass'=>wp_generate_password(),'role'=>'customer']);$buyer=wp_insert_user(['user_login'=>'fault-buyer-'.$suffix,'user_email'=>'buyer-'.$suffix.'@example.invalid','user_pass'=>wp_generate_password(),'role'=>POW\Installer::ROLE]);$data=['name'=>'Fault fixture','status'=>'pending','owner_user_id'=>$owner,'from_domain'=>'NetworkID','from_identity'=>'buyer-'.$suffix,'sender_domain'=>'NetworkID','sender_identity'=>'buyer-'.$suffix,'to_domain'=>'NetworkID','to_identity'=>'supplier','company_profile'=>'{"book":"preserve"}'];$id=$r->insert($data);update_user_meta($buyer,'_pow_partner_id',$id);$secret=$pending?'':$svc->approve($id,t4_native_admin());return compact('id','owner','buyer','data','secret');}
 function t4_native_login_row($f,$status='active'){global $store;$t=WP_Session_Tokens::get_instance($f['buyer'])->create(time()+3600);$id=$store->create(['partner_id'=>$f['id'],'user_id'=>$f['buyer'],'status'=>$status,'payload_id'=>bin2hex(random_bytes(10)),'one_time_token_hash'=>hash('sha256',random_bytes(32)),'wp_session_token'=>$t,'expires'=>gmdate('Y-m-d H:i:s',time()+3600)]);return $store->find($id);}
 function t4_native_filtered($hook,$filter,$fn,$priority=10,$args=1){add_filter($hook,$filter,$priority,$args);try{return $fn();}finally{remove_filter($hook,$filter,$priority);}}
+foreach ( [ 'approve', 'reset' ] as $action ) {
+	foreach ( [ 'false', 'throw' ] as $read_mode ) {
+		foreach ( [ 'false', 'throw' ] as $write_mode ) {
+			foreach ( [ 'allowed', 'write_failed', 'read_failed' ] as $recovery ) {
+				t4_native_case( "credential recovery $action read-$read_mode compensation-$write_mode recovery-$recovery", function () use ( $action, $read_mode, $write_mode, $recovery, $r, $svc, $wpdb ) {
+					$f = t4_native_fixture( 'approve' === $action );
+					$before = $r->find( $f['id'] );
+					$table = POW\Installer::partners_table();
+					$key = 'pow_partner_' . substr( hash( 'sha256', DB_NAME . '|' . $table . '|' . $f['id'] ), 0, 52 );
+					$phase = '';
+					$events = [];
+					$locked = true;
+					$filter = function ( $q ) use ( &$phase, &$events, &$locked, $key, $table, $read_mode, $write_mode, $recovery, $wpdb ) {
+						$is_update = str_starts_with( $q, 'UPDATE `' . $table . '`' );
+						$is_read = str_starts_with( $q, 'SELECT * FROM ' . $table . ' WHERE id =' );
+						if ( $is_update && '' === $phase && str_contains( explode( ' WHERE ', $q )[0], "`status` = 'active'" ) && str_contains( $q, 'secret_current' ) ) {
+							$phase = 'activation';
+							$events[] = 'activation_write';
+							return $q;
+						}
+						if ( $is_read && 'activation' === $phase ) {
+							$phase = 'compensation';
+							$events[] = 'activation_read';
+							if ( 'throw' === $read_mode ) { throw new RuntimeException( 'injected private read detail' ); }
+							return 'SELECT * FROM t4_missing_recovery_read';
+						}
+						if ( $is_update && 'compensation' === $phase ) {
+							$phase = 'restoration_read';
+							$events[] = 'compensation_write';
+							if ( 'throw' === $write_mode ) { throw new RuntimeException( 'injected private compensation detail' ); }
+							return '';
+						}
+						if ( $is_read && 'restoration_read' === $phase ) {
+							$events[] = 'restoration_read';
+							$phase = 'recovery';
+						}
+						if ( $is_update && 'recovery' === $phase ) {
+							$events[] = 'recovery_write';
+							$phase = 'recovery_read';
+							$locked = $locked && '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $key ) );
+							if ( 'write_failed' === $recovery ) {
+								if ( 'throw' === $write_mode ) { throw new RuntimeException( 'injected private recovery detail' ); }
+								return '';
+							}
+						}
+						if ( $is_read && 'recovery_read' === $phase ) {
+							$events[] = 'recovery_read';
+							$phase = 'done';
+							$locked = $locked && '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT IS_USED_LOCK(%s) = CONNECTION_ID()', $key ) );
+							if ( 'read_failed' === $recovery ) {
+								if ( 'throw' === $read_mode ) { throw new RuntimeException( 'injected private verification detail' ); }
+								return 'SELECT * FROM t4_missing_recovery_read';
+							}
+						}
+						return $q;
+					};
+					$secret = t4_native_filtered( 'query', $filter, fn() => 'approve' === $action ? $svc->approve( $f['id'], t4_native_admin() ) : $svc->reset( $f['id'], $f['data'], t4_native_admin() ) );
+					$p = $r->find( $f['id'] );
+					t4_native_check( '' === $secret && $locked && [ 'activation_write', 'activation_read', 'compensation_write', 'restoration_read', 'recovery_write', 'recovery_read' ] === $events );
+					if ( 'write_failed' === $recovery ) {
+						// This fault deliberately leaves the write unavailable; the report must not claim safety.
+						t4_native_check( $p->is_active() && '' !== $p->secret_current );
+					} else {
+						t4_native_check( 'disabled' === $p->status && '' === $p->secret_current && '' === $p->secret_previous );
+					}
+					t4_native_check( $before->owner_user_id === $p->owner_user_id && $before->company_profile === $p->company_profile );
+					$event = 'approve' === $action ? 'registration_approval_failed' : 'registration_reset_failed';
+					$detail = $wpdb->get_var( $wpdb->prepare( 'SELECT detail FROM ' . POW\Installer::log_table() . ' WHERE partner_id = %d AND event = %s ORDER BY id DESC LIMIT 1', $f['id'], $event ) );
+					$decoded = json_decode( (string) $detail, true );
+					t4_native_check( ( 'allowed' === $recovery ? 'recovery_confirmed_disabled' : 'recovery_unconfirmed' ) === ( $decoded['reason'] ?? '' ) && ! str_contains( (string) $detail, 'private' ) );
+				} );
+			}
+		}
+	}
+}
 foreach(['zero','false','throw'] as $mode)t4_native_case('approval '.$mode.' write preserves pending empty slots',function()use($mode,$r,$svc){$f=t4_native_fixture(true);$filter=function($q)use($mode){if(str_starts_with($q,'UPDATE `'.POW\Installer::partners_table().'`')&&str_contains($q,'secret_current')){if($mode==='throw')throw new RuntimeException('injected');return $mode==='zero'?$q.' AND 0=1':'';}return $q;};$s=t4_native_filtered('query',$filter,fn()=>$svc->approve($f['id'],t4_native_admin()));$p=$r->find($f['id']);t4_native_check($s===''&&$p->is_pending()&&$p->secret_current===''&&$p->secret_previous==='');});
 foreach(['fence','clear','replacement'] as $phase)t4_native_case('reset '.$phase.' failure never issues or reactivates',function()use($phase,$r,$svc){$f=t4_native_fixture();$before=$r->find($f['id']);$hit=0;$filter=function($q)use($phase,&$hit){if(str_starts_with($q,'UPDATE `'.POW\Installer::partners_table().'`')){$match=match($phase){'fence'=>str_contains($q,"`status` = 'disabled'"),'clear'=>str_contains($q,"`secret_current` = ''"),'replacement'=>str_contains(explode(' WHERE ',$q)[0],"`status` = 'active'")&&str_contains($q,'secret_current')};if($match){$hit++;return '';}}return $q;};t4_native_check(t4_native_filtered('query',$filter,fn()=>$svc->reset($f['id'],$f['data'],t4_native_admin()))==='');$p=$r->find($f['id']);t4_native_check($hit>0&&($phase==='fence'?$p->is_active()&&$p->secret_current===$before->secret_current:$p->status==='disabled'));});
 t4_native_case('reset replacement readback failure restores disabled empty slots',function()use($r,$svc){$f=t4_native_fixture();$armed=false;$injected=false;$filter=function($q)use(&$armed,&$injected){if(str_starts_with($q,'UPDATE `'.POW\Installer::partners_table().'`')&&str_contains(explode(' WHERE ',$q)[0],"`status` = 'active'"))$armed=true;if($armed&&!$injected&&str_starts_with($q,'SELECT * FROM '.POW\Installer::partners_table())){$injected=true;return 'SELECT * FROM t4_missing_read';}return $q;};t4_native_check(t4_native_filtered('query',$filter,fn()=>$svc->reset($f['id'],$f['data'],t4_native_admin()))==='');$p=$r->find($f['id']);t4_native_check($injected&&$p->status==='disabled'&&$p->secret_current===''&&$p->secret_previous==='');});

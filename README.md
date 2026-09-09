@@ -124,16 +124,28 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 
 | Table | Holds |
 |---|---|
-| `wp_pow_partners` | Customer-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, optional customer-group mapping, TTLs |
+| `wp_pow_partners` | Customer-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, ordinary owner account association, TTLs |
 | `wp_pow_sessions` | One row per PunchOutSetupRequest: BuyerCookie, BrowserFormPost URL, user, hashed one-time token, exact WP session token, state machine (`pending → active → returned/ordered/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics |
 | `wp_pow_log` | The audit/compliance trail: every transaction, full POOM XML archives, secrets redacted; retention-trimmed by cron |
 
 ---
 
+## Company applications and admin approval
+
+Ordinary logged-in customer accounts can request a company connection from My Account. Applications collect the technical From/Sender identity and deployment mode before store approval. The company account manages its connection; employees authorised by the purchasing system receive separate company-scoped buyer accounts from the supplied stable identifier, normally UserEmail. There is no second employee approval queue or shared company login.
+
+At **WooCommerce ▸ PunchOut ▸ Customers**, pending requests link to the existing edit form. An administrator with `manage_woocommerce` prepares the supplier To identity and connection entitlements, saves, then uses the separate **Approve company** POST. Saving a pending row never activates it or generates credentials. Identity and entitlement changes remain admin-only.
+
+Admin creation, replacement, rotation, approval and reset show any newly issued secret directly in the successful authorized POST response with a no-store policy. Copy it then: later GETs cannot retrieve it, and notices, emails and logs contain no plaintext credential. Approval emails carry no secret; arrange its handover out of band. Rotation retains the previous credential until **Close rotation**; another rotation is refused while that overlap is open.
+
+Save identity changes before **Reset connection**. Reset uses the saved identity, immediately revokes both credentials and recorded buyer sessions, then issues a replacement only after checked cleanup. Pending connections cannot reset. If cleanup or persistence fails, the admin notice reports the incomplete reset instead of claiming success; inspect the connection and retry after recovery. The owner and company book association stay intact. Owner **Deactivate connection now** immediately disables the connection and revokes its recorded sessions; it is not a request for later manual review.
+
+For a legacy connection with owner user ID zero, the edit screen offers a separate admin-only **Associate company account** POST. Select an existing ordinary WordPress user ID that owns no other connection. Provisioned buyers and claimed accounts are refused; matching is never inferred from email, names or third-party company groups. Existing nonzero associations cannot be transferred or cleared. Association does not copy addresses or sign employees in as the owner.
+
 ## Security model
 
-- **Shared secrets** are sealed at rest with `sodium_crypto_secretbox` under a wp-config key (`POW_SECRET_KEY`; a documented auth-salt-derived fallback keeps the key out of the database either way), compared with `hash_equals`, write-only in the admin UI, and rotated dual-slot: current and previous both verify during an overlap window, the audit log records which slot matched, and the window is closed explicitly (admin link or `wp punchout close-rotation`).
-- **The secret exists in exactly one place** — the inbound setup comparison. The builder has no code path that writes a `SharedSecret` node, and the unit suite asserts its absence on both POOM variants (browser-transported Messages carry an identity-only Sender by DTD rule).
+- **Shared secrets** are sealed at rest with `sodium_crypto_secretbox` under a wp-config key (`POW_SECRET_KEY`; a documented auth-salt-derived fallback keeps the key out of the database either way), compared with `hash_equals`, write-only in the admin UI, and rotated dual-slot: current and previous both verify during an overlap window, the audit log records which slot matched, and the window is closed explicitly (admin POST form or `wp punchout close-rotation`).
+- **Outbound baskets never carry a shared secret.** The builder has no code path that writes a `SharedSecret` node, and the unit suite asserts its absence on both POOM variants (browser-transported Messages carry an identity-only Sender by DTD rule).
 - **StartPage tokens** are 256-bit random, URL-safe, single-use (an atomic one-query status flip), short-TTL, and stored only as SHA-256. Invalid/expired/used all produce the same detail-free 403.
 - **Replay**: `UNIQUE(partner_id, payloadID)` plus written-down semantics — a duplicate with an identical body while `pending` replays the stored response byte-identically (legitimate retry); any duplicate after token redemption is a cXML 409.
 - **Sessions**: the exact WP session token created at auto-login is recorded, so either exit destroys *that* login only; auth-cookie expiry is the customer's session TTL (default 4 h), and cron reaps stragglers.

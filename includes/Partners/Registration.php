@@ -18,6 +18,8 @@ defined( 'ABSPATH' ) || exit;
 
 final class Registration {
 
+	public const RATE_LIMIT_PER_HOUR = 5;
+
 	public function __construct( private Registry $registry, private Store $sessions, private Log $audit ) {}
 
 	/** Approval policy operates on the administrator's saved pending configuration. */
@@ -54,7 +56,12 @@ final class Registration {
 				if ( ! $partner || ! self::valid_approval( $partner ) ) { return; }
 				$reason = 'approval_write';
 				$secret = Secrets::generate_secret();
-				if ( $this->registry->transition_status( $partner_id, Partner::STATUS_PENDING, [ 'status' => Partner::STATUS_ACTIVE, 'secret_previous' => '' ], $secret ) ) { $issued = $secret; }
+				try {
+					if ( $this->registry->transition_status( $partner_id, Partner::STATUS_PENDING, [ 'status' => Partner::STATUS_ACTIVE, 'secret_previous' => '' ], $secret ) ) { $issued = $secret; }
+				} catch ( CredentialRecoveryException $e ) {
+					// Capture inside the callback so a later release exception cannot mask recovery state.
+					$reason = $e->getMessage();
+				}
 			} );
 		} catch ( \Throwable $e ) { /* Only a confirmed transition may issue, including after release failure. */ }
 		finally { $this->record( '' !== $issued ? 'registration_approved' : 'registration_approval_failed', get_current_user_id(), $partner_id, '' !== $issued ? '' : $reason ); }
@@ -100,9 +107,13 @@ final class Registration {
 				if ( ! $this->drain_locked( $partner_id ) ) { return; }
 				$reason = 'replacement_write';
 				$secret = Secrets::generate_secret();
-				if ( $this->registry->transition_status( $partner_id, Partner::STATUS_DISABLED, $data + [ 'status' => Partner::STATUS_ACTIVE, 'secret_previous' => '' ], $secret ) ) { $issued = $secret; }
+				try {
+					if ( $this->registry->transition_status( $partner_id, Partner::STATUS_DISABLED, $data + [ 'status' => Partner::STATUS_ACTIVE, 'secret_previous' => '' ], $secret ) ) { $issued = $secret; }
+				} catch ( CredentialRecoveryException $e ) {
+					$reason = $e->getMessage();
+				}
 			} );
-		} catch ( \Throwable $e ) { /* A failed fenced operation stays recoverable and never issues. */ }
+		} catch ( \Throwable $e ) { /* Only confirmed issuance survives release failure; recovery may be unconfirmed. */ }
 		finally { $this->record( '' !== $issued ? 'registration_reset' : 'registration_reset_failed', get_current_user_id(), $partner_id, '' !== $issued ? '' : $reason ); }
 		if ( '' !== $issued && $partner ) { $this->notify_owner( $partner, __( 'Your punchout connection has been reset. Previous sessions and credentials have been revoked. Contact the store to arrange credential handover.', 'punchout-woocommerce' ) ); }
 		return $issued;

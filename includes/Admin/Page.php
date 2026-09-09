@@ -294,7 +294,7 @@ final class Page {
 	}
 
 	/**
-	 * One-shot notices from Admin\Actions (new secret shown exactly once).
+	 * One-shot nonsecret notices from Admin\Actions.
 	 */
 	private function render_notices(): void {
 		$key    = 'pow_notice_' . get_current_user_id();
@@ -309,10 +309,6 @@ final class Page {
 		$class = 'error' === ( $notice['type'] ?? '' ) ? 'notice-error' : 'notice-success';
 
 		echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( (string) ( $notice['text'] ?? '' ) ) . '</p>';
-
-		if ( ! empty( $notice['secret'] ) ) {
-			echo '<p><strong>' . esc_html__( 'Shared secret (shown once — copy it now):', 'punchout-woocommerce' ) . '</strong> <code>' . esc_html( (string) $notice['secret'] ) . '</code></p>';
-		}
 
 		echo '</div>';
 	}
@@ -330,85 +326,65 @@ final class Page {
 	 * ------------------------------------------------------------------ */
 
 	private function render_partners(): void {
-		$action     = isset( $_GET['action'] ) ? sanitize_key( wp_unslash( $_GET['action'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		$action = isset( $_GET['action'] ) ? sanitize_key( wp_unslash( $_GET['action'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing.
 		$partner_id = isset( $_GET['partner'] ) ? absint( $_GET['partner'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-
 		if ( 'edit' === $action || 'new' === $action ) {
 			$this->render_partner_form( $partner_id > 0 ? $this->registry->find( $partner_id ) : null );
 			return;
 		}
+		printf( '<p><a href="%s" class="button button-primary">%s</a></p>', esc_url( $this->tab_url( 'partners', [ 'action' => 'new' ] ) ), esc_html__( 'Add customer', 'punchout-woocommerce' ) );
+		$pending = $this->registry->pending();
+		echo '<h2>' . esc_html__( 'Pending requests', 'punchout-woocommerce' ) . '</h2>';
+		echo '<p>' . esc_html__( 'Edit the company identity and entitlements, save them, then approve explicitly. Approval credentials are handed over out of band.', 'punchout-woocommerce' ) . '</p>';
+		$this->render_partner_table( $pending );
+		echo '<h2>' . esc_html__( 'Configured connections', 'punchout-woocommerce' ) . '</h2>';
+		$this->render_partner_table( array_values( array_filter( $this->registry->all(), static fn( Partner $p ): bool => ! $p->is_pending() ) ) );
+		echo '<p class="description">' . esc_html__( 'Endpoint for all customers: POST /punchout/setup (raw cXML). Give each customer the setup URL, your To/From identities and their shared secret.', 'punchout-woocommerce' ) . '</p>';
+	}
 
-		printf(
-			'<p><a href="%s" class="button button-primary">%s</a></p>',
-			esc_url( $this->tab_url( 'partners', [ 'action' => 'new' ] ) ),
-			esc_html__( 'Add customer', 'punchout-woocommerce' )
-		);
-
-		$partners = $this->registry->all();
-
+	/** @param list<Partner> $partners */
+	private function render_partner_table( array $partners ): void {
 		if ( [] === $partners ) {
-			echo '<p>' . esc_html__( 'No customers connected yet.', 'punchout-woocommerce' ) . '</p>';
+			echo '<p>' . esc_html__( 'No connections in this section.', 'punchout-woocommerce' ) . '</p>';
 			return;
 		}
-
 		echo '<table class="widefat striped"><thead><tr>';
-
 		foreach ( [ __( 'Name', 'punchout-woocommerce' ), __( 'Status', 'punchout-woocommerce' ), __( 'Sender identity', 'punchout-woocommerce' ), __( 'Mode', 'punchout-woocommerce' ), __( 'cXML', 'punchout-woocommerce' ), __( 'Secret', 'punchout-woocommerce' ), __( 'Actions', 'punchout-woocommerce' ) ] as $head ) {
 			echo '<th>' . esc_html( $head ) . '</th>';
 		}
-
 		echo '</tr></thead><tbody>';
-
 		foreach ( $partners as $partner ) {
-			$rotate_url = wp_nonce_url(
-				admin_url( 'admin-post.php?action=pow_rotate_partner&partner=' . $partner->id ),
-				'pow_rotate_' . $partner->id
-			);
-			$delete_url = wp_nonce_url(
-				admin_url( 'admin-post.php?action=pow_delete_partner&partner=' . $partner->id ),
-				'pow_delete_' . $partner->id
-			);
-
-			$secret_state = '' !== $partner->secret_current
-				? ( '' !== $partner->secret_previous
-					? __( 'set (rotation window open)', 'punchout-woocommerce' )
-					: __( 'set', 'punchout-woocommerce' ) )
-				: __( 'not set', 'punchout-woocommerce' );
-
-			echo '<tr>';
-			echo '<td>' . esc_html( $partner->name ) . '</td>';
-			echo '<td>' . esc_html( $partner->status ) . '</td>';
-			echo '<td><code>' . esc_html( $partner->sender_domain . ' / ' . $partner->sender_identity ) . '</code></td>';
-			echo '<td>' . esc_html( Partner::MODE_DUAL_EXIT === $partner->mode ? __( 'Dual exit', 'punchout-woocommerce' ) : __( 'Requisition only', 'punchout-woocommerce' ) ) . '</td>';
-			echo '<td>' . esc_html( $partner->cxml_version ) . '</td>';
-			echo '<td>' . esc_html( $secret_state ) . '</td>';
-			echo '<td>';
-			printf( '<a href="%s">%s</a> | ', esc_url( $this->tab_url( 'partners', [ 'action' => 'edit', 'partner' => $partner->id ] ) ), esc_html__( 'Edit', 'punchout-woocommerce' ) );
-			printf( '<a href="%s">%s</a> | ', esc_url( $rotate_url ), esc_html__( 'Rotate secret', 'punchout-woocommerce' ) );
-
-			if ( '' !== $partner->secret_previous ) {
-				$close_url = wp_nonce_url(
-					admin_url( 'admin-post.php?action=pow_close_rotation&partner=' . $partner->id ),
-					'pow_close_' . $partner->id
-				);
-				printf( '<a href="%s">%s</a> | ', esc_url( $close_url ), esc_html__( 'Close rotation', 'punchout-woocommerce' ) );
+			$secret_state = '' === $partner->secret_current ? __( 'not set', 'punchout-woocommerce' ) : ( '' !== $partner->secret_previous ? __( 'set (rotation window open)', 'punchout-woocommerce' ) : __( 'set', 'punchout-woocommerce' ) );
+			echo '<tr><td>' . esc_html( $partner->name ) . '</td><td>' . esc_html( $partner->status ) . '</td><td><code>' . esc_html( $partner->sender_domain . ' / ' . $partner->sender_identity ) . '</code></td>';
+			echo '<td>' . esc_html( Partner::MODE_DUAL_EXIT === $partner->mode ? __( 'Dual exit', 'punchout-woocommerce' ) : __( 'Requisition only', 'punchout-woocommerce' ) ) . '</td><td>' . esc_html( $partner->cxml_version ) . '</td><td>' . esc_html( $secret_state ) . '</td><td>';
+			printf( '<p><a href="%s">%s</a></p>', esc_url( $this->tab_url( 'partners', [ 'action' => 'edit', 'partner' => $partner->id ] ) ), esc_html__( 'Edit', 'punchout-woocommerce' ) );
+			if ( $partner->is_pending() ) {
+				$this->action_form( $partner->id, 'approve_partner', 'approve', __( 'Approve company', 'punchout-woocommerce' ) );
+			} elseif ( $partner->is_active() ) {
+				if ( '' === $partner->secret_previous ) {
+					$this->action_form( $partner->id, 'rotate_partner', 'rotate', __( 'Rotate secret', 'punchout-woocommerce' ) );
+				} else {
+					$this->action_form( $partner->id, 'close_rotation', 'close', __( 'Close rotation', 'punchout-woocommerce' ) );
+				}
 			}
-
-			printf(
-				'<a href="%s" onclick="return confirm(%s)">%s</a>',
-				esc_url( $delete_url ),
-				esc_attr( (string) wp_json_encode( __( 'Delete this customer connection? Sessions and log rows are kept.', 'punchout-woocommerce' ) ) ),
-				esc_html__( 'Delete', 'punchout-woocommerce' )
-			);
+			$this->action_form( $partner->id, 'delete_partner', 'delete', __( 'Delete connection', 'punchout-woocommerce' ), __( 'Delete this customer connection? Sessions and log rows are kept.', 'punchout-woocommerce' ) );
 			echo '</td></tr>';
 		}
-
 		echo '</tbody></table>';
-		echo '<p class="description">' . esc_html__( 'Endpoint for all customers: POST /punchout/setup (raw cXML). Give each customer the setup URL, your To/From identities and their shared secret.', 'punchout-woocommerce' ) . '</p>';
+	}
+
+	private function action_form( int $partner_id, string $action, string $nonce, string $label, string $confirm = '' ): void {
+		$confirmation = '' !== $confirm ? ' onsubmit="return confirm(' . esc_attr( (string) wp_json_encode( $confirm ) ) . ')"' : '';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"' . $confirmation . '>';
+		echo '<input type="hidden" name="action" value="pow_' . esc_attr( $action ) . '" />';
+		printf( '<input type="hidden" name="partner" value="%d" />', $partner_id );
+		wp_nonce_field( 'pow_' . $nonce . '_' . $partner_id );
+		echo '<p><button type="submit" class="button">' . esc_html( $label ) . '</button></p></form>';
 	}
 
 	private function render_partner_form( ?Partner $partner ): void {
 		$is_new = null === $partner;
+		$is_pending = null !== $partner && $partner->is_pending();
 
 		echo '<h2>' . ( $is_new ? esc_html__( 'Add customer', 'punchout-woocommerce' ) : esc_html( $partner->name ) ) . '</h2>';
 		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
@@ -425,7 +401,7 @@ final class Page {
 
 		$this->form_row(
 			__( 'Status', 'punchout-woocommerce' ),
-			$this->select( 'status', [ 'active' => __( 'Active', 'punchout-woocommerce' ), 'disabled' => __( 'Disabled', 'punchout-woocommerce' ) ], $partner->status ?? 'active' )
+			$is_pending ? esc_html__( 'Pending — save configuration, then approve explicitly.', 'punchout-woocommerce' ) : ( null !== $partner && ! $partner->is_active() ? esc_html__( 'Disabled — use Reset connection to recover after checking its configuration.', 'punchout-woocommerce' ) : $this->select( 'status', [ 'active' => __( 'Active', 'punchout-woocommerce' ), 'disabled' => __( 'Disabled', 'punchout-woocommerce' ) ], $partner->status ?? 'active' ) )
 		);
 
 		$this->form_row(
@@ -470,17 +446,20 @@ final class Page {
 			)
 		);
 
-		$secret_value = ( ! $is_new && '' !== $partner->secret_current ) ? self::SECRET_MASK : '';
+		if ( $is_new || $partner->is_active() ) {
+			$secret_value = ( ! $is_new && '' !== $partner->secret_current ) ? self::SECRET_MASK : '';
 
-		$this->form_row(
-			__( 'Shared secret', 'punchout-woocommerce' ),
-			sprintf(
-				'<input type="password" class="regular-text" name="secret" value="%s" autocomplete="new-password" /> <label><input type="checkbox" name="generate_secret" value="1" /> %s</label><p class="description">%s</p>',
-				esc_attr( $secret_value ),
-				esc_html__( 'Generate a strong secret for me (shown once after saving)', 'punchout-woocommerce' ),
-				esc_html__( 'Write-only: the stored secret is never displayed. Leave unchanged to keep it.', 'punchout-woocommerce' )
-			)
-		);
+			$this->form_row(
+				__( 'Shared secret', 'punchout-woocommerce' ),
+				sprintf(
+					'<input type="password" class="regular-text" name="secret" value="%s" autocomplete="new-password" /> <label><input type="checkbox" name="generate_secret" value="1" /> %s</label><p class="description">%s</p>',
+					esc_attr( $secret_value ),
+					esc_html__( 'Generate a strong secret for me (shown once after saving)', 'punchout-woocommerce' ),
+					esc_html__( 'Write-only: the stored secret is never displayed. Leave unchanged to keep it.', 'punchout-woocommerce' )
+				)
+			);
+
+		}
 
 		$this->form_row(
 			__( 'cXML version to emit', 'punchout-woocommerce' ),
@@ -525,6 +504,27 @@ final class Page {
 		echo '</table>';
 		submit_button( $is_new ? __( 'Add customer', 'punchout-woocommerce' ) : __( 'Save customer', 'punchout-woocommerce' ) );
 		echo '</form>';
+
+		if ( null !== $partner ) {
+			if ( $is_pending ) {
+				$this->action_form( $partner->id, 'approve_partner', 'approve', __( 'Approve company', 'punchout-woocommerce' ) );
+			} else {
+				echo '<p>' . esc_html__( 'Save identity changes first. Reset immediately revokes both credentials and recorded sessions before issuing a replacement. The company owner and book stay associated.', 'punchout-woocommerce' ) . '</p>';
+				$this->action_form( $partner->id, 'reset_partner', 'reset', __( 'Reset connection', 'punchout-woocommerce' ), __( 'Revoke current credentials and sessions, then reset this connection?', 'punchout-woocommerce' ) );
+			}
+			echo '<h2>' . esc_html__( 'Company management account', 'punchout-woocommerce' ) . '</h2>';
+			if ( 0 === $partner->owner_user_id ) {
+				echo '<p>' . esc_html__( 'Explicitly select an ordinary WordPress account by user ID. It must own no other connection. This does not copy addresses or sign employees in as the company owner.', 'punchout-woocommerce' ) . '</p>';
+				echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="pow_associate_partner" />';
+				printf( '<input type="hidden" name="partner" value="%d" />', $partner->id );
+				wp_nonce_field( 'pow_associate_' . $partner->id );
+				echo '<p><label>' . esc_html__( 'Owner user ID', 'punchout-woocommerce' ) . ' <input type="number" name="owner_user_id" min="1" required /></label></p>';
+				submit_button( __( 'Associate company account', 'punchout-woocommerce' ) );
+				echo '</form>';
+			} else {
+				echo '<p>' . esc_html__( 'Associated owner user ID:', 'punchout-woocommerce' ) . ' ' . esc_html( (string) $partner->owner_user_id ) . '. ' . esc_html__( 'This association cannot be transferred or cleared; the company book stays with its owner.', 'punchout-woocommerce' ) . '</p>';
+			}
+		}
 	}
 
 	private function form_row( string $label, string $control_html ): void {
