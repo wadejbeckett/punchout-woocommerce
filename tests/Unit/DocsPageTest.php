@@ -15,8 +15,16 @@
 declare( strict_types = 1 );
 
 use PHPUnit\Framework\TestCase;
+use POW\Audit\Log;
+use POW\Cxml\Parser;
 use POW\Docs\Page;
 use POW\Docs\Reference;
+use POW\Docs\SelfTest;
+use POW\Http\RateLimiter;
+use POW\Logger;
+use POW\Partners\Registry;
+use POW\Partners\Secrets;
+use POW\Settings;
 use POW\Support\Templates;
 
 final class DocsPageTest extends TestCase {
@@ -101,9 +109,114 @@ final class DocsPageTest extends TestCase {
 		);
 	}
 
+	/**
+	 * An expired or forged nonce must not be a silent no-op: the visitor
+	 * is told why the page came back unchanged.
+	 */
+	public function test_an_expired_nonce_says_so(): void {
+		$GLOBALS['pow_test_valid_nonce'] = 'good';
+
+		$notice = Page::expired_nonce_notice(
+			'POST',
+			[
+				'pow_docs_xml' => '<cXML/>',
+				'_wpnonce'     => 'stale',
+			]
+		);
+
+		self::assertNotSame( '', $notice );
+		self::assertStringContainsString( 'expired', strtolower( $notice ) );
+	}
+
+	public function test_a_valid_submission_and_a_plain_get_get_no_expiry_notice(): void {
+		$GLOBALS['pow_test_valid_nonce'] = 'good';
+
+		self::assertSame(
+			'',
+			Page::expired_nonce_notice(
+				'POST',
+				[
+					'pow_docs_xml' => '<cXML/>',
+					'_wpnonce'     => 'good',
+				]
+			)
+		);
+
+		self::assertSame( '', Page::expired_nonce_notice( 'GET', [] ) );
+		self::assertSame( '', Page::expired_nonce_notice( 'POST', [] ) );
+	}
+
+	/**
+	 * The notice reaches the page, escaped like everything else.
+	 */
+	public function test_the_expiry_notice_is_rendered(): void {
+		$GLOBALS['pow_test_valid_nonce'] = 'good';
+
+		$notice = Page::expired_nonce_notice(
+			'POST',
+			[
+				'pow_docs_xml' => '<cXML/>',
+				'_wpnonce'     => 'stale',
+			]
+		);
+
+		self::assertStringContainsString( $notice, $this->self_test_html( null, '', $notice ) );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * The self-test is never built half-wired
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * A Registry means the partner stage runs, and the partner stage is
+	 * only safe throttled and logged. This asserts the object the page
+	 * actually builds carries all four collaborators — it fails if the
+	 * limiter or the log is dropped from that constructor call.
+	 */
+	public function test_the_self_test_is_built_with_a_real_limiter_and_log(): void {
+		$registry = new Registry( new Secrets( str_repeat( 'k', SODIUM_CRYPTO_SECRETBOX_KEYBYTES ) ) );
+		$limiter  = new RateLimiter( 30, static fn ( string $k ): int => 0, static function ( string $k, int $c ): void {} );
+		$log      = new Log( new Logger( new Settings() ) );
+
+		$built = Page::self_test( $registry, $limiter, $log );
+
+		self::assertInstanceOf( Parser::class, self::collaborator( $built, 'parser' ) );
+		self::assertSame( $registry, self::collaborator( $built, 'registry' ) );
+		self::assertSame( $limiter, self::collaborator( $built, 'limiter' ), 'a registry without a limiter sells unmetered credential guesses' );
+		self::assertSame( $log, self::collaborator( $built, 'log' ), 'an oracle nobody can see being used is worse than no oracle' );
+	}
+
+	/**
+	 * The three are required, so a half-wired self-test cannot be
+	 * expressed at the call site at all.
+	 */
+	public function test_the_collaborators_cannot_be_omitted(): void {
+		$parameters = ( new ReflectionMethod( Page::class, 'self_test' ) )->getParameters();
+
+		self::assertCount( 3, $parameters );
+
+		foreach ( $parameters as $parameter ) {
+			self::assertFalse( $parameter->isOptional(), $parameter->getName() . ' must be required' );
+			self::assertFalse( $parameter->allowsNull(), $parameter->getName() . ' must not be nullable' );
+		}
+	}
+
 	/* ---------------------------------------------------------------------
 	 * Output escaping
 	 * ------------------------------------------------------------------ */
+
+	/**
+	 * The render guard logs whatever went wrong, and what went wrong may
+	 * quote the visitor's paste — which may carry a live secret.
+	 */
+	public function test_a_render_failure_is_logged_redacted(): void {
+		$detail = Page::failure_detail(
+			new RuntimeException( 'Parse failed near <SharedSecret>hunter2</SharedSecret>' )
+		);
+
+		self::assertStringNotContainsString( 'hunter2', $detail );
+		self::assertStringContainsString( '[redacted]', $detail );
+	}
 
 	/**
 	 * Every self-test detail is attacker-controlled: the parser's own
@@ -213,6 +326,20 @@ final class DocsPageTest extends TestCase {
 	/* ---------------------------------------------------------------------
 	 * Helpers
 	 * ------------------------------------------------------------------ */
+
+	/**
+	 * One of SelfTest's private collaborators, read back off the built
+	 * object: the wiring is the thing under test, and SelfTest exposes no
+	 * getters (nor should it).
+	 *
+	 * @return mixed
+	 */
+	private static function collaborator( SelfTest $self_test, string $property ) {
+		$reflected = new ReflectionProperty( SelfTest::class, $property );
+		$reflected->setAccessible( true );
+
+		return $reflected->getValue( $self_test );
+	}
 
 	/**
 	 * @param ?array<string, mixed> $report Self-test report, or null.
