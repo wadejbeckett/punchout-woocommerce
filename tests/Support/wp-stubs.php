@@ -38,6 +38,37 @@ if ( ! function_exists( '__' ) ) {
 	}
 }
 
+if ( ! function_exists( '_x' ) ) {
+	/**
+	 * Context-qualified translation stub. The context disambiguates for
+	 * translators only; it never changes the returned string, so this
+	 * defers to __() and stays steerable by pow_test_translations.
+	 */
+	function _x( string $text, string $context, string $domain = '' ): string { // phpcs:ignore
+		return __( $text, $domain );
+	}
+}
+
+if ( ! function_exists( '_n_noop' ) ) {
+	/**
+	 * Registers a plural string for later translation without translating
+	 * it now. Returns the same shape as WordPress: the numeric pair kept
+	 * for legacy callers alongside the named keys.
+	 *
+	 * @return array<array-key, string|null>
+	 */
+	function _n_noop( string $singular, string $plural, ?string $domain = null ): array { // phpcs:ignore
+		return [
+			0          => $singular,
+			1          => $plural,
+			'singular' => $singular,
+			'plural'   => $plural,
+			'context'  => null,
+			'domain'   => $domain,
+		];
+	}
+}
+
 if ( ! function_exists( 'esc_html' ) ) {
 	function esc_html( string $text ): string { // phpcs:ignore
 		return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
