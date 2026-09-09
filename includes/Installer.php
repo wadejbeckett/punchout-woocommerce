@@ -29,7 +29,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '2';
+	public const DB_VERSION     = '3';
 	public const DB_VERSION_KEY = 'pow_db_version';
 
 	public const ROLE = 'punchout_buyer';
@@ -153,6 +153,7 @@ final class Installer {
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			name VARCHAR(190) NOT NULL,
 			status VARCHAR(16) NOT NULL DEFAULT 'active',
+			owner_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
 			from_domain VARCHAR(190) NOT NULL DEFAULT '',
 			from_identity VARCHAR(190) NOT NULL DEFAULT '',
 			sender_domain VARCHAR(190) NOT NULL,
@@ -177,7 +178,8 @@ final class Installer {
 			updated DATETIME NULL,
 			PRIMARY KEY  (id),
 			UNIQUE KEY sender (sender_domain, sender_identity),
-			KEY status (status)
+			KEY status (status),
+			KEY owner_user_id (owner_user_id)
 		) {$charset_collate};";
 
 		// Punchout session store (scope §4.2). One row per

@@ -60,6 +60,23 @@ final class Registry {
 	}
 
 	/**
+	 * Resolve the partner a WordPress user owns (self-service registration).
+	 * Newest row wins; user 0 owns nothing.
+	 */
+	public function find_by_owner( int $user_id ): ?Partner {
+		global $wpdb;
+
+		if ( $user_id <= 0 ) {
+			return null;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE owner_user_id = %d ORDER BY id DESC LIMIT 1', $user_id ), ARRAY_A );
+
+		return $row ? Partner::from_row( $row ) : null;
+	}
+
+	/**
 	 * @return list<Partner>
 	 */
 	public function all(): array {
@@ -67,6 +84,20 @@ final class Registry {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$rows = $wpdb->get_results( 'SELECT * FROM ' . $this->table() . ' ORDER BY name ASC', ARRAY_A );
+
+		return array_map( [ Partner::class, 'from_row' ], $rows ?: [] );
+	}
+
+	/**
+	 * Registrations awaiting an administrator, oldest first.
+	 *
+	 * @return list<Partner>
+	 */
+	public function pending(): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE status = %s ORDER BY created ASC', Partner::STATUS_PENDING ), ARRAY_A );
 
 		return array_map( [ Partner::class, 'from_row' ], $rows ?: [] );
 	}
@@ -174,6 +205,28 @@ final class Registry {
 	}
 
 	/**
+	 * Revoke outright: BOTH slots cleared, so the old credential stops
+	 * working immediately and no overlap window survives. This is the
+	 * reset primitive, not rotate() — see the plan's WooCommerce REST
+	 * key research.
+	 */
+	public function revoke_secret( int $id ): bool {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+		return false !== $wpdb->update(
+			$this->table(),
+			[
+				'secret_current'    => '',
+				'secret_previous'   => '',
+				'secret_rotated_at' => gmdate( 'Y-m-d H:i:s' ),
+				'updated'           => gmdate( 'Y-m-d H:i:s' ),
+			],
+			[ 'id' => $id ]
+		);
+	}
+
+	/**
 	 * Constant-time secret check against both slots.
 	 *
 	 * @return string|null Secrets::SLOT_* that matched, or null.
@@ -205,6 +258,7 @@ final class Registry {
 		$allowed = [
 			'name',
 			'status',
+			'owner_user_id',
 			'from_domain',
 			'from_identity',
 			'sender_domain',
@@ -227,7 +281,12 @@ final class Registry {
 		$data = array_intersect_key( $data, array_flip( $allowed ) );
 
 		if ( isset( $data['status'] ) ) {
-			$data['status'] = in_array( $data['status'], [ 'active', 'disabled' ], true ) ? $data['status'] : 'disabled';
+			$statuses       = [ Partner::STATUS_PENDING, Partner::STATUS_ACTIVE, Partner::STATUS_DISABLED ];
+			$data['status'] = in_array( $data['status'], $statuses, true ) ? $data['status'] : Partner::STATUS_DISABLED;
+		}
+
+		if ( isset( $data['owner_user_id'] ) ) {
+			$data['owner_user_id'] = max( 0, (int) $data['owner_user_id'] );
 		}
 
 		if ( isset( $data['mode'] ) ) {
