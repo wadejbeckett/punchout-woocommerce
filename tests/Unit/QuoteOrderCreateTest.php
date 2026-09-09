@@ -76,6 +76,71 @@ final class QuoteOrderCreateTest extends TestCase {
 		];
 	}
 
+	private function destination(): array {
+		return [
+			'address' => [ 'first_name' => 'Ada', 'last_name' => 'Buyer', 'company' => 'Example & Co', 'address_1' => '1 Accepted Road', 'address_2' => 'Unit 2', 'city' => 'Pretoria', 'state' => 'GP', 'postcode' => '0001', 'country' => 'ZA', 'phone' => '+27 12 555 0100' ],
+			'code' => '',
+			'source' => 'company_book',
+		];
+	}
+
+	public function test_prepared_destination_is_used_without_reresolving_after_return_claim(): void {
+		$lines = $this->lines() + [ 'delivery_destination' => $this->destination() ];
+		$before = $lines;
+		$this->break_creation(); // The filter changed after preparation; a winning Quote must never call it.
+		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Changed master city' ] );
+		$order_id = $this->quotes->create_for_session( $this->session( [ 'delivery_choice' => 'later changed snapshot' ] ), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $order_id );
+		$order = wc_get_order( $order_id );
+		self::assertSame( 'Pretoria', $order->props['shipping_city'] );
+		self::assertSame( '+27 12 555 0100', $order->props['shipping_phone'] );
+		self::assertCount( 10, $order->props );
+		self::assertSame( '', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
+		self::assertSame( 'company_book', QuoteOrderTestLog::$written[0][1]['detail']['address_source'] );
+		self::assertSame( $before, $lines );
+	}
+
+	public function test_explicit_null_destination_suppresses_all_legacy_sources(): void {
+		$this->break_creation();
+		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Must not use' ] );
+		$id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => null ] );
+		self::assertGreaterThan( 0, $id );
+		self::assertSame( [], wc_get_order( $id )->props );
+		self::assertSame( '', wc_get_order( $id )->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
+		self::assertSame( 'none', QuoteOrderTestLog::$written[0][1]['detail']['address_source'] );
+	}
+
+	public function test_invalid_mapped_destination_fails_safely_without_legacy_fallback(): void {
+		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static fn() => [ 'address' => [ 'city' => 'Legacy valid' ], 'code' => 'LEGACY' ];
+		foreach ( [ false, 'invalid', [], [ 'address' => [] ], array_replace( $this->destination(), [ 'address' => [ 'country' => 'ZA' ] ] ) ] as $bad ) {
+			self::assertSame( 0, $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => $bad ] ) );
+		}
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+		foreach ( $GLOBALS['pow_test_orders'] as $order ) { self::assertSame( 'cancelled', $order->get_status() ); }
+	}
+
+	public function test_mapped_destination_preserves_existing_payexit_link(): void {
+		$id = $this->quotes->create_for_session( $this->session( [ 'order_id' => 777 ] ), $this->partner(), $this->lines() + [ 'delivery_destination' => $this->destination() ] );
+		self::assertGreaterThan( 0, $id );
+		self::assertSame( '1 Accepted Road', wc_get_order( $id )->props['shipping_address_1'] );
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+	}
+
+	public function test_prepared_blank_fields_clear_creation_hook_defaults(): void {
+		$destination = $this->destination();
+		$destination['address']['phone'] = '';
+		$destination['address']['address_2'] = '';
+		$GLOBALS['pow_test_after_create_order'] = static function( WC_Order $order ): void {
+			$order->set_props( [ 'shipping_phone' => 'Old phone', 'shipping_address_2' => 'Old building' ] );
+		};
+		try {
+			$id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => $destination ] );
+			self::assertGreaterThan( 0, $id );
+			self::assertSame( '', wc_get_order( $id )->props['shipping_phone'] );
+			self::assertSame( '', wc_get_order( $id )->props['shipping_address_2'] );
+		} finally { unset( $GLOBALS['pow_test_after_create_order'] ); }
+	}
+
 	/** Make the address step throw, part-way through a saved order. */
 	private function break_creation(): void {
 		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function ( $value ): array {

@@ -183,6 +183,7 @@ final class Registry {
 	public function transition_status( int $id, string $expected, array $fields, string $secret = '' ): bool {
 		global $wpdb;
 		if ( ! isset( self::$partner_locks[ $this->partner_lock_key( $id ) ] ) ) { return false; }
+		if ( array_key_exists( 'exit_policy', $fields ) && ! \POW\Checkout\ExitPolicy::administrator( get_current_user_id() ) ) { return false; }
 		$data = $this->sanitise( $fields );
 		foreach ( [ 'secret_previous', 'secret_rotated_at' ] as $key ) {
 			if ( array_key_exists( $key, $fields ) ) { $data[ $key ] = $fields[ $key ]; }
@@ -275,6 +276,9 @@ final class Registry {
 	public function insert( array $data, string $secret = '' ): int {
 		global $wpdb;
 
+		if ( array_key_exists( 'exit_policy', $data ) && ! \POW\Checkout\ExitPolicy::administrator( get_current_user_id() ) ) { return 0; }
+		// Newly provisioned companies inherit; only an explicit admin policy sets a cap.
+		$data['exit_policy'] = $data['exit_policy'] ?? 'inherit';
 		$data = $this->sanitise( $data );
 
 		$data['secret_current'] = '' !== $secret ? $this->secrets->seal( $secret ) : '';
@@ -299,6 +303,11 @@ final class Registry {
 			return $this->with_partner_lock( $id, function () use ( $id, $data, $secret, $wpdb ) {
 				$partner = $this->find( $id );
 				if ( null === $partner ) { return false; }
+				// Existing callers may still set mode explicitly. No runtime consumer uses it as entitlement.
+				if ( array_key_exists( 'mode', $data ) && ! array_key_exists( 'exit_policy', $data ) ) {
+					$data['exit_policy'] = Partner::MODE_DUAL_EXIT === $data['mode'] ? 'punchout_and_checkout' : 'punchout_only';
+				}
+				if ( array_key_exists( 'exit_policy', $data ) && ! \POW\Checkout\ExitPolicy::administrator( get_current_user_id() ) ) { return false; }
 				$data = $this->sanitise( $data );
 				// Ordinary saves cannot approve pending or revive a fenced connection.
 				if ( ! $partner->is_active() ) { $data['status'] = $partner->status; $secret = ''; }
@@ -410,6 +419,7 @@ final class Registry {
 			'deployment_mode',
 			'return_encoding',
 			'mode',
+			'exit_policy',
 			'allow_reentry',
 			'allcaps_transform',
 			'gateway_allowlist',
@@ -434,6 +444,10 @@ final class Registry {
 			$data['mode'] = in_array( $data['mode'], [ Partner::MODE_REQUISITION_ONLY, Partner::MODE_DUAL_EXIT ], true )
 				? $data['mode']
 				: Partner::MODE_REQUISITION_ONLY;
+		}
+
+		if ( array_key_exists( 'exit_policy', $data ) ) {
+			$data['exit_policy'] = \POW\Checkout\ExitPolicy::normalise( $data['exit_policy'] );
 		}
 
 		if ( isset( $data['return_encoding'] ) ) {
