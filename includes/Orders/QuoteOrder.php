@@ -58,6 +58,13 @@ final class QuoteOrder {
 	/** Transient that throttles the failure notice to one an hour. */
 	private const FAIL_NOTICE_KEY = 'pow_quote_fail_notice';
 
+	/**
+	 * The shipping fields WooCommerce stores as order props. Anything a
+	 * filter or an inbound ShipTo offers outside this list is dropped
+	 * rather than written, which is what keeps HPOS free of orphan meta.
+	 */
+	private const SHIPPING_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
+
 	public function __construct(
 		private Store $sessions,
 		private Log $audit,
@@ -71,9 +78,34 @@ final class QuoteOrder {
 	 * @param array<string, mixed> $poom_lines PoomMapper::from_cart() output.
 	 * @return int Order id, or 0 when creation failed (logged and audited).
 	 */
+	/**
+	 * Create the Punchout Quote order for a returning session.
+	 *
+	 * @param array<string, mixed> $poom_lines PoomMapper::from_cart() output.
+	 * @return int Order id, or 0 when creation failed (logged and audited).
+	 */
 	public function create_for_session( Session $session, Partner $partner, array $poom_lines ): int {
+		// A double-submitted return must not leave two quotes behind: the
+		// session already names one of ours, so hand that back instead.
+		$existing = $this->existing_quote( $session );
+
+		if ( $existing > 0 ) {
+			return $existing;
+		}
+
+		// Held outside the try so the catch can cancel a part-built order:
+		// wc_create_order(), add_product() and calculate_totals() each
+		// persist, so a throw halfway through would otherwise leave a
+		// payable wc-pending order in the shop.
+		$order = null;
+
 		try {
 			$order = wc_create_order( [ 'customer_id' => $session->user_id ] );
+
+			if ( ! $order instanceof \WC_Order ) {
+				// wc_create_order() returns a WP_Error; it does not throw.
+				throw new \RuntimeException( is_wp_error( $order ) ? (string) $order->get_error_message() : 'wc_create_order returned no order' );
+			}
 
 			$order->set_currency( (string) ( $poom_lines['currency'] ?? get_woocommerce_currency() ) );
 
@@ -84,11 +116,15 @@ final class QuoteOrder {
 			$shipping = $this->shipping_for( $session, $partner );
 
 			if ( [] !== $shipping['address'] ) {
-				$order->set_address( $shipping['address'], 'shipping' );
+				$this->set_shipping( $order, $shipping['address'] );
 			}
 
-			$order->update_meta_data( self::META_SESSION_ID, $session->id );
-			$order->update_meta_data( self::META_PARTNER_ID, $partner->id );
+			// Stored as strings: that is what WooCommerce writes back after
+			// a round trip through the meta store, so a reader comparing
+			// values sees the same type whether the order was just built or
+			// re-fetched (PayExit does the same).
+			$order->update_meta_data( self::META_SESSION_ID, (string) $session->id );
+			$order->update_meta_data( self::META_PARTNER_ID, (string) $partner->id );
 			$order->update_meta_data( self::META_DELIVERY_CODE, $shipping['code'] );
 
 			// Totals without taxes: the basket quotes ex-tax unit prices
@@ -96,9 +132,13 @@ final class QuoteOrder {
 			// number the buyer's system received.
 			$order->calculate_totals( false );
 
-			// Status set last, so the one transition WooCommerce sees is
-			// into punchout-quote — a status nothing in core binds stock or
-			// mail to (wc-stock-functions.php:124-127, class-wc-emails.php:91).
+			// Status set last: wc_create_order() saves the order as pending,
+			// so the only transition core sees is pending -> punchout-quote.
+			// Neither end of that pair is on a hook that moves stock or
+			// sends mail (wc-stock-functions.php:124-127 binds only
+			// completed/processing/on-hold and payment_complete;
+			// class-wc-emails.php:91 lists fixed X_to_Y pairs, none of
+			// which names a custom status).
 			$order->set_status( Status::SLUG );
 
 			$order->add_order_note(
@@ -116,23 +156,15 @@ final class QuoteOrder {
 			// DESIGN §6: quote-order failure never blocks the basket —
 			// log, notify the admin, continue. The buyer still gets their
 			// cart back and the audit copy of the basket still exists.
-			$this->logger->error( 'Quote order creation failed', [ 'session' => $session->id, 'error' => $e->getMessage() ] );
-			$this->audit->write(
-				'quote_order_failed',
-				[
-					'partner_id' => $partner->id,
-					'session_id' => $session->id,
-					'user_id'    => $session->user_id,
-					'result'     => 'error',
-					'detail'     => [ 'error' => $e->getMessage() ],
-				]
-			);
-			$this->notify_failure( $session, $partner, $e->getMessage() );
-
-			return 0;
+			return $this->fail( $session, $partner, $order, $e->getMessage() );
 		}
 
-		$this->sessions->update( $session->id, [ 'order_id' => $order_id ] );
+		// PayExit owns sessions.order_id once a buyer checks out (it links
+		// the paid order and leaves the session active until payment
+		// confirms), so a quote only ever fills an empty column.
+		if ( $session->order_id <= 0 ) {
+			$this->sessions->update( $session->id, [ 'order_id' => $order_id ] );
+		}
 
 		$this->audit->write(
 			'quote_order_created',
@@ -158,16 +190,113 @@ final class QuoteOrder {
 	 * Store the basket document on the order once the build has produced
 	 * it. Separate from creation because DESIGN §1 puts creation between
 	 * the mapping and the build, so there is no XML to store yet.
+	 *
+	 * Swallows its own failures for the same reason creation does: this
+	 * runs while the buyer's basket is on its way back, and the audit log
+	 * already holds the document, so a save that fails costs the operator
+	 * a convenience copy and nothing else.
 	 */
 	public function attach_poom( int $order_id, string $poom_xml ): void {
-		$order = wc_get_order( $order_id );
+		try {
+			$order = wc_get_order( $order_id );
 
-		if ( ! $order ) {
-			return;
+			if ( ! $order instanceof \WC_Order ) {
+				return;
+			}
+
+			$order->update_meta_data( self::META_POOM_XML, $poom_xml );
+			$order->save();
+		} catch ( \Throwable $e ) {
+			$this->logger->error( 'Quote order basket could not be attached', [ 'order' => $order_id, 'error' => $e->getMessage() ] );
+			$this->audit->write(
+				'quote_poom_failed',
+				[
+					'order_id' => $order_id,
+					'result'   => 'error',
+					'detail'   => [ 'error' => $e->getMessage() ],
+				]
+			);
+		}
+	}
+
+	/**
+	 * The quote this session already has, or 0.
+	 *
+	 * The meta check is what separates our own quote from the paid order
+	 * PayExit links to the same column: that one carries _pow_session,
+	 * never _pow_session_id.
+	 */
+	private function existing_quote( Session $session ): int {
+		if ( $session->order_id <= 0 ) {
+			return 0;
 		}
 
-		$order->update_meta_data( self::META_POOM_XML, $poom_xml );
-		$order->save();
+		$order = wc_get_order( $session->order_id );
+
+		if ( ! $order instanceof \WC_Order || (int) $order->get_meta( self::META_SESSION_ID ) !== $session->id ) {
+			return 0;
+		}
+
+		return (int) $order->get_id();
+	}
+
+	/**
+	 * The failure path (DESIGN §6). Cancels whatever was already
+	 * persisted, records the failure everywhere it belongs, and returns
+	 * the 0 the caller treats as "no quote".
+	 *
+	 * @param \WC_Order|\WP_Error|null $order Whatever wc_create_order() left us with.
+	 */
+	private function fail( Session $session, Partner $partner, mixed $order, string $error ): int {
+		$order_id = $order instanceof \WC_Order ? (int) $order->get_id() : 0;
+
+		if ( $order_id > 0 ) {
+			$this->cancel_part_built( $order, $error );
+		}
+
+		$this->logger->error( 'Quote order creation failed', [ 'session' => $session->id, 'order' => $order_id, 'error' => $error ] );
+
+		$this->audit->write(
+			'quote_order_failed',
+			[
+				'partner_id' => $partner->id,
+				'session_id' => $session->id,
+				'user_id'    => $session->user_id,
+				'order_id'   => $order_id,
+				'result'     => 'error',
+				'detail'     => [
+					'error'    => $error,
+					'order_id' => $order_id,
+				],
+			]
+		);
+
+		$this->notify_failure( $session, $partner, $order_id, $error );
+
+		return 0;
+	}
+
+	/**
+	 * A part-built quote is cancelled, never deleted: cancelled keeps the
+	 * evidence, keeps it out of the buyer's pay-for-order links, and
+	 * restores no stock (a quote never reduced any).
+	 */
+	private function cancel_part_built( \WC_Order $order, string $error ): void {
+		try {
+			$order->add_order_note(
+				sprintf(
+					/* translators: %s: error message */
+					__( 'Cancelled automatically: this Punchout Quote was left part-built by a failed punchout return (%s). Do not treat it as an order to fulfil — the buyer\'s basket went back normally and their purchasing system holds the real requisition.', 'punchout-woocommerce' ),
+					$error
+				)
+			);
+			$order->set_status( 'cancelled' );
+			$order->save();
+		} catch ( \Throwable $e ) {
+			// Nothing left to try: say so loudly rather than throw into
+			// the return the buyer is still waiting on.
+			$this->logger->error( 'Part-built quote order could not be cancelled', [ 'order' => $order->get_id(), 'error' => $e->getMessage() ] );
+		}
 	}
 
 	/**
@@ -196,13 +325,46 @@ final class QuoteOrder {
 		$customer = null;
 
 		if ( function_exists( 'WC' ) && null !== WC()->customer ) {
-			$customer = [
-				'address' => WC()->customer->get_shipping(),
-				'code'    => '',
-			];
+			// A customer who has never saved a shipping address still has
+			// the full set of empty fields; offering that as a candidate
+			// would stamp a blank address on the order and record it as a
+			// match, so only real values count.
+			$saved = array_filter(
+				(array) WC()->customer->get_shipping(),
+				static fn ( $value ): bool => is_scalar( $value ) && '' !== trim( (string) $value )
+			);
+
+			if ( [] !== $saved ) {
+				$customer = [
+					'address' => $saved,
+					'code'    => '',
+				];
+			}
 		}
 
 		return self::resolve_shipping( is_array( $filtered ) ? $filtered : null, $inbound, $customer );
+	}
+
+	/**
+	 * Write the delivery address as order props rather than through the
+	 * legacy set_address(): under HPOS the props are the columns, and an
+	 * unknown key handed to set_address() becomes orphan post meta. Keys
+	 * outside the shipping set are dropped here, deliberately and visibly.
+	 *
+	 * @param array<string, mixed> $address WC-style address fields.
+	 */
+	private function set_shipping( \WC_Order $order, array $address ): void {
+		$props = [];
+
+		foreach ( self::SHIPPING_FIELDS as $field ) {
+			if ( isset( $address[ $field ] ) && is_scalar( $address[ $field ] ) && '' !== (string) $address[ $field ] ) {
+				$props[ 'shipping_' . $field ] = (string) $address[ $field ];
+			}
+		}
+
+		if ( [] !== $props ) {
+			$order->set_props( $props );
+		}
 	}
 
 	/**
@@ -215,8 +377,8 @@ final class QuoteOrder {
 	 * but priced: a deleted product must not silently drop a line the
 	 * buyer's system was quoted.
 	 *
-	 * @param \WC_Order                                                                                         $order Order being built.
-	 * @param array{product_id: int, variation_id: int, quantity: float, subtotal: float, total: float, sku: string, name: string} $args  Line args.
+	 * @param \WC_Order            $order Order being built.
+	 * @param array<string, mixed> $args  One line from line_args().
 	 */
 	private function add_line( \WC_Order $order, array $args ): void {
 		$product_id = $args['variation_id'] > 0 ? $args['variation_id'] : $args['product_id'];
@@ -257,7 +419,7 @@ final class QuoteOrder {
 	 * once an hour — a systematic failure would otherwise mail on every
 	 * punchout return. The audit log carries every occurrence regardless.
 	 */
-	private function notify_failure( Session $session, Partner $partner, string $error ): void {
+	private function notify_failure( Session $session, Partner $partner, int $order_id, string $error ): void {
 		$to = (string) get_option( 'admin_email' );
 
 		if ( '' === $to || false !== get_transient( self::FAIL_NOTICE_KEY ) ) {
@@ -266,14 +428,23 @@ final class QuoteOrder {
 
 		set_transient( self::FAIL_NOTICE_KEY, 1, HOUR_IN_SECONDS );
 
+		$outcome = $order_id > 0
+			? sprintf(
+				/* translators: %d: order id */
+				__( 'order #%d was left part-built and has been cancelled for you', 'punchout-woocommerce' ),
+				$order_id
+			)
+			: __( 'no order was created', 'punchout-woocommerce' );
+
 		wp_mail(
 			$to,
 			__( 'Punchout: a quote order could not be created', 'punchout-woocommerce' ),
 			sprintf(
-				/* translators: 1: connection name, 2: session id, 3: error message */
-				__( 'A punchout return from %1$s (session #%2$d) went back to the buyer normally, but no Punchout Quote order was created: %3$s. Further failures in the next hour are logged but not emailed; see the punchout audit log.', 'punchout-woocommerce' ),
+				/* translators: 1: connection name, 2: session id, 3: what happened to the order, 4: error message */
+				__( 'A punchout return from %1$s (session #%2$d) went back to the buyer normally, but the Punchout Quote order could not be completed: %3$s. The error was: %4$s. Further failures in the next hour are logged but not emailed; see the punchout audit log.', 'punchout-woocommerce' ),
 				$partner->name,
 				$session->id,
+				$outcome,
 				$error
 			)
 		);

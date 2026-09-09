@@ -127,10 +127,12 @@ final class ReturnEndpoint {
 
 		// The quote order is created between the mapping and the build, so
 		// it carries exactly the lines the buyer's system is about to be
-		// quoted (DESIGN §1). The empty/close-out path creates nothing: an
-		// empty POOM is a cancel, and $session->order_id there already
-		// points at a paid Woo order. A failure here returns 0 and never
-		// stops the basket going back (DESIGN §6).
+		// quoted (DESIGN §1). The empty/close-out path creates nothing:
+		// an empty POOM is a cancel, so there is no basket to quote —
+		// either the buyer left with nothing (order_id still 0) or they
+		// paid and PayExit already linked the real Woo order, which the
+		// quote never overwrites. A failure here returns 0 and never stops
+		// the basket going back (DESIGN §6).
 		$quote_order_id = 'cart' === $mode
 			? $this->quotes->create_for_session( $session, $partner, $mapped )
 			: 0;

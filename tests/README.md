@@ -8,8 +8,8 @@ Two stub files load from `bootstrap.php`, and they own disjoint symbol sets — 
 
 | File | Owns |
 |---|---|
-| `Support/wp-stubs.php` | the WordPress surface: `__`, `_x`, `_n_noop`, the `esc_*` family, `apply_filters`, `locate_template`, the nonce pair, `nocache_headers`, `wp_unslash`, `sanitize_text_field`, `wp_strip_all_tags`, `get_option`, the transient pair, `wp_mail`, `HOUR_IN_SECONDS` |
-| `Support/wc-stubs.php` | the WooCommerce surface: `get_woocommerce_currency`, `wc_create_order`, `wc_get_order`, `wc_get_product`, and the classes `WC_Order`, `WC_Order_Item_Product`, `WC_Product` |
+| `Support/wp-stubs.php` | the WordPress surface: `__`, `_x`, `_n_noop`, the `esc_*` family, `apply_filters`, `locate_template`, the nonce pair, `nocache_headers`, `wp_unslash`, `sanitize_text_field`, `wp_strip_all_tags`, `get_option`, the transient pair, `wp_mail`, `HOUR_IN_SECONDS`, `is_wp_error` and the class `WP_Error` |
+| `Support/wc-stubs.php` | the WooCommerce surface: `get_woocommerce_currency`, `WC`, `wc_create_order`, `wc_get_order`, `wc_get_product`, and the classes `WC_Order`, `WC_Order_Item_Product`, `WC_Product`, `WC_Customer`, `POW_Test_WC` |
 
 `Settings`, `Logger`, `Sessions\Store` and `Audit\Log` are deliberately **not** `final`: a service a WordPress-free suite must double cannot be sealed, and a `final` keyword that only exists to block a test double is a testability defect rather than a design rule. No method of theirs is overridden in production.
 

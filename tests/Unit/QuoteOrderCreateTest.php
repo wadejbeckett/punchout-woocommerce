@@ -27,6 +27,9 @@ final class QuoteOrderCreateTest extends TestCase {
 		$GLOBALS['pow_test_options']    = [];
 		$GLOBALS['pow_test_transients'] = [];
 		$GLOBALS['pow_test_mail']       = [];
+		$GLOBALS['pow_test_wc']         = new POW_Test_WC();
+
+		unset( $GLOBALS['pow_test_create_order_error'] );
 
 		QuoteOrderTestStore::$updates = [];
 		QuoteOrderTestLog::$written   = [];
@@ -39,14 +42,20 @@ final class QuoteOrderCreateTest extends TestCase {
 		);
 	}
 
-	private function session(): Session {
+	/**
+	 * @param array<string, mixed> $overrides Row columns to change.
+	 */
+	private function session( array $overrides = [] ): Session {
 		return Session::from_row(
-			[
-				'id'         => 42,
-				'partner_id' => 7,
-				'user_id'    => 99,
-				'ship_to'    => '<ShipTo><Address addressID="LEMA-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name></Address></ShipTo>',
-			]
+			array_merge(
+				[
+					'id'         => 42,
+					'partner_id' => 7,
+					'user_id'    => 99,
+					'ship_to'    => '<ShipTo><Address addressID="LEMA-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name></Address></ShipTo>',
+				],
+				$overrides
+			)
 		);
 	}
 
@@ -67,6 +76,13 @@ final class QuoteOrderCreateTest extends TestCase {
 		];
 	}
 
+	/** Make the address step throw, part-way through a saved order. */
+	private function break_creation(): void {
+		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function ( $value ): array {
+			throw new \RuntimeException( 'address lookup exploded' );
+		};
+	}
+
 	public function test_order_is_created_and_linked_to_the_session(): void {
 		$order_id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
 
@@ -81,8 +97,8 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( Status::SLUG, $order->get_status() );
 		self::assertCount( 1, $order->items );
 		self::assertSame( 375.33, $order->items[0]['total'] );
-		self::assertSame( 42, $order->get_meta( QuoteOrder::META_SESSION_ID ) );
-		self::assertSame( 7, $order->get_meta( QuoteOrder::META_PARTNER_ID ) );
+		self::assertSame( 42, (int) $order->get_meta( QuoteOrder::META_SESSION_ID ) );
+		self::assertSame( 7, (int) $order->get_meta( QuoteOrder::META_PARTNER_ID ) );
 		self::assertSame( '', $order->get_meta( QuoteOrder::META_POOM_XML ), 'the document does not exist until the build has run' );
 		self::assertCount( 1, $order->notes );
 		self::assertStringContainsString( '42', $order->notes[0] );
@@ -132,7 +148,7 @@ final class QuoteOrderCreateTest extends TestCase {
 		$order = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
 
 		self::assertSame( 'LEMA-001', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
-		self::assertSame( 'Head office', $order->shipping['shipping']['company'] );
+		self::assertSame( 'Head office', $order->props['shipping_company'] );
 	}
 
 	public function test_the_filter_wins_over_the_inbound_ship_to(): void {
@@ -144,7 +160,8 @@ final class QuoteOrderCreateTest extends TestCase {
 		$order = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
 
 		self::assertSame( 'LEMA-CCBSA-002', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
-		self::assertSame( 'Cape Town', $order->shipping['shipping']['city'] );
+		self::assertSame( 'Cape Town', $order->props['shipping_city'] );
+		self::assertSame( [ 'shipping_company', 'shipping_city' ], array_keys( $order->props ), 'only known shipping props are written' );
 	}
 
 	/**
@@ -165,10 +182,9 @@ final class QuoteOrderCreateTest extends TestCase {
 	 * is audited, and the operator is mailed at most once an hour.
 	 */
 	public function test_a_failure_returns_zero_audits_and_mails_once(): void {
-		$GLOBALS['pow_test_options']['admin_email']                = 'ops@example.com';
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function ( $value ): array {
-			throw new \RuntimeException( 'address lookup exploded' );
-		};
+		$GLOBALS['pow_test_options']['admin_email'] = 'ops@example.com';
+
+		$this->break_creation();
 
 		self::assertSame( 0, $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
 		self::assertSame( 0, $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
@@ -178,6 +194,112 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertCount( 2, QuoteOrderTestLog::$written, 'every failure is audited' );
 		self::assertCount( 1, $GLOBALS['pow_test_mail'], 'the second failure within the hour is logged, not mailed' );
 		self::assertStringContainsString( 'address lookup exploded', $GLOBALS['pow_test_mail'][0]['message'] );
+	}
+
+	/**
+	 * wc_create_order() persists immediately, and add_product() and
+	 * calculate_totals() save again, so a throw part-way through would
+	 * otherwise leave a payable wc-pending order in the shop. It is
+	 * cancelled — never deleted — and named everywhere the operator looks.
+	 */
+	public function test_a_part_built_order_is_cancelled_and_named(): void {
+		$GLOBALS['pow_test_options']['admin_email'] = 'ops@example.com';
+
+		$this->break_creation();
+
+		self::assertSame( 0, $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
+
+		$order = array_values( $GLOBALS['pow_test_orders'] )[0];
+
+		self::assertSame( 'cancelled', $order->get_status() );
+		self::assertCount( 1, $order->notes );
+		self::assertStringContainsString( 'part-built', $order->notes[0] );
+		self::assertSame( $order->get_id(), QuoteOrderTestLog::$written[0][1]['order_id'] );
+		self::assertSame( $order->get_id(), QuoteOrderTestLog::$written[0][1]['detail']['order_id'] );
+		self::assertStringContainsString( '#' . $order->get_id(), $GLOBALS['pow_test_mail'][0]['message'] );
+		self::assertStringContainsString( 'cancelled', $GLOBALS['pow_test_mail'][0]['message'] );
+	}
+
+	/**
+	 * wc_create_order() returns a WP_Error rather than throwing, so the
+	 * guard is what turns it into the failure path — with the real
+	 * message, and without claiming an order exists.
+	 */
+	public function test_a_wp_error_from_wc_create_order_is_the_failure_path(): void {
+		$GLOBALS['pow_test_options']['admin_email']      = 'ops@example.com';
+		$GLOBALS['pow_test_create_order_error']          = 'Could not insert the order into the database';
+
+		self::assertSame( 0, $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
+
+		self::assertSame( [], $GLOBALS['pow_test_orders'], 'nothing was created' );
+		self::assertSame( 0, QuoteOrderTestLog::$written[0][1]['order_id'] );
+		self::assertStringContainsString( 'Could not insert the order into the database', QuoteOrderTestLog::$written[0][1]['detail']['error'] );
+		self::assertStringContainsString( 'no order was created', $GLOBALS['pow_test_mail'][0]['message'] );
+	}
+
+	/**
+	 * A double-submitted return must not leave two quotes behind.
+	 */
+	public function test_a_double_submitted_return_reuses_the_existing_quote(): void {
+		$order_id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
+
+		$again = $this->quotes->create_for_session( $this->session( [ 'order_id' => $order_id ] ), $this->partner(), $this->lines() );
+
+		self::assertSame( $order_id, $again );
+		self::assertCount( 1, $GLOBALS['pow_test_orders'] );
+	}
+
+	/**
+	 * PayExit owns sessions.order_id for a paid checkout and leaves the
+	 * session active until payment confirms; a quote must not overwrite
+	 * that link. The order it does not recognise is not one of ours
+	 * either, so a quote is still created — just not written back.
+	 */
+	public function test_an_existing_order_link_is_not_overwritten(): void {
+		$order_id = $this->quotes->create_for_session( $this->session( [ 'order_id' => 777 ] ), $this->partner(), $this->lines() );
+
+		self::assertGreaterThan( 0, $order_id );
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+	}
+
+	/**
+	 * A customer who never saved a shipping address still has the full set
+	 * of empty fields; that must not count as a match and stamp a blank
+	 * address on the order.
+	 */
+	public function test_a_blank_customer_address_is_not_a_match(): void {
+		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'first_name' => '', 'city' => '   ', 'country' => '' ] );
+
+		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'ship_to' => '' ] ), $this->partner(), $this->lines() ) );
+
+		self::assertSame( [], $order->props );
+		self::assertSame( 'none', QuoteOrderTestLog::$written[0][1]['detail']['address_source'] );
+
+		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Durban', 'country' => 'ZA' ] );
+
+		$second = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'ship_to' => '' ] ), $this->partner(), $this->lines() ) );
+
+		self::assertSame( 'Durban', $second->props['shipping_city'] );
+		self::assertSame( 'customer', QuoteOrderTestLog::$written[1][1]['detail']['address_source'] );
+	}
+
+	/**
+	 * The basket is already on its way back by the time the document is
+	 * attached, so a failing save here is logged and audited, never
+	 * thrown into the return.
+	 */
+	public function test_attach_poom_survives_a_failing_save(): void {
+		$order_id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
+
+		wc_get_order( $order_id )->save_throws = true;
+
+		$this->quotes->attach_poom( $order_id, '<cXML/>' );
+
+		$last = QuoteOrderTestLog::$written[ count( QuoteOrderTestLog::$written ) - 1 ];
+
+		self::assertSame( 'quote_poom_failed', $last[0] );
+		self::assertSame( $order_id, $last[1]['order_id'] );
+		self::assertStringContainsString( 'order save failed', $last[1]['detail']['error'] );
 	}
 
 	public function test_attach_poom_stores_the_document(): void {
