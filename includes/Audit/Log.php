@@ -71,10 +71,14 @@ final class Log {
 	 * Redact SharedSecret content in stored XML: the inbound setup body is
 	 * archived as evidence, but the partner credential inside it must not
 	 * be (scope §7 "secrets redacted always").
+	 *
+	 * The element may carry a namespace prefix (<cxml:SharedSecret>) —
+	 * legal cXML, and sent by real buyers — so the prefix is optional in
+	 * the pattern rather than absent from it.
 	 */
 	public static function redact_xml( string $xml ): string {
 		return (string) preg_replace(
-			'#(<SharedSecret\b[^>]*>).*?(</SharedSecret\s*>)#is',
+			'#(<(?:[A-Za-z0-9_.-]+:)?SharedSecret\b[^>]*>).*?(</(?:[A-Za-z0-9_.-]+:)?SharedSecret\s*>)#is',
 			'$1[redacted]$2',
 			$xml
 		);

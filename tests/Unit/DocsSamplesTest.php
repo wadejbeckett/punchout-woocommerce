@@ -67,19 +67,42 @@ final class DocsSamplesTest extends TestCase {
 		self::assertSame( '599.00', Samples::poom_total() );
 	}
 
-	/**
-	 * DESIGN §7: the samples validate against the DTD shipped in
-	 * includes/Cxml/dtd. The DOCTYPE's SYSTEM identifier is rewritten to
-	 * the local copy so nothing is fetched over the network.
-	 */
+	/* ---------------------------------------------------------------------
+	 * DESIGN §7: every outbound sample validates against the shipped DTD
+	 * ------------------------------------------------------------------ */
+
+	public function test_setup_response_sample_validates_against_the_shipped_dtd(): void {
+		$this->assert_validates( Samples::setup_response( 'https://shop.example.com/punchout/start/EXAMPLE-TOKEN' ), 'setup_response' );
+	}
+
+	public function test_status_sample_validates_against_the_shipped_dtd(): void {
+		$this->assert_validates( Samples::status( SetupEndpoint::STATUS_UNSUPPORTED ), 'status' );
+	}
+
+	public function test_profile_response_sample_validates_against_the_shipped_dtd(): void {
+		$this->assert_validates( Samples::profile_response( 'https://shop.example.com/punchout/setup' ), 'profile_response' );
+	}
+
 	public function test_poom_sample_validates_against_the_shipped_dtd(): void {
+		$this->assert_validates( Samples::poom(), 'poom' );
+	}
+
+	/**
+	 * One document against the DTD shipped in includes/Cxml/dtd. The
+	 * DOCTYPE's SYSTEM identifier is rewritten to the local copy so
+	 * nothing is fetched over the network.
+	 *
+	 * Shared by all four outbound samples: the page publishes them as what
+	 * a buyer will receive, so "the POOM is valid" is not enough.
+	 */
+	private function assert_validates( string $sample, string $label ): void {
 		$dtd = dirname( __DIR__, 2 ) . '/includes/Cxml/dtd/cXML-1.2.071.dtd';
 
 		if ( ! is_readable( $dtd ) ) {
 			self::markTestSkipped( 'shipped DTD not present' );
 		}
 
-		$xml = (string) preg_replace( '#SYSTEM "[^"]+"#', 'SYSTEM "' . $dtd . '"', Samples::poom() );
+		$xml = (string) preg_replace( '#SYSTEM "[^"]+"#', 'SYSTEM "' . $dtd . '"', $sample );
 
 		$previous = libxml_use_internal_errors( true );
 		$doc      = new DOMDocument();
@@ -90,6 +113,6 @@ final class DocsSamplesTest extends TestCase {
 
 		$messages = array_map( static fn ( $e ): string => trim( $e->message ), $errors );
 
-		self::assertSame( [], $messages, "POOM sample failed DTD validation:\n" . implode( "\n", $messages ) );
+		self::assertSame( [], $messages, "The {$label} sample failed DTD validation:\n" . implode( "\n", $messages ) );
 	}
 }

@@ -12,6 +12,9 @@
  * proves output is escaped is worthless against a stub that escapes
  * nothing.
  *
+ * nocache_headers() records its call count in pow_test_nocache_headers,
+ * because a CLI run cannot see headers but can see that the page asked.
+ *
  * Three stubs read a $GLOBALS key so a test can steer them: __() consults
  * pow_test_translations (proving a string really goes through
  * translation, which an identity stub cannot), apply_filters runs one
@@ -154,6 +157,17 @@ if ( ! function_exists( 'wp_verify_nonce' ) ) {
 	 */
 	function wp_verify_nonce( string $nonce, string $action = '-1' ) { // phpcs:ignore
 		return isset( $GLOBALS['pow_test_valid_nonce'] ) && $GLOBALS['pow_test_valid_nonce'] === $nonce ? 1 : false;
+	}
+}
+
+if ( ! function_exists( 'nocache_headers' ) ) {
+	/**
+	 * Records that the page asked not to be cached. The real function
+	 * sends headers, which a CLI test run cannot observe; the count is
+	 * what the rule is about — it was called, or it was not.
+	 */
+	function nocache_headers(): void { // phpcs:ignore
+		$GLOBALS['pow_test_nocache_headers'] = ( $GLOBALS['pow_test_nocache_headers'] ?? 0 ) + 1;
 	}
 }
 
