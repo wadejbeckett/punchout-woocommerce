@@ -15,6 +15,8 @@ use POW\Cxml\SetupMessage;
 use POW\Docs\Samples;
 use POW\Http\SetupEndpoint;
 
+require_once dirname( __DIR__ ) . '/Support/ExactCxmlDtd.php';
+
 final class DocsSamplesTest extends TestCase {
 
 	protected function setUp(): void {
@@ -87,32 +89,26 @@ final class DocsSamplesTest extends TestCase {
 		$this->assert_validates( Samples::poom(), 'poom' );
 	}
 
+	public function test_delivery_sample_uses_the_live_codec_and_exact_declared_dialect(): void {
+		foreach ( [ '1.2.008', '1.2.071' ] as $version ) {
+			$xml = Samples::delivery_poom( $version );
+			self::assertSame( 3, substr_count( $xml, '<ItemIn ' ) );
+			self::assertStringContainsString( '<Money currency="ZAR">634.00</Money>', $xml );
+			self::assertStringContainsString( '<ShipTo>', $xml );
+			self::assertStringContainsString( 'DeliveryInstructions', $xml );
+			self::assertStringNotContainsString( 'SharedSecret', $xml );
+			$this->assert_validates( $xml, 'delivery_poom ' . $version );
+		}
+	}
+
 	/**
-	 * One document against the DTD shipped in includes/Cxml/dtd. The
-	 * DOCTYPE's SYSTEM identifier is rewritten to the local copy so
-	 * nothing is fetched over the network.
+	 * Resolve only the unchanged official fixture for the exact declared version.
 	 *
 	 * Shared by all four outbound samples: the page publishes them as what
 	 * a buyer will receive, so "the POOM is valid" is not enough.
 	 */
 	private function assert_validates( string $sample, string $label ): void {
-		$dtd = dirname( __DIR__, 2 ) . '/includes/Cxml/dtd/cXML-1.2.071.dtd';
-
-		if ( ! is_readable( $dtd ) ) {
-			self::markTestSkipped( 'shipped DTD not present' );
-		}
-
-		$xml = (string) preg_replace( '#SYSTEM "[^"]+"#', 'SYSTEM "' . $dtd . '"', $sample );
-
-		$previous = libxml_use_internal_errors( true );
-		$doc      = new DOMDocument();
-		$doc->loadXML( $xml, LIBXML_DTDLOAD | LIBXML_DTDVALID );
-		$errors = libxml_get_errors();
-		libxml_clear_errors();
-		libxml_use_internal_errors( $previous );
-
-		$messages = array_map( static fn ( $e ): string => trim( $e->message ), $errors );
-
-		self::assertSame( [], $messages, "The {$label} sample failed DTD validation:\n" . implode( "\n", $messages ) );
+		$result = ExactCxmlDtd::validate( $sample );
+		self::assertTrue( $result['valid'], "The {$label} sample failed exact DTD validation: " . implode( '; ', $result['errors'] ) );
 	}
 }

@@ -58,7 +58,8 @@ final class DocsReferenceTest extends TestCase {
 		self::assertContains( 'ShipTo', $names );
 		self::assertContains( 'Address/@addressID', $names );
 		self::assertContains( 'Address/@addressIDDomain', $names );
-		self::assertContains( 'ItemIn/Extrinsic name="LemaDeliveryCode"', $names );
+		self::assertContains( 'ItemIn/Extrinsic name="DeliveryAddressCode"', $names );
+		self::assertContains( 'ItemDetail/Extrinsic name="DeliveryInstructions"', $names );
 	}
 
 	public function test_links_point_at_the_three_reference_documents(): void {

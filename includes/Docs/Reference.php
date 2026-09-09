@@ -106,7 +106,7 @@ final class Reference {
 			__( 'XML signatures on any document.', 'punchout-woocommerce' ),
 			__( 'operation="edit", "inspect" and "source" — all answered 450.', 'punchout-woocommerce' ),
 			__( 'Inbound OrderRequest / cXML purchase orders. /punchout/order answers 450.', 'punchout-woocommerce' ),
-			__( 'Per-line ShipTo. The delivery address is header-level, mirrored per line only as the LemaDeliveryCode extrinsic.', 'punchout-woocommerce' ),
+			__( 'Different delivery addresses per merchandise line. One destination is confirmed for the basket.', 'punchout-woocommerce' ),
 			__( 'Multi-currency. One store currency per connection.', 'punchout-woocommerce' ),
 		];
 	}
@@ -124,27 +124,37 @@ final class Reference {
 			[
 				'field'  => 'ShipTo',
 				'source' => __( 'PunchOutOrderMessageHeader (outbound); PunchOutSetupRequest (inbound)', 'punchout-woocommerce' ),
-				'note'   => __( 'Inbound: a ShipTo you send in the setup request is stored verbatim against the session and used as the delivery address when the buyer has not chosen one. Outbound: the standard cXML ShipTo, carrying the chosen delivery address.', 'punchout-woocommerce' ),
+				'note'   => __( 'Inbound ShipTo is session context for explicit buyer confirmation. Outbound full postal address is separately enabled and does not require an address code. Verified in cXML 1.2.008 and 1.2.071.', 'punchout-woocommerce' ),
 			],
 			[
 				'field'  => 'Address/@addressID',
 				'source' => __( 'the delivery code on the chosen address', 'punchout-woocommerce' ),
-				'note'   => __( 'The code your ERP maps to. Default form PREFIX-NNN (for example LEMA-001); the buyer may overwrite it, and it is unique per connection.', 'punchout-woocommerce' ),
+				'note'   => __( 'Optional company address identifier, for example BUYER-001. The company owner or shop administrator manages it. Issued codes are unique per company and never reassigned to another address.', 'punchout-woocommerce' ),
 			],
 			[
 				'field'  => 'Address/@addressIDDomain',
 				'source' => __( 'fixed value "supplier"', 'punchout-woocommerce' ),
-				'note'   => __( 'Says the identifier is ours, not yours. Map it to your own site or delivery-address code on receipt.', 'punchout-woocommerce' ),
+				'note'   => __( 'Identifies a supplier address code. Emitted only with a usable addressID under verified cXML 1.2.071; omitted for 1.2.008 and unverified versions.', 'punchout-woocommerce' ),
 			],
 			[
 				'field'  => 'Address/PostalAddress',
 				'source' => __( 'the chosen delivery address', 'punchout-woocommerce' ),
-				'note'   => __( 'DeliverTo, Street, City, State, PostalCode and Country@isoCountryCode, exactly as held on the account.', 'punchout-woocommerce' ),
+				'note'   => __( 'DeliverTo, Street, City, State, PostalCode and Country@isoCountryCode come from the confirmed destination snapshot. They are escaped as XML text.', 'punchout-woocommerce' ),
 			],
 			[
-				'field'  => 'ItemIn/Extrinsic name="LemaDeliveryCode"',
+				'field'  => 'ItemIn/Extrinsic name="DeliveryAddressCode"',
 				'source' => __( 'the same delivery code, per line', 'punchout-woocommerce' ),
-				'note'   => __( 'Mirrors the header code on every line for receivers whose line mapping is easier to reach than the header. A header-level Extrinsic is not valid cXML and is never emitted.', 'punchout-woocommerce' ),
+				'note'   => __( 'Separately enabled direct line metadata with a configurable name, verified only for cXML 1.2.071. Omitted for 1.2.008 and unverified versions; never moved to another element automatically.', 'punchout-woocommerce' ),
+			],
+			[
+				'field' => 'ItemDetail/Extrinsic name="DeliveryInstructions"',
+				'source' => __( 'the confirmed basket note', 'punchout-woocommerce' ),
+				'note' => __( 'Local only by default. Explicit item_detail_extrinsic policy copies the note onto every merchandise line, excluding freight. Verified for 1.2.008 and 1.2.071; the receiver must agree to use this mapping.', 'punchout-woocommerce' ),
+			],
+			[
+				'field' => 'ItemIn (freight)',
+				'source' => __( 'the sum of the selected native WooCommerce package rates, excluding tax', 'punchout-woocommerce' ),
+				'note' => __( 'Separately enabled quantity-one line with configured supplier ID, unit and classification, independent of address export. An unavailable rate is never represented as free delivery. No header Shipping is added.', 'punchout-woocommerce' ),
 			],
 		];
 	}

@@ -118,6 +118,7 @@ final class PoomEnvelopeTest extends TestCase {
 		$xml = $this->poom(
 			[],
 			[
+				'version'             => '1.2.071',
 				'total_cents'         => 0,
 				'supplier_order_info' => [
 					'order_id'   => '10423',

@@ -126,7 +126,15 @@ final class Builder {
 	 *   currency: string,
 	 *   total_cents: int,
 	 *   supplier_order_info?: array{order_id: string, order_date: string}|null,
+	 *   ship_to?: array{name:string,deliver_to?:list<string>,street:list<string>,city:string,state?:string,postal_code?:string,iso_country:string}|null,
+	 *   emit_ship_to?: bool,
+	 *   emit_delivery_code?: bool,
+	 *   delivery_code?: string,
+	 *   delivery_code_extrinsic_name?: string,
+	 *   delivery_notes?: string,
+	 *   delivery_notes_policy?: string,
 	 *   items: list<array{
+	 *     line_type?: string,
 	 *     quantity: float|int,
 	 *     supplier_part_id: string,
 	 *     aux_id: string,
@@ -142,8 +150,14 @@ final class Builder {
 	 */
 	public function poom( array $args ): string {
 		$lang = $args['lang'] ?? 'en-US';
+		$version = $this->version( $args['version'] );
+		// Positive proof for these exact official DTDs; no guessed version threshold.
+		$postal_and_notes = in_array( $version, [ '1.2.008', '1.2.071' ], true );
+		$extended = '1.2.071' === $version;
+		$code = $args['delivery_code'] ?? '';
+		$code = is_string( $code ) && 1 === preg_match( '/\A[A-Z0-9_-]{1,32}\z/', $code ) ? $code : '';
 
-		[ $doc, $root ] = $this->envelope( $args['version'], $args['payload_id'], $args['timestamp'], $lang );
+		[ $doc, $root ] = $this->envelope( $version, $args['payload_id'], $args['timestamp'], $lang );
 
 		// Header: identity only. There is deliberately no SharedSecret
 		// parameter to this method — the DTD forbids authentication in
@@ -179,11 +193,12 @@ final class Builder {
 		$money = $this->el( $doc, $total, 'Money', Money::format( $args['total_cents'] ) );
 		$money->setAttribute( 'currency', $args['currency'] );
 
-		// DTD order within PunchOutOrderMessageHeader: Total then
-		// SupplierOrderInfo (ShipTo/Shipping/Tax are omitted — D365's fixed
-		// post-back mapping has no field for them; keep the POOM minimal
-		// and correct rather than rich, scope §6.2).
-		if ( ! empty( $args['supplier_order_info'] ) ) {
+		// Optional header order is Total, ShipTo, then the newer order reference.
+		// Freight is an ItemIn supplied by the native estimate mapper, never header Shipping.
+		if ( $postal_and_notes && true === ( $args['emit_ship_to'] ?? false ) && null !== ( $args['ship_to'] ?? null ) ) {
+			$this->ship_to( $doc, $poom_header, $args['ship_to'], $code, $extended, $lang );
+		}
+		if ( $extended && ! empty( $args['supplier_order_info'] ) ) {
 			$info = $this->el( $doc, $poom_header, 'SupplierOrderInfo' );
 			$info->setAttribute( 'orderID', $args['supplier_order_info']['order_id'] );
 
@@ -222,6 +237,19 @@ final class Builder {
 
 			$classification = $this->el( $doc, $detail, 'Classification', $item['classification'] );
 			$classification->setAttribute( 'domain', $item['classification_domain'] ?? 'UNSPSC' );
+
+			// The producer marks freight explicitly; a product can legitimately have SKU DELIVERY.
+			if ( 'freight' !== ( $item['line_type'] ?? 'merchandise' ) && $postal_and_notes && 'item_detail_extrinsic' === ( $args['delivery_notes_policy'] ?? 'off' ) && '' !== ( $args['delivery_notes'] ?? '' ) ) {
+				$notes = $this->xml_text( $args['delivery_notes'], 2000 );
+				$extrinsic = $this->el( $doc, $detail, 'Extrinsic', $notes );
+				$extrinsic->setAttribute( 'name', 'DeliveryInstructions' );
+			}
+			if ( $extended && true === ( $args['emit_delivery_code'] ?? false ) && '' !== $code ) {
+				$name = $this->xml_text( $args['delivery_code_extrinsic_name'] ?? 'DeliveryAddressCode', 64 );
+				if ( '' === trim( $name ) ) { throw new \DomainException( 'Invalid delivery XML value.' ); }
+				$extrinsic = $this->el( $doc, $item_in, 'Extrinsic', $code );
+				$extrinsic->setAttribute( 'name', $name );
+			}
 		}
 
 		return $this->serialise( $doc );
@@ -231,13 +259,56 @@ final class Builder {
 	 * Internals
 	 * ------------------------------------------------------------------ */
 
+	/** Prepared postal data only; no Woo lookup, rate calculation or master-address mutation. */
+	private function ship_to( \DOMDocument $doc, \DOMElement $parent, array $address, string $code, bool $extended, string $lang ): void {
+		$name = $this->xml_text( $address['name'] ?? null, 381 );
+		$country = $address['iso_country'] ?? '';
+		$streets = $address['street'] ?? null;
+		$recipients = $address['deliver_to'] ?? [];
+		if ( '' === trim( $name ) || ! is_string( $country ) || 1 !== preg_match( '/\A[A-Z]{2}\z/', $country ) || ! is_array( $streets ) || ! array_is_list( $streets ) || count( $streets ) < 1 || count( $streets ) > 2 || ! is_array( $recipients ) || ! array_is_list( $recipients ) || count( $recipients ) > 2 ) {
+			throw new \DomainException( 'Invalid delivery XML address.' );
+		}
+		$ship = $this->el( $doc, $parent, 'ShipTo' );
+		$node = $this->el( $doc, $ship, 'Address' );
+		if ( '' !== $code ) {
+			$node->setAttribute( 'addressID', $code );
+			if ( $extended ) { $node->setAttribute( 'addressIDDomain', 'supplier' ); }
+		}
+		$this->el( $doc, $node, 'Name', $name )->setAttribute( 'xml:lang', $lang );
+		$postal = $this->el( $doc, $node, 'PostalAddress' );
+		foreach ( $recipients as $recipient ) { $this->el( $doc, $postal, 'DeliverTo', $this->xml_text( $recipient, 381 ) ); }
+		foreach ( $streets as $street ) {
+			$street = $this->xml_text( $street, 190 );
+			if ( '' === trim( $street ) ) { throw new \DomainException( 'Invalid delivery XML address.' ); }
+			$this->el( $doc, $postal, 'Street', $street );
+		}
+		$this->el( $doc, $postal, 'City', $this->xml_text( $address['city'] ?? null, 190 ) );
+		foreach ( [ 'state' => 'State', 'postal_code' => 'PostalCode' ] as $key => $tag ) {
+			$value = $this->xml_text( $address[ $key ] ?? '', 'state' === $key ? 190 : 32 );
+			if ( '' !== $value ) { $this->el( $doc, $postal, $tag, $value ); }
+		}
+		$this->el( $doc, $postal, 'Country', $country )->setAttribute( 'isoCountryCode', $country );
+	}
+
+	/** Reject malformed new optional values instead of emitting invalid XML or truncating identifiers. */
+	private function xml_text( mixed $text, int $limit ): string {
+		if ( ! is_string( $text ) || strlen( $text ) > $limit * 4 || 1 !== preg_match( '/\A[\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]{0,' . $limit . '}\z/u', $text ) ) {
+			throw new \DomainException( 'Invalid delivery XML value.' );
+		}
+		return $text;
+	}
+
+	private function version( string $version ): string {
+		return preg_match( '/^\d+\.\d+\.\d+$/', $version ) ? $version : '1.2.008';
+	}
+
 	/**
 	 * Document + cXML root with DOCTYPE, payloadID, timestamp.
 	 *
 	 * @return array{0: \DOMDocument, 1: \DOMElement}
 	 */
 	private function envelope( string $version, string $payload_id, string $timestamp, string $lang = 'en-US' ): array {
-		$version = preg_match( '/^\d+\.\d+\.\d+$/', $version ) ? $version : '1.2.008';
+		$version = $this->version( $version );
 
 		$impl = new \DOMImplementation();
 		$dtd  = $impl->createDocumentType( 'cXML', '', "http://xml.cxml.org/schemas/cXML/{$version}/cXML.dtd" );
