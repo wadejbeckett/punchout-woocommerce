@@ -14,15 +14,6 @@ use PHPUnit\Framework\TestCase;
 use POW\Docs\Reference;
 use POW\Http\SetupEndpoint;
 
-if ( ! function_exists( '__' ) ) {
-	/**
-	 * Translation stub — never defined when WordPress is loaded.
-	 */
-	function __( string $text, string $domain = '' ): string { // phpcs:ignore
-		return $text;
-	}
-}
-
 final class DocsReferenceTest extends TestCase {
 
 	private function reference( bool $codes = false ): Reference {
