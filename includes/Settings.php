@@ -36,9 +36,11 @@ class Settings {
 		'token_ttl'            => 300,     // StartPage token, seconds (~5 min).
 		'session_ttl'          => 14400,   // Punchout login, seconds (4 h).
 
-		// /punchout/setup rate limit: requests per rolling minute for one
-		// (partner|unknown-sender, IP) pair.
+		// /punchout/setup downstream limit per (partner|unknown-sender, IP). Public construction uses 30 for nonpositive settings.
 		'rate_limit_per_min'   => 30,
+
+		// Per IP, pre-resolution: bounds body reads, parsing and audit storage.
+		'edge_rate_limit_per_min' => 120,
 
 		// Audit-table retention. The scope treats the log as dispute
 		// evidence, so the default keeps a year-plus before cron trims.

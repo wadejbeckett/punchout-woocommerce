@@ -164,7 +164,8 @@ wp punchout generate-key
 | Landing page | shop page | Post-login redirect + route-guard home |
 | Login link lifetime | 300 s | One-time StartPage token TTL |
 | Session lifetime | 4 h | Punchout login TTL (per-partner override) |
-| Setup rate limit | 30/min | Per partner+IP on `/punchout/setup`; 0 disables |
+| Setup rate limit | 30/min | Per partner+IP on `/punchout/setup`; 0 uses the default (30). The public self-test preserves positive values and uses 10/min when this is 0. |
+| Setup edge limit | 120/min | Per IP before method checks, body reads, parsing or audit storage on `/punchout/setup`; 0 uses the default (120) |
 | Log retention | 400 days | Audit-table trim horizon |
 | Buyer inactivity | 90 days | Flag (never delete) unseen buyers |
 | Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |

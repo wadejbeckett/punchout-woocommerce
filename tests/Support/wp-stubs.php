@@ -255,10 +255,11 @@ if ( ! function_exists( 'get_transient' ) ) {
 if ( ! function_exists( 'set_transient' ) ) {
 	/**
 	 * @param mixed $value      Value to store.
-	 * @param int   $expiration Ignored; see get_transient.
+	 * @param int   $expiration Recorded in pow_test_transient_expirations; expiry is not simulated.
 	 */
 	function set_transient( string $key, $value, int $expiration = 0 ): bool { // phpcs:ignore
 		$GLOBALS['pow_test_transients'][ $key ] = $value;
+		$GLOBALS['pow_test_transient_expirations'][ $key ][] = $expiration;
 
 		return true;
 	}
@@ -302,5 +303,40 @@ if ( ! function_exists( 'is_wp_error' ) ) {
 	 */
 	function is_wp_error( $thing ): bool { // phpcs:ignore
 		return $thing instanceof WP_Error;
+	}
+}
+
+if ( ! defined( 'ARRAY_A' ) ) {
+	define( 'ARRAY_A', 'ARRAY_A' );
+}
+
+if ( ! defined( 'MINUTE_IN_SECONDS' ) ) {
+	define( 'MINUTE_IN_SECONDS', 60 );
+}
+
+if ( ! function_exists( 'home_url' ) ) {
+	/** Only the absolute site URL used by the endpoint is modelled. */
+	function home_url( string $path = '' ): string { // phpcs:ignore
+		return 'https://shop.example.test' . $path;
+	}
+}
+
+if ( ! function_exists( 'wp_parse_url' ) ) {
+	/** Absolute URLs only in this suite; protocol-relative WP handling is not modelled. */
+	function wp_parse_url( string $url, int $component = -1 ): mixed { // phpcs:ignore
+		return parse_url( $url, $component );
+	}
+}
+
+if ( ! function_exists( 'status_header' ) ) {
+	function status_header( int $code ): void { // phpcs:ignore
+		$GLOBALS['pow_test_status_headers'][] = $code;
+	}
+}
+
+if ( ! function_exists( 'wp_parse_args' ) ) {
+	/** Only array merging is used by Settings; string/object argument parsing is not modelled. */
+	function wp_parse_args( array $args, array $defaults = [] ): array { // phpcs:ignore
+		return array_merge( $defaults, $args );
 	}
 }

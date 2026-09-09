@@ -28,6 +28,9 @@ require_once __DIR__ . '/Support/testcase-shim.php';
 // Under WordPress these stubs define nothing.
 require_once __DIR__ . '/Support/wp-stubs.php';
 
+// Native endpoint I/O and parser-entry recorders; dormant outside their test.
+require_once __DIR__ . '/Support/setup-io-stubs.php';
+
 // Under WooCommerce these stubs define nothing. Loaded after wp-stubs so
 // the WordPress surface is claimed there and this file stays WooCommerce.
 require_once __DIR__ . '/Support/wc-stubs.php';

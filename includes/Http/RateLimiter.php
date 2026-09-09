@@ -13,15 +13,9 @@ namespace POW\Http;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Fixed-window counter per (partner|unknown, IP) bucket for the pre-auth
- * /punchout/setup surface (scope §7). Transient-backed in production; the
- * storage callables are injectable so the window logic is unit-testable
- * without WordPress.
+ * Transient-backed counter for a named bucket, with a fixed window duration per limiter and injectable storage. Each accepted hit refreshes the transient TTL; rejected hits do not write. This is a blunt anti-abuse counter, not atomic or precise traffic shaping.
  *
- * A fixed one-minute window is deliberately simple: the goal is blunting
- * brute force and XML-parser abuse on a pre-auth endpoint, not fair
- * traffic shaping. A legitimate D365 retry (a handful of requests) never
- * approaches the threshold.
+ * Window-specific keys separate minute and hourly consumers. Introducing the window namespace resets existing live counters once on deploy.
  */
 final class RateLimiter {
 
@@ -32,19 +26,30 @@ final class RateLimiter {
 	private $set;
 
 	/**
-	 * @param int           $per_minute Threshold (<= 0 disables limiting).
+	 * @param int           $per_minute Threshold per window (<= 0 disables limiting).
 	 * @param callable|null $get        fn(string $key): int — current count.
-	 * @param callable|null $set        fn(string $key, int $count): void — store with ~60s TTL.
+	 * @param callable|null $set        fn(string $key, int $count): void — store with the window TTL.
+	 * @param int           $window_seconds Fixed window duration in seconds (default 60).
 	 */
 	public function __construct(
 		private int $per_minute,
 		?callable $get = null,
 		?callable $set = null,
+		private int $window_seconds = 60,
 	) {
 		$this->get = $get ?? static fn( string $key ): int => (int) get_transient( $key );
-		$this->set = $set ?? static function ( string $key, int $count ): void {
-			set_transient( $key, $count, MINUTE_IN_SECONDS );
+		$this->set = $set ?? function ( string $key, int $count ): void {
+			set_transient( $key, $count, $this->window_seconds );
 		};
+	}
+
+	/** Public flows must stay bounded while preserving every positive configured threshold. */
+	public static function public_limit( int $configured, int $fallback ): int {
+		if ( $fallback <= 0 ) {
+			throw new \InvalidArgumentException( 'Public rate-limit fallback must be positive' );
+		}
+
+		return $configured > 0 ? $configured : $fallback;
 	}
 
 	/**
@@ -55,7 +60,7 @@ final class RateLimiter {
 			return true;
 		}
 
-		$key   = 'pow_rl_' . md5( $bucket );
+		$key   = 'pow_rl_' . $this->window_seconds . '_' . md5( $bucket );
 		$count = ( $this->get )( $key );
 
 		if ( $count >= $this->per_minute ) {

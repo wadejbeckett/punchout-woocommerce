@@ -185,17 +185,23 @@ final class DocsPageTest extends TestCase {
 	 * The public self-test is never unthrottled, and never cached
 	 * ------------------------------------------------------------------ */
 
-	/**
-	 * 0 means "no limit" for the setup endpoint, which is the store's
-	 * choice to make about its own endpoint. The self-test is an
-	 * anonymous XML parser and a credential oracle on a public page, so
-	 * it keeps a floor whatever the setting says.
-	 */
-	public function test_the_self_test_bucket_has_a_floor(): void {
+	/** Positive limits are exact; only a nonpositive setting uses the public default. */
+	public function test_self_test_limit_preserves_positive_values_and_defaults_nonpositive(): void {
 		self::assertSame( 10, Page::self_test_limit( 0 ) );
 		self::assertSame( 10, Page::self_test_limit( -5 ) );
-		self::assertSame( 10, Page::self_test_limit( 3 ) );
-		self::assertSame( 60, Page::self_test_limit( 60 ) );
+		foreach ( [ 1, 3, 9, 30, 60 ] as $configured ) {
+			self::assertSame( $configured, Page::self_test_limit( $configured ) );
+		}
+	}
+
+	public function test_page_documents_the_effective_setup_limit_including_zero_default(): void {
+		foreach ( [ [ 0, 30 ], [ -5, 30 ], [ 1, 1 ], [ 3, 3 ], [ 9, 9 ], [ 30, 30 ] ] as [ $configured, $expected ] ) {
+			$vars = $this->page_vars();
+			$vars['rate_limit'] = $configured;
+			$html = Templates::render( 'docs/page', $vars );
+			self::assertStringContainsString( 'accepts ' . $expected . ' requests per minute', $html );
+			self::assertStringNotContainsString( 'No rate limit is currently configured', $html );
+		}
 	}
 
 	/**

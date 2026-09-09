@@ -57,7 +57,7 @@ final class Page {
 	public const NONCE = 'pow_docs_self_test';
 	public const FIELD = 'pow_docs_xml';
 
-	/** Floor on the self-test's per-minute bucket; see self_test_limit(). */
+	/** Public self-test default for nonpositive settings; the legacy constant name is retained for compatibility. */
 	public const SELF_TEST_MIN_PER_MIN = 10;
 
 	public function __construct(
@@ -112,24 +112,10 @@ final class Page {
 	}
 
 	/**
-	 * The per-minute ceiling the public self-test runs under.
-	 *
-	 * The setting documents 0 as "no limit", and that is the store's
-	 * choice to make about its own setup endpoint. The self-test is a
-	 * different surface: an anonymous XML parser and — because SelfTest
-	 * charges the endpoint's unknown-sender bucket — a credential oracle,
-	 * on a page anyone can load. It keeps a floor whatever the setting
-	 * says, so "unlimited" can never be expressed here.
-	 *
-	 * A store that sets the limit below the floor gets a self-test that is
-	 * slightly more permissive than its own endpoint against the shared
-	 * unknown-sender counter — 10 a minute rather than the 3 it asked for.
-	 * That is the deliberate trade: the floor exists to stop 0 meaning
-	 * unlimited, and a bounded page is worth more than an exact match to a
-	 * threshold nobody sets that low.
+	 * The public self-test preserves every positive configured threshold and uses its secure default only for zero/negative settings. It must never express the generic limiter's unlimited mode.
 	 */
 	public static function self_test_limit( int $configured ): int {
-		return max( self::SELF_TEST_MIN_PER_MIN, $configured );
+		return RateLimiter::public_limit( $configured, self::SELF_TEST_MIN_PER_MIN );
 	}
 
 	/**
