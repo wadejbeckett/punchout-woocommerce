@@ -31,10 +31,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * Contract: HTTP status is 200 even for cXML-level failures — the failure
  * is expressed in the cXML Status code (a 400 alongside a valid StartPage
- * broke a real integration, gotcha 6). Codes: 401 unknown identity / bad
- * secret / IP reject; 406 unparseable or structurally invalid; 409
- * duplicate payloadID after token redemption; 450 unsupported request or
- * operation; 500 internal; 550 rate limited.
+ * broke a real integration, gotcha 6). The codes and what each one means
+ * are STATUS_REASONS below, which is also what the buyer-facing table is
+ * built from; prose here could only go stale against it.
  */
 final class SetupEndpoint {
 

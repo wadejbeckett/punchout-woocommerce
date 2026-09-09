@@ -534,7 +534,7 @@ final class Page {
 		echo ( new \POW\Docs\Page(
 			$this->settings,
 			$this->registry,
-			new RateLimiter( $this->settings->int( 'rate_limit_per_min' ) ),
+			new RateLimiter( \POW\Docs\Page::self_test_limit( $this->settings->int( 'rate_limit_per_min' ) ) ),
 			$this->audit
 		) )->render( true );
 	}

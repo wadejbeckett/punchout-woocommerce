@@ -116,6 +116,19 @@ final class DocsSelfTestTest extends TestCase {
 	}
 
 	/**
+	 * A namespace prefix on the element is legal cXML and some buyers send
+	 * it. A redaction that only knows the bare element name would archive
+	 * the credential verbatim.
+	 */
+	public function test_redact_removes_a_namespace_prefixed_shared_secret(): void {
+		$redacted = SelfTest::redact( '<cxml:Credential><cxml:SharedSecret>hunter2</cxml:SharedSecret></cxml:Credential>' );
+
+		self::assertStringNotContainsString( 'hunter2', $redacted );
+		self::assertStringContainsString( '[redacted]', $redacted );
+		self::assertStringContainsString( '</cxml:SharedSecret>', $redacted );
+	}
+
+	/**
 	 * The collapse rule is a pure static so it is provable without a
 	 * database — a Registry needs wpdb, and the whole point of the rule is
 	 * that it holds for a failed lookup as well as a wrong secret.

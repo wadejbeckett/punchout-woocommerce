@@ -33,7 +33,7 @@ final class DocsPageTest extends TestCase {
 	private const HOSTILE_XML = '<cXML><SharedSecret>hunter2</SharedSecret><script>alert(1)</script></cXML>';
 
 	protected function tearDown(): void {
-		unset( $GLOBALS['pow_test_translations'], $GLOBALS['pow_test_valid_nonce'] );
+		unset( $GLOBALS['pow_test_translations'], $GLOBALS['pow_test_valid_nonce'], $GLOBALS['pow_test_nocache_headers'] );
 	}
 
 	/**
@@ -161,6 +161,65 @@ final class DocsPageTest extends TestCase {
 		);
 
 		self::assertStringContainsString( $notice, $this->self_test_html( null, '', $notice ) );
+	}
+
+	/**
+	 * pow_docs_xml[]=x makes $_POST[ FIELD ] an array, and casting an
+	 * array to string is a PHP warning printed on a public page. Both
+	 * gates take a document or they take nothing.
+	 */
+	public function test_an_array_in_the_document_field_is_not_a_submission(): void {
+		$GLOBALS['pow_test_valid_nonce'] = 'good';
+
+		$post = [
+			'pow_docs_xml' => [ '<cXML/>' ],
+			'_wpnonce'     => 'good',
+		];
+
+		self::assertFalse( Page::is_self_test_post( 'POST', $post ) );
+		self::assertFalse( Page::is_self_test_request( 'POST', $post ) );
+		self::assertSame( '', Page::expired_nonce_notice( 'POST', $post ) );
+	}
+
+	/* ---------------------------------------------------------------------
+	 * The public self-test is never unthrottled, and never cached
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * 0 means "no limit" for the setup endpoint, which is the store's
+	 * choice to make about its own endpoint. The self-test is an
+	 * anonymous XML parser and a credential oracle on a public page, so
+	 * it keeps a floor whatever the setting says.
+	 */
+	public function test_the_self_test_bucket_has_a_floor(): void {
+		self::assertSame( 10, Page::self_test_limit( 0 ) );
+		self::assertSame( 10, Page::self_test_limit( -5 ) );
+		self::assertSame( 10, Page::self_test_limit( 3 ) );
+		self::assertSame( 60, Page::self_test_limit( 60 ) );
+	}
+
+	/**
+	 * A privileged render carries the partner roster, and a self-test POST
+	 * carries a report about a stranger's paste. Neither may be stored by
+	 * a page cache and handed to the next anonymous visitor.
+	 */
+	public function test_a_privileged_render_is_never_page_cached(): void {
+		self::assertTrue( Page::suppress_page_cache( true, 'GET', [] ) );
+		self::assertSame( 1, $GLOBALS['pow_test_nocache_headers'] ?? 0 );
+	}
+
+	public function test_a_self_test_post_is_never_page_cached(): void {
+		self::assertTrue( Page::suppress_page_cache( false, 'POST', [ 'pow_docs_xml' => '<cXML/>' ] ) );
+		self::assertSame( 1, $GLOBALS['pow_test_nocache_headers'] ?? 0 );
+	}
+
+	/**
+	 * The public page itself is identical for every visitor, so an
+	 * anonymous GET stays cacheable.
+	 */
+	public function test_an_anonymous_get_stays_cacheable(): void {
+		self::assertFalse( Page::suppress_page_cache( false, 'GET', [] ) );
+		self::assertSame( 0, $GLOBALS['pow_test_nocache_headers'] ?? 0 );
 	}
 
 	/* ---------------------------------------------------------------------

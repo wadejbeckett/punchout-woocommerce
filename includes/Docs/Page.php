@@ -57,6 +57,9 @@ final class Page {
 	public const NONCE = 'pow_docs_self_test';
 	public const FIELD = 'pow_docs_xml';
 
+	/** Floor on the self-test's per-minute bucket; see self_test_limit(). */
+	public const SELF_TEST_MIN_PER_MIN = 10;
+
 	public function __construct(
 		private Settings $settings,
 		private Registry $registry,
@@ -72,7 +75,61 @@ final class Page {
 	 * @param array<string, mixed>|string $atts Shortcode attributes (none taken).
 	 */
 	public function shortcode( $atts = [] ): string {
-		return $this->render( current_user_can( AdminPage::CAP ) );
+		$privileged = current_user_can( AdminPage::CAP );
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- reads only the presence of the field, to decide cacheability.
+		self::suppress_page_cache( $privileged, (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ), $_POST );
+
+		return $this->render( $privileged );
+	}
+
+	/**
+	 * Keep this render out of every page cache, and say whether it did.
+	 *
+	 * Two renders of this page are not the public page: the privileged one
+	 * carries the partner roster, and a self-test POST carries a report
+	 * about a stranger's paste. A page cache that stored either would
+	 * serve it to the next anonymous visitor, which is the one thing the
+	 * $privileged gate exists to prevent. An anonymous GET is the same for
+	 * everyone and stays cacheable.
+	 *
+	 * DONOTCACHEPAGE is the constant WP Super Cache, W3 Total Cache,
+	 * LiteSpeed Cache and Batcache all honour; nocache_headers() covers
+	 * the proxy in front of them.
+	 *
+	 * @param array<string, mixed> $post Posted fields.
+	 * @return bool Whether caching was suppressed.
+	 */
+	public static function suppress_page_cache( bool $privileged, string $method, array $post ): bool {
+		if ( ! $privileged && ! self::is_self_test_post( $method, $post ) ) {
+			return false;
+		}
+
+		nocache_headers();
+		defined( 'DONOTCACHEPAGE' ) || define( 'DONOTCACHEPAGE', true );
+
+		return true;
+	}
+
+	/**
+	 * The per-minute ceiling the public self-test runs under.
+	 *
+	 * The setting documents 0 as "no limit", and that is the store's
+	 * choice to make about its own setup endpoint. The self-test is a
+	 * different surface: an anonymous XML parser and — because SelfTest
+	 * charges the endpoint's unknown-sender bucket — a credential oracle,
+	 * on a page anyone can load. It keeps a floor whatever the setting
+	 * says, so "unlimited" can never be expressed here.
+	 *
+	 * A store that sets the limit below the floor gets a self-test that is
+	 * slightly more permissive than its own endpoint against the shared
+	 * unknown-sender counter — 10 a minute rather than the 3 it asked for.
+	 * That is the deliberate trade: the floor exists to stop 0 meaning
+	 * unlimited, and a bounded page is worth more than an exact match to a
+	 * threshold nobody sets that low.
+	 */
+	public static function self_test_limit( int $configured ): int {
+		return max( self::SELF_TEST_MIN_PER_MIN, $configured );
 	}
 
 	/**
@@ -162,10 +219,14 @@ final class Page {
 	/**
 	 * Whether the visitor submitted the self-test form at all, nonce aside.
 	 *
+	 * The field must be a string. `pow_docs_xml[]=x` makes it an array,
+	 * and PHP casting an array to string is a warning printed on a public
+	 * page — so the type is part of the gate, not of the handler.
+	 *
 	 * @param array<string, mixed> $post Posted fields.
 	 */
 	public static function is_self_test_post( string $method, array $post ): bool {
-		return 'POST' === strtoupper( $method ) && isset( $post[ self::FIELD ] );
+		return 'POST' === strtoupper( $method ) && isset( $post[ self::FIELD ] ) && is_string( $post[ self::FIELD ] );
 	}
 
 	/**
@@ -178,7 +239,7 @@ final class Page {
 	 * @param array<string, mixed> $post Posted fields.
 	 */
 	public static function is_self_test_request( string $method, array $post ): bool {
-		if ( 'POST' !== strtoupper( $method ) || ! isset( $post[ self::FIELD ], $post['_wpnonce'] ) ) {
+		if ( ! self::is_self_test_post( $method, $post ) || ! isset( $post['_wpnonce'] ) || ! is_string( $post['_wpnonce'] ) ) {
 			return false;
 		}
 

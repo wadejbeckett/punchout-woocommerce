@@ -114,7 +114,7 @@ final class Plugin {
 		// precisely while punchout is still switched off, and the page
 		// exposes no session surface. Its self-test is the one gated part
 		// — with punchout off it says so instead of running.
-		( new Docs\Page( $this->settings, $this->registry, new RateLimiter( $this->settings->int( 'rate_limit_per_min' ) ), $this->audit ) )->register();
+		( new Docs\Page( $this->settings, $this->registry, new RateLimiter( Docs\Page::self_test_limit( $this->settings->int( 'rate_limit_per_min' ) ) ), $this->audit ) )->register();
 
 		add_action( 'admin_init', [ Installer::class, 'maybe_upgrade' ] );
 		add_action( 'admin_notices', [ $this, 'render_key_notice' ] );
