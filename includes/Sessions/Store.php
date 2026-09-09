@@ -63,6 +63,30 @@ class Store {
 	}
 
 	/**
+	 * Fill only an unowned order column. PayExit's generic update remains authoritative.
+	 *
+	 * @return string linked|already_owned|error. Zero affected rows also covers a missing session.
+	 */
+	public function link_quote_if_empty( int $id, int $order_id ): string {
+		global $wpdb;
+
+		if ( $id <= 0 || $order_id <= 0 ) {
+			return 'error';
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$affected = $wpdb->query(
+			$wpdb->prepare(
+				'UPDATE ' . $this->table() . ' SET order_id = %d WHERE id = %d AND (order_id = 0 OR order_id IS NULL)',
+				$order_id,
+				$id
+			)
+		);
+
+		return false === $affected ? 'error' : ( 1 === $affected ? 'linked' : 'already_owned' );
+	}
+
+	/**
 	 * Existing row for a (partner, payloadID) pair — replay detection.
 	 */
 	public function find_by_payload( int $partner_id, string $payload_id ): ?Session {

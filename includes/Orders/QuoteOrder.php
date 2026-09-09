@@ -97,7 +97,7 @@ final class QuoteOrder {
 	 * Create the Punchout Quote order for a returning session.
 	 *
 	 * @param array<string, mixed> $poom_lines PoomMapper::from_cart() output.
-	 * @return int Order id, or 0 when creation failed (logged and audited).
+	 * @return int Order id, or 0 when creation failed (reporting is best effort).
 	 */
 	public function create_for_session( Session $session, Partner $partner, array $poom_lines ): int {
 		// Held outside the try so the catch can cancel a part-built order:
@@ -107,14 +107,14 @@ final class QuoteOrder {
 		$order = null;
 
 		try {
-			// A double-submitted return must not leave two quotes behind:
-			// the session already names one of ours, so hand that back.
+			// Sequential reuse only: the return endpoint selects its atomic winner
+			// before entering this optional service.
 			// Inside the try because the lookup touches the database, and
 			// nothing in here may throw into the waiting basket.
 			$existing = $this->existing_quote( $session );
 
 			if ( $existing > 0 ) {
-				$this->audit->write(
+				$this->audit_best_effort(
 					'quote_order_reused',
 					[
 						'partner_id' => $partner->id,
@@ -133,7 +133,7 @@ final class QuoteOrder {
 
 			if ( ! $order instanceof \WC_Order ) {
 				// wc_create_order() returns a WP_Error; it does not throw.
-				throw new \RuntimeException( is_wp_error( $order ) ? (string) $order->get_error_message() : 'wc_create_order returned no order' );
+				throw new \RuntimeException( 'quote_creation_failed' );
 			}
 
 			$order->set_currency( (string) ( $poom_lines['currency'] ?? get_woocommerce_currency() ) );
@@ -170,32 +170,53 @@ final class QuoteOrder {
 			// which names a custom status).
 			$order->set_status( Status::SLUG );
 
-			$order->add_order_note(
+			$order_id = (int) $order->save();
+
+			// Woo may catch a save exception and still return the existing ID.
+			$saved = $order_id > 0 ? wc_get_order( $order_id ) : false;
+
+			if ( ! $saved instanceof \WC_Order || Status::SLUG !== $saved->get_status() || (int) $saved->get_meta( self::META_SESSION_ID ) !== $session->id ) {
+				throw new \RuntimeException( 'quote_save_failed' );
+			}
+		} catch ( \Throwable $e ) {
+			return $this->fail( $session, $partner, $order, 'quote_creation_failed' );
+		}
+
+		// Persistence succeeded. Linking and reporting may fail independently; neither
+		// failure makes this usable quote part-built or eligible for cancellation.
+		$link = 'already_owned';
+
+		try {
+			if ( $session->order_id <= 0 ) {
+				$link = $this->sessions->link_quote_if_empty( $session->id, $order_id );
+			}
+		} catch ( \Throwable $e ) {
+			$link = 'error';
+		}
+
+		if ( 'error' === $link ) {
+			$this->error_best_effort( 'Quote order session link failed', [ 'session' => $session->id, 'order' => $order_id ] );
+		}
+
+		try {
+			$noted = $order->add_order_note(
 				sprintf(
 					/* translators: 1: session id, 2: customer connection name, 3: address source */
-					__( 'Punchout Quote created from punchout session #%1$d (%2$s). The cXML basket returned to the buyer is stored on this order. Delivery address source: %3$s.', 'punchout-woocommerce' ),
+					__( 'Punchout Quote created from punchout session #%1$d (%2$s). Delivery address source: %3$s.', 'punchout-woocommerce' ),
 					$session->id,
 					$partner->name,
 					$shipping['source']
 				)
 			);
 
-			$order_id = (int) $order->save();
+			if ( ! $noted ) {
+				throw new \RuntimeException( 'quote_note_failed' );
+			}
 		} catch ( \Throwable $e ) {
-			// DESIGN §6: quote-order failure never blocks the basket —
-			// log, notify the admin, continue. The buyer still gets their
-			// cart back and the audit copy of the basket still exists.
-			return $this->fail( $session, $partner, $order, $e->getMessage() );
+			$this->error_best_effort( 'Quote order note could not be saved', [ 'order' => $order_id ] );
 		}
 
-		// PayExit owns sessions.order_id once a buyer checks out (it links
-		// the paid order and leaves the session active until payment
-		// confirms), so a quote only ever fills an empty column.
-		if ( $session->order_id <= 0 ) {
-			$this->sessions->update( $session->id, [ 'order_id' => $order_id ] );
-		}
-
-		$this->audit->write(
+		$this->audit_best_effort(
 			'quote_order_created',
 			[
 				'partner_id' => $partner->id,
@@ -206,6 +227,7 @@ final class QuoteOrder {
 				'detail'     => [
 					'lines'          => count( (array) ( $poom_lines['items'] ?? [] ) ),
 					'total'          => (int) ( $poom_lines['total_cents'] ?? 0 ),
+					'session_link'   => $link,
 					'address_source' => $shipping['source'],
 					'delivery_code'  => $shipping['code'],
 				],
@@ -215,34 +237,33 @@ final class QuoteOrder {
 		return $order_id;
 	}
 
-	/**
-	 * Store the basket document on the order once the build has produced
-	 * it. Separate from creation because DESIGN §1 puts creation between
-	 * the mapping and the build, so there is no XML to store yet.
-	 *
-	 * Swallows its own failures for the same reason creation does: this
-	 * runs while the buyer's basket is on its way back, and the audit log
-	 * already holds the document, so a save that fails costs the operator
-	 * a convenience copy and nothing else.
-	 */
+	/** Attach the winning basket document; both order and audit copies are best effort. */
 	public function attach_poom( int $order_id, string $poom_xml ): void {
 		try {
 			$order = wc_get_order( $order_id );
 
 			if ( ! $order instanceof \WC_Order ) {
-				return;
+				throw new \RuntimeException( 'quote_missing' );
 			}
 
 			$order->update_meta_data( self::META_POOM_XML, $poom_xml );
-			$order->save();
+			if ( (int) $order->save() <= 0 ) {
+				throw new \RuntimeException( 'quote_attachment_failed' );
+			}
+
+			$saved = wc_get_order( $order_id );
+
+			if ( ! $saved instanceof \WC_Order || $poom_xml !== $saved->get_meta( self::META_POOM_XML ) ) {
+				throw new \RuntimeException( 'quote_attachment_failed' );
+			}
 		} catch ( \Throwable $e ) {
-			$this->logger->error( 'Quote order basket could not be attached', [ 'order' => $order_id, 'error' => $e->getMessage() ] );
-			$this->audit->write(
+			$this->error_best_effort( 'Quote order basket could not be attached', [ 'order' => $order_id ] );
+			$this->audit_best_effort(
 				'quote_poom_failed',
 				[
-					'order_id' => $order_id,
+					'order_id'   => $order_id,
 					'result'   => 'error',
-					'detail'   => [ 'error' => $e->getMessage() ],
+					'detail'   => [ 'error' => 'quote_attachment_failed' ],
 				]
 			);
 		}
@@ -464,14 +485,10 @@ final class QuoteOrder {
 	 */
 	private function fail( Session $session, Partner $partner, mixed $order, string $error ): int {
 		$order_id = $order instanceof \WC_Order ? (int) $order->get_id() : 0;
+		$cancelled = $order_id > 0 && $this->cancel_part_built( $order );
 
-		if ( $order_id > 0 ) {
-			$this->cancel_part_built( $order, $error );
-		}
-
-		$this->logger->error( 'Quote order creation failed', [ 'session' => $session->id, 'order' => $order_id, 'error' => $error ] );
-
-		$this->audit->write(
+		$this->error_best_effort( 'Quote order creation failed', [ 'session' => $session->id, 'order' => $order_id, 'error' => $error ] );
+		$this->audit_best_effort(
 			'quote_order_failed',
 			[
 				'partner_id' => $partner->id,
@@ -480,38 +497,70 @@ final class QuoteOrder {
 				'order_id'   => $order_id,
 				'result'     => 'error',
 				'detail'     => [
-					'error'    => $error,
-					'order_id' => $order_id,
+					'error'        => $error,
+					'order_id'     => $order_id,
+					'cancellation' => $order_id > 0 ? ( $cancelled ? 'confirmed' : 'unconfirmed' ) : 'not_needed',
 				],
 			]
 		);
 
-		$this->notify_failure( $session, $partner, $order_id, $error );
+		try {
+			$this->notify_failure( $session, $partner, $order_id, $error, $cancelled );
+		} catch ( \Throwable $e ) {
+			$this->error_best_effort( 'Quote failure notification could not be sent', [ 'session' => $session->id, 'order' => $order_id ] );
+		}
 
 		return 0;
 	}
 
-	/**
-	 * A part-built quote is cancelled, never deleted: cancelled keeps the
-	 * evidence, keeps it out of the buyer's pay-for-order links, and
-	 * restores no stock (a quote never reduced any).
-	 */
-	private function cancel_part_built( \WC_Order $order, string $error ): void {
+	/** Cancel incomplete persistence before attempting its optional explanatory note. */
+	private function cancel_part_built( \WC_Order $order ): bool {
 		try {
-			$order->add_order_note(
-				sprintf(
-					/* translators: %s: error message */
-					__( 'Cancelled automatically: this Punchout Quote was left part-built by a failed punchout return (%s). Do not treat it as an order to fulfil — the buyer\'s basket went back normally and their purchasing system holds the real requisition.', 'punchout-woocommerce' ),
-					$error
-				)
-			);
 			$order->set_status( 'cancelled' );
-			$order->save();
+
+			if ( (int) $order->save() <= 0 ) {
+				throw new \RuntimeException( 'quote_cancellation_failed' );
+			}
+
+			$saved = wc_get_order( (int) $order->get_id() );
+
+			if ( ! $saved instanceof \WC_Order || 'cancelled' !== $saved->get_status() ) {
+				throw new \RuntimeException( 'quote_cancellation_failed' );
+			}
 		} catch ( \Throwable $e ) {
-			// Nothing left to try: say so loudly rather than throw into
-			// the return the buyer is still waiting on.
-			$this->logger->error( 'Part-built quote order could not be cancelled', [ 'order' => $order->get_id(), 'error' => $e->getMessage() ] );
+			$this->error_best_effort( 'Part-built quote order cancellation not confirmed' );
+			return false;
 		}
+
+		try {
+			if ( ! $order->add_order_note( __( 'Cancelled automatically: this Punchout Quote was left part-built. Check the punchout session before treating it as an order to fulfil.', 'punchout-woocommerce' ) ) ) {
+				throw new \RuntimeException( 'quote_note_failed' );
+			}
+		} catch ( \Throwable $e ) {
+			$this->error_best_effort( 'Part-built quote cancellation note could not be saved' );
+		}
+
+		return true;
+	}
+
+	private function error_best_effort( string $message, array $context = [] ): void {
+		try {
+			$this->logger->error( $message, $context );
+		} catch ( \Throwable $e ) {
+			// Operational handlers are optional and may themselves throw.
+		}
+	}
+
+	private function audit_best_effort( string $event, array $context ): void {
+		try {
+			if ( $this->audit->write_checked( $event, $context ) ) {
+				return;
+			}
+		} catch ( \Throwable $e ) {
+			// Contain third-party audit overrides as well as the default writer.
+		}
+
+		$this->error_best_effort( 'Quote audit persistence not confirmed', [ 'event' => $event, 'order' => $context['order_id'] ?? 0 ] );
 	}
 
 	/**
@@ -578,7 +627,9 @@ final class QuoteOrder {
 		}
 
 		if ( [] !== $props ) {
-			$order->set_props( $props );
+			if ( is_wp_error( $order->set_props( $props ) ) ) {
+				throw new \RuntimeException( 'quote_shipping_failed' );
+			}
 		}
 	}
 
@@ -600,7 +651,7 @@ final class QuoteOrder {
 		$product    = ( $product_id > 0 && function_exists( 'wc_get_product' ) ) ? wc_get_product( $product_id ) : null;
 
 		if ( $product ) {
-			$order->add_product(
+			$item_id = $order->add_product(
 				$product,
 				$args['quantity'],
 				[
@@ -608,6 +659,10 @@ final class QuoteOrder {
 					'total'    => $args['total'],
 				]
 			);
+
+			if ( ! $item_id ) {
+				throw new \RuntimeException( 'quote_line_failed' );
+			}
 
 			return;
 		}
@@ -626,43 +681,53 @@ final class QuoteOrder {
 			$item->add_meta_data( 'SKU', $args['sku'], true );
 		}
 
-		$order->add_item( $item );
+		if ( false === $order->add_item( $item ) ) {
+			throw new \RuntimeException( 'quote_line_failed' );
+		}
 	}
 
 	/**
 	 * DESIGN §6: the operator hears about a failed quote order, but at most
 	 * once an hour — a systematic failure would otherwise mail on every
-	 * punchout return. The audit log carries every occurrence regardless.
+	 * punchout return. Each occurrence attempts an independent audit write.
 	 */
-	private function notify_failure( Session $session, Partner $partner, int $order_id, string $error ): void {
+	private function notify_failure( Session $session, Partner $partner, int $order_id, string $error, bool $cancelled ): void {
 		$to = (string) get_option( 'admin_email' );
 
 		if ( '' === $to || false !== get_transient( self::FAIL_NOTICE_KEY ) ) {
 			return;
 		}
 
-		set_transient( self::FAIL_NOTICE_KEY, 1, HOUR_IN_SECONDS );
-
 		$outcome = $order_id > 0
 			? sprintf(
 				/* translators: %d: order id */
-				__( 'order #%d was left part-built and has been cancelled for you', 'punchout-woocommerce' ),
+				$cancelled
+					? __( 'order #%d was left part-built and has been cancelled for you', 'punchout-woocommerce' )
+					: __( 'order #%d was left part-built; cancellation is not confirmed and needs checking', 'punchout-woocommerce' ),
 				$order_id
 			)
 			: __( 'no order was created', 'punchout-woocommerce' );
 
-		wp_mail(
+		$sent = wp_mail(
 			$to,
 			__( 'Punchout: a quote order could not be created', 'punchout-woocommerce' ),
 			sprintf(
 				/* translators: 1: connection name, 2: session id, 3: what happened to the order, 4: error message */
-				__( 'A punchout return from %1$s (session #%2$d) went back to the buyer normally, but the Punchout Quote order could not be completed: %3$s. The error was: %4$s. Further failures in the next hour are logged but not emailed; see the punchout audit log.', 'punchout-woocommerce' ),
+				__( 'A punchout return from %1$s (session #%2$d) is being returned, but the Punchout Quote order could not be completed: %3$s. The error was: %4$s. Further notifications are limited for the next hour. Check the order and available punchout logs; diagnostic persistence is not guaranteed.', 'punchout-woocommerce' ),
 				$partner->name,
 				$session->id,
 				$outcome,
 				$error
 			)
 		);
+
+		if ( ! $sent ) {
+			throw new \RuntimeException( 'quote_notification_failed' );
+		}
+
+		if ( ! set_transient( self::FAIL_NOTICE_KEY, 1, HOUR_IN_SECONDS ) ) {
+			$this->error_best_effort( 'Quote failure notification throttle could not be saved', [ 'session' => $session->id ] );
+		}
 	}
 
 	/**

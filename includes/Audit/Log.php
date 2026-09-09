@@ -41,6 +41,33 @@ class Log {
 	 *                                      result, detail (array), xml, ip.
 	 */
 	public function write( string $event, array $context = [] ): void {
+		[ $row ] = $this->append( $event, $context );
+		$this->logger->info( $event, [ 'result' => $row['result'], 'partner' => $row['partner_id'], 'session' => $row['session_id'] ] );
+	}
+
+	/**
+	 * Optional return diagnostics: confirm the row independently of the operational mirror.
+	 * Existing write() callers retain their void interface and exception behaviour.
+	 */
+	public function write_checked( string $event, array $context = [] ): bool {
+		try {
+			[ $row, $persisted ] = $this->append( $event, $context );
+		} catch ( \Throwable $e ) {
+			$persisted = false;
+			$row = [ 'result' => 'error', 'partner_id' => (int) ( $context['partner_id'] ?? 0 ), 'session_id' => (int) ( $context['session_id'] ?? 0 ) ];
+		}
+
+		try {
+			$this->logger->info( $event, [ 'result' => $persisted ? $row['result'] : 'audit_failed', 'partner' => $row['partner_id'], 'session' => $row['session_id'] ] );
+		} catch ( \Throwable $e ) {
+			// A failed mirror does not undo a confirmed audit row.
+		}
+
+		return $persisted;
+	}
+
+	/** @return array{0: array<string, mixed>, 1: bool} */
+	private function append( string $event, array $context ): array {
 		global $wpdb;
 
 		$detail = $context['detail'] ?? [];
@@ -62,9 +89,9 @@ class Log {
 		];
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
-		$wpdb->insert( $this->table(), $row );
+		$inserted = $wpdb->insert( $this->table(), $row );
 
-		$this->logger->info( $event, [ 'result' => $row['result'], 'partner' => $row['partner_id'], 'session' => $row['session_id'] ] );
+		return [ $row, 1 === $inserted ];
 	}
 
 	/**

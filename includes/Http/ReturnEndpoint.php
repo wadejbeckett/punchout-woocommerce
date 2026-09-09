@@ -125,18 +125,6 @@ final class ReturnEndpoint {
 			];
 		}
 
-		// The quote order is created between the mapping and the build, so
-		// it carries exactly the lines the buyer's system is about to be
-		// quoted (DESIGN §1). The empty/close-out path creates nothing:
-		// an empty POOM is a cancel, so there is no basket to quote —
-		// either the buyer left with nothing (order_id still 0) or they
-		// paid and PayExit already linked the real Woo order, which the
-		// quote never overwrites. A failure here returns 0 and never stops
-		// the basket going back (DESIGN §6).
-		$quote_order_id = 'cart' === $mode
-			? $this->quotes->create_for_session( $session, $partner, $mapped )
-			: 0;
-
 		$supplier_order_info = null;
 
 		if ( 'empty' === $mode && $session->order_id > 0 && function_exists( 'wc_get_order' ) ) {
@@ -173,13 +161,17 @@ final class ReturnEndpoint {
 			]
 		);
 
-		if ( $quote_order_id > 0 ) {
-			$this->quotes->attach_poom( $quote_order_id, $poom_xml );
+		// Prepare the complete response before consuming the session. The same mapped
+		// snapshot supplies both the winning quote and this already-built document.
+		$markup = $this->handoff_markup( $session, $partner, $poom_xml, $notices );
+
+		if ( '' === trim( $markup ) ) {
+			$this->error_page( __( 'The cart return could not be prepared. Please try again.', 'punchout-woocommerce' ), 500 );
+			return;
 		}
 
-		// Transition BEFORE rendering: if the guarded update loses a race
-		// (double-submit), the second request lands on the expired page
-		// instead of sending a second POOM.
+		// This conditional transition is the only winner selection. A losing request
+		// never creates or attaches a quote, even if it read an earlier active snapshot.
 		$transitioned = 'cart' === $mode
 			? $this->sessions->transition( $session->id, Session::ACTIVE, Session::RETURNED )
 			: $this->sessions->transition( $session->id, $session->status, Session::CLOSED );
@@ -189,7 +181,23 @@ final class ReturnEndpoint {
 			return;
 		}
 
-		$this->audit->write(
+		$quote_order_id = 0;
+
+		if ( 'cart' === $mode ) {
+			try {
+				$quote_order_id = $this->quotes->create_for_session( $session, $partner, $mapped );
+
+				if ( $quote_order_id > 0 ) {
+					$this->quotes->attach_poom( $quote_order_id, $poom_xml );
+				}
+			} catch ( \Throwable $e ) {
+				// Defence in depth for unexpected optional-service failures. Never expose
+				// extension exception text, which can contain credentials or basket XML.
+				$this->audit_best_effort( 'quote_return_failed', [ 'session_id' => $session->id, 'partner_id' => $partner->id, 'order_id' => $quote_order_id, 'result' => 'error' ] );
+			}
+		}
+
+		$this->audit_best_effort(
 			'cart' === $mode ? 'return_sent' : 'return_empty_sent',
 			[
 				'partner_id' => $partner->id,
@@ -207,8 +215,6 @@ final class ReturnEndpoint {
 			]
 		);
 
-		$markup = $this->handoff_markup( $session, $partner, $poom_xml, $notices );
-
 		$this->teardown( $user->ID, $session );
 
 		status_header( 200 );
@@ -219,6 +225,14 @@ final class ReturnEndpoint {
 	/* ---------------------------------------------------------------------
 	 * Internals
 	 * ------------------------------------------------------------------ */
+
+	private function audit_best_effort( string $event, array $context ): void {
+		try {
+			$this->audit->write_checked( $event, $context );
+		} catch ( \Throwable $e ) {
+			// Reporting cannot prevent a prepared, authorized handoff, including teardown.
+		}
+	}
 
 	private function handoff_markup( Session $session, Partner $partner, string $poom_xml, array $notices ): string {
 		$field = FormPack::field(
@@ -271,7 +285,7 @@ final class ReturnEndpoint {
 			WC()->cart->empty_cart( true );
 		}
 
-		$this->audit->write(
+		$this->audit_best_effort(
 			'session_closed',
 			[
 				'partner_id' => $session->partner_id,
