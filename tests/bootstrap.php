@@ -35,3 +35,9 @@ require_once __DIR__ . '/Support/wc-stubs.php';
 require_once dirname( __DIR__ ) . '/includes/Autoloader.php';
 
 \POW\Autoloader::register( 'POW', dirname( __DIR__ ) . '/includes' );
+
+// The service doubles two quote suites share. They extend plugin classes,
+// so they load after the autoloader — and from here rather than from a
+// test file, because the standalone runner requires each test file only
+// when it reaches it.
+require_once __DIR__ . '/Support/quote-doubles.php';

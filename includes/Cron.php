@@ -11,6 +11,7 @@ declare( strict_types = 1 );
 namespace POW;
 
 use POW\Audit\Log;
+use POW\Orders\QuoteOrder;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
 
@@ -25,7 +26,9 @@ defined( 'ABSPATH' ) || exit;
  * - buyers unseen for N days flagged inactive — flagged, never deleted,
  *   because they carry order attribution — their sessions torn down and
  *   pow_buyer_deactivated fired for site glue to clean up after;
- * - audit-table retention trim.
+ * - audit-table retention trim;
+ * - unconverted Punchout Quote orders past their retention cancelled
+ *   (never deleted — QuoteOrder::expire()).
  *
  * Runs through Action Scheduler when WooCommerce provides it (reliable,
  * observable in WC > Status > Scheduled Actions), falling back to WP-Cron.
@@ -39,6 +42,7 @@ final class Cron {
 		private Store $sessions,
 		private Log $audit,
 		private Settings $settings,
+		private QuoteOrder $quotes,
 	) {}
 
 	public function register(): void {
@@ -64,6 +68,7 @@ final class Cron {
 		$this->expire_sessions();
 		$this->deactivate_stale_buyers();
 		$this->audit->trim( $this->settings->int( 'log_retention_days' ) );
+		$this->quotes->expire();
 	}
 
 	private function expire_sessions(): void {

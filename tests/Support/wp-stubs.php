@@ -21,12 +21,13 @@
  * sending — which is how a throttle that must mail once, not once per
  * failure, can be proved.
  *
- * Three stubs read a $GLOBALS key so a test can steer them: __() consults
+ * Four stubs read a $GLOBALS key so a test can steer them: __() consults
  * pow_test_translations (proving a string really goes through
  * translation, which an identity stub cannot), apply_filters runs one
- * callback per hook out of pow_test_filters, and wp_verify_nonce accepts
- * only pow_test_valid_nonce. All three behave as the plain stub would
- * when their key is unset.
+ * callback per hook out of pow_test_filters, wp_verify_nonce accepts
+ * only pow_test_valid_nonce, and get_current_user_id() returns
+ * pow_test_current_user_id. All four behave as the plain stub would when
+ * their key is unset.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -190,6 +191,29 @@ if ( ! function_exists( 'wp_unslash' ) ) {
 if ( ! function_exists( 'sanitize_text_field' ) ) {
 	function sanitize_text_field( string $text ): string { // phpcs:ignore
 		return trim( (string) preg_replace( '/[\r\n\t ]+/', ' ', wp_strip_all_tags( $text ) ) );
+	}
+}
+
+if ( ! function_exists( 'sanitize_title' ) ) {
+	/**
+	 * The part of sanitize_title() an action key has to survive: anything
+	 * outside [A-Za-z0-9_-] becomes a dash and the result is lowercased.
+	 * The real function does more (accent folding, entity stripping); a
+	 * key that this rewrites is rewritten by that one too, which is what
+	 * the hook-name test is asking.
+	 */
+	function sanitize_title( string $text ): string { // phpcs:ignore
+		return strtolower( (string) preg_replace( '/[^A-Za-z0-9_-]/', '-', $text ) );
+	}
+}
+
+if ( ! function_exists( 'get_current_user_id' ) ) {
+	/**
+	 * The acting administrator, from pow_test_current_user_id; 0 — nobody
+	 * logged in — when a test has not set one, as on a cron run.
+	 */
+	function get_current_user_id(): int { // phpcs:ignore
+		return (int) ( $GLOBALS['pow_test_current_user_id'] ?? 0 );
 	}
 }
 
