@@ -20,7 +20,7 @@ defined( 'ABSPATH' ) || exit;
  * is the custom audit table written by Audit\Log; the two are deliberately
  * separate (scope §4.4).
  */
-final class Logger {
+class Logger {
 
 	public const SOURCE = 'punchout-woocommerce';
 

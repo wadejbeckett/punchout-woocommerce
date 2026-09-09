@@ -24,7 +24,7 @@ defined( 'ABSPATH' ) || exit;
  * redacted from BOTH the detail JSON and any stored XML before the row is
  * written; there is no code path that persists one.
  */
-final class Log {
+class Log {
 
 	public function __construct( private Logger $logger ) {}
 

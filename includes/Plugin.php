@@ -109,6 +109,11 @@ final class Plugin {
 		( new AdminDetails() )->register();
 		( new Cron( $this->sessions, $this->audit, $this->settings ) )->register();
 
+		// Outside the master-switch gate: a shop that switches punchout off
+		// must still render and list the Punchout Quote orders it already
+		// has, or they drop out of the orders screen entirely.
+		( new \POW\Orders\Status() )->register();
+
 		// The [punchout_docs] page is registered before the master-switch
 		// gate on purpose: a buyer reads the integration documentation
 		// precisely while punchout is still switched off, and the page
@@ -141,7 +146,8 @@ final class Plugin {
 		$rate_limiter    = new RateLimiter( $this->settings->int( 'rate_limit_per_min' ) );
 		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $provisioner, $parser, $builder, $rate_limiter, $this->audit );
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
-		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit );
+		$quotes          = new \POW\Orders\QuoteOrder( $this->sessions, $this->audit, $this->settings, $this->logger );
+		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes );
 
 		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint ) )->register();
 		$return_endpoint->register();
