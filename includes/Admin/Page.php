@@ -11,6 +11,7 @@ declare( strict_types = 1 );
 namespace POW\Admin;
 
 use POW\Audit\Log;
+use POW\Http\RateLimiter;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
 use POW\Settings;
@@ -18,12 +19,16 @@ use POW\Settings;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Three tabs, core UI only (no custom CSS framework):
+ * Four tabs, core UI only (no custom CSS framework):
  *
  * - Settings: WordPress Settings API over the single pow_settings option —
  *   master switch plus the handful of genuinely needed knobs.
  * - Customers: the customer-connection registry (write-only secrets).
  * - Log: the audit trail, filtered and paged.
+ * - Integration docs: the buyer-facing documentation page, rendered
+ *   privileged — the same page [punchout_docs] publishes, plus the
+ *   per-connection block and a self-test that names the exact
+ *   authentication stage rather than collapsing it.
  *
  * All writes go through Admin\Actions (admin-post handlers, nonce +
  * capability checked); this class only renders and registers settings.
@@ -206,6 +211,9 @@ final class Page {
 			case 'log':
 				$this->render_log();
 				break;
+			case 'docs':
+				$this->render_docs();
+				break;
 			default:
 				$this->render_settings();
 		}
@@ -231,6 +239,7 @@ final class Page {
 			'settings' => __( 'Settings', 'punchout-woocommerce' ),
 			'partners' => __( 'Customers', 'punchout-woocommerce' ),
 			'log'      => __( 'Log', 'punchout-woocommerce' ),
+			'docs'     => __( 'Integration docs', 'punchout-woocommerce' ),
 		];
 
 		echo '<nav class="nav-tab-wrapper">';
@@ -501,6 +510,33 @@ final class Page {
 		}
 
 		return $html . '</select>';
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Integration docs tab
+	 * ------------------------------------------------------------------ */
+
+	/**
+	 * The buyer-facing documentation page, rendered privileged: the
+	 * per-connection block appears and the self-test names the exact
+	 * authentication stage instead of collapsing the three into one.
+	 */
+	private function render_docs(): void {
+		echo '<p class="description">';
+		printf(
+			/* translators: %s: the shortcode that publishes the page. */
+			esc_html__( 'This is what buyers see. Publish it by creating a page and adding the shortcode %s to it, then send buyers that page\'s URL. The page renders while punchout is switched off, which is when new buyers usually read it.', 'punchout-woocommerce' ),
+			'<code>[punchout_docs]</code>' // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- literal markup.
+		);
+		echo '</p>';
+
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within templates/docs/.
+		echo ( new \POW\Docs\Page(
+			$this->settings,
+			$this->registry,
+			new RateLimiter( $this->settings->int( 'rate_limit_per_min' ) ),
+			$this->audit
+		) )->render( true );
 	}
 
 	/* ---------------------------------------------------------------------

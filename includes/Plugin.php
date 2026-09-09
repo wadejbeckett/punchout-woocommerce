@@ -109,6 +109,13 @@ final class Plugin {
 		( new AdminDetails() )->register();
 		( new Cron( $this->sessions, $this->audit, $this->settings ) )->register();
 
+		// The [punchout_docs] page is registered before the master-switch
+		// gate on purpose: a buyer reads the integration documentation
+		// precisely while punchout is still switched off, and the page
+		// exposes no session surface. Its self-test is the one gated part
+		// — with punchout off it says so instead of running.
+		( new Docs\Page( $this->settings, $this->registry, new RateLimiter( $this->settings->int( 'rate_limit_per_min' ) ), $this->audit ) )->register();
+
 		add_action( 'admin_init', [ Installer::class, 'maybe_upgrade' ] );
 		add_action( 'admin_notices', [ $this, 'render_key_notice' ] );
 

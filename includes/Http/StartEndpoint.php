@@ -16,6 +16,7 @@ use POW\Partners\Registry;
 use POW\Sessions\Store;
 use POW\Sessions\Tokens;
 use POW\Settings;
+use POW\Support\Ip;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -182,8 +183,6 @@ final class StartEndpoint {
 	}
 
 	private function client_ip(): string {
-		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) wp_unslash( $_SERVER['REMOTE_ADDR'] ) : '';
-
-		return (string) apply_filters( 'pow_client_ip', $ip );
+		return Ip::client();
 	}
 }

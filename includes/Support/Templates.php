@@ -22,10 +22,28 @@ defined( 'ABSPATH' ) || exit;
 final class Templates {
 
 	/**
-	 * Resolve a template path by base name (e.g. "return-button").
+	 * Path-safe template name: one or more segments of [A-Za-z0-9._-],
+	 * traversal segments dropped. Subdirectories are allowed (templates
+	 * live under templates/docs/ as well as templates/); the old
+	 * sanitize_file_name() call ate the separator, so "docs/page"
+	 * resolved to the file "docspage.php" and never loaded.
+	 */
+	public static function normalise_name( string $name ): string {
+		$parts = array_map(
+			static fn( string $part ): string => (string) preg_replace( '/[^A-Za-z0-9._-]/', '', $part ),
+			preg_split( '#/+#', $name ) ?: []
+		);
+
+		$parts = array_filter( $parts, static fn( string $part ): bool => '' !== $part && '.' !== $part && '..' !== $part );
+
+		return implode( '/', $parts );
+	}
+
+	/**
+	 * Resolve a template path by name (e.g. "return-button", "docs/page").
 	 */
 	public static function locate( string $name ): string {
-		$name  = sanitize_file_name( $name );
+		$name  = self::normalise_name( $name );
 		$theme = locate_template( [ 'punchout-woocommerce/' . $name . '.php' ] );
 		$file  = '' !== $theme ? $theme : POW_PLUGIN_DIR . 'templates/' . $name . '.php';
 

@@ -20,6 +20,25 @@ defined( 'ABSPATH' ) || exit;
 final class Ip {
 
 	/**
+	 * The client address used for rate-limit buckets, allowlists and audit
+	 * rows. One definition, so the documentation page's self-test is
+	 * throttled and logged against exactly the address the setup endpoint
+	 * would have seen.
+	 */
+	public static function client(): string {
+		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) wp_unslash( $_SERVER['REMOTE_ADDR'] ) : '';
+
+		/**
+		 * Filter the client IP used for rate limiting, allowlists and the
+		 * audit trail — e.g. to read CF-Connecting-IP behind a proxy whose
+		 * presence the operator can vouch for.
+		 *
+		 * @param string $ip Remote address.
+		 */
+		return (string) apply_filters( 'pow_client_ip', $ip );
+	}
+
+	/**
 	 * True when $ip falls inside any of the given CIDR blocks. A bare
 	 * address is treated as a /32 (v4) or /128 (v6).
 	 *

@@ -22,6 +22,7 @@ use POW\Sessions\ReplayPolicy;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
 use POW\Sessions\Tokens;
+use POW\Support\Ip;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -434,16 +435,7 @@ final class SetupEndpoint {
 	}
 
 	private function client_ip(): string {
-		$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? (string) wp_unslash( $_SERVER['REMOTE_ADDR'] ) : '';
-
-		/**
-		 * Filter the client IP used for rate limiting, allowlists and the
-		 * audit trail — e.g. to read CF-Connecting-IP behind a proxy whose
-		 * presence the operator can vouch for.
-		 *
-		 * @param string $ip Remote address.
-		 */
-		return (string) apply_filters( 'pow_client_ip', $ip );
+		return Ip::client();
 	}
 
 	private function host(): string {
