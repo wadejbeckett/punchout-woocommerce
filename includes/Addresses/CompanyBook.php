@@ -1,0 +1,227 @@
+<?php
+/**
+ * Private company delivery book. All mutations share the native partner mutex.
+ *
+ * @package POW
+ * @license AGPL-3.0-or-later
+ */
+
+declare( strict_types = 1 );
+
+namespace POW\Addresses;
+
+use POW\Audit\Log;
+use POW\Installer;
+use POW\Partners\{Partner, Registry};
+
+defined( 'ABSPATH' ) || exit;
+
+final class CompanyBook {
+	/** Persisted schema bounds are stable; current Woo country/required-field policy belongs to new saves and active selection. */
+	private const ADDRESS_LIMITS = [ 'first_name' => 190, 'last_name' => 190, 'company' => 190, 'address_1' => 190, 'address_2' => 190, 'city' => 190, 'state' => 190, 'postcode' => 32, 'country' => 2, 'phone' => 100 ];
+
+	/** Reject synchronous metadata-hook reentry across instances; Registry itself is reentrant. */
+	private static array $mutating = [];
+
+	public function __construct( private Registry $registry, private Log $log ) {}
+
+	/** Management view includes disabled entries. $actor must be the actual logged-in editor. */
+	public function read( int $partner_id, int $actor ): array|\WP_Error {
+		try {
+			return $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $actor ) {
+				$partner = $this->editor( $partner_id, $actor );
+				return $partner instanceof \WP_Error ? $partner : $this->load( $partner->owner_user_id, $partner_id )['book'];
+			} );
+		} catch ( \Throwable $error ) { return self::unavailable(); }
+	}
+
+	/**
+	 * Read-only consumer boundary for Resolver's active-choice check. Caller owns the partner mutex and buyer/session authorization; do not acquire it again here. Reread the association and raw metadata even when its revision appears unchanged. This does not grant management access to a buyer.
+	 */
+	public function read_for_partner_locked( Partner $partner ): array|\WP_Error {
+		try {
+			$fresh = $this->registry->find( $partner->id );
+			if ( ! $fresh || $fresh->owner_user_id !== $partner->owner_user_id || ! $this->ordinary_user( $fresh->owner_user_id ) ) { return self::unavailable(); }
+			return $this->load( $fresh->owner_user_id, $fresh->id )['book'];
+		} catch ( \Throwable $error ) { return self::unavailable(); }
+	}
+
+	/**
+	 * Fingerprint a checked canonical entry and immutable key, never the aggregate revision. Resolver/confirmation consumers share DeliveryData's ordering and encoding rules. Reordered maps are equivalent; noncanonical content refuses instead of being silently repaired.
+	 *
+	 * @throws \DomainException If the persisted key/entry shape is not canonical. Current shipping policy cannot change this historical fingerprint.
+	 */
+	public static function entry_fingerprint( string $key, array $entry ): string {
+		try {
+			if ( ! self::key( $key ) || ! self::stored_entry( $entry ) ) { throw new \DomainException(); }
+			return DeliveryData::fingerprint( [ 'key' => $key ] + $entry );
+		} catch ( \Throwable $error ) { throw new \DomainException( 'Invalid delivery entry fingerprint input.' ); }
+	}
+
+	/**
+	 * Accept unslashed {label,address,code,use_for_punchout}; the HTTP boundary unslashes once. Omitted code preserves an existing claim; omitted enablement preserves existing state and defaults to disabled for new entries. Imports call this with enablement false until a separate explicit enable action.
+	 *
+	 * @return array|\WP_Error Success is {revision,key,entry,changed}; no-op preserves revision.
+	 */
+	public function save( int $partner_id, int $actor, int $expected_revision, ?string $key, array $fields ): array|\WP_Error {
+		return $this->mutate( $partner_id, $actor, $expected_revision, $key, $fields );
+	}
+
+	public function remove( int $partner_id, int $actor, int $expected_revision, string $key ): bool|\WP_Error {
+		$result = $this->mutate( $partner_id, $actor, $expected_revision, $key, null );
+		return $result instanceof \WP_Error ? $result : true;
+	}
+
+	private function mutate( int $partner_id, int $actor, int $expected_revision, ?string $key, ?array $fields ): array|\WP_Error {
+		if ( isset( self::$mutating[$partner_id] ) ) { return self::unavailable(); }
+		self::$mutating[$partner_id] = true;
+		try {
+			$result = $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $actor, $expected_revision, $key, $fields ) {
+				$partner = $this->editor( $partner_id, $actor );
+				if ( $partner instanceof \WP_Error ) { return $partner; }
+				$stored = $this->load( $partner->owner_user_id, $partner_id );
+				$book = $stored['book'];
+				if ( $expected_revision < 0 || $expected_revision !== $book['revision'] ) {
+					return new \WP_Error( 'address_book_stale', __( 'The delivery book changed. Reload it before saving.', 'punchout-woocommerce' ) );
+				}
+				if ( null !== $key && ( ! self::key( $key ) || ! isset( $book['addresses'][$key] ) ) ) {
+					return new \WP_Error( 'address_unavailable', __( 'This delivery address is unavailable. Reload the delivery book.', 'punchout-woocommerce' ) );
+				}
+				$old = null === $key ? null : $book['addresses'][$key];
+				if ( null === $fields ) {
+					if ( null === $old ) { return self::invalid(); }
+					if ( '' !== $old['code'] ) { $book['claims'][$old['code']]['retired'] = true; }
+					unset( $book['addresses'][$key] );
+					$entry = null;
+				} else {
+					$entry = self::entry( $fields, $old );
+					if ( $entry instanceof \WP_Error ) { return $entry; }
+					if ( null === $old ) {
+						if ( PHP_INT_MAX === $book['next_sequence'] ) { return self::invalid(); }
+						// Random immutable keys do not expose the count or recycle removed uncoded IDs. next_sequence counts issued entries, independently of per-prefix code sequences.
+						$key = bin2hex( random_bytes( 16 ) );
+						if ( isset( $book['addresses'][$key] ) || in_array( $key, array_column( $book['claims'], 'key' ), true ) ) { return self::unavailable(); }
+						++$book['next_sequence'];
+						if ( '' === $entry['code'] ) {
+							try {
+								// PHP coerces all-digit map keys to integers; Codes correctly requires canonical strings.
+								$entry['code'] = Codes::next( array_map( 'strval', array_keys( $book['claims'] ) ), $partner->delivery_code_prefix );
+							} catch ( \InvalidArgumentException | \OverflowException $error ) { return self::invalid(); }
+						}
+					}
+					if ( '' !== $entry['code'] && $entry['code'] !== ( $old['code'] ?? '' ) ) {
+						// Retired means permanently spent, including for the same entry. No claim is ever reassigned or resurrected.
+						if ( array_key_exists( $entry['code'], $book['claims'] ) ) { return self::invalid(); }
+						$book['claims'][$entry['code']] = [ 'key' => $key, 'retired' => false ];
+					}
+					if ( null !== $old && $old['code'] !== $entry['code'] && '' !== $old['code'] ) { $book['claims'][$old['code']]['retired'] = true; }
+					if ( $old === $entry ) { return [ 'revision' => $book['revision'], 'key' => $key, 'entry' => $entry, 'changed' => false ]; }
+					$book['addresses'][$key] = $entry;
+				}
+				if ( PHP_INT_MAX === $book['revision'] ) { return self::invalid(); }
+				++$book['revision'];
+				$meta_key = self::meta_key( $partner_id );
+				// WordPress unslashes the NEW metadata value, not the previous-value predicate. Slash exactly once here to preserve the already-unslashed canonical payload.
+				$written = $stored['exists']
+					? update_user_meta( $partner->owner_user_id, $meta_key, wp_slash( $book ), $stored['book'] )
+					: add_user_meta( $partner->owner_user_id, $meta_key, wp_slash( $book ), true );
+				if ( ! $written ) { return self::unavailable(); }
+				$after = $this->load( $partner->owner_user_id, $partner_id );
+				if ( ! $after['exists'] || $after['book'] !== $book ) { return self::unavailable(); }
+				return [ 'revision' => $book['revision'], 'key' => $key, 'entry' => $entry, 'changed' => true ];
+			} );
+			if ( is_array( $result ) && $result['changed'] ) {
+				// No external callbacks inside the mutex. An optional diagnostic failure cannot undo a verified aggregate or invite a duplicate retry.
+				try {
+					$this->log->write( null === $fields ? 'address_book_removed' : 'address_book_saved', [ 'partner_id' => $partner_id, 'user_id' => $actor, 'direction' => 'internal', 'result' => 'ok', 'detail' => [ 'revision' => $result['revision'], 'key' => $result['key'] ] ] );
+				} catch ( \Throwable $error ) { /* Persisted state remains authoritative; no address content enters the audit. */ }
+			}
+			return $result;
+		} catch ( \Throwable $error ) { return self::unavailable(); }
+		finally { unset( self::$mutating[$partner_id] ); }
+	}
+
+	private function editor( int $partner_id, int $actor ): Partner|\WP_Error {
+		$partner = $this->registry->find( $partner_id );
+		$user = $actor > 0 && $actor === get_current_user_id() ? $this->ordinary_user( $actor ) : false;
+		if ( ! $partner || ! $user || ! $this->ordinary_user( $partner->owner_user_id ) || ! ( user_can( $user, 'manage_woocommerce' ) || $partner->is_owned_by( $actor ) ) ) {
+			return new \WP_Error( 'address_forbidden', __( 'You cannot manage this company delivery book.', 'punchout-woocommerce' ) );
+		}
+		return $partner;
+	}
+
+	/** Refresh actor and owner after acquiring the mutex; a stale capability or hidden second mapping cannot grant access. */
+	private function ordinary_user( int $id ): object|false {
+		global $wpdb;
+		if ( $id <= 0 ) { return false; }
+		$wpdb->last_error = '';
+		wp_cache_delete( $id, 'users' );
+		wp_cache_delete( $id, 'user_meta' );
+		$user = get_userdata( $id );
+		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Delivery actor unavailable.' ); }
+		if ( ! $user || ! user_can( $user, 'read' ) || in_array( Installer::ROLE, (array) $user->roles, true ) ) { return false; }
+		$mapping = get_user_meta( $id, '_pow_partner_id', false );
+		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Delivery owner association unavailable.' ); }
+		if ( ! is_array( $mapping ) || ( [] !== $mapping && [ '' ] !== $mapping ) ) { return false; }
+		return $user;
+	}
+
+	/** Native raw read bypasses metadata cache and short-circuit filters; zero rows is distinct from failure or corruption. */
+	private function load( int $owner, int $partner_id ): array {
+		global $wpdb;
+		// LIMIT 2 bounds duplicate detection. Native metadata APIs do not expose SQL read failure separately from a missing value.
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT meta_value FROM ' . $wpdb->usermeta . ' WHERE user_id = %d AND meta_key = %s LIMIT 2', $owner, self::meta_key( $partner_id ) ), ARRAY_A );
+		if ( '' !== ( $wpdb->last_error ?? '' ) || ! is_array( $rows ) || count( $rows ) > 1 ) { throw new \RuntimeException( 'Delivery state unavailable.' ); }
+		if ( [] === $rows ) { return [ 'exists' => false, 'book' => [ 'schema' => 1, 'revision' => 0, 'addresses' => [], 'claims' => [], 'next_sequence' => 1 ] ]; }
+		$raw = $rows[0]['meta_value'] ?? null;
+		if ( ! is_string( $raw ) ) { throw new \RuntimeException( 'Delivery state unavailable.' ); }
+		// Do not instantiate objects from malformed stored metadata. Invalid serialization is a bounded refusal, never an empty replacement book.
+		$book = @unserialize( $raw, [ 'allowed_classes' => false ] ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_unserialize
+		if ( ! $this->valid_book( $book ) ) { throw new \RuntimeException( 'Delivery state unavailable.' ); }
+		return [ 'exists' => true, 'book' => $book ];
+	}
+
+	private function valid_book( mixed $book ): bool {
+		if ( ! is_array( $book ) || ! self::keys( $book, [ 'schema', 'revision', 'addresses', 'claims', 'next_sequence' ] ) || 1 !== $book['schema'] || ! is_int( $book['revision'] ) || $book['revision'] < 1 || ! is_int( $book['next_sequence'] ) || $book['next_sequence'] < 1 || ! is_array( $book['addresses'] ) || ! is_array( $book['claims'] ) ) { return false; }
+		foreach ( $book['addresses'] as $key => $entry ) {
+			if ( ! self::key( (string) $key ) || ! is_array( $entry ) || ! self::stored_entry( $entry ) ) { return false; }
+			if ( '' !== $entry['code'] && ( $book['claims'][$entry['code']] ?? null ) !== [ 'key' => (string) $key, 'retired' => false ] ) { return false; }
+		}
+		foreach ( $book['claims'] as $code => $claim ) {
+			$code = (string) $code;
+			if ( '' === $code || Codes::sanitise( $code ) !== $code || ! is_array( $claim ) || ! self::keys( $claim, [ 'key', 'retired' ] ) || ! is_string( $claim['key'] ) || ! self::key( $claim['key'] ) || ! is_bool( $claim['retired'] ) ) { return false; }
+			if ( ! $claim['retired'] && ( $book['addresses'][$claim['key']]['code'] ?? null ) !== $code ) { return false; }
+		}
+		return true;
+	}
+
+	/** Decode stored structure without reapplying mutable Woo rules to every historical entry. */
+	private static function stored_entry( array $entry ): bool {
+		if ( ! self::keys( $entry, [ 'label', 'address', 'code', 'use_for_punchout' ] ) || ! self::text( $entry['label'], 190 ) || '' === $entry['label'] || sanitize_text_field( $entry['label'] ) !== $entry['label'] || ! is_bool( $entry['use_for_punchout'] ) || ! self::text( $entry['code'], 32 ) || Codes::sanitise( $entry['code'] ) !== $entry['code'] || ! is_array( $entry['address'] ) || ! self::keys( $entry['address'], array_keys( self::ADDRESS_LIMITS ) ) ) { return false; }
+		foreach ( self::ADDRESS_LIMITS as $field => $limit ) {
+			if ( ! self::text( $entry['address'][$field], $limit ) || sanitize_text_field( $entry['address'][$field] ) !== $entry['address'][$field] ) { return false; }
+		}
+		return 1 === preg_match( '/\A[A-Z]{2}\z/', $entry['address']['country'] );
+	}
+
+	private static function entry( array $fields, ?array $old ): array|\WP_Error {
+		if ( array_diff_key( $fields, array_flip( [ 'label', 'address', 'code', 'use_for_punchout' ] ) ) || ! isset( $fields['label'], $fields['address'] ) || ! is_string( $fields['label'] ) || ! is_array( $fields['address'] ) ) { return self::invalid(); }
+		if ( ! self::text( $fields['label'], 190 ) ) { return self::invalid(); }
+		$label = sanitize_text_field( $fields['label'] );
+		$code = $fields['code'] ?? '';
+		$enabled = $fields['use_for_punchout'] ?? ( $old['use_for_punchout'] ?? false );
+		if ( ! self::text( $label, 190 ) || '' === $label || ! is_string( $code ) || ! is_bool( $enabled ) || ( array_key_exists( 'code', $fields ) && null === $fields['code'] ) || ( array_key_exists( 'use_for_punchout', $fields ) && null === $fields['use_for_punchout'] ) ) { return self::invalid(); }
+		try { $code = Codes::sanitise( $code ); } catch ( \InvalidArgumentException $error ) { return self::invalid(); }
+		if ( '' === $code && null !== $old ) { $code = $old['code']; }
+		$address = Shape::normalise( $fields['address'] );
+		if ( $address instanceof \WP_Error ) { return $address; }
+		return [ 'label' => $label, 'address' => $address, 'code' => $code, 'use_for_punchout' => $enabled ];
+	}
+
+	private static function keys( array $value, array $keys ): bool { return count( $value ) === count( $keys ) && ! array_diff_key( $value, array_flip( $keys ) ); }
+	private static function key( string $key ): bool { return 1 === preg_match( '/\A[A-Za-z0-9_-]{1,190}\z/', $key ); }
+	private static function text( mixed $value, int $limit ): bool { return is_string( $value ) && strlen( $value ) <= 4 * $limit && 1 === preg_match( '//u', $value ) && 0 === preg_match( '/[\x00-\x1f\x7f]/', $value ) && preg_match_all( '/./us', $value ) <= $limit; }
+	private static function meta_key( int $partner_id ): string { return '_pow_delivery_book_' . $partner_id; }
+	private static function invalid(): \WP_Error { return new \WP_Error( 'address_book_invalid', __( 'Supply a valid delivery address, label and unused delivery code within the allowed lengths.', 'punchout-woocommerce' ) ); }
+	private static function unavailable(): \WP_Error { return new \WP_Error( 'address_state_unavailable', __( 'The delivery book could not be verified. Reload it before trying again.', 'punchout-woocommerce' ) ); }
+}
