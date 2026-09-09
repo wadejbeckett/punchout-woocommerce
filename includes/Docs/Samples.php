@@ -92,6 +92,10 @@ XML;
 	 * Field-by-field annotations, read off the parse result so the page
 	 * can never document a value the parser does not actually take.
 	 *
+	 * Values are the parsed values themselves or machine tokens
+	 * ('present'/'absent'); no prose and no translation happens here, so
+	 * the renderer owns every user-visible string.
+	 *
 	 * @return array<string, string>
 	 */
 	public static function annotations(): array {
@@ -109,7 +113,7 @@ XML;
 			'BrowserFormPost/URL'             => $message->browser_form_post,
 			'Extrinsic names honoured'        => implode( ', ', array_keys( $message->extrinsics ) ),
 			'Contact/Email'                   => (string) $message->contact_email,
-			'ShipTo'                          => null !== $message->ship_to_xml ? 'present — stored on the session' : 'absent',
+			'ShipTo'                          => null !== $message->ship_to_xml ? 'present' : 'absent',
 		];
 	}
 
@@ -132,11 +136,15 @@ XML;
 	}
 
 	/**
-	 * The basket we post back, built by the real Builder from a two-line
-	 * cart in the same shape PoomMapper produces.
+	 * The two sample cart lines, in the shape PoomMapper produces.
+	 *
+	 * One source for both the document and the prose total, so a line
+	 * edited here can never leave the two disagreeing.
+	 *
+	 * @return list<array{quantity: int, supplier_part_id: string, aux_id: string, unit_price_cents: int, description: string, short_name: string, uom: string, classification: string}>
 	 */
-	public static function poom(): string {
-		$items = [
+	private static function items(): array {
+		return [
 			[
 				'quantity'         => 2,
 				'supplier_part_id' => 'SKU-1001',
@@ -158,13 +166,26 @@ XML;
 				'classification'   => '47131700',
 			],
 		];
+	}
 
+	/**
+	 * Sample basket total in cents, summed from items().
+	 */
+	private static function total_cents(): int {
 		$total = 0;
 
-		foreach ( $items as $item ) {
+		foreach ( self::items() as $item ) {
 			$total += (int) round( $item['unit_price_cents'] * $item['quantity'] );
 		}
 
+		return $total;
+	}
+
+	/**
+	 * The basket we post back, built by the real Builder from the two-line
+	 * cart in items().
+	 */
+	public static function poom(): string {
 		return ( new Builder() )->poom(
 			[
 				'version'             => self::VERSION,
@@ -187,15 +208,15 @@ XML;
 				'buyer_cookie'        => self::parsed()->buyer_cookie,
 				'operation_allowed'   => 'create',
 				'currency'            => self::CURRENCY,
-				'total_cents'         => $total,
+				'total_cents'         => self::total_cents(),
 				'supplier_order_info' => null,
-				'items'               => $items,
+				'items'               => self::items(),
 			]
 		);
 	}
 
 	/** Formatted total of the sample basket, for the page's prose. */
 	public static function poom_total(): string {
-		return Money::format( 12500 * 2 + 34900 );
+		return Money::format( self::total_cents() );
 	}
 }
