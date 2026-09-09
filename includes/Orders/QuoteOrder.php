@@ -78,21 +78,7 @@ final class QuoteOrder {
 	 * @param array<string, mixed> $poom_lines PoomMapper::from_cart() output.
 	 * @return int Order id, or 0 when creation failed (logged and audited).
 	 */
-	/**
-	 * Create the Punchout Quote order for a returning session.
-	 *
-	 * @param array<string, mixed> $poom_lines PoomMapper::from_cart() output.
-	 * @return int Order id, or 0 when creation failed (logged and audited).
-	 */
 	public function create_for_session( Session $session, Partner $partner, array $poom_lines ): int {
-		// A double-submitted return must not leave two quotes behind: the
-		// session already names one of ours, so hand that back instead.
-		$existing = $this->existing_quote( $session );
-
-		if ( $existing > 0 ) {
-			return $existing;
-		}
-
 		// Held outside the try so the catch can cancel a part-built order:
 		// wc_create_order(), add_product() and calculate_totals() each
 		// persist, so a throw halfway through would otherwise leave a
@@ -100,6 +86,28 @@ final class QuoteOrder {
 		$order = null;
 
 		try {
+			// A double-submitted return must not leave two quotes behind:
+			// the session already names one of ours, so hand that back.
+			// Inside the try because the lookup touches the database, and
+			// nothing in here may throw into the waiting basket.
+			$existing = $this->existing_quote( $session );
+
+			if ( $existing > 0 ) {
+				$this->audit->write(
+					'quote_order_reused',
+					[
+						'partner_id' => $partner->id,
+						'session_id' => $session->id,
+						'user_id'    => $session->user_id,
+						'order_id'   => $existing,
+						'result'     => 'ok',
+						'detail'     => [ 'reason' => 'duplicate_return' ],
+					]
+				);
+
+				return $existing;
+			}
+
 			$order = wc_create_order( [ 'customer_id' => $session->user_id ] );
 
 			if ( ! $order instanceof \WC_Order ) {
@@ -227,7 +235,7 @@ final class QuoteOrder {
 	 * never _pow_session_id.
 	 */
 	private function existing_quote( Session $session ): int {
-		if ( $session->order_id <= 0 ) {
+		if ( $session->order_id <= 0 || ! function_exists( 'wc_get_order' ) ) {
 			return 0;
 		}
 
