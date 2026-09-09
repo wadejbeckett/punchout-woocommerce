@@ -42,7 +42,8 @@ final class Guard {
 
 	public function register(): void {
 		add_filter( 'woocommerce_persistent_cart_enabled', [ $this, 'disable_persistent_cart' ] );
-		add_action( 'wp_loaded', [ $this, 'seed_cart' ], 30 );
+		// Woo restores at 10 and handles native add-to-cart forms at 20.
+		add_action( 'wp_loaded', [ $this, 'seed_cart' ], 15 );
 		add_filter( 'woocommerce_add_to_cart_validation', [ $this, 'validate_add_to_cart' ], 20, 2 );
 	}
 
@@ -69,7 +70,14 @@ final class Guard {
 		// one-shot armed for the first real storefront request.
 		if ( function_exists( 'WC' ) && null !== WC()->cart ) {
 			WC()->cart->empty_cart( true );
-			$this->sessions->update( $session->id, [ 'cart_ready' => 1 ] );
+			if ( ! $this->sessions->update( $session->id, [ 'cart_ready' => 1 ] ) ) {
+				// Do not accept additions that the next request would clear again.
+				wp_die(
+					__( 'Your catalog cart could not be initialized. Please try again.', 'punchout-woocommerce' ),
+					'',
+					[ 'response' => 503 ]
+				);
+			}
 		}
 	}
 
