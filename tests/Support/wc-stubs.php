@@ -266,8 +266,14 @@ if ( ! function_exists( 'wc_create_order' ) ) {
 
 		$order = new WC_Order( ++$next );
 		$order->set_customer_id( (int) ( $args['customer_id'] ?? 0 ) );
+		$order->set_status( (string) ( $args['status'] ?? 'pending' ) );
 
 		$GLOBALS['pow_test_orders'][ $order->get_id() ] = $order;
+
+		// Native creation can persist before an extension throws and the caller receives its object.
+		if ( isset( $GLOBALS['pow_test_after_create_order'] ) ) {
+			( $GLOBALS['pow_test_after_create_order'] )( $order );
+		}
 
 		return $order;
 	}

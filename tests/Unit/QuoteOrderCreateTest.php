@@ -199,7 +199,7 @@ final class QuoteOrderCreateTest extends TestCase {
 	/**
 	 * wc_create_order() persists immediately, and add_product() and
 	 * calculate_totals() save again, so a throw part-way through would
-	 * otherwise leave a payable wc-pending order in the shop. It is
+	 * leave an incomplete native auto-draft in the shop. It is
 	 * cancelled — never deleted — and named everywhere the operator looks.
 	 */
 	public function test_a_part_built_order_is_cancelled_and_named(): void {
@@ -234,7 +234,7 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( [], $GLOBALS['pow_test_orders'], 'nothing was created' );
 		self::assertSame( 0, QuoteOrderTestLog::$written[0][1]['order_id'] );
 		self::assertStringContainsString( 'quote_creation_failed', QuoteOrderTestLog::$written[0][1]['detail']['error'] );
-		self::assertStringContainsString( 'no order was created', $GLOBALS['pow_test_mail'][0]['message'] );
+		self::assertStringContainsString( 'no order ID was returned', $GLOBALS['pow_test_mail'][0]['message'] );
 	}
 
 	/**

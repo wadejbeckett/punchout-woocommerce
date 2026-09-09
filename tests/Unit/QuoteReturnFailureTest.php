@@ -124,6 +124,42 @@ final class QuoteReturnFailureTest extends TestCase {
 		}
 	}
 
+	public function test_native_staging_precedes_construction_and_final_quote_promotion(): void {
+		$statuses = [];
+		$GLOBALS['pow_test_after_create_order'] = static function( $order ) use ( &$statuses ): void {
+			$statuses[] = $order->get_status();
+		};
+		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function( $address ) use ( &$statuses ) {
+			$statuses[] = array_values( $GLOBALS['pow_test_orders'] )[0]->get_status();
+			return $address;
+		};
+		$id = $this->create();
+		self::assertGreaterThan( 0, $id );
+		self::assertSame( [ 'auto-draft', 'auto-draft' ], $statuses );
+		self::assertSame( 'punchout-quote', wc_get_order( $id )->get_status() );
+	}
+
+	public function test_initial_creation_hook_failure_leaves_safe_staging_without_claiming_no_order_exists(): void {
+		$GLOBALS['pow_test_after_create_order'] = static function( $order ): void {
+			throw new Error( 'initial hook failed after persistence' );
+		};
+		self::assertSame( 0, $this->create() );
+		self::assertCount( 1, $GLOBALS['pow_test_orders'] );
+		self::assertSame( 'auto-draft', array_values( $GLOBALS['pow_test_orders'] )[0]->get_status() );
+		self::assertSame( 0, $this->db->session['order_id'] );
+		self::assertSame( 'unconfirmed', json_decode( $this->db->audits[0]['detail'], true )['cancellation'] );
+		self::assertStringNotContainsString( 'no order was created', $GLOBALS['pow_test_mail'][0]['message'] );
+		self::assertStringContainsString( 'no order ID was returned', $GLOBALS['pow_test_mail'][0]['message'] );
+	}
+
+	public function test_unexpected_initial_status_is_rejected_before_quote_construction(): void {
+		$GLOBALS['pow_test_after_create_order'] = static function( $order ): void {
+			$order->set_status( 'pending' );
+		};
+		self::assertSame( 0, $this->create() );
+		self::assertSame( 0, $this->db->session['order_id'] );
+	}
+
 	public function test_conditional_link_distinguishes_all_outcomes_and_keeps_payexit_update(): void {
 		$store = new Store();
 		self::assertSame( 'linked', $store->link_quote_if_empty( 42, 1001 ) );
