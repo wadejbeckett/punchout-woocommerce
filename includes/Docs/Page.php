@@ -93,7 +93,7 @@ final class Page {
 				'docs_render_fail',
 				[
 					'result' => 'error',
-					'detail' => [ 'error' => $e->getMessage() ],
+					'detail' => [ 'error' => self::failure_detail( $e ) ],
 				]
 			);
 
@@ -115,6 +115,57 @@ final class Page {
 		return 'present' === $value
 			? __( 'present', 'punchout-woocommerce' )
 			: __( 'absent', 'punchout-woocommerce' );
+	}
+
+	/**
+	 * What a failed render may say in the audit row.
+	 *
+	 * The try around page_vars() also covers the self-test, so the message
+	 * can quote the visitor's paste — and the paste may carry a live
+	 * shared secret. Redacted before it is written anywhere, exactly as
+	 * the paste itself is.
+	 */
+	public static function failure_detail( \Throwable $e ): string {
+		return SelfTest::redact( $e->getMessage() );
+	}
+
+	/**
+	 * The self-test, with every collaborator the public page owes it.
+	 *
+	 * A Registry means the partner stage runs, and the partner stage is
+	 * only safe throttled and logged (SelfTest rules 2 and 3): a null
+	 * limiter beside a real registry would sell unmetered credential
+	 * guesses from a public page. All three are required here so that
+	 * cannot be expressed at the call site.
+	 */
+	public static function self_test( Registry $registry, RateLimiter $limiter, Log $log ): SelfTest {
+		return new SelfTest( new Parser(), $registry, $limiter, $log );
+	}
+
+	/**
+	 * The message for a POST whose nonce did not verify — an expired form,
+	 * usually a page left open or served from a cache. Silence would leave
+	 * the visitor staring at an unchanged page wondering what happened.
+	 *
+	 * '' when this is not that case, so the caller can use it directly.
+	 *
+	 * @param array<string, mixed> $post Posted fields.
+	 */
+	public static function expired_nonce_notice( string $method, array $post ): string {
+		if ( ! self::is_self_test_post( $method, $post ) || self::is_self_test_request( $method, $post ) ) {
+			return '';
+		}
+
+		return __( 'This form has expired. Reload the page and try again.', 'punchout-woocommerce' );
+	}
+
+	/**
+	 * Whether the visitor submitted the self-test form at all, nonce aside.
+	 *
+	 * @param array<string, mixed> $post Posted fields.
+	 */
+	public static function is_self_test_post( string $method, array $post ): bool {
+		return 'POST' === strtoupper( $method ) && isset( $post[ self::FIELD ] );
 	}
 
 	/**
@@ -225,11 +276,17 @@ final class Page {
 	 */
 	private function self_test_box( bool $privileged ): string {
 		$report = null;
-		$notice = '';
 		$xml    = '';
+		$method = (string) ( $_SERVER['REQUEST_METHOD'] ?? '' );
+
+		// An expired form says so. The paste itself is NOT echoed back in
+		// that case: reflecting unverified POST content onto the page is
+		// the thing the nonce is there to stop.
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- reads the nonce to decide.
+		$notice = self::expired_nonce_notice( $method, $_POST );
 
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- is_self_test_request() verifies the nonce.
-		if ( self::is_self_test_request( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ), $_POST ) ) {
+		if ( self::is_self_test_request( $method, $_POST ) ) {
 			// Not sanitised and not truncated: it is a document, not a
 			// field, and the 2 MB cap is the endpoint's to apply — SelfTest
 			// refuses an oversized document with the endpoint's own answer,
@@ -278,7 +335,7 @@ final class Page {
 			return [ null, __( 'Too many self-tests from this address in the last minute. Wait a moment and try again.', 'punchout-woocommerce' ) ];
 		}
 
-		$report = ( new SelfTest( new Parser(), $this->registry, $this->rate_limiter, $this->audit ) )
+		$report = self::self_test( $this->registry, $this->rate_limiter, $this->audit )
 			->run( $xml, $privileged, $ip );
 
 		// The verdict, the address and who ran it — never the document: it
