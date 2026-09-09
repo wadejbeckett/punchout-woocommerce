@@ -12,6 +12,7 @@ namespace POW\Admin;
 
 use POW\Audit\Log;
 use POW\Partners\Registry;
+use POW\Partners\Registration;
 use POW\Partners\Secrets;
 
 defined( 'ABSPATH' ) || exit;
@@ -19,17 +20,20 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Every write is nonce- and capability-checked, every value sanitised on
  * the way in. Secrets are write-only: a generated or rotated secret is
- * placed in a 60-second, per-user transient and rendered exactly once by
- * Admin\Page.
+ * rendered only in the authorized POST response, never a reveal store.
  */
 final class Actions {
 
 	public function __construct(
 		private Registry $registry,
 		private Log $audit,
+		private Registration $registration,
 	) {}
 
 	public function register(): void {
+		add_action( 'admin_post_pow_approve_partner', [ $this, 'approve_partner' ] );
+		add_action( 'admin_post_pow_reset_partner', [ $this, 'reset_partner' ] );
+		add_action( 'admin_post_pow_associate_partner', [ $this, 'associate_partner' ] );
 		add_action( 'admin_post_pow_save_partner', [ $this, 'save_partner' ] );
 		add_action( 'admin_post_pow_delete_partner', [ $this, 'delete_partner' ] );
 		add_action( 'admin_post_pow_rotate_partner', [ $this, 'rotate_partner' ] );
@@ -65,53 +69,89 @@ final class Actions {
 			$this->finish( 'partners', __( 'Name and Sender credential are required.', 'punchout-woocommerce' ), 'error' );
 		}
 
-		$generated = '';
-		$secret    = (string) ( $posted['secret'] ?? '' );
-
-		if ( isset( $posted['generate_secret'] ) ) {
-			$generated = Secrets::generate_secret();
-			$secret    = $generated;
-		} elseif ( Page::SECRET_MASK === $secret ) {
-			$secret = ''; // Unchanged sentinel.
-		}
-
-		if ( $partner_id > 0 ) {
-			$ok = false;
-			try {
-				$ok = $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $data, $secret, &$generated ) {
+		$issued = '';
+		$ok = false;
+		try {
+			if ( $partner_id > 0 ) {
+				$this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $data, $posted, &$issued, &$ok ) {
 					$current = $this->registry->find( $partner_id );
-					if ( ! $current || ! $current->is_active() ) { $secret = ''; $generated = ''; }
-					return $this->registry->update( $partner_id, $data, $secret );
+					if ( ! $current ) { return; }
+					if ( $current->is_active() && ! in_array( $data['status'], [ 'active', 'disabled' ], true ) ) { return; }
+					// Preparation is not approval, even when an old form posts a forged state.
+					if ( ! $current->is_active() ) { $data['status'] = $current->status; }
+					$secret = $current->is_active() ? $this->posted_secret( $posted ) : '';
+					$ok = $this->registry->update( $partner_id, $data, $secret );
+					if ( $ok ) { $issued = $secret; }
 				} );
-			} catch ( \Throwable $e ) { $generated = ''; }
-		} else {
-			$partner_id = $this->registry->insert( $data, $secret );
-			$ok         = $partner_id > 0;
-		}
+			} else {
+				$data['status'] = 'disabled' === $data['status'] ? 'disabled' : 'active';
+				$secret = $this->posted_secret( $posted );
+				$partner_id = $this->registry->insert( $data, $secret );
+				$ok = $partner_id > 0;
+				if ( $ok ) { $issued = $secret; }
+			}
+		} catch ( \Throwable $e ) { /* A confirmed write still needs its direct credential handover. */ }
 
-		if ( ! $ok ) { $generated = ''; }
 		if ( $ok ) {
-			$this->audit->write(
-				'partner_saved',
-				[
-					'partner_id' => $partner_id,
-					'user_id'    => get_current_user_id(),
-					'result'     => 'ok',
-				]
-			);
+			$this->record( 'partner_saved', $partner_id );
+			if ( '' !== $issued ) { $this->secret_response( __( 'Customer saved.', 'punchout-woocommerce' ), $issued ); }
 		}
+		$this->finish( 'partners', $ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : __( 'Saving failed — is the Sender identity unique?', 'punchout-woocommerce' ), $ok ? 'success' : 'error' );
+	}
 
-		$this->finish(
-			'partners',
-			$ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : __( 'Saving failed — is the Sender identity unique?', 'punchout-woocommerce' ),
-			$ok ? 'success' : 'error',
-			$generated
-		);
+	public function approve_partner(): void {
+		$partner_id = $this->posted_partner();
+		$this->authorise( 'pow_approve_' . $partner_id );
+		$secret = '';
+		try {
+			$partner = $this->registry->find( $partner_id );
+			// Validate preparation here; the service rechecks under its mutation lock.
+			if ( $partner && Registration::valid_approval( $partner ) ) {
+				$secret = $this->registration->approve( $partner_id, get_current_user_id() );
+			}
+		} catch ( \Throwable $e ) { /* No issuance after an unavailable configuration read. */ }
+		if ( '' !== $secret ) {
+			$this->secret_response( __( 'Company connection approved. Hand the secret to the owner out of band; the notification email contains no secret.', 'punchout-woocommerce' ), $secret );
+		}
+		$this->finish( 'partners', __( 'Approval failed. Save complete From, Sender and supplier To identities and valid connection entitlements on the pending edit screen, then approve explicitly.', 'punchout-woocommerce' ), 'error' );
+	}
+
+	public function reset_partner(): void {
+		$partner_id = $this->posted_partner();
+		$this->authorise( 'pow_reset_' . $partner_id );
+		$secret = '';
+		try {
+			// Reset the saved configuration, not unreviewed fields posted with the button.
+			$this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, &$secret ) {
+				$p = $this->registry->find( $partner_id );
+				if ( ! $p || $p->is_pending() ) { return; }
+				$identity = [];
+				foreach ( [ 'from_domain', 'from_identity', 'sender_domain', 'sender_identity', 'to_domain', 'to_identity', 'deployment_mode' ] as $key ) {
+					$identity[ $key ] = $p->$key;
+				}
+				$secret = $this->registration->reset( $partner_id, $identity, get_current_user_id() );
+			} );
+		} catch ( \Throwable $e ) { /* Retain a confirmed issuance even if lock release failed. */ }
+		if ( '' !== $secret ) {
+			$this->secret_response( __( 'Connection reset. Previous credentials and recorded sessions have been revoked. Copy the replacement secret now.', 'punchout-woocommerce' ), $secret );
+		}
+		$this->finish( 'partners', __( 'Reset was not completed. No replacement secret is available. The connection may be disabled with cleanup incomplete; review its state and retry after correcting the failure.', 'punchout-woocommerce' ), 'error' );
+	}
+
+	public function associate_partner(): void {
+		$partner_id = $this->posted_partner();
+		$this->authorise( 'pow_associate_' . $partner_id );
+		$owner = absint( $_POST['owner_user_id'] ?? 0 );
+		$ok = $this->registry->associate_owner( $partner_id, $owner );
+		if ( $ok ) {
+			$this->record( 'partner_owner_associated', $partner_id, [ 'old_owner_user_id' => 0, 'new_owner_user_id' => $owner ] );
+		}
+		$this->finish( 'partners', $ok ? __( 'Company management account associated.', 'punchout-woocommerce' ) : __( 'Association refused. Select an existing ordinary account that owns no connection. An existing nonzero association cannot be transferred or cleared; its company book stays with the current owner.', 'punchout-woocommerce' ), $ok ? 'success' : 'error' );
 	}
 
 	public function delete_partner(): void {
-		$partner_id = absint( $_GET['partner'] ?? 0 );
-		$this->authorise( 'pow_delete_' . $partner_id, 'get' );
+		$partner_id = $this->posted_partner();
+		$this->authorise( 'pow_delete_' . $partner_id );
 
 		$ok = false;
 		try {
@@ -148,35 +188,21 @@ final class Actions {
 	}
 
 	public function rotate_partner(): void {
-		$partner_id = absint( $_GET['partner'] ?? 0 );
-		$this->authorise( 'pow_rotate_' . $partner_id, 'get' );
+		$partner_id = $this->posted_partner();
+		$this->authorise( 'pow_rotate_' . $partner_id );
 
 		$new_secret = $partner_id > 0 ? $this->registry->rotate( $partner_id ) : null;
 
 		if ( null !== $new_secret ) {
-			$this->audit->write(
-				'secret_rotated',
-				[
-					'partner_id' => $partner_id,
-					'user_id'    => get_current_user_id(),
-					'result'     => 'ok',
-				]
-			);
+			$this->record( 'secret_rotated', $partner_id );
+			$this->secret_response( __( 'Secret rotated. The previous secret stays valid until you close the rotation window.', 'punchout-woocommerce' ), $new_secret );
 		}
-
-		$this->finish(
-			'partners',
-			null !== $new_secret
-				? __( 'Secret rotated. The previous secret stays valid until you close the rotation window.', 'punchout-woocommerce' )
-				: __( 'Rotation failed.', 'punchout-woocommerce' ),
-			null !== $new_secret ? 'success' : 'error',
-			$new_secret ?? ''
-		);
+		$this->finish( 'partners', __( 'Rotation failed. Only an active connection without an open rotation can rotate.', 'punchout-woocommerce' ), 'error' );
 	}
 
 	public function close_rotation(): void {
-		$partner_id = absint( $_GET['partner'] ?? 0 );
-		$this->authorise( 'pow_close_' . $partner_id, 'get' );
+		$partner_id = $this->posted_partner();
+		$this->authorise( 'pow_close_' . $partner_id );
 
 		$ok = $partner_id > 0 && $this->registry->close_rotation( $partner_id );
 
@@ -201,17 +227,55 @@ final class Actions {
 	/**
 	 * Capability + nonce gate for every handler.
 	 */
-	private function authorise( string $nonce_action, string $source = 'post' ): void {
-		if ( ! current_user_can( Page::CAP ) ) {
-			wp_die( esc_html__( 'You do not have permission to do that.', 'punchout-woocommerce' ) );
+	private function authorise( string $nonce_action ): void {
+		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
+			wp_die( esc_html__( 'This action requires a POST request.', 'punchout-woocommerce' ), '', [ 'response' => 405 ] );
 		}
+		if ( ! current_user_can( Page::CAP ) ) {
+			wp_die( esc_html__( 'You do not have permission to do that.', 'punchout-woocommerce' ), '', [ 'response' => 403 ] );
+		}
+		$nonce = $_POST['_wpnonce'] ?? null;
+		if ( ! is_string( $nonce ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $nonce ) ), $nonce_action ) ) {
+			wp_die( esc_html__( 'Security check failed — please go back and try again.', 'punchout-woocommerce' ), '', [ 'response' => 403 ] );
+		}
+		foreach ( $_POST as $value ) {
+			if ( ! is_scalar( $value ) ) { wp_die( esc_html__( 'Invalid form value.', 'punchout-woocommerce' ), '', [ 'response' => 400 ] ); }
+		}
+	}
 
-		$nonce = 'get' === $source
-			? sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ?? '' ) )
-			: sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ?? '' ) );
+	private function posted_partner(): int {
+		return is_scalar( $_POST['partner'] ?? null ) ? absint( $_POST['partner'] ) : 0;
+	}
 
-		if ( ! wp_verify_nonce( $nonce, $nonce_action ) ) {
-			wp_die( esc_html__( 'Security check failed — please go back and try again.', 'punchout-woocommerce' ) );
+	private function posted_secret( array $posted ): string {
+		if ( isset( $posted['generate_secret'] ) ) { return Secrets::generate_secret(); }
+		$secret = (string) ( $posted['secret'] ?? '' );
+		return Page::SECRET_MASK === $secret ? '' : $secret;
+	}
+
+	private function record( string $event, int $partner_id, array $detail = [] ): void {
+		try {
+			$this->audit->write( $event, [ 'partner_id' => $partner_id, 'user_id' => get_current_user_id(), 'result' => 'ok', 'detail' => $detail ] );
+		} catch ( \Throwable $e ) { /* Diagnostics must not discard a confirmed credential response. */ }
+	}
+
+	/** Native WordPress response; plaintext exists only in this authorized POST. */
+	private function secret_response( string $text, string $secret ): void {
+		// The native wp_die renderer calls nocache_headers again; retain this response's stricter policy.
+		$no_store = static function ( array $headers ): array {
+			$headers['Cache-Control'] = 'no-store, private, max-age=0';
+			return $headers;
+		};
+		add_filter( 'nocache_headers', $no_store, PHP_INT_MAX );
+		nocache_headers();
+		header( 'Cache-Control: no-store, private, max-age=0', true );
+		header( 'Referrer-Policy: no-referrer', true );
+		$html = '<p>' . esc_html( $text ) . '</p><p><strong>' . esc_html__( 'Shared secret (shown once — copy it now):', 'punchout-woocommerce' ) . '</strong></p><p><code>' . esc_html( $secret ) . '</code></p>';
+		$html .= '<p><a href="' . esc_url( add_query_arg( [ 'page' => Page::SLUG, 'tab' => 'partners' ], admin_url( 'admin.php' ) ) ) . '">' . esc_html__( 'Return to customers', 'punchout-woocommerce' ) . '</a></p>';
+		try {
+			wp_die( $html, esc_html__( 'PunchOut connection credentials', 'punchout-woocommerce' ), [ 'response' => 200 ] );
+		} finally {
+			remove_filter( 'nocache_headers', $no_store, PHP_INT_MAX );
 		}
 	}
 
@@ -221,13 +285,12 @@ final class Actions {
 	 * @param array<string, int|string> $extra Extra query args.
 	 * @return never
 	 */
-	private function finish( string $tab, string $text, string $type = 'success', string $secret = '', array $extra = [] ): void {
+	private function finish( string $tab, string $text, string $type = 'success', array $extra = [] ): void {
 		set_transient(
 			'pow_notice_' . get_current_user_id(),
 			[
 				'text'   => $text,
 				'type'   => $type,
-				'secret' => $secret,
 			],
 			60
 		);

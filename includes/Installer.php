@@ -31,6 +31,9 @@ final class Installer {
 
 	public const DB_VERSION     = '3';
 	public const DB_VERSION_KEY = 'pow_db_version';
+	// Routing changes independently of the table schema (v3 already exists).
+	public const REWRITE_VERSION = '1';
+	public const REWRITE_VERSION_KEY = 'pow_rewrite_version';
 
 	public const ROLE = 'punchout_buyer';
 
@@ -56,6 +59,7 @@ final class Installer {
 		self::install_schema();
 		self::register_role();
 		update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
+		self::install_rewrites();
 
 		// Nothing is scheduled on activation. The GC job is (re)scheduled
 		// lazily from Cron::register() on boot, so a deactivate/reactivate
@@ -71,6 +75,13 @@ final class Installer {
 
 		wp_clear_scheduled_hook( Cron::HOOK );
 
+		// init already registered our endpoint in this request. Remove it before
+		// rebuilding, otherwise the deactivation flush would preserve its rules.
+		global $wp_rewrite;
+		$wp_rewrite->endpoints = array_values( array_filter( $wp_rewrite->endpoints, static fn( array $endpoint ): bool => Account\IntegrationTab::ENDPOINT !== $endpoint[1] ) );
+		flush_rewrite_rules( false );
+		delete_option( self::REWRITE_VERSION_KEY );
+
 		// Tables, settings and the role stay: deactivation is not
 		// uninstallation, and live punchout sessions reference all three.
 	}
@@ -80,14 +91,22 @@ final class Installer {
 	 * requiring a deactivate/reactivate cycle.
 	 */
 	public static function maybe_upgrade(): void {
-		if ( (string) get_option( self::DB_VERSION_KEY, '0' ) === self::DB_VERSION ) {
-			return;
+		if ( (string) get_option( self::DB_VERSION_KEY, '0' ) !== self::DB_VERSION ) {
+			self::install_schema();
+			self::register_role();
+			self::drop_retired_columns();
+			update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
 		}
 
-		self::install_schema();
-		self::register_role();
-		self::drop_retired_columns();
-		update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
+		if ( (string) get_option( self::REWRITE_VERSION_KEY, '0' ) !== self::REWRITE_VERSION ) {
+			self::install_rewrites();
+		}
+	}
+
+	private static function install_rewrites(): void {
+		add_rewrite_endpoint( Account\IntegrationTab::ENDPOINT, EP_PAGES );
+		flush_rewrite_rules( false );
+		update_option( self::REWRITE_VERSION_KEY, self::REWRITE_VERSION, false );
 	}
 
 	/**

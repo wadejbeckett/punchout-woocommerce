@@ -157,6 +157,28 @@ final class Registry {
 		return 'pow_partner_' . substr( hash( 'sha256', ( defined( 'DB_NAME' ) ? DB_NAME : '' ) . '|' . $this->table() . '|' . $id ), 0, 52 );
 	}
 
+	/** Explicit admin association only; owner serialization precedes the partner lock. */
+	public function associate_owner( int $partner_id, int $owner_user_id ): bool {
+		global $wpdb;
+		$confirmed = false;
+		try {
+			$actor = get_userdata( get_current_user_id() );
+			if ( ! $actor || ! user_can( $actor, 'manage_woocommerce' ) || $partner_id <= 0 || $owner_user_id <= 0 ) { return false; }
+			$this->with_owner_lock( $owner_user_id, function () use ( $partner_id, $owner_user_id, $wpdb, &$confirmed ) {
+				$this->with_partner_lock( $partner_id, function () use ( $partner_id, $owner_user_id, $wpdb, &$confirmed ) {
+					$owner = get_userdata( $owner_user_id );
+					$partner = $this->find( $partner_id );
+					if ( ! $owner || ! user_can( $owner, 'read' ) || in_array( Installer::ROLE, (array) $owner->roles, true ) || get_user_meta( $owner_user_id, '_pow_partner_id', true ) ) { return; }
+					// A nonzero association owns the company's book; no transfer semantics exist.
+					if ( ! $partner || 0 !== $partner->owner_user_id || null !== $this->find_by_owner( $owner_user_id ) ) { return; }
+					$data = [ 'owner_user_id' => $owner_user_id, 'updated' => gmdate( 'Y-m-d H:i:s' ) ];
+					$confirmed = 1 === $wpdb->update( $this->table(), $data, [ 'id' => $partner_id, 'owner_user_id' => 0 ] ) && $this->matches_fields( $partner_id, $data );
+				} );
+			} );
+		} catch ( \Throwable $e ) { /* Only a confirmed association is reported, even after a release failure. */ }
+		return $confirmed;
+	}
+
 	/** A lifecycle write must be conditional, changed once, and freshly confirmed. */
 	public function transition_status( int $id, string $expected, array $fields, string $secret = '' ): bool {
 		global $wpdb;
@@ -177,11 +199,25 @@ final class Registry {
 			$restore = [];
 			foreach ( $data as $key => $value ) { $restore[ $key ] = $before[ $key ]; }
 			// Compensate only this exact issuance, while still holding the lock.
-			if ( false === $wpdb->update( $this->table(), $restore, [ 'id' => $id, 'secret_current' => $data['secret_current'] ] ) || ! $this->matches_fields( $id, $restore ) ) {
-				throw new \RuntimeException( 'Credential restoration unconfirmed.' );
-			}
+			try { $wpdb->update( $this->table(), $restore, [ 'id' => $id, 'secret_current' => $data['secret_current'] ] ); }
+			catch ( \Throwable $e ) { /* A write can commit before its acknowledgement fails; read afresh. */ }
+			try { if ( $this->matches_fields( $id, $restore ) ) { return false; } }
+			catch ( \Throwable $e ) { /* Restoration is unconfirmed; attempt the bounded safe fallback below. */ }
+			throw new CredentialRecoveryException( $this->recover_disabled_locked( $id ) );
 		}
 		return false;
+	}
+
+	/** One final fence/clear and fresh read under the caller's still-held mutex. */
+	private function recover_disabled_locked( int $id ): bool {
+		global $wpdb;
+		if ( ! isset( self::$partner_locks[ $this->partner_lock_key( $id ) ] ) ) { return false; }
+		$safe = [ 'status' => Partner::STATUS_DISABLED, 'secret_current' => '', 'secret_previous' => '', 'secret_rotated_at' => null ];
+		// Do not depend on an uncertain credential/status predicate. The held partner lock serializes our writers.
+		try { $wpdb->update( $this->table(), $safe + [ 'updated' => gmdate( 'Y-m-d H:i:s' ) ], [ 'id' => $id ] ); }
+		catch ( \Throwable $e ) { /* Still verify: an exception does not prove the write was rolled back. */ }
+		try { return $this->matches_fields( $id, $safe ); }
+		catch ( \Throwable $e ) { return false; }
 	}
 
 	private function matches_fields( int $id, array $expected ): bool {

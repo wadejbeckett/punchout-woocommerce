@@ -29,6 +29,15 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Router {
 
+	/**
+	 * One supplier URL serves test and production connections. The cXML
+	 * deploymentMode selects the connection context, not a second route.
+	 * Use the front-end home URL so subdirectory installations stay valid.
+	 */
+	public static function setup_url(): string {
+		return home_url( '/punchout/setup' );
+	}
+
 	public function __construct(
 		private SetupEndpoint $setup,
 		private StartEndpoint $start,

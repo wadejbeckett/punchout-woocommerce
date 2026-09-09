@@ -96,6 +96,7 @@ final class Plugin {
 		$this->registry = new Registry( $secrets );
 		$this->sessions = new Store();
 		$this->audit    = new Log( $this->logger );
+		$registration  = new \POW\Partners\Registration( $this->registry, $this->sessions, $this->audit );
 
 		$provisioner = new Provisioner( $this->sessions, $this->audit, $this->logger );
 		$parser      = new Parser();
@@ -110,7 +111,8 @@ final class Plugin {
 		// Admin, schema upgrade, CLI and housekeeping run regardless of the
 		// master switch.
 		( new AdminPage( $this->settings, $this->registry, $this->audit ) )->register();
-		( new AdminActions( $this->registry, $this->audit ) )->register();
+		( new AdminActions( $this->registry, $this->audit, $registration ) )->register();
+		( new \POW\Account\IntegrationTab( $this, $this->registry, $registration, $this->audit, new RateLimiter( RateLimiter::public_limit( \POW\Partners\Registration::RATE_LIMIT_PER_HOUR, 5 ), null, null, HOUR_IN_SECONDS ) ) )->register();
 		( new AdminDetails() )->register();
 		( new Cron( $this->sessions, $this->audit, $this->settings, $quotes ) )->register();
 

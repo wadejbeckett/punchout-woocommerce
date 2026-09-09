@@ -31,6 +31,7 @@ global $wpdb;
 
 delete_option( 'pow_settings' );
 delete_option( 'pow_db_version' );
+delete_option( 'pow_rewrite_version' );
 
 remove_role( 'punchout_buyer' );
 
