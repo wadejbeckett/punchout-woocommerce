@@ -22,8 +22,17 @@ defined( 'ABSPATH' ) || exit;
  *   renders; checkout is blocked for that partner's punchout sessions.
  * - MODE_DUAL_EXIT: the RFQ button renders alongside the completely
  *   untouched stock WooCommerce checkout.
+ *
+ * `status` is the lifecycle: STATUS_PENDING (self-service registration
+ * submitted, awaiting an administrator — never authenticates), then
+ * STATUS_ACTIVE or STATUS_DISABLED. Only STATUS_ACTIVE authenticates, so
+ * anything unrecognised fails closed.
  */
 final class Partner {
+
+	public const STATUS_PENDING  = 'pending';
+	public const STATUS_ACTIVE   = 'active';
+	public const STATUS_DISABLED = 'disabled';
 
 	public const MODE_REQUISITION_ONLY = 'requisition_only';
 	public const MODE_DUAL_EXIT        = 'dual_exit';
@@ -52,6 +61,7 @@ final class Partner {
 		public readonly ?string $ip_allowlist,
 		public readonly int $session_ttl,
 		public readonly int $token_ttl,
+		public readonly int $owner_user_id,
 	) {}
 
 	/**
@@ -82,11 +92,23 @@ final class Partner {
 			ip_allowlist: isset( $row['ip_allowlist'] ) && '' !== (string) $row['ip_allowlist'] ? (string) $row['ip_allowlist'] : null,
 			session_ttl: max( 60, (int) ( $row['session_ttl'] ?? 14400 ) ),
 			token_ttl: max( 30, (int) ( $row['token_ttl'] ?? 300 ) ),
+			owner_user_id: (int) ( $row['owner_user_id'] ?? 0 ),
 		);
 	}
 
 	public function is_active(): bool {
-		return 'active' === $this->status;
+		return self::STATUS_ACTIVE === $this->status;
+	}
+
+	public function is_pending(): bool {
+		return self::STATUS_PENDING === $this->status;
+	}
+
+	/**
+	 * True only for a real user who owns this row — user 0 owns nothing.
+	 */
+	public function is_owned_by( int $user_id ): bool {
+		return $user_id > 0 && $user_id === $this->owner_user_id;
 	}
 
 	public function is_requisition_only(): bool {
