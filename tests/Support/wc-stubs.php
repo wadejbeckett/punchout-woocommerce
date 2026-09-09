@@ -124,6 +124,10 @@ if ( ! class_exists( 'WC_Order' ) ) {
 			$this->status = $status;
 		}
 
+		public function get_order_number(): string { return (string) $this->id; }
+
+		public function get_date_created(): ?DateTimeImmutable { return null; }
+
 		public function get_status(): string {
 			return $this->status;
 		}
@@ -165,8 +169,10 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		 *
 		 * @param array<string, string> $props Order props.
 		 */
-		public function set_props( array $props ): void {
+		public function set_props( array $props ): mixed {
+			if ( isset( $GLOBALS['pow_test_props_error'] ) ) { return $GLOBALS['pow_test_props_error']; }
 			$this->props = array_merge( $this->props, $props );
+			return true;
 		}
 
 		public function update_meta_data( string $key, mixed $value ): void {
@@ -178,6 +184,10 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		}
 
 		public function add_order_note( string $note, int $is_customer_note = 0 ): int {
+			if ( isset( $GLOBALS['pow_test_order_note'] ) ) {
+				$result = ( $GLOBALS['pow_test_order_note'] )( $this );
+				if ( null !== $result ) { return $result; }
+			}
 			$this->notes[] = $note;
 
 			return count( $this->notes );
@@ -191,6 +201,7 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		 * @param array<string, float> $args subtotal/total overrides.
 		 */
 		public function add_product( WC_Product $product, float $quantity = 1, array $args = [] ): int {
+			if ( isset( $GLOBALS['pow_test_add_product_result'] ) ) { return $GLOBALS['pow_test_add_product_result']; }
 			$this->items[] = [
 				'product_id' => $product->get_id(),
 				'name'       => $product->get_name(),
@@ -203,7 +214,8 @@ if ( ! class_exists( 'WC_Order' ) ) {
 			return count( $this->items );
 		}
 
-		public function add_item( WC_Order_Item_Product $item ): void {
+		public function add_item( WC_Order_Item_Product $item ): mixed {
+			if ( isset( $GLOBALS['pow_test_add_item_result'] ) ) { return $GLOBALS['pow_test_add_item_result']; }
 			$this->items[] = [
 				'product_id' => 0,
 				'name'       => $item->name,
@@ -212,6 +224,7 @@ if ( ! class_exists( 'WC_Order' ) ) {
 				'subtotal'   => $item->subtotal,
 				'total'      => $item->total,
 			];
+			return null;
 		}
 
 		public function calculate_totals( bool $and_taxes = true ): float {
@@ -221,6 +234,10 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		}
 
 		public function save(): int {
+			if ( isset( $GLOBALS['pow_test_order_save'] ) ) {
+				$result = ( $GLOBALS['pow_test_order_save'] )( $this );
+				if ( null !== $result ) { return $result; }
+			}
 			if ( $this->save_throws ) {
 				throw new \RuntimeException( 'order save failed' );
 			}

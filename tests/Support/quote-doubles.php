@@ -38,6 +38,11 @@ final class QuoteOrderTestStore extends \POW\Sessions\Store {
 
 		return true;
 	}
+	public function link_quote_if_empty( int $id, int $order_id ): string {
+		self::$updates[ $id ] = [ 'order_id' => $order_id ];
+		return 'linked';
+	}
+
 }
 
 final class QuoteOrderTestLog extends \POW\Audit\Log {
@@ -53,6 +58,11 @@ final class QuoteOrderTestLog extends \POW\Audit\Log {
 	public function write( string $event, array $context = [] ): void {
 		self::$written[] = [ $event, $context ];
 	}
+	public function write_checked( string $event, array $context = [] ): bool {
+		$this->write( $event, $context );
+		return true;
+	}
+
 }
 
 final class QuoteOrderTestSettings extends \POW\Settings {
@@ -79,5 +89,11 @@ final class QuoteOrderTestLogger extends \POW\Logger {
 	/**
 	 * @param array<string, mixed> $context Log context.
 	 */
-	public function error( string $message, array $context = [] ): void {}
+	public function info( string $message, array $context = [] ): void {
+		if ( isset( $GLOBALS['pow_test_logger_error'] ) ) { throw $GLOBALS['pow_test_logger_error']; }
+	}
+	public function error( string $message, array $context = [] ): void {
+		$GLOBALS['pow_test_errors'][] = [ $message, $context ];
+		if ( isset( $GLOBALS['pow_test_logger_error'] ) ) { throw $GLOBALS['pow_test_logger_error']; }
+	}
 }

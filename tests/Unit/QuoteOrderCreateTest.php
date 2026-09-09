@@ -193,7 +193,7 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( 'quote_order_failed', QuoteOrderTestLog::$written[0][0] );
 		self::assertCount( 2, QuoteOrderTestLog::$written, 'every failure is audited' );
 		self::assertCount( 1, $GLOBALS['pow_test_mail'], 'the second failure within the hour is logged, not mailed' );
-		self::assertStringContainsString( 'address lookup exploded', $GLOBALS['pow_test_mail'][0]['message'] );
+		self::assertStringContainsString( 'quote_creation_failed', $GLOBALS['pow_test_mail'][0]['message'] );
 	}
 
 	/**
@@ -222,8 +222,8 @@ final class QuoteOrderCreateTest extends TestCase {
 
 	/**
 	 * wc_create_order() returns a WP_Error rather than throwing, so the
-	 * guard is what turns it into the failure path — with the real
-	 * message, and without claiming an order exists.
+	 * guard is what turns it into the failure path — with a safe
+	 * diagnostic code, and without claiming an order exists.
 	 */
 	public function test_a_wp_error_from_wc_create_order_is_the_failure_path(): void {
 		$GLOBALS['pow_test_options']['admin_email']      = 'ops@example.com';
@@ -233,12 +233,12 @@ final class QuoteOrderCreateTest extends TestCase {
 
 		self::assertSame( [], $GLOBALS['pow_test_orders'], 'nothing was created' );
 		self::assertSame( 0, QuoteOrderTestLog::$written[0][1]['order_id'] );
-		self::assertStringContainsString( 'Could not insert the order into the database', QuoteOrderTestLog::$written[0][1]['detail']['error'] );
+		self::assertStringContainsString( 'quote_creation_failed', QuoteOrderTestLog::$written[0][1]['detail']['error'] );
 		self::assertStringContainsString( 'no order was created', $GLOBALS['pow_test_mail'][0]['message'] );
 	}
 
 	/**
-	 * A double-submitted return must not leave two quotes behind.
+	 * An explicitly linked quote can be reused sequentially; concurrency is enforced at the return endpoint.
 	 */
 	public function test_a_double_submitted_return_reuses_the_existing_quote(): void {
 		$order_id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
@@ -265,7 +265,7 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( [], $GLOBALS['pow_test_orders'], 'nothing was created' );
 		self::assertSame( 'quote_order_failed', QuoteOrderTestLog::$written[0][0] );
 		self::assertSame( 0, QuoteOrderTestLog::$written[0][1]['order_id'] );
-		self::assertStringContainsString( 'order lookup exploded', QuoteOrderTestLog::$written[0][1]['detail']['error'] );
+		self::assertStringContainsString( 'quote_creation_failed', QuoteOrderTestLog::$written[0][1]['detail']['error'] );
 	}
 
 	/**
@@ -318,7 +318,7 @@ final class QuoteOrderCreateTest extends TestCase {
 
 		self::assertSame( 'quote_poom_failed', $last[0] );
 		self::assertSame( $order_id, $last[1]['order_id'] );
-		self::assertStringContainsString( 'order save failed', $last[1]['detail']['error'] );
+		self::assertStringContainsString( 'quote_attachment_failed', $last[1]['detail']['error'] );
 	}
 
 	public function test_attach_poom_stores_the_document(): void {

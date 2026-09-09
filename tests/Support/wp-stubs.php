@@ -271,13 +271,14 @@ if ( ! function_exists( 'wp_mail' ) ) {
 	 * what a throttle let through.
 	 */
 	function wp_mail( string $to, string $subject, string $message ): bool { // phpcs:ignore
+		if ( isset( $GLOBALS['pow_test_mail_error'] ) ) { throw $GLOBALS['pow_test_mail_error']; }
 		$GLOBALS['pow_test_mail'][] = [
 			'to'      => $to,
 			'subject' => $subject,
 			'message' => $message,
 		];
 
-		return true;
+		return $GLOBALS['pow_test_mail_result'] ?? true;
 	}
 }
 
@@ -339,4 +340,26 @@ if ( ! function_exists( 'wp_parse_args' ) ) {
 	function wp_parse_args( array $args, array $defaults = [] ): array { // phpcs:ignore
 		return array_merge( $defaults, $args );
 	}
+}
+
+if ( ! function_exists( 'is_user_logged_in' ) ) {
+	function is_user_logged_in(): bool { return get_current_user_id() > 0; }
+}
+if ( ! function_exists( 'wp_get_current_user' ) ) {
+	function wp_get_current_user(): object { return (object) [ 'ID' => get_current_user_id(), 'roles' => $GLOBALS['pow_test_roles'] ?? [] ]; }
+}
+if ( ! function_exists( 'wp_get_session_token' ) ) {
+	function wp_get_session_token(): string { return $GLOBALS['pow_test_login_token'] ?? ''; }
+}
+if ( ! function_exists( 'wp_clear_auth_cookie' ) ) {
+	function wp_clear_auth_cookie(): void { $GLOBALS['pow_test_cookies_cleared'][] = true; }
+}
+if ( ! class_exists( 'WP_Session_Tokens' ) ) {
+	class WP_Session_Tokens {
+		public static function get_instance( int $user_id ): self { return new self(); }
+		public function destroy( string $token ): void { $GLOBALS['pow_test_destroyed_tokens'][] = $token; }
+	}
+}
+if ( ! function_exists( 'wp_json_encode' ) ) {
+	function wp_json_encode( mixed $value ): string|false { return json_encode( $value ); }
 }
