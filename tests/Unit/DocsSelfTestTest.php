@@ -134,14 +134,14 @@ final class DocsSelfTestTest extends TestCase {
 	 * that it holds for a failed lookup as well as a wrong secret.
 	 */
 	public function test_anonymous_partner_stage_is_collapsed(): void {
-		$anonymous  = SelfTest::partner_result_rows( true, true, false, false, [ 'Coke', 'active', '' ] );
-		$privileged = SelfTest::partner_result_rows( true, true, false, true, [ 'Coke', 'active', '' ] );
+		$anonymous  = SelfTest::partner_result_rows( true, true, false, false, [ 'Example Buyer Company', 'active', '' ] );
+		$privileged = SelfTest::partner_result_rows( true, true, false, true, [ 'Example Buyer Company', 'active', '' ] );
 
 		self::assertCount( 1, $anonymous );
 		self::assertCount( 3, $privileged );
 		self::assertSame( SelfTest::RESULT_FAIL, $anonymous[0]['result'] );
 		self::assertSame( '', $anonymous[0]['detail'], 'an anonymous run must never say which stage failed' );
-		self::assertSame( 'Coke', $privileged[0]['detail'] );
+		self::assertSame( 'Example Buyer Company', $privileged[0]['detail'] );
 	}
 
 	public function test_unknown_identity_and_wrong_secret_are_indistinguishable(): void {
@@ -231,7 +231,7 @@ final class DocsSelfTestTest extends TestCase {
 	public function test_a_disabled_connection_is_also_verified_against_the_dummy(): void {
 		$disabled = Partner::from_row(
 			[
-				'name'           => 'Coke',
+				'name'           => 'Example Buyer Company',
 				'status'         => 'disabled',
 				'secret_current' => 'the-real-sealed-value',
 			]
@@ -256,7 +256,7 @@ final class DocsSelfTestTest extends TestCase {
 	public function test_an_active_partner_with_a_matching_secret_passes_every_flag(): void {
 		$active = Partner::from_row(
 			[
-				'name'           => 'Coke',
+				'name'           => 'Example Buyer Company',
 				'status'         => 'active',
 				'secret_current' => 'the-real-sealed-value',
 			]
@@ -325,8 +325,10 @@ XML;
 	 * not a fault.
 	 */
 	public function test_empty_buyer_cookie_is_accepted(): void {
-		$xml    = str_replace( '<BuyerCookie>1CX26RCJDQ9OS</BuyerCookie>', '<BuyerCookie/>', Samples::setup_request() );
-		$report = $this->parsing_self_test()->run( $xml );
+		$self_test = $this->parsing_self_test();
+		$xml       = str_replace( '<BuyerCookie>' . Samples::parsed()->buyer_cookie . '</BuyerCookie>', '<BuyerCookie/>', Samples::setup_request() );
+		self::assertSame( '', ( new Parser() )->parse( $xml )->buyer_cookie );
+		$report = $self_test->run( $xml );
 
 		self::assertSame( SetupEndpoint::STATUS_OK, $report['verdict'] );
 

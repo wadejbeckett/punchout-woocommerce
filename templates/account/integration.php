@@ -12,6 +12,7 @@
  * @var string $action_url
  * @var string $docs_url
  * @var string $nonce
+ * @var string $delivery_addresses Authorized, escaped Fields markup; optional for existing template callers.
  * @package POW
  * @license AGPL-3.0-or-later
  */
@@ -70,6 +71,9 @@ defined( 'ABSPATH' ) || exit;
 		</form>
 	<?php else : ?>
 		<p><?php esc_html_e( 'Connection information is unavailable. Reload this page before making another change.', 'punchout-woocommerce' ); ?></p>
+	<?php endif; ?>
+	<?php if ( ! empty( $delivery_addresses ) ) : ?>
+		<?php echo $delivery_addresses; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- authorized Fields producer renders the escaped delivery-addresses template, outside credential forms. ?>
 	<?php endif; ?>
 	<h3><?php esc_html_e( 'Company credentials and individual buyers', 'punchout-woocommerce' ); ?></h3>
 	<p><?php esc_html_e( 'Company credentials authenticate the connection. Your purchasing system authorises its buyers and supplies a stable identifier for each person. Buyers are recognised or created automatically; no separate website password, manual employee entry or second store approval is required.', 'punchout-woocommerce' ); ?></p>

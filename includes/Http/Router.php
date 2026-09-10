@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Http;
 
+use POW\Support\Transport;
+
 use POW\Sessions\Tokens;
 
 defined( 'ABSPATH' ) || exit;
@@ -35,13 +37,14 @@ final class Router {
 	 * Use the front-end home URL so subdirectory installations stay valid.
 	 */
 	public static function setup_url(): string {
-		return home_url( '/punchout/setup' );
+		return Transport::supplier_url( home_url( '/punchout/setup' ) );
 	}
 
 	public function __construct(
 		private SetupEndpoint $setup,
 		private StartEndpoint $start,
 		private ReturnEndpoint $return_endpoint,
+		private ?\POW\Addresses\Chooser $delivery = null,
 	) {}
 
 	public function register(): void {
@@ -53,6 +56,14 @@ final class Router {
 
 		if ( ! str_starts_with( $path, '/punchout/' ) ) {
 			return;
+		}
+
+		if ( ! Transport::request_allowed() ) {
+			if ( in_array( $path, [ '/punchout/setup', '/punchout/order' ], true ) ) {
+				$this->setup->transport_denied();
+				exit;
+			}
+			Transport::require_https();
 		}
 
 		if ( '/punchout/setup' === $path ) {
@@ -75,6 +86,12 @@ final class Router {
 			// does not even look like a token still gets the same page.
 			$this->harden_headers();
 			$this->start->deny();
+			exit;
+		}
+
+		if ( '/punchout/confirm' === $path && null !== $this->delivery ) {
+			$this->harden_headers();
+			$this->delivery->handle();
 			exit;
 		}
 

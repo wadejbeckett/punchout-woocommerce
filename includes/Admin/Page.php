@@ -10,6 +10,9 @@ declare( strict_types = 1 );
 
 namespace POW\Admin;
 
+use POW\Support\Transport;
+
+use POW\Addresses\Fields;
 use POW\Checkout\ExitPolicy;
 use POW\Audit\Log;
 use POW\Http\RateLimiter;
@@ -31,8 +34,9 @@ defined( 'ABSPATH' ) || exit;
  *   per-connection block and a self-test that names the exact
  *   authentication stage rather than collapsing it.
  *
- * All writes go through Admin\Actions (admin-post handlers, nonce +
- * capability checked); this class only renders and registers settings.
+ * Connection writes go through Admin\Actions (admin-post handlers, nonce +
+ * capability checked); delivery forms use the injected Fields same-page handler.
+ * This class only renders and registers settings.
  */
 final class Page {
 
@@ -46,6 +50,7 @@ final class Page {
 		private Settings $settings,
 		private Registry $registry,
 		private Log $audit,
+		private ?Fields $addresses = null,
 	) {}
 
 	public function register(): void {
@@ -204,6 +209,7 @@ final class Page {
 	 * @return array<string, mixed>
 	 */
 	public function sanitize_settings( $input ): array {
+		Transport::require_https();
 		$input = is_array( $input ) ? $input : [];
 
 		return [
@@ -234,6 +240,7 @@ final class Page {
 	 * ------------------------------------------------------------------ */
 
 	public function render(): void {
+		Transport::require_https();
 		if ( ! current_user_can( self::CAP ) ) {
 			wp_die( esc_html__( 'You do not have permission to access this page.', 'punchout-woocommerce' ) );
 		}
@@ -543,6 +550,8 @@ final class Page {
 				echo '</form>';
 			} else {
 				echo '<p>' . esc_html__( 'Associated owner user ID:', 'punchout-woocommerce' ) . ' ' . esc_html( (string) $partner->owner_user_id ) . '. ' . esc_html__( 'This association cannot be transferred or cleared; the company book stays with its owner.', 'punchout-woocommerce' ) . '</p>';
+				// This fragment contains independent same-page POST forms; keep it outside identity, credential and buyer-policy forms.
+				echo $this->addresses?->markup( $partner->id ) ?? ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- authorized, escaped Fields producer.
 			}
 		}
 	}

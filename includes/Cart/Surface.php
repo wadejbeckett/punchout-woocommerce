@@ -10,6 +10,9 @@ declare( strict_types = 1 );
 
 namespace POW\Cart;
 
+use POW\Support\Transport;
+
+use POW\Checkout\ExitPolicy;
 use POW\Partners\Registry;
 use POW\Plugin;
 use POW\Support\Templates;
@@ -53,6 +56,7 @@ final class Surface {
 		add_shortcode( 'punchout_abandon_button', [ $this, 'abandon_shortcode' ] );
 		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
 		add_filter( 'render_block_woocommerce/proceed-to-checkout-block', [ $this, 'filter_blocks_proceed' ] );
+		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
 	}
 
@@ -66,6 +70,19 @@ final class Surface {
 			return '';
 		}
 
+		return Templates::render(
+			'return-button',
+			[
+				'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ),
+				'nonce'      => wp_create_nonce( 'pow_confirm_delivery' ),
+				'label'      => $this->return_button_label(),
+				'classes'    => $this->button_classes( 'pow-return-button' ),
+			]
+		);
+	}
+
+	/** The native Cart block and the classic/shortcode controls share one label policy. */
+	private function return_button_label(): string {
 		/**
 		 * Filter the RFQ exit button label.
 		 *
@@ -74,22 +91,12 @@ final class Surface {
 		 *
 		 * @param string $label Button text.
 		 */
-		$label = (string) apply_filters(
+		return (string) apply_filters(
 			'pow_return_button_label',
 			$this->plugin->settings()->button_label(
 				'return_button_label',
 				__( 'Punchout', 'punchout-woocommerce' )
 			)
-		);
-
-		return Templates::render(
-			'return-button',
-			[
-				'action_url' => home_url( '/punchout/return' ),
-				'nonce'      => wp_create_nonce( 'pow_return' ),
-				'label'      => $label,
-				'classes'    => $this->button_classes( 'pow-return-button' ),
-			]
 		);
 	}
 
@@ -127,7 +134,7 @@ final class Surface {
 		return Templates::render(
 			'abandon-button',
 			[
-				'action_url' => home_url( '/punchout/return' ),
+				'action_url' => Transport::supplier_url( home_url( '/punchout/return' ) ),
 				'nonce'      => wp_create_nonce( 'pow_return' ),
 				'label'      => $label,
 				'classes'    => $this->button_classes( 'pow-abandon-button', false ),
@@ -186,12 +193,10 @@ final class Surface {
 	}
 
 	/**
-	 * Blocks cart (Woo 8.3+ default): the proceed-to-checkout block is a
-	 * server-rendered wrapper that React hydrates internally, so appending
-	 * a SIBLING here survives hydration. Dual exit appends beside the stock
-	 * button; requisition_only replaces the wrapper outright so the
-	 * checkout button never mounts — presentation only, RouteGuard owns
-	 * the hard block either way.
+	 * Preserve the native wrapper: Cart's React render recreates its button
+	 * even if PHP replaces the wrapper. Restricted sessions use Woo's public
+	 * button label/link filters; dual exit retains the additive control.
+	 * RouteGuard and the confirmation endpoint remain the authorities.
 	 */
 	public function filter_blocks_proceed( string $block_content ): string {
 		$session = $this->plugin->current_session();
@@ -200,13 +205,60 @@ final class Surface {
 			return $block_content;
 		}
 
-		$partner = $this->registry->find( $session->partner_id );
-
-		if ( null === $partner || \POW\Checkout\ExitPolicy::CHECKOUT !== ( new \POW\Checkout\ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() ) ) {
-			return $this->markup();
+		if ( ! $this->checkout_allowed( $session->partner_id ) ) {
+			return $block_content;
 		}
 
 		return $block_content . $this->markup();
+	}
+
+	/** Cart registers its frontend assets after its inner blocks have rendered. */
+	public function enqueue_cart_blocks_filters(): void {
+		$session = $this->plugin->current_session();
+		if ( null !== $session && ! $this->checkout_allowed( $session->partner_id ) ) {
+			$this->enqueue_blocks_filters();
+		}
+	}
+
+	/** Resolve current policy; an unavailable initial Registry read is also restricted. */
+	private function checkout_allowed( int $partner_id ): bool {
+		try {
+			$partner = $this->registry->find( $partner_id );
+			return null !== $partner && ExitPolicy::CHECKOUT === ( new ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() );
+		} catch ( \Throwable $error ) {
+			return false;
+		}
+	}
+
+	/**
+	 * Cart's enqueue-data hook runs after its frontend handle is registered,
+	 * before Cart enqueues that handle and before footer scripts print.
+	 * Depending only on the API would leave our script and Cart as unordered
+	 * siblings. Make Cart depend on our filter too: API -> filters -> Cart.
+	 */
+	private function enqueue_blocks_filters(): void {
+		$cart_handle = 'wc-cart-block-frontend';
+		if ( ! wp_script_is( 'wc-blocks-checkout', 'registered' ) || ! wp_script_is( $cart_handle, 'registered' ) || wp_script_is( $cart_handle, 'done' ) ) {
+			// Unsupported/already-printed assets: preserve native markup; RouteGuard still refuses checkout.
+			return;
+		}
+
+		$config = wp_json_encode(
+			[
+				'restricted' => true,
+				'label'      => $this->return_button_label(),
+				'confirmUrl' => Transport::supplier_url( home_url( '/punchout/confirm' ) ),
+			],
+			JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+		);
+		if ( false === $config ) { return; }
+
+		wp_enqueue_script( 'pow-cart-blocks', POW_PLUGIN_URL . 'assets/js/cart-blocks.js', [ 'wc-blocks-checkout' ], (string) filemtime( POW_PLUGIN_DIR . 'assets/js/cart-blocks.js' ), true );
+		wp_add_inline_script( 'pow-cart-blocks', 'window.powCartBlocks = ' . $config . ';', 'before' );
+		$scripts = wp_scripts();
+		if ( ! in_array( 'pow-cart-blocks', $scripts->registered[$cart_handle]->deps, true ) ) {
+			$scripts->registered[$cart_handle]->deps[] = 'pow-cart-blocks';
+		}
 	}
 
 	/**
@@ -221,9 +273,7 @@ final class Surface {
 			return;
 		}
 
-		$partner = $this->registry->find( $session->partner_id );
-
-		if ( null === $partner || \POW\Checkout\ExitPolicy::CHECKOUT !== ( new \POW\Checkout\ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() ) ) {
+		if ( ! $this->checkout_allowed( $session->partner_id ) ) {
 			remove_action( 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 );
 		}
 	}

@@ -14,7 +14,7 @@ use POW\Partners\Partner;
 final class PartnerStatusTest extends TestCase {
 
 	public function test_pending_is_neither_active_nor_terminal(): void {
-		$partner = Partner::from_row( [ 'id' => 7, 'name' => 'Coke', 'status' => Partner::STATUS_PENDING ] );
+		$partner = Partner::from_row( [ 'id' => 7, 'name' => 'Example Buyer Company', 'status' => Partner::STATUS_PENDING ] );
 
 		self::assertTrue( $partner->is_pending() );
 		self::assertFalse( $partner->is_active(), 'a pending row must never authenticate a setup request' );

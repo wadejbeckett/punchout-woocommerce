@@ -57,12 +57,12 @@ final class QuoteOrderRulesTest extends TestCase {
 	}
 
 	public function test_shipping_resolution_order(): void {
-		$filtered = [ 'address' => [ 'city' => 'Cape Town' ], 'code' => 'LEMA-002' ];
-		$inbound  = [ 'address' => [ 'city' => 'Durban' ], 'code' => 'LEMA-001' ];
+		$filtered = [ 'address' => [ 'city' => 'Cape Town' ], 'code' => 'BUYER-002' ];
+		$inbound  = [ 'address' => [ 'city' => 'Durban' ], 'code' => 'BUYER-001' ];
 		$customer = [ 'address' => [ 'city' => 'Pretoria' ], 'code' => '' ];
 
 		self::assertSame( 'filter', QuoteOrder::resolve_shipping( $filtered, $inbound, $customer )['source'] );
-		self::assertSame( 'LEMA-002', QuoteOrder::resolve_shipping( $filtered, $inbound, $customer )['code'] );
+		self::assertSame( 'BUYER-002', QuoteOrder::resolve_shipping( $filtered, $inbound, $customer )['code'] );
 
 		self::assertSame( 'ship_to', QuoteOrder::resolve_shipping( null, $inbound, $customer )['source'] );
 		self::assertSame( 'Durban', QuoteOrder::resolve_shipping( null, $inbound, $customer )['address']['city'] );
@@ -89,14 +89,14 @@ final class QuoteOrderRulesTest extends TestCase {
 			self::markTestSkipped( 'ext-dom not available' );
 		}
 
-		$xml = '<ShipTo><Address addressID="LEMA-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name>'
+		$xml = '<ShipTo><Address addressID="BUYER-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name>'
 			. '<PostalAddress name="default"><DeliverTo>Receiving</DeliverTo><Street>1 Example Road</Street>'
 			. '<City>Johannesburg</City><State>GP</State><PostalCode>2196</PostalCode>'
 			. '<Country isoCountryCode="ZA">South Africa</Country></PostalAddress></Address></ShipTo>';
 
 		$parsed = QuoteOrder::address_from_ship_to( $xml );
 
-		self::assertSame( 'LEMA-001', $parsed['code'] );
+		self::assertSame( 'BUYER-001', $parsed['code'] );
 		self::assertSame( 'Head office', $parsed['address']['company'] );
 		self::assertSame( 'Receiving', $parsed['address']['first_name'] );
 		self::assertSame( '1 Example Road', $parsed['address']['address_1'] );

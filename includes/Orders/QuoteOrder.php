@@ -11,12 +11,16 @@ declare( strict_types = 1 );
 namespace POW\Orders;
 
 use POW\Addresses\QuoteAddress;
+use POW\Addresses\DeliveryData;
+use POW\Addresses\DeliveryEstimate;
 use POW\Audit\Log;
+use POW\Cxml\Money;
 use POW\Logger;
 use POW\Partners\Partner;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
 use POW\Settings;
+use WC_Order_Item_Shipping;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -56,6 +60,10 @@ final class QuoteOrder {
 	public const META_SESSION_ID    = '_pow_session_id';
 	public const META_PARTNER_ID    = '_pow_partner_id';
 	public const META_DELIVERY_CODE = '_pow_delivery_code';
+	public const META_DELIVERY      = '_pow_delivery';
+	public const META_DELIVERY_NOTES = '_pow_delivery_notes';
+	public const META_DELIVERY_CHOICE = '_pow_delivery_choice';
+	public const META_DELIVERY_CONFIRMATION = '_pow_delivery_confirmation';
 
 	/**
 	 * The order-screen action key. It has to survive sanitize_title()
@@ -82,6 +90,9 @@ final class QuoteOrder {
 	 */
 	private const SHIPPING_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
 
+	/** Request-local winner values survive the later XML attachment, without adding fields to the stored delivery schemas. */
+	private array $prepared_quotes = [];
+
 	public function __construct(
 		private Store $sessions,
 		private Log $audit,
@@ -100,6 +111,7 @@ final class QuoteOrder {
 		// at the first insert, so even a creation hook that throws before returning
 		// the object cannot strand a payable order or an incomplete actionable quote.
 		$order = null;
+		$note_filter = null;
 
 		try {
 			// Sequential reuse only: the return endpoint selects its atomic winner
@@ -137,19 +149,24 @@ final class QuoteOrder {
 				throw new \RuntimeException( 'quote_staging_failed' );
 			}
 
-			$order->set_currency( (string) ( $poom_lines['currency'] ?? get_woocommerce_currency() ) );
+			$currency = (string) ( $poom_lines['currency'] ?? get_woocommerce_currency() );
+			$order->set_currency( $currency );
 
+			$prepared_lines = [];
 			foreach ( (array) ( $poom_lines['items'] ?? [] ) as $item ) {
-				$this->add_line( $order, self::line_args( (array) $item ) );
+				$prepared_lines[] = $this->add_line( $order, self::line_args( (array) $item ) );
 			}
 
 			// The return winner owns these prepared values. An explicit null also suppresses all mutable legacy lookups; only callers lacking the key retain the original fallback.
-			$shipping = array_key_exists( 'delivery_destination', $poom_lines )
+			$has_destination = array_key_exists( 'delivery_destination', $poom_lines );
+			$shipping = $has_destination
 				? ( QuoteAddress::payload( $poom_lines['delivery_destination'] ) ?? [ 'address' => [], 'code' => '', 'source' => 'none' ] )
 				: $this->shipping_for( $session, $partner );
 
-			if ( [] !== $shipping['address'] ) {
-				$this->set_shipping( $order, $shipping['address'], array_key_exists( 'delivery_destination', $poom_lines ) );
+			// An explicit null means no native shipping address, including any creation-hook defaults. Keep the prepared value separate from the mutable order for both readback checks.
+			$prepared_shipping = $has_destination ? ( $shipping['address'] ?: array_fill_keys( self::SHIPPING_FIELDS, '' ) ) : null;
+			if ( null !== $prepared_shipping || [] !== $shipping['address'] ) {
+				$this->set_shipping( $order, $prepared_shipping ?? $shipping['address'], $has_destination );
 			}
 
 			// Stored as strings: that is what WooCommerce writes back after
@@ -160,10 +177,38 @@ final class QuoteOrder {
 			$order->update_meta_data( self::META_PARTNER_ID, (string) $partner->id );
 			$order->update_meta_data( self::META_DELIVERY_CODE, $shipping['code'] );
 
+			$delivery = null;
+			if ( array_key_exists( 'delivery', $poom_lines ) ) {
+				$delivery = $this->add_delivery( $order, $poom_lines, $shipping );
+			}
+			$provenance = $this->add_confirmation( $order, $session, $partner, $poom_lines );
+			if ( null !== $provenance ) {
+				// Woo's CPT store passes a raw excerpt to wp_update_post(), whose final unslashing otherwise removes confirmed backslashes. HPOS needs no transformation; its optional CPT sync can use this same narrowly scoped native boundary.
+				$note_order_id = (int) $order->get_id();
+				$notes = $provenance[ self::META_DELIVERY_NOTES ];
+				$note_filter = static function ( array $data, array $postarr ) use ( $note_order_id, $notes ): array {
+					if ( (int) ( $postarr['ID'] ?? 0 ) === $note_order_id ) { $data['post_excerpt'] = wp_slash( $notes ); }
+					return $data;
+				};
+				add_filter( 'wp_insert_post_data', $note_filter, PHP_INT_MAX, 2 );
+			}
+
 			// Totals without taxes: the basket quotes ex-tax unit prices
 			// (PoomMapper), so a tax-inclusive order total would not be the
 			// number the buyer's system received.
 			$order->calculate_totals( false );
+
+			if ( null !== $prepared_shipping ) {
+				$groups = $this->collect_verification_items( $order );
+				if ( 'auto-draft' !== $order->get_status( 'edit' ) ) { throw new \RuntimeException( 'quote_staging_failed' ); }
+				$this->verify_shipping( $order, $prepared_shipping );
+				$this->verify_merchandise( $groups['line_items'], $prepared_lines );
+			}
+
+			if ( null !== $delivery ) {
+				$this->verify_delivery( $order, $delivery, $poom_lines['total_cents'], $groups['shipping_lines'] );
+			}
+			if ( null !== $provenance ) { $this->verify_confirmation( $order, $provenance ); }
 
 			// Promote only the completed construction. Both native stores defer their
 			// new-order hook until this promotion; no payable intermediate status is
@@ -178,8 +223,29 @@ final class QuoteOrder {
 			if ( ! $saved instanceof \WC_Order || Status::SLUG !== $saved->get_status() || (int) $saved->get_meta( self::META_SESSION_ID ) !== $session->id ) {
 				throw new \RuntimeException( 'quote_save_failed' );
 			}
+			if ( null !== $prepared_shipping ) {
+				$groups = $this->collect_verification_items( $saved );
+				if ( Status::SLUG !== $saved->get_status( 'edit' ) || (int) $saved->get_meta( self::META_SESSION_ID, true, 'edit' ) !== $session->id ) { throw new \RuntimeException( 'quote_save_failed' ); }
+				$this->verify_shipping( $saved, $prepared_shipping );
+				$this->verify_merchandise( $groups['line_items'], $prepared_lines );
+			}
+			if ( null !== $delivery ) {
+				$this->verify_delivery( $saved, $delivery, $poom_lines['total_cents'], $groups['shipping_lines'] );
+			}
+			if ( null !== $provenance ) { $this->verify_confirmation( $saved, $provenance ); }
+			if ( null !== $prepared_shipping ) {
+				$this->prepared_quotes[ $order_id ] = [
+					'lines' => $prepared_lines, 'shipping' => $prepared_shipping, 'delivery' => $delivery, 'provenance' => $provenance,
+					'currency' => $currency, 'total' => (int) ( $poom_lines['total_cents'] ?? array_sum( array_column( $prepared_lines, 'total' ) ) ),
+					'shipping_total' => null !== $delivery && $delivery['emit'] ? $delivery['amount_cents'] : 0,
+					'note' => null !== $provenance ? $provenance[ self::META_DELIVERY_NOTES ] : $saved->get_customer_note( 'edit' ),
+					'meta' => [ self::META_SESSION_ID => (string) $session->id, self::META_PARTNER_ID => (string) $partner->id, self::META_DELIVERY_CODE => $shipping['code'] ],
+				];
+			}
 		} catch ( \Throwable $e ) {
 			return $this->fail( $session, $partner, $order, 'quote_creation_failed' );
+		} finally {
+			if ( null !== $note_filter ) { remove_filter( 'wp_insert_post_data', $note_filter, PHP_INT_MAX ); }
 		}
 
 		// Persistence succeeded. Linking and reporting may fail independently; neither
@@ -216,6 +282,17 @@ final class QuoteOrder {
 			$this->error_best_effort( 'Quote order note could not be saved', [ 'order' => $order_id ] );
 		}
 
+		if ( null !== $delivery && ! $delivery['emit'] && 'not_required' !== $delivery['status'] ) {
+			try {
+				$note = null === $delivery['amount_cents']
+					? __( 'Delivery estimate unavailable; no delivery charge included in this Quote.', 'punchout-woocommerce' )
+					: sprintf( /* translators: 1: currency, 2: ex-tax delivery estimate */ __( 'Delivery estimate: %1$s %2$s (excluded from this Quote).', 'punchout-woocommerce' ), $delivery['currency'], Money::format( $delivery['amount_cents'] ) );
+				if ( ! $order->add_order_note( $note ) ) { throw new \RuntimeException( 'quote_note_failed' ); }
+			} catch ( \Throwable $e ) {
+				$this->error_best_effort( 'Quote delivery estimate note could not be saved', [ 'order' => $order_id ] );
+			}
+		}
+
 		$this->audit_best_effort(
 			'quote_order_created',
 			[
@@ -239,34 +316,81 @@ final class QuoteOrder {
 
 	/** Attach the winning basket document; both order and audit copies are best effort. */
 	public function attach_poom( int $order_id, string $poom_xml ): void {
+		$order = null;
+		$invalid = false;
 		try {
 			$order = wc_get_order( $order_id );
-
-			if ( ! $order instanceof \WC_Order ) {
-				throw new \RuntimeException( 'quote_missing' );
+			if ( ! $order instanceof \WC_Order || Status::SLUG !== $order->get_status() ) { throw new \RuntimeException( 'quote_missing' ); }
+			// A legacy order whose baseline cannot be read is left untouched. A winner or stored confirmation already identifies required accepted state and must fail closed if that state is unreadable.
+			$invalid = isset( $this->prepared_quotes[ $order_id ] ) || '' !== $order->get_meta( self::META_DELIVERY_CONFIRMATION, true, 'edit' );
+			$state = $this->prepared_quotes[ $order_id ] ?? $this->attachment_snapshot( $order );
+			$invalid = false;
+			try {
+				$this->verify_quote_state( $order, $state );
+			} catch ( \Throwable $e ) {
+				// Only an identified Quote with unverifiable required state is invalidated. XML-only persistence failures do not invalidate an otherwise verified Quote.
+				$invalid = true;
+				throw $e;
 			}
 
-			$order->update_meta_data( self::META_POOM_XML, $poom_xml );
-			if ( (int) $order->save() <= 0 ) {
-				throw new \RuntimeException( 'quote_attachment_failed' );
+			try {
+				$order->update_meta_data( self::META_POOM_XML, $poom_xml );
+				// This writes metadata through either native store without running another full order save. Metadata callbacks still require the same immutable readback guard.
+				$order->save_meta_data();
+			} finally {
+				try {
+					$this->verify_quote_state( $order, $state );
+					$saved = wc_get_order( $order_id );
+					if ( ! $saved instanceof \WC_Order ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
+					$this->verify_quote_state( $saved, $state );
+				} catch ( \Throwable $e ) { $invalid = true; throw $e; }
 			}
-
-			$saved = wc_get_order( $order_id );
-
-			if ( ! $saved instanceof \WC_Order || $poom_xml !== $saved->get_meta( self::META_POOM_XML ) ) {
-				throw new \RuntimeException( 'quote_attachment_failed' );
-			}
+			if ( $poom_xml !== $saved->get_meta( self::META_POOM_XML, true, 'edit' ) ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
 		} catch ( \Throwable $e ) {
+			$cancelled = $invalid && $order instanceof \WC_Order ? $this->cancel_part_built( $order ) : false;
 			$this->error_best_effort( 'Quote order basket could not be attached', [ 'order' => $order_id ] );
 			$this->audit_best_effort(
 				'quote_poom_failed',
 				[
-					'order_id'   => $order_id,
-					'result'   => 'error',
-					'detail'   => [ 'error' => 'quote_attachment_failed' ],
+					'order_id' => $order_id, 'result' => 'error',
+					'detail' => [ 'error' => 'quote_attachment_failed', 'cancellation' => $invalid ? ( $cancelled ? 'confirmed' : 'unconfirmed' ) : 'not_needed' ],
 				]
 			);
 		}
+	}
+
+	/** Preserve the legacy attachment API across requests. Existing confirmation metadata supplies the accepted destination/note/delivery; remaining native fields form the before-write baseline. */
+	private function attachment_snapshot( \WC_Order $order ): array {
+		$groups = $this->collect_verification_items( $order );
+		$meta = [];
+		foreach ( [ self::META_SESSION_ID, self::META_PARTNER_ID, self::META_DELIVERY_CODE ] as $key ) { $meta[ $key ] = $order->get_meta( $key, true, 'edit' ); }
+		$shipping = [];
+		foreach ( self::SHIPPING_FIELDS as $field ) { $getter = 'get_shipping_' . $field; $shipping[ $field ] = $order->{$getter}( 'edit' ); }
+		$delivery = $order->get_meta( self::META_DELIVERY, true, 'edit' );
+		$delivery = '' === $delivery ? null : $delivery;
+		$provenance = [];
+		foreach ( [ self::META_DELIVERY_CHOICE, self::META_DELIVERY_CONFIRMATION, self::META_DELIVERY_NOTES ] as $key ) { $provenance[ $key ] = $order->get_meta( $key, true, 'edit' ); }
+		if ( array_filter( $provenance, static fn( $value ): bool => '' !== $value ) ) {
+			$choice = 'null' === $provenance[ self::META_DELIVERY_CHOICE ] ? null : DeliveryData::choice( $provenance[ self::META_DELIVERY_CHOICE ], (int) $meta[ self::META_PARTNER_ID ] );
+			$confirmation = DeliveryData::confirmation( $provenance[ self::META_DELIVERY_CONFIRMATION ], (int) $meta[ self::META_SESSION_ID ], (int) $order->get_customer_id( 'edit' ), $choice );
+			if ( $confirmation['notes'] !== $provenance[ self::META_DELIVERY_NOTES ] || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $delivery ) ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
+			$shipping = QuoteAddress::payload( $choice )['address'] ?? array_fill_keys( self::SHIPPING_FIELDS, '' );
+		} else { $provenance = null; }
+		return [
+			'lines' => $this->merchandise_snapshot( $groups['line_items'] ), 'shipping' => $shipping, 'delivery' => $delivery, 'provenance' => $provenance,
+			'currency' => $order->get_currency( 'edit' ), 'total' => Money::to_cents( $order->get_total( 'edit' ) ),
+			'shipping_total' => Money::to_cents( $order->get_shipping_total( 'edit' ) ), 'note' => $order->get_customer_note( 'edit' ), 'meta' => $meta,
+		];
+	}
+
+	private function verify_quote_state( \WC_Order $order, array $state ): void {
+		$groups = $this->collect_verification_items( $order );
+		if ( Status::SLUG !== $order->get_status( 'edit' ) || $order->get_currency( 'edit' ) !== $state['currency'] || Money::to_cents( $order->get_total( 'edit' ) ) !== $state['total'] || Money::to_cents( $order->get_shipping_total( 'edit' ) ) !== $state['shipping_total'] || 0 !== Money::to_cents( $order->get_total_tax( 'edit' ) ) || $order->get_customer_note( 'edit' ) !== $state['note'] ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
+		foreach ( $state['meta'] as $key => $value ) { if ( $order->get_meta( $key, true, 'edit' ) !== $value ) { throw new \RuntimeException( 'quote_attachment_failed' ); } }
+		$this->verify_shipping( $order, $state['shipping'] );
+		$this->verify_merchandise( $groups['line_items'], $state['lines'] );
+		if ( null !== $state['delivery'] ) { $this->verify_delivery( $order, $state['delivery'], $state['total'], $groups['shipping_lines'] ); }
+		if ( null !== $state['provenance'] ) { $this->verify_confirmation( $order, $state['provenance'] ); }
 	}
 
 	/**
@@ -635,6 +759,140 @@ final class QuoteOrder {
 		}
 	}
 
+	/** Reject callback or persistence changes without exposing the prepared address in diagnostics. */
+	private function verify_shipping( \WC_Order $order, array $prepared ): void {
+		foreach ( self::SHIPPING_FIELDS as $field ) {
+			$getter = 'get_shipping_' . $field;
+			if ( $order->{$getter}( 'edit' ) !== $prepared[ $field ] ) {
+				throw new \RuntimeException( 'quote_shipping_save_failed' );
+			}
+		}
+	}
+
+	/** Store the complete prepared pair and already-confirmed plain notes. The caller's Session may still be its pre-claim ACTIVE snapshot. */
+	private function add_confirmation( \WC_Order $order, Session $session, Partner $partner, array $mapped ): ?array {
+		$keys = [ 'delivery_choice', 'delivery_confirmation', 'delivery_notes' ];
+		if ( ! array_intersect( $keys, array_keys( $mapped ) ) ) { return null; }
+		if ( array_diff( [ ...$keys, 'delivery', 'delivery_destination' ], array_keys( $mapped ) ) || $session->partner_id !== $partner->id || ! is_array( $mapped['delivery_confirmation'] ) || ! is_string( $mapped['delivery_notes'] ) ) { throw new \RuntimeException( 'quote_confirmation_invalid' ); }
+		$choice_json = json_encode( $mapped['delivery_choice'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		$confirmation_json = json_encode( $mapped['delivery_confirmation'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		$choice = null === $mapped['delivery_choice'] ? null : DeliveryData::choice( $choice_json, $session->partner_id );
+		$confirmation = DeliveryData::confirmation( $confirmation_json, $session->id, $session->user_id, $choice );
+		$notes = $mapped['delivery_notes'];
+		// Decoding must not silently upgrade/rewrite this winner's payload, and neither the native note nor its metadata may contain a different instruction.
+		if ( DeliveryData::fingerprint( $choice ) !== DeliveryData::fingerprint( $mapped['delivery_choice'] ) || DeliveryData::fingerprint( QuoteAddress::payload( $choice ) ) !== DeliveryData::fingerprint( QuoteAddress::payload( $mapped['delivery_destination'] ) ) || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $mapped['delivery'] ) || $confirmation['notes'] !== $notes || sanitize_textarea_field( $notes ) !== $notes ) { throw new \RuntimeException( 'quote_confirmation_invalid' ); }
+		// JSON preserves an explicit null choice across both Woo stores, where a null metadata value would otherwise read back as an empty string.
+		$values = [ self::META_DELIVERY_CHOICE => $choice_json, self::META_DELIVERY_CONFIRMATION => $confirmation_json, self::META_DELIVERY_NOTES => $notes ];
+		foreach ( $values as $key => $value ) { $order->update_meta_data( $key, $value ); }
+		$order->set_customer_note( $notes );
+		return $values;
+	}
+
+	/** Check exact persisted bytes, including blank/multiline notes; a silent truncate is an optional Quote failure. */
+	private function verify_confirmation( \WC_Order $order, array $values ): void {
+		foreach ( $values as $key => $value ) {
+			if ( $order->get_meta( $key, true, 'edit' ) !== $value ) { throw new \RuntimeException( 'quote_confirmation_save_failed' ); }
+		}
+		if ( $order->get_customer_note( 'edit' ) !== $values[ self::META_DELIVERY_NOTES ] ) { throw new \RuntimeException( 'quote_confirmation_save_failed' ); }
+	}
+
+	/** Consume only the winner's prepared snapshot. Current rates and policy belong to pre-claim confirmation. */
+	private function add_delivery( \WC_Order $order, array $mapped, array $shipping ): array {
+		$delivery = $mapped['delivery'];
+		if ( ! is_array( $delivery ) || ! array_key_exists( 'delivery_destination', $mapped ) ) { throw new \RuntimeException( 'quote_delivery_invalid' ); }
+		$freight = DeliveryEstimate::poom_line( $delivery );
+		if ( $delivery['currency'] !== ( $mapped['currency'] ?? null ) || $delivery['code'] !== $shipping['code'] || ( 'not_required' !== $delivery['status'] && [] === $shipping['address'] ) ) { throw new \RuntimeException( 'quote_delivery_invalid' ); }
+		$charge = null === $freight ? 0 : $delivery['amount_cents'];
+		$merchandise = 0;
+		foreach ( (array) ( $mapped['items'] ?? [] ) as $line ) {
+			// A merchandise SKU named DELIVERY is still merchandise. The wire-only freight line must never also be supplied in this list.
+			if ( 'merchandise' !== ( $line['line_type'] ?? 'merchandise' ) ) { throw new \RuntimeException( 'quote_delivery_invalid' ); }
+			$cents = Money::to_cents( self::line_args( $line )['total'] );
+			if ( $cents < 0 || $merchandise > PHP_INT_MAX - $cents ) { throw new \RuntimeException( 'quote_delivery_invalid' ); }
+			$merchandise += $cents;
+		}
+		if ( ( null !== $freight && empty( $mapped['items'] ) ) || $merchandise > PHP_INT_MAX - $charge || ! is_int( $mapped['total_cents'] ?? null ) || $mapped['total_cents'] !== $merchandise + $charge ) { throw new \RuntimeException( 'quote_delivery_invalid' ); }
+		if ( null !== $freight ) {
+			foreach ( $delivery['rates'] as $rate ) {
+				$item = new WC_Order_Item_Shipping();
+				$item->set_method_title( $rate['label'] );
+				$item->set_method_id( $rate['method_id'] );
+				$item->set_instance_id( $rate['instance_id'] );
+				$item->set_total( Money::format( $rate['amount_cents'] ) );
+				// Native estimated taxes remain in protected snapshot metadata; this Quote and its outgoing freight are ex-tax.
+				$item->set_taxes( [ 'total' => [] ] );
+				$item->add_meta_data( '_pow_package_key', (string) $rate['package_key'], true );
+				$item->add_meta_data( '_pow_rate_id', $rate['rate_id'], true );
+				if ( false === $order->add_item( $item ) ) { throw new \RuntimeException( 'quote_delivery_item_failed' ); }
+			}
+		}
+		$order->update_meta_data( self::META_DELIVERY, $delivery );
+		return $delivery;
+	}
+
+	/** Refuse a hook/store that changes or loses the accepted charge, both before promotion and after native readback. */
+	private function verify_delivery( \WC_Order $order, array $delivery, int $total, array $items ): void {
+		$stored = $order->get_meta( self::META_DELIVERY, true, 'edit' );
+		$charge = $delivery['emit'] ? $delivery['amount_cents'] : 0;
+		if ( $stored !== $delivery || $order->get_currency( 'edit' ) !== $delivery['currency'] || Money::to_cents( $order->get_shipping_total( 'edit' ) ) !== $charge || Money::to_cents( $order->get_total( 'edit' ) ) !== $total || 0 !== Money::to_cents( $order->get_total_tax( 'edit' ) ) ) { throw new \RuntimeException( 'quote_delivery_save_failed' ); }
+		$expected = [];
+		foreach ( $delivery['emit'] ? $delivery['rates'] : [] as $rate ) { $expected[ (string) $rate['package_key'] ] = $rate; }
+		if ( count( $items ) !== count( $expected ) ) { throw new \RuntimeException( 'quote_delivery_save_failed' ); }
+		foreach ( $items as $item ) {
+			if ( ! $item instanceof WC_Order_Item_Shipping ) { throw new \RuntimeException( 'quote_delivery_save_failed' ); }
+			$key = (string) $item->get_meta( '_pow_package_key', true, 'edit' );
+			$rate = $expected[ $key ] ?? null;
+			if ( null === $rate || $item->get_meta( '_pow_rate_id', true, 'edit' ) !== $rate['rate_id'] || $item->get_method_title( 'edit' ) !== $rate['label'] || $item->get_method_id( 'edit' ) !== $rate['method_id'] || (int) $item->get_instance_id( 'edit' ) !== $rate['instance_id'] || Money::to_cents( $item->get_total( 'edit' ) ) !== $rate['amount_cents'] || 0 !== Money::to_cents( $item->get_total_tax( 'edit' ) ) || [ 'total' => [] ] !== $item->get_taxes( 'edit' ) ) { throw new \RuntimeException( 'quote_delivery_save_failed' ); }
+			unset( $expected[ $key ] );
+		}
+	}
+
+	/** Finish native collection filters and lazy metadata loads before comparing accepted edit-context values. */
+	private function collect_verification_items( \WC_Order $order ): array {
+		$groups = [ 'line_items' => $order->get_items( 'line_item' ), 'shipping_lines' => $order->get_items( 'shipping' ) ];
+		$order->get_meta_data();
+		foreach ( $groups as $items ) {
+			foreach ( $items as $item ) { $item->get_meta_data(); }
+		}
+		// Woo has no public unfiltered collection getter. Read its already-loaded protected cache without callbacks: keys and object identity must still match both collected groups. No vendor state is written, and an unsupported cache layout fails this optional Quote closed.
+		$native = get_mangled_object_vars( $order )[ "\0*\0items" ] ?? null;
+		foreach ( $groups as $key => $items ) {
+			$current = is_array( $native ) ? ( $native[ $key ] ?? null ) : null;
+			if ( ! is_array( $current ) ) { throw new \RuntimeException( 'quote_items_read_failed' ); }
+			ksort( $items );
+			ksort( $current );
+			if ( $current !== $items ) { throw new \RuntimeException( 'quote_items_read_failed' ); }
+		}
+		return $groups;
+	}
+
+	/** A multiset preserves duplicate lines and count while allowing native item ordering. Live product identity is its mapped product/variation pair; a deleted product retains its fallback name and SKU. */
+	private function merchandise_snapshot( array $items ): array {
+		$lines = [];
+		foreach ( $items as $item ) {
+			if ( ! $item instanceof \WC_Order_Item_Product ) { throw new \RuntimeException( 'quote_lines_save_failed' ); }
+			$product_id = (int) $item->get_product_id( 'edit' );
+			$variation_id = (int) $item->get_variation_id( 'edit' );
+			$bare = 0 === $product_id && 0 === $variation_id;
+			$lines[] = [
+				'product_id' => $product_id, 'variation_id' => $variation_id,
+				'quantity' => (float) $item->get_quantity( 'edit' ),
+				'subtotal' => Money::to_cents( $item->get_subtotal( 'edit' ) ),
+				'total' => Money::to_cents( $item->get_total( 'edit' ) ),
+				'sku' => $bare ? $item->get_meta( 'SKU', true, 'edit' ) : null,
+				'name' => $bare ? $item->get_name( 'edit' ) : null,
+			];
+		}
+		return $lines;
+	}
+
+	private function verify_merchandise( array $items, array $prepared ): void {
+		$actual = $this->merchandise_snapshot( $items );
+		sort( $actual );
+		sort( $prepared );
+		if ( $actual !== $prepared ) { throw new \RuntimeException( 'quote_lines_save_failed' ); }
+	}
+
 	/**
 	 * Add one POOM line to the order.
 	 *
@@ -647,10 +905,21 @@ final class QuoteOrder {
 	 *
 	 * @param \WC_Order            $order Order being built.
 	 * @param array<string, mixed> $args  One line from line_args().
+	 * @return array<string, mixed> Prepared native identity and amounts, independent of callbacks.
 	 */
-	private function add_line( \WC_Order $order, array $args ): void {
+	private function add_line( \WC_Order $order, array $args ): array {
 		$product_id = $args['variation_id'] > 0 ? $args['variation_id'] : $args['product_id'];
 		$product    = ( $product_id > 0 && function_exists( 'wc_get_product' ) ) ? wc_get_product( $product_id ) : null;
+
+		$expected = [
+			'product_id' => $product ? $args['product_id'] : 0,
+			'variation_id' => $product ? $args['variation_id'] : 0,
+			'quantity' => $args['quantity'],
+			'subtotal' => Money::to_cents( $args['subtotal'] ),
+			'total' => Money::to_cents( $args['total'] ),
+			'sku' => $product ? null : $args['sku'],
+			'name' => $product ? null : ( '' !== $args['name'] ? $args['name'] : $args['sku'] ),
+		];
 
 		if ( $product ) {
 			$item_id = $order->add_product(
@@ -666,7 +935,7 @@ final class QuoteOrder {
 				throw new \RuntimeException( 'quote_line_failed' );
 			}
 
-			return;
+			return $expected;
 		}
 
 		$item = new \WC_Order_Item_Product();
@@ -686,6 +955,7 @@ final class QuoteOrder {
 		if ( false === $order->add_item( $item ) ) {
 			throw new \RuntimeException( 'quote_line_failed' );
 		}
+		return $expected;
 	}
 
 	/**

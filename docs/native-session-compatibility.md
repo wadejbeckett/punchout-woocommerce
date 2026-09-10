@@ -1,0 +1,19 @@
+# Punchout native cart session compatibility
+
+Punchout uses WooCommerce's normal buyer cookies, authentication and session table. Its extension of the default `WC_Session_Handler` reads the actual stored buyer row before cart hydration and saves only when that row still matches the request's loaded or last successfully saved value. This prevents an older request from overwriting a newer cart or approving its old contents. Ordinary shoppers retain the default handler's storage behavior.
+
+Supported Punchout paths are the default cookie session handler, storefront/classic cart requests, and Store API requests authenticated with the buyer's cookies and WooCommerce Nonce. A concurrent change can require reloading the cart and reviewing delivery again. Comparison covers the whole native row; even a concurrent change to noncommercial session data can conservatively cause that refusal. Once refused, the request cannot retry its old data at shutdown.
+
+Cart-Token requests targeting a Punchout buyer's session are currently refused. The check uses WooCommerce's authenticated token payload from the outer HTTP request, including when there is no logged-in WordPress actor. Ordinary customers' Cart-Token requests retain WooCommerce behavior. The native Store API token handler is a separate final class; it is not silently replaced with cookie authentication. Supporting it for Punchout requires a guarded native adapter and separate acceptance tests.
+
+Other plugins' custom session handlers are not silently replaced. A Punchout request using an unsupported handler is refused. Installations using custom native session persistence need an explicitly reviewed integration before enabling that path. Direct writes to WooCommerce's session table outside its selected handler cannot participate in this guard and are unsupported for Punchout buyers.
+
+Protected sessions must contain native scalar/array session data. Opaque objects or recursive data are refused. Guest-to-buyer migration keeps WooCommerce's identity and cookie handling, then loads the destination buyer row before cart hydration. It does not copy an ordinary guest basket into Punchout; the existing create/edit cart-seeding policy remains responsible for the Punchout basket.
+
+The guard uses the existing company mutex for short commits, consent storage and the existing return winner. It does not hold a request-long lock, add a second return transition or create a database table. Shipping calculations, native authentication, mapping and session serialization happen before the new persistence critical section. Readback failures do not count as successful saves, and protected cache entries are invalidated rather than populated with a potentially stale candidate.
+
+Paid sessions keep their exact-login native saves. Terminal cleanup removes only the unchanged native row for its recorded login, after checking for replacement open sessions; stale or superseded requests cannot delete it or recreate it during shutdown. Invalid-cookie initialization does not authorize deleting a protected buyer row. Normal WooCommerce expiry housekeeping remains in place.
+
+Cross-request preservation of unconfirmed address-choice and notes drafts is deferred UX. It is separate from native session concurrency and persisted buyer consent.
+
+These are plugin compatibility boundaries, not a claim that every WooCommerce extension or native request flow has been certified. Native acceptance must verify actual selected handlers and direct stored rows across independent requests, in addition to the isolated source tests.

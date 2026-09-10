@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Docs;
 
+use POW\Support\Transport;
+
 use POW\Admin\Page as AdminPage;
 use POW\Audit\Log;
 use POW\Cxml\Parser;
@@ -125,6 +127,7 @@ final class Page {
 	 *                         and precise self-test authentication reasons.
 	 */
 	public function render( bool $privileged ): string {
+		if ( ! Transport::request_allowed() ) { return Transport::notice(); }
 		try {
 			$vars = $this->page_vars( $privileged );
 		} catch ( \Throwable $e ) {
@@ -236,7 +239,7 @@ final class Page {
 	 * @return array<string, mixed>
 	 */
 	private function page_vars( bool $privileged ): array {
-		$home_url = untrailingslashit( home_url() );
+		$home_url = untrailingslashit( Transport::supplier_url( home_url() ) );
 		$partners = $this->registry->all();
 
 		[ $to_domain, $to_identity ] = self::to_credential( $partners );
@@ -249,20 +252,17 @@ final class Page {
 
 		return [
 			/**
-			 * Filter whether the store emits delivery codes on the basket.
+			 * Legacy presentation hint retained for custom documentation templates. Actual emission is configured independently on each connection; the bundled reference documents all flags unconditionally.
 			 *
-			 * The delivery-address plan turns this on when the delivery-code
-			 * field is registered; until then the page documents the fields
-			 * and marks them as forthcoming.
-			 *
-			 * @param bool $enabled Whether delivery codes are emitted.
+			 * @param bool $enabled Legacy display hint, not an emission control.
 			 */
 			'reference'      => new Reference( $home_url, $to_domain, $to_identity, (bool) apply_filters( 'pow_delivery_codes_enabled', false ) ),
 			'annotations'    => $annotations,
 			'setup_request'  => Samples::setup_request(),
-			'setup_response' => Samples::setup_response( $home_url . '/punchout/start/nQ3xw3lVQ0m8Yy2Z7c1p4T6bK9dR5sF2' ),
+			'setup_response' => Samples::setup_response( $home_url . '/punchout/start/EXAMPLE-TOKEN' ),
 			'poom'           => Samples::poom(),
 			'poom_total'     => Samples::poom_total(),
+			'delivery_samples' => Samples::delivery_examples(),
 			'cxml_version'   => Samples::VERSION,
 			'rate_limit'     => $this->settings->int( 'rate_limit_per_min' ),
 			'connections'    => $privileged ? self::connection_rows( $partners ) : [],

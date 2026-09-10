@@ -10,6 +10,8 @@
 
 declare( strict_types = 1 );
 
+namespace {
+
 use PHPUnit\Framework\TestCase;
 use POW\Orders\QuoteOrder;
 use POW\Orders\Status;
@@ -52,7 +54,7 @@ final class QuoteOrderCreateTest extends TestCase {
 					'id'         => 42,
 					'partner_id' => 7,
 					'user_id'    => 99,
-					'ship_to'    => '<ShipTo><Address addressID="LEMA-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name></Address></ShipTo>',
+					'ship_to'    => '<ShipTo><Address addressID="BUYER-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name></Address></ShipTo>',
 				],
 				$overrides
 			)
@@ -60,7 +62,7 @@ final class QuoteOrderCreateTest extends TestCase {
 	}
 
 	private function partner(): Partner {
-		return Partner::from_row( [ 'id' => 7, 'name' => 'Coke', 'status' => 'active' ] );
+		return Partner::from_row( [ 'id' => 7, 'name' => 'Example Buyer Company', 'status' => 'active' ] );
 	}
 
 	/**
@@ -84,12 +86,210 @@ final class QuoteOrderCreateTest extends TestCase {
 		];
 	}
 
+	/** Bind only native boundaries; the production QuoteOrder method bodies remain unchanged. */
+	private function shipping_quotes(): object {
+		if ( ! class_exists( POW\Tests\QuoteShipping\QuoteOrder::class, false ) ) {
+			$source = file_get_contents( dirname( __DIR__, 2 ) . '/includes/Orders/QuoteOrder.php' );
+			$source = str_replace( [ 'namespace POW\\Orders;', 'use WC_Order_Item_Shipping;' ], [ 'namespace POW\\Tests\\QuoteShipping; use POW\\Orders\\Status;', 'use POW\\Tests\\QuoteShipping\\ShippingItem as WC_Order_Item_Shipping;' ], $source );
+			eval( substr( $source, 5 ) );
+		}
+		POW\Tests\QuoteShipping\Boundary::$failure = '';
+		return new POW\Tests\QuoteShipping\QuoteOrder( new QuoteOrderTestStore(), new QuoteOrderTestLog(), new QuoteOrderTestSettings(), new QuoteOrderTestLogger() );
+	}
+
+	private function shipping_lines(): array {
+		$lines = $this->lines();
+		$lines['items'][0]['supplier_part_id'] = 'DELIVERY'; // A real merchandise SKU never becomes freight.
+		$lines['total_cents'] = 41033;
+		$lines['delivery_destination'] = $this->destination();
+		$lines['delivery'] = [ 'status' => 'quoted', 'amount_cents' => 3500, 'currency' => 'ZAR', 'code' => '', 'emit' => true, 'rates' => [
+			[ 'package_key' => 0, 'rate_id' => 'flat_rate:2', 'method_id' => 'flat_rate', 'instance_id' => 2, 'label' => 'Express', 'amount_cents' => 1250, 'taxes' => [ 1 => '1.875' ] ],
+			[ 'package_key' => 'parcel-b', 'rate_id' => 'local_pickup:4', 'method_id' => 'local_pickup', 'instance_id' => 4, 'label' => 'Collect second parcel', 'amount_cents' => 2250, 'taxes' => [ 1 => '3.375' ] ],
+		], 'freight' => [ 'supplier_part_id' => 'DELIVERY', 'uom' => 'EA', 'classification_domain' => 'UNSPSC', 'classification' => '78102200' ] ];
+		return $lines;
+	}
+
+	public function test_shipping_items_match_each_immutable_package_and_the_freight_total(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->shipping_lines(); $this->break_creation();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id ); $order = wc_get_order( $id );
+		self::assertCount( 1, $order->items ); self::assertSame( 'DELIVERY', $order->items[0]['sku'] );
+		self::assertCount( 2, $order->get_items( 'shipping' ) );
+		foreach ( $order->get_items( 'shipping' ) as $i => $item ) {
+			$rate = $lines['delivery']['rates'][$i];
+			self::assertSame( $rate['method_id'], $item->get_method_id() ); self::assertSame( $rate['instance_id'], (int) $item->get_instance_id() );
+			self::assertSame( $rate['label'], $item->get_method_title() ); self::assertSame( (string) $rate['package_key'], $item->get_meta( '_pow_package_key' ) );
+			self::assertSame( $rate['rate_id'], $item->get_meta( '_pow_rate_id' ) ); self::assertSame( $rate['amount_cents'], POW\Cxml\Money::to_cents( $item->get_total() ) );
+			self::assertSame( [ 'total' => [] ], $item->get_taxes() );
+		}
+		self::assertSame( '35.00', $order->get_shipping_total() ); self::assertSame( '410.33', $order->get_total() );
+		self::assertSame( $lines['delivery'], $order->get_meta( '_pow_delivery' ) ); self::assertSame( [ false ], $order->totals_calls );
+		self::assertSame( $id, $quotes->create_for_session( $this->session( [ 'order_id' => $id ] ), $this->partner(), $lines ) );
+		self::assertCount( 1, $GLOBALS['pow_test_orders'] ); self::assertCount( 2, $order->get_items( 'shipping' ) );
+	}
+
+	public function test_nonemitted_estimates_are_local_without_shipping_charges(): void {
+		$quotes = $this->shipping_quotes();
+		foreach ( [ 'disabled', 'unknown', 'not_required' ] as $status ) {
+			$lines = $this->shipping_lines(); $lines['total_cents'] = 37533;
+			$lines['delivery']['status'] = $status; $lines['delivery']['emit'] = false;
+			if ( 'disabled' !== $status ) { $lines['delivery']['amount_cents'] = null; $lines['delivery']['rates'] = []; }
+			if ( 'not_required' === $status ) { $lines['delivery_destination'] = null; }
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+			self::assertGreaterThan( 0, $id ); $order = wc_get_order( $id );
+			self::assertSame( [], $order->get_items( 'shipping' ) ); self::assertSame( '375.33', $order->get_total() );
+			self::assertSame( $lines['delivery'], $order->get_meta( '_pow_delivery' ) );
+			if ( 'not_required' !== $status ) { self::assertStringContainsString( 'Delivery estimate', implode( ' ', $order->notes ) ); }
+		}
+	}
+
+	public function test_real_zero_shipping_is_an_item_and_payexit_link_is_preserved(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->shipping_lines();
+		$lines['delivery']['rates'] = [ array_replace( $lines['delivery']['rates'][0], [ 'amount_cents' => 0, 'taxes' => [] ] ) ];
+		$lines['delivery']['amount_cents'] = 0; $lines['total_cents'] = 37533;
+		$id = $quotes->create_for_session( $this->session( [ 'order_id' => 777 ] ), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id ); self::assertCount( 1, wc_get_order( $id )->get_items( 'shipping' ) );
+		self::assertSame( '0.00', wc_get_order( $id )->get_shipping_total() ); self::assertSame( [], QuoteOrderTestStore::$updates );
+	}
+
+	public function test_invalid_delivery_or_mapped_totals_are_cancelled_before_linking(): void {
+		$quotes = $this->shipping_quotes(); $base = $this->shipping_lines(); $cases = [];
+		$bad = $base; $bad['delivery']['currency'] = 'USD'; $cases[] = $bad;
+		$bad = $base; $bad['delivery']['code'] = 'OTHER'; $cases[] = $bad;
+		$bad = $base; $bad['delivery_destination'] = null; $cases[] = $bad;
+		$bad = $base; unset( $bad['delivery_destination'] ); $cases[] = $bad;
+		$bad = $base; $bad['total_cents']++; $cases[] = $bad;
+		$bad = $base; $bad['items'][0]['unit_price_cents']++; $cases[] = $bad;
+		$bad = $base; $bad['delivery']['rates'][1]['package_key'] = 0; $cases[] = $bad;
+		$bad = $base; $bad['items'][0]['line_type'] = 'freight'; $cases[] = $bad;
+		$bad = $base; $bad['items'] = []; $bad['total_cents'] = 3500; $cases[] = $bad;
+		foreach ( $cases as $lines ) { self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $lines ) ); }
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+		foreach ( $GLOBALS['pow_test_orders'] as $order ) { self::assertSame( 'cancelled', $order->get_status() ); }
+	}
+
+	public function test_shipping_boundary_and_persisted_readback_failures_remain_optional(): void {
+		$quotes = $this->shipping_quotes();
+		foreach ( [ 'setter', 'add', 'lost_meta', 'changed_item', 'changed_total' ] as $failure ) {
+			POW\Tests\QuoteShipping\Boundary::$failure = $failure;
+			self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->shipping_lines() ) );
+		}
+		POW\Tests\QuoteShipping\Boundary::$failure = '';
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+		foreach ( $GLOBALS['pow_test_orders'] as $order ) { self::assertSame( 'cancelled', $order->get_status() ); }
+	}
+
+	public function test_shipping_snapshot_survives_later_policy_change_and_clears_blank_address_fields(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->shipping_lines();
+		$lines['delivery_destination']['address']['phone'] = '';
+		$lines['delivery_destination']['address']['address_2'] = '';
+		$GLOBALS['pow_test_after_create_order'] = static function( WC_Order $order ): void { $order->set_props( [ 'shipping_phone' => 'Old phone', 'shipping_address_2' => 'Old building' ] ); };
+		try {
+			$partner = Partner::from_row( [ 'id' => 7, 'name' => 'Changed policy', 'status' => 'active', 'emit_delivery_line' => false ] );
+			$id = $quotes->create_for_session( $this->session(), $partner, $lines );
+			self::assertGreaterThan( 0, $id ); $order = wc_get_order( $id );
+			self::assertCount( 2, $order->get_items( 'shipping' ) ); self::assertSame( $lines['delivery'], $order->get_meta( '_pow_delivery' ) );
+			self::assertSame( '', $order->props['shipping_phone'] ); self::assertSame( '', $order->props['shipping_address_2'] );
+		} finally { unset( $GLOBALS['pow_test_after_create_order'] ); }
+	}
+
+	public function test_delivery_estimate_note_failure_does_not_cancel_a_complete_quote(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->shipping_lines();
+		$lines['delivery']['status'] = 'disabled'; $lines['delivery']['emit'] = false; $lines['total_cents'] = 37533;
+		$GLOBALS['pow_test_order_note'] = static function(): int { throw new RuntimeException( 'Native note failed' ); };
+		try {
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+			self::assertGreaterThan( 0, $id ); self::assertSame( Status::SLUG, wc_get_order( $id )->get_status() );
+			self::assertSame( [ 'order_id' => $id ], QuoteOrderTestStore::$updates[42] );
+			self::assertSame( $lines['delivery'], wc_get_order( $id )->get_meta( '_pow_delivery' ) );
+		} finally { unset( $GLOBALS['pow_test_order_note'] ); }
+	}
+
+	private function confirmed_lines(): array {
+		$lines = $this->shipping_lines();
+		$choice = [ 'schema' => 1, 'partner_id' => 7, 'storage_user_id' => 8, 'provider' => 'native', 'key' => 'depot', 'label' => 'Accepted depot', 'book_revision' => 2, 'entry_fingerprint' => str_repeat( 'a', 64 ) ] + $lines['delivery_destination'];
+		$lines['delivery_choice'] = $choice;
+		$lines['delivery_notes'] = "First line\r\n\tSecond line — call O'Neil\\receiving.";
+		$lines['delivery_confirmation'] = [ 'schema' => 1, 'session_id' => 42, 'buyer_user_id' => 99, 'choice_hash' => POW\Addresses\DeliveryData::fingerprint( $choice ), 'cart_fingerprint' => str_repeat( 'b', 64 ), 'policy_fingerprint' => str_repeat( 'c', 64 ), 'delivery' => $lines['delivery'], 'notes' => $lines['delivery_notes'], 'confirmed_at' => 1788980000 ];
+		return $lines;
+	}
+
+	public function test_confirmed_notes_and_complete_pair_are_persisted_without_rewriting(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		$id = $quotes->create_for_session( $this->session( [ 'status' => Session::ACTIVE ] ), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id ); $order = wc_get_order( $id );
+		self::assertSame( $lines['delivery_notes'], $order->get_customer_note( 'edit' ) );
+		self::assertSame( $lines['delivery_notes'], $order->get_meta( '_pow_delivery_notes' ) );
+		self::assertSame( $lines['delivery_choice'], json_decode( $order->get_meta( '_pow_delivery_choice' ), true ) );
+		self::assertSame( $lines['delivery_confirmation'], json_decode( $order->get_meta( '_pow_delivery_confirmation' ), true ) );
+		self::assertStringNotContainsString( $lines['delivery_notes'], json_encode( QuoteOrderTestLog::$written ) );
+	}
+
+	public function test_confirmation_pair_must_match_session_destination_delivery_and_notes(): void {
+		$quotes = $this->shipping_quotes(); $base = $this->confirmed_lines(); $cases = [];
+		foreach ( [ 'delivery_choice', 'delivery_confirmation', 'delivery_notes' ] as $key ) { $bad = $base; unset( $bad[$key] ); $cases[] = $bad; }
+		foreach ( [ 'session_id', 'buyer_user_id' ] as $key ) { $bad = $base; $bad['delivery_confirmation'][$key]++; $cases[] = $bad; }
+		$bad = $base; $bad['delivery_choice']['partner_id']++; $cases[] = $bad;
+		$bad = $base; $bad['delivery_destination']['address']['city'] = 'Changed'; $cases[] = $bad;
+		$bad = $base; $bad['delivery_confirmation']['delivery']['rates'][0]['label'] = 'Changed'; $cases[] = $bad;
+		$bad = $base; $bad['delivery_notes'] = 'Changed'; $cases[] = $bad;
+		foreach ( $cases as $lines ) { self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $lines ) ); }
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+	}
+
+	public function test_confirmed_notes_refuse_invalid_or_overlong_input_without_truncation(): void {
+		$quotes = $this->shipping_quotes();
+		foreach ( [ str_repeat( 'x', 2001 ), "invalid\0note", "bad\xFF", '<b>unsanitized</b>', [ 'array' ] ] as $notes ) {
+			$lines = $this->confirmed_lines(); $lines['delivery_notes'] = $notes; $lines['delivery_confirmation']['notes'] = $notes;
+			self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $lines ) );
+		}
+		$lines = $this->confirmed_lines(); $lines['delivery_notes'] = str_repeat( '😀', 2000 ); $lines['delivery_confirmation']['notes'] = $lines['delivery_notes'];
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines ); self::assertGreaterThan( 0, $id );
+		self::assertSame( $lines['delivery_notes'], wc_get_order( $id )->get_customer_note() );
+	}
+
+	public function test_virtual_confirmation_retains_explicit_null_choice_and_clears_old_note(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		$lines['delivery_choice'] = null; $lines['delivery_destination'] = null; $lines['delivery_notes'] = ''; $lines['total_cents'] = 37533;
+		$lines['delivery'] = array_replace( $lines['delivery'], [ 'status' => 'not_required', 'amount_cents' => null, 'emit' => false, 'rates' => [] ] );
+		$lines['delivery_confirmation'] = array_replace( $lines['delivery_confirmation'], [ 'choice_hash' => POW\Addresses\DeliveryData::fingerprint( null ), 'delivery' => $lines['delivery'], 'notes' => '' ] );
+		$GLOBALS['pow_test_after_create_order'] = static fn( $order ) => $order->set_customer_note( 'Old note' );
+		try {
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines ); self::assertGreaterThan( 0, $id );
+			self::assertSame( '', wc_get_order( $id )->get_customer_note() ); self::assertSame( 'null', wc_get_order( $id )->get_meta( '_pow_delivery_choice' ) );
+		} finally { unset( $GLOBALS['pow_test_after_create_order'] ); }
+	}
+
+	public function test_lost_provenance_or_changed_native_customer_note_refuses_linking(): void {
+		$quotes = $this->shipping_quotes();
+		foreach ( [ 'lost_confirmation', 'changed_note' ] as $failure ) {
+			POW\Tests\QuoteShipping\Boundary::$failure = $failure;
+			self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() ) );
+		}
+		POW\Tests\QuoteShipping\Boundary::$failure = '';
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+	}
+
+	public function test_native_cpt_unslashing_preserves_confirmed_backslash_and_releases_its_filter(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		POW\Tests\QuoteShipping\Boundary::$failure = 'cpt_unslash';
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		POW\Tests\QuoteShipping\Boundary::$failure = '';
+		self::assertGreaterThan( 0, $id ); self::assertSame( $lines['delivery_notes'], wc_get_order( $id )->get_customer_note() );
+		self::assertSame( [], POW\Tests\QuoteShipping\Boundary::$note_filters );
+		POW\Tests\QuoteShipping\Boundary::$failure = 'lost_confirmation';
+		self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $lines ) );
+		POW\Tests\QuoteShipping\Boundary::$failure = '';
+		self::assertSame( [], POW\Tests\QuoteShipping\Boundary::$note_filters );
+	}
+
 	public function test_prepared_destination_is_used_without_reresolving_after_return_claim(): void {
+		$quotes = $this->shipping_quotes();
 		$lines = $this->lines() + [ 'delivery_destination' => $this->destination() ];
 		$before = $lines;
 		$this->break_creation(); // The filter changed after preparation; a winning Quote must never call it.
 		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Changed master city' ] );
-		$order_id = $this->quotes->create_for_session( $this->session( [ 'delivery_choice' => 'later changed snapshot' ] ), $this->partner(), $lines );
+		$order_id = $quotes->create_for_session( $this->session( [ 'delivery_choice' => 'later changed snapshot' ] ), $this->partner(), $lines );
 		self::assertGreaterThan( 0, $order_id );
 		$order = wc_get_order( $order_id );
 		self::assertSame( 'Pretoria', $order->props['shipping_city'] );
@@ -101,11 +301,12 @@ final class QuoteOrderCreateTest extends TestCase {
 	}
 
 	public function test_explicit_null_destination_suppresses_all_legacy_sources(): void {
+		$quotes = $this->shipping_quotes();
 		$this->break_creation();
 		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Must not use' ] );
-		$id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => null ] );
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => null ] );
 		self::assertGreaterThan( 0, $id );
-		self::assertSame( [], wc_get_order( $id )->props );
+		self::assertSame( array_fill_keys( array_map( static fn( string $field ): string => 'shipping_' . $field, array_keys( $this->destination()['address'] ) ), '' ), wc_get_order( $id )->props );
 		self::assertSame( '', wc_get_order( $id )->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
 		self::assertSame( 'none', QuoteOrderTestLog::$written[0][1]['detail']['address_source'] );
 	}
@@ -120,13 +321,15 @@ final class QuoteOrderCreateTest extends TestCase {
 	}
 
 	public function test_mapped_destination_preserves_existing_payexit_link(): void {
-		$id = $this->quotes->create_for_session( $this->session( [ 'order_id' => 777 ] ), $this->partner(), $this->lines() + [ 'delivery_destination' => $this->destination() ] );
+		$quotes = $this->shipping_quotes();
+		$id = $quotes->create_for_session( $this->session( [ 'order_id' => 777 ] ), $this->partner(), $this->lines() + [ 'delivery_destination' => $this->destination() ] );
 		self::assertGreaterThan( 0, $id );
 		self::assertSame( '1 Accepted Road', wc_get_order( $id )->props['shipping_address_1'] );
 		self::assertSame( [], QuoteOrderTestStore::$updates );
 	}
 
 	public function test_prepared_blank_fields_clear_creation_hook_defaults(): void {
+		$quotes = $this->shipping_quotes();
 		$destination = $this->destination();
 		$destination['address']['phone'] = '';
 		$destination['address']['address_2'] = '';
@@ -134,11 +337,392 @@ final class QuoteOrderCreateTest extends TestCase {
 			$order->set_props( [ 'shipping_phone' => 'Old phone', 'shipping_address_2' => 'Old building' ] );
 		};
 		try {
-			$id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => $destination ] );
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => $destination ] );
 			self::assertGreaterThan( 0, $id );
 			self::assertSame( '', wc_get_order( $id )->props['shipping_phone'] );
 			self::assertSame( '', wc_get_order( $id )->props['shipping_address_2'] );
 		} finally { unset( $GLOBALS['pow_test_after_create_order'] ); }
+	}
+
+
+	public function test_creation_item_callbacks_cannot_change_city_before_promotion_or_on_fresh_read(): void {
+		$this->assert_creation_item_callback_refused( 'address' );
+	}
+
+	public function test_creation_item_callbacks_cannot_change_quantity_before_promotion_or_on_fresh_read(): void {
+		$this->assert_creation_item_callback_refused( 'quantity' );
+	}
+
+	private function assert_creation_item_callback_refused( string $case ): void {
+		foreach ( [ 'auto-draft', Status::SLUG ] as $target_status ) {
+			$quotes = $this->shipping_quotes();
+			POW\Tests\QuoteShipping\Boundary::$failure = 'save_during_totals';
+			$armed = false; $statuses = [];
+			$GLOBALS['pow_test_order_save'] = static function( $order ) use ( $target_status, $case, &$armed, &$statuses ): void {
+				$statuses[] = $order->get_status();
+				if ( ! $armed && $target_status === $order->get_status() ) {
+					$armed = true;
+					$GLOBALS['pow_test_order_get_items'] = static function( $current, string $type, array $items ) use ( $case ): array {
+						if ( 'shipping' === $type ) {
+							unset( $GLOBALS['pow_test_order_get_items'] );
+							if ( 'address' === $case ) { $current->set_props( [ 'shipping_city' => 'Changed during final item read' ] ); }
+							else { $current->items[0]['quantity'] = 6; }
+							$current->save();
+						}
+						return $items;
+					};
+				}
+			};
+			try {
+				self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() ), $target_status );
+				self::assertTrue( $armed );
+				self::assertSame( [], QuoteOrderTestStore::$updates );
+				self::assertSame( 'cancelled', end( $GLOBALS['pow_test_orders'] )->get_status() );
+				if ( 'auto-draft' === $target_status ) { self::assertFalse( in_array( Status::SLUG, $statuses, true ) ); }
+			} finally { unset( $GLOBALS['pow_test_order_save'], $GLOBALS['pow_test_order_get_items'] ); POW\Tests\QuoteShipping\Boundary::$failure = ''; }
+		}
+	}
+
+	public function test_item_groups_replaced_by_later_collection_or_metadata_read_are_refused(): void {
+		foreach ( [ 'shipping_collection', 'metadata' ] as $boundary ) {
+			$quotes = $this->shipping_quotes();
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() );
+			self::assertGreaterThan( 0, $id );
+			$GLOBALS['pow_test_order_meta_save'] = static function() use ( $boundary ): void {
+				if ( 'metadata' === $boundary ) {
+					$GLOBALS['pow_test_order_metadata_read'] = static function( $order ): void {
+						unset( $GLOBALS['pow_test_order_metadata_read'] ); $order->replace_merchandise_collection();
+					};
+				} else {
+					$GLOBALS['pow_test_order_get_items'] = static function( $order, string $type, array $items ): array {
+						if ( 'shipping' === $type ) { unset( $GLOBALS['pow_test_order_get_items'] ); $order->replace_merchandise_collection(); }
+						return $items;
+					};
+				}
+			};
+			try {
+				$quotes->attach_poom( $id, '<cXML/>' );
+				self::assertSame( 'cancelled', wc_get_order( $id )->get_status(), $boundary );
+				self::assertSame( 'quote_poom_failed', end( QuoteOrderTestLog::$written )[0] );
+			} finally { unset( $GLOBALS['pow_test_order_meta_save'], $GLOBALS['pow_test_order_metadata_read'], $GLOBALS['pow_test_order_get_items'] ); }
+		}
+	}
+
+	public function test_stable_item_collection_callbacks_keep_native_identity_and_remain_usable(): void {
+		$quotes = $this->shipping_quotes(); $calls = 0;
+		$GLOBALS['pow_test_order_get_items'] = static function( $order, string $type, array $items ) use ( &$calls ): array { ++$calls; return array_reverse( $items, true ); };
+		try {
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() );
+			self::assertGreaterThan( 0, $id );
+			$quotes->attach_poom( $id, '<cXML/>' );
+			self::assertGreaterThan( 0, $calls );
+			self::assertSame( Status::SLUG, wc_get_order( $id )->get_status() );
+			self::assertSame( '<cXML/>', wc_get_order( $id )->get_meta( QuoteOrder::META_POOM_XML ) );
+		} finally { unset( $GLOBALS['pow_test_order_get_items'] ); }
+	}
+
+	public function test_final_shipping_collection_callback_cannot_change_accepted_city(): void {
+		$this->assert_final_item_callback_refused( 'address' );
+	}
+
+	public function test_final_shipping_collection_callback_cannot_change_accepted_quantity(): void {
+		$this->assert_final_item_callback_refused( 'quantity' );
+	}
+
+	public function test_final_callback_mutating_the_same_native_item_object_is_refused(): void {
+		$this->assert_final_item_callback_refused( 'native_quantity' );
+	}
+
+	private function assert_final_item_callback_refused( string $case ): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id );
+		$GLOBALS['pow_test_order_meta_save'] = static function() use ( $case ): void {
+			$reads = 0;
+			$GLOBALS['pow_test_order_get_items'] = static function( $order, string $type, array $items ) use ( $case, &$reads ): array {
+				if ( 'shipping' === $type && 2 === ++$reads ) {
+					unset( $GLOBALS['pow_test_order_get_items'] );
+					if ( 'address' === $case ) { $order->set_props( [ 'shipping_city' => 'Changed during final item read' ] ); }
+					elseif ( 'native_quantity' === $case ) { $order->get_items( 'line_item' )[0]->set_quantity( 6 ); }
+					else { $order->items[0]['quantity'] = 6; }
+					$order->save();
+				}
+				return $items;
+			};
+		};
+		try {
+			$quotes->attach_poom( $id, '<cXML/>' );
+			self::assertSame( 'cancelled', wc_get_order( $id )->get_status() );
+			self::assertSame( 'quote_poom_failed', end( QuoteOrderTestLog::$written )[0] );
+			self::assertSame( 'confirmed', end( QuoteOrderTestLog::$written )[1]['detail']['cancellation'] );
+			self::assertStringNotContainsString( 'Changed during final item read', json_encode( QuoteOrderTestLog::$written ) );
+		} finally { unset( $GLOBALS['pow_test_order_meta_save'], $GLOBALS['pow_test_order_get_items'] ); }
+	}
+
+	public function test_attachment_metadata_callbacks_cannot_invalidate_any_accepted_quote_component(): void {
+		$quotes = $this->shipping_quotes();
+		$mutations = [
+			'note' => static function( $order ): void { $order->set_customer_note( 'Changed during metadata attachment' ); },
+			'choice' => static function( $order ): void { $order->update_meta_data( QuoteOrder::META_DELIVERY_CHOICE, 'null' ); },
+			'confirmation' => static function( $order ): void { $order->update_meta_data( QuoteOrder::META_DELIVERY_CONFIRMATION, '{}' ); },
+			'notes_meta' => static function( $order ): void { $order->update_meta_data( QuoteOrder::META_DELIVERY_NOTES, 'Changed protected note' ); },
+			'address' => static function( $order ): void { $order->set_props( [ 'shipping_city' => 'Changed' ] ); },
+			'shipping' => static function( $order ): void { $order->get_items( 'shipping' )[0]->set_total( '0.01' ); },
+			'quantity' => static function( $order ): void { $order->items[0]['quantity'] = 6; },
+			'subtotal' => static function( $order ): void { $order->items[0]['subtotal'] = 0.01; },
+			'total' => static function( $order ): void { $order->items[0]['total'] = 0.01; },
+			'count' => static function( $order ): void { $order->items[] = $order->items[0]; },
+			'sku' => static function( $order ): void { $order->items[0]['sku'] = 'Changed'; },
+			'session' => static function( $order ): void { $order->update_meta_data( QuoteOrder::META_SESSION_ID, '999' ); },
+		];
+		foreach ( $mutations as $case => $mutate ) {
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() );
+			self::assertGreaterThan( 0, $id, $case );
+			$GLOBALS['pow_test_order_meta_save'] = static function( $order ) use ( $mutate ): void {
+				$persisted = clone $order; $mutate( $persisted ); $GLOBALS['pow_test_orders'][$order->get_id()] = $persisted;
+			};
+			$GLOBALS['pow_test_order_save'] = static function( $order ): void { $GLOBALS['pow_test_orders'][$order->get_id()] = clone $order; };
+			try {
+				$quotes->attach_poom( $id, '<cXML/>' );
+				self::assertSame( 'cancelled', wc_get_order( $id )->get_status(), $case );
+				self::assertSame( 'quote_poom_failed', end( QuoteOrderTestLog::$written )[0], $case );
+				self::assertSame( 'quote_attachment_failed', end( QuoteOrderTestLog::$written )[1]['detail']['error'] );
+			} finally { unset( $GLOBALS['pow_test_order_meta_save'], $GLOBALS['pow_test_order_save'] ); }
+		}
+	}
+
+	public function test_attachment_uses_metadata_save_without_running_full_order_save_hooks(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id );
+		$full_saves = 0;
+		$GLOBALS['pow_test_order_save'] = static function( WC_Order $order ) use ( &$full_saves ): void {
+			++$full_saves; $order->set_customer_note( 'Changed during XML attachment' );
+		};
+		try {
+			$quotes->attach_poom( $id, '<cXML/>' );
+			self::assertSame( 0, $full_saves );
+			self::assertSame( $lines['delivery_notes'], wc_get_order( $id )->get_customer_note( 'edit' ) );
+			self::assertSame( '<cXML/>', wc_get_order( $id )->get_meta( QuoteOrder::META_POOM_XML ) );
+			self::assertSame( Status::SLUG, wc_get_order( $id )->get_status() );
+		} finally { unset( $GLOBALS['pow_test_order_save'] ); }
+	}
+
+	public function test_every_merchandise_invariant_is_checked_at_totals_and_persisted_save_boundaries(): void {
+		$mutations = [
+			'quantity' => static function( $order ): void { $order->items[0]['quantity'] = 6; },
+			'subtotal' => static function( $order ): void { $order->items[0]['subtotal'] = 0.01; },
+			'total' => static function( $order ): void { $order->items[0]['total'] = 0.01; },
+			'product_id' => static function( $order ): void { $order->items[0]['product_id'] = 999; },
+			'variation_id' => static function( $order ): void { $order->items[0]['variation_id'] = 999; },
+			'sku' => static function( $order ): void { $order->items[0]['sku'] = 'CHANGED'; },
+			'name' => static function( $order ): void { $order->items[0]['name'] = 'Changed'; },
+			'missing' => static function( $order ): void { $order->items = []; },
+			'extra' => static function( $order ): void { $order->items[] = $order->items[0]; },
+		];
+		foreach ( [ 'totals', 'save', 'fresh' ] as $schedule ) {
+			foreach ( $mutations as $case => $mutate ) {
+				$quotes = $this->shipping_quotes();
+				POW\Tests\QuoteShipping\Boundary::$failure = 'totals' === $schedule ? 'save_during_totals' : '';
+				$statuses = [];
+				$GLOBALS['pow_test_order_save'] = static function( $order ) use ( $schedule, $mutate, &$statuses ): void {
+					$statuses[] = $order->get_status();
+					$target = 'totals' === $schedule ? 'auto-draft' : Status::SLUG;
+					if ( $target === $order->get_status() ) {
+						$stored = 'fresh' === $schedule ? clone $order : $order;
+						$mutate( $stored ); $GLOBALS['pow_test_orders'][$order->get_id()] = $stored;
+					} else { $GLOBALS['pow_test_orders'][$order->get_id()] = $order; }
+				};
+				try {
+					self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() ), $schedule . '/' . $case );
+					self::assertSame( [], QuoteOrderTestStore::$updates );
+					self::assertSame( 'cancelled', end( $GLOBALS['pow_test_orders'] )->get_status() );
+					if ( 'totals' === $schedule ) { self::assertSame( [ 'auto-draft', 'cancelled' ], $statuses ); }
+				} finally { unset( $GLOBALS['pow_test_order_save'] ); POW\Tests\QuoteShipping\Boundary::$failure = ''; }
+			}
+		}
+	}
+
+	public function test_live_product_variation_and_duplicate_fallback_lines_keep_their_prepared_identity(): void {
+		$quotes = $this->shipping_quotes();
+		$GLOBALS['pow_test_products'][412] = new WC_Product( 412, 'Native product name', 'SKU-1001' );
+		$GLOBALS['pow_test_products'][413] = new POW\Tests\QuoteShipping\Variation( 413, 'Native variation name', 'SKU-V' );
+		$lines = $this->lines() + [ 'delivery_destination' => $this->destination() ];
+		$lines['items'][] = array_replace( $lines['items'][0], [ 'aux_id' => '412|413', 'quantity' => 1 ] );
+		$lines['items'][] = array_replace( $lines['items'][0], [ 'aux_id' => '', 'supplier_part_id' => 'DELETED', 'quantity' => 1 ] );
+		$lines['items'][] = $lines['items'][2];
+		$lines['total_cents'] = 75066;
+		$GLOBALS['pow_test_order_save'] = static function( $order ): void { if ( Status::SLUG === $order->get_status() ) { $order->items = array_reverse( $order->items ); } };
+		try {
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+			self::assertGreaterThan( 0, $id );
+			self::assertCount( 4, wc_get_order( $id )->get_items() );
+			self::assertSame( 413, wc_get_order( $id )->items[2]['variation_id'] );
+			self::assertSame( 412, wc_get_order( $id )->items[2]['product_id'] );
+		} finally { unset( $GLOBALS['pow_test_order_save'] ); }
+		QuoteOrderTestStore::$updates = [];
+		foreach ( [ 'product_id', 'variation_id' ] as $field ) {
+			$GLOBALS['pow_test_order_save'] = static function( $order ) use ( $field ): void { if ( Status::SLUG === $order->get_status() ) { $order->items[1][$field] = 999; } };
+			try { self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $lines ) ); }
+			finally { unset( $GLOBALS['pow_test_order_save'] ); }
+		}
+		self::assertSame( [], QuoteOrderTestStore::$updates );
+	}
+
+	public function test_attachment_rejects_changes_after_creation_before_metadata_write(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id );
+		wc_get_order( $id )->items[0]['quantity'] = 6;
+		$quotes->attach_poom( $id, '<cXML/>' );
+		self::assertSame( 'cancelled', wc_get_order( $id )->get_status() );
+		self::assertSame( '', wc_get_order( $id )->get_meta( QuoteOrder::META_POOM_XML ) );
+		self::assertSame( 'confirmed', end( QuoteOrderTestLog::$written )[1]['detail']['cancellation'] );
+	}
+
+	public function test_attachment_keeps_cross_request_legacy_api_and_validates_stored_provenance(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id );
+		$this->shipping_quotes()->attach_poom( $id, '<cXML/>' );
+		self::assertSame( Status::SLUG, wc_get_order( $id )->get_status() );
+		self::assertSame( '<cXML/>', wc_get_order( $id )->get_meta( QuoteOrder::META_POOM_XML ) );
+		wc_get_order( $id )->set_customer_note( 'Changed before another request' );
+		$this->shipping_quotes()->attach_poom( $id, '<cXML>retry</cXML>' );
+		self::assertSame( 'cancelled', wc_get_order( $id )->get_status() );
+	}
+
+	public function test_metadata_failure_is_nonblocking_but_mutation_even_when_throwing_cancels(): void {
+		$quotes = $this->shipping_quotes();
+		foreach ( [ false, true ] as $mutate ) {
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() );
+			self::assertGreaterThan( 0, $id );
+			$GLOBALS['pow_test_order_meta_save'] = static function( $order ) use ( $mutate ): void {
+				if ( $mutate ) { $order->set_customer_note( 'Changed before throwing' ); }
+				throw new RuntimeException( 'Private callback content' );
+			};
+			try {
+				$quotes->attach_poom( $id, '<cXML/>' );
+				self::assertSame( $mutate ? 'cancelled' : Status::SLUG, wc_get_order( $id )->get_status() );
+				self::assertSame( $mutate ? 'confirmed' : 'not_needed', end( QuoteOrderTestLog::$written )[1]['detail']['cancellation'] );
+				self::assertStringNotContainsString( 'Private callback content', json_encode( QuoteOrderTestLog::$written ) );
+			} finally { unset( $GLOBALS['pow_test_order_meta_save'] ); }
+		}
+	}
+
+	public function test_attachment_verifies_explicit_null_address_and_reports_failed_cancellation(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
+		$lines['delivery_choice'] = null; $lines['delivery_destination'] = null; $lines['delivery_notes'] = ''; $lines['total_cents'] = 37533;
+		$lines['delivery'] = array_replace( $lines['delivery'], [ 'status' => 'not_required', 'amount_cents' => null, 'emit' => false, 'rates' => [] ] );
+		$lines['delivery_confirmation'] = array_replace( $lines['delivery_confirmation'], [ 'choice_hash' => POW\Addresses\DeliveryData::fingerprint( null ), 'delivery' => $lines['delivery'], 'notes' => '' ] );
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id );
+		$this->shipping_quotes()->attach_poom( $id, '<cXML/>' );
+		self::assertSame( Status::SLUG, wc_get_order( $id )->get_status() );
+		$GLOBALS['pow_test_order_meta_save'] = static function( $order ): void {
+			$persisted = clone $order; $persisted->set_props( [ 'shipping_city' => 'Injected city' ] );
+			$GLOBALS['pow_test_orders'][$order->get_id()] = $persisted;
+		};
+		$GLOBALS['pow_test_order_save'] = static fn() => 0;
+		try {
+			$quotes->attach_poom( $id, '<cXML>retry</cXML>' );
+			self::assertSame( 'quote_poom_failed', end( QuoteOrderTestLog::$written )[0] );
+			self::assertSame( 'unconfirmed', end( QuoteOrderTestLog::$written )[1]['detail']['cancellation'] );
+			self::assertStringNotContainsString( 'Injected city', json_encode( QuoteOrderTestLog::$written ) );
+		} finally { unset( $GLOBALS['pow_test_order_meta_save'], $GLOBALS['pow_test_order_save'] ); }
+	}
+
+	public function test_missing_xml_readback_does_not_cancel_verified_quote(): void {
+		$quotes = $this->shipping_quotes();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() );
+		self::assertGreaterThan( 0, $id );
+		$GLOBALS['pow_test_order_meta_save'] = static function( $order ): void { unset( $order->meta[QuoteOrder::META_POOM_XML] ); };
+		try {
+			$quotes->attach_poom( $id, '<cXML/>' );
+			self::assertSame( Status::SLUG, wc_get_order( $id )->get_status() );
+			self::assertSame( 'quote_poom_failed', end( QuoteOrderTestLog::$written )[0] );
+			self::assertSame( 'not_needed', end( QuoteOrderTestLog::$written )[1]['detail']['cancellation'] );
+		} finally { unset( $GLOBALS['pow_test_order_meta_save'] ); }
+	}
+
+	public function test_saved_merchandise_quantity_cannot_change_with_the_same_line_total(): void {
+		$quotes = $this->shipping_quotes();
+		$GLOBALS['pow_test_order_save'] = static function( WC_Order $order ): void {
+			if ( Status::SLUG === $order->get_status() ) { $order->items[0]['quantity'] = 6; }
+		};
+		try {
+			self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() ) );
+			self::assertSame( [], QuoteOrderTestStore::$updates );
+			self::assertSame( 'cancelled', end( $GLOBALS['pow_test_orders'] )->get_status() );
+		} finally { unset( $GLOBALS['pow_test_order_save'] ); }
+	}
+
+	public function test_save_hook_cannot_change_any_prepared_shipping_field(): void {
+		$quotes = $this->shipping_quotes();
+		foreach ( array_keys( $this->destination()['address'] ) as $field ) {
+			$GLOBALS['pow_test_order_save'] = static function( WC_Order $order ) use ( $field ): void {
+				if ( Status::SLUG === $order->get_status() ) { $order->set_props( [ 'shipping_' . $field => 'Changed by save hook' ] ); }
+			};
+			try {
+				self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() ), $field );
+				self::assertSame( [], QuoteOrderTestStore::$updates );
+				self::assertSame( 'cancelled', end( $GLOBALS['pow_test_orders'] )->get_status() );
+				self::assertSame( 'quote_creation_failed', end( QuoteOrderTestLog::$written )[1]['detail']['error'] );
+			} finally { unset( $GLOBALS['pow_test_order_save'] ); }
+		}
+	}
+
+	public function test_totals_save_mutation_is_rejected_before_quote_promotion(): void {
+		$quotes = $this->shipping_quotes();
+		POW\Tests\QuoteShipping\Boundary::$failure = 'save_during_totals';
+		$statuses = [];
+		$GLOBALS['pow_test_order_save'] = static function( WC_Order $order ) use ( &$statuses ): void {
+			$statuses[] = $order->get_status();
+			if ( 'auto-draft' === $order->get_status() ) { $order->set_props( [ 'shipping_city' => 'Changed by save hook' ] ); }
+		};
+		try {
+			self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() ) );
+			self::assertSame( [ 'auto-draft', 'cancelled' ], $statuses );
+			self::assertSame( [], QuoteOrderTestStore::$updates );
+		} finally { unset( $GLOBALS['pow_test_order_save'] ); POW\Tests\QuoteShipping\Boundary::$failure = ''; }
+	}
+
+	public function test_shipping_is_verified_on_fresh_persisted_object(): void {
+		$quotes = $this->shipping_quotes();
+		$GLOBALS['pow_test_order_save'] = static function( WC_Order $order ): void {
+			if ( Status::SLUG === $order->get_status() ) {
+				$persisted = clone $order;
+				$persisted->set_props( [ 'shipping_city' => 'Changed only in persistence' ] );
+				$GLOBALS['pow_test_orders'][$order->get_id()] = $persisted;
+			} else { $GLOBALS['pow_test_orders'][$order->get_id()] = clone $order; }
+		};
+		try {
+			self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() ) );
+			self::assertSame( [], QuoteOrderTestStore::$updates );
+			self::assertSame( 'cancelled', end( $GLOBALS['pow_test_orders'] )->get_status() );
+		} finally { unset( $GLOBALS['pow_test_order_save'] ); }
+	}
+
+	public function test_explicit_null_clears_every_creation_default_and_rejects_save_injection(): void {
+		$quotes = $this->shipping_quotes();
+		$props = [];
+		foreach ( $this->destination()['address'] as $field => $value ) { $props['shipping_' . $field] = $value; }
+		$GLOBALS['pow_test_after_create_order'] = static function( WC_Order $order ) use ( $props ): void { $order->set_props( $props ); };
+		$lines = $this->lines() + [ 'delivery_destination' => null ];
+		try {
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+			self::assertGreaterThan( 0, $id );
+			self::assertSame( array_fill_keys( array_keys( $props ), '' ), wc_get_order( $id )->props );
+			QuoteOrderTestStore::$updates = [];
+			foreach ( array_keys( $props ) as $prop ) {
+				$GLOBALS['pow_test_order_save'] = static function( WC_Order $order ) use ( $prop ): void {
+					if ( Status::SLUG === $order->get_status() ) { $order->set_props( [ $prop => 'Injected' ] ); }
+				};
+				self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $lines ), $prop );
+				self::assertSame( [], QuoteOrderTestStore::$updates );
+				self::assertSame( 'cancelled', end( $GLOBALS['pow_test_orders'] )->get_status() );
+			}
+		} finally { unset( $GLOBALS['pow_test_after_create_order'], $GLOBALS['pow_test_order_save'] ); }
 	}
 
 	/** Make the address step throw, part-way through a saved order. */
@@ -167,7 +751,7 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( '', $order->get_meta( QuoteOrder::META_POOM_XML ), 'the document does not exist until the build has run' );
 		self::assertCount( 1, $order->notes );
 		self::assertStringContainsString( '42', $order->notes[0] );
-		self::assertStringContainsString( 'Coke', $order->notes[0] );
+		self::assertStringContainsString( 'Example Buyer Company', $order->notes[0] );
 	}
 
 	/**
@@ -212,19 +796,19 @@ final class QuoteOrderCreateTest extends TestCase {
 
 		$order = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
 
-		self::assertSame( 'LEMA-001', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
+		self::assertSame( 'BUYER-001', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
 		self::assertSame( 'Head office', $order->props['shipping_company'] );
 	}
 
 	public function test_the_filter_wins_over_the_inbound_ship_to(): void {
 		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static fn ( $value ): array => [
-			'address' => [ 'city' => 'Cape Town', 'company' => 'CCBSA Midrand' ],
-			'code'    => 'LEMA-CCBSA-002',
+			'address' => [ 'city' => 'Cape Town', 'company' => 'Example Buyer Company' ],
+			'code'    => 'BUYER-002',
 		];
 
 		$order = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
 
-		self::assertSame( 'LEMA-CCBSA-002', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
+		self::assertSame( 'BUYER-002', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
 		self::assertSame( 'Cape Town', $order->props['shipping_city'] );
 		self::assertSame( [ 'shipping_company', 'shipping_city' ], array_keys( $order->props ), 'only known shipping props are written' );
 	}
@@ -373,11 +957,12 @@ final class QuoteOrderCreateTest extends TestCase {
 	 * thrown into the return.
 	 */
 	public function test_attach_poom_survives_a_failing_save(): void {
-		$order_id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
+		$quotes = $this->shipping_quotes();
+		$order_id = $quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
 
 		wc_get_order( $order_id )->save_throws = true;
 
-		$this->quotes->attach_poom( $order_id, '<cXML/>' );
+		$quotes->attach_poom( $order_id, '<cXML/>' );
 
 		$last = QuoteOrderTestLog::$written[ count( QuoteOrderTestLog::$written ) - 1 ];
 
@@ -387,10 +972,166 @@ final class QuoteOrderCreateTest extends TestCase {
 	}
 
 	public function test_attach_poom_stores_the_document(): void {
-		$order_id = $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
+		$quotes = $this->shipping_quotes();
+		$order_id = $quotes->create_for_session( $this->session(), $this->partner(), $this->lines() );
 
-		$this->quotes->attach_poom( $order_id, '<cXML/>' );
+		$quotes->attach_poom( $order_id, '<cXML/>' );
 
 		self::assertSame( '<cXML/>', wc_get_order( $order_id )->get_meta( QuoteOrder::META_POOM_XML ) );
 	}
+}
+}
+
+namespace POW\Tests\QuoteShipping {
+
+final class Boundary { public static string $failure = ''; public static array $note_filters = []; }
+
+/** Native shipping API double, private to these tests. No global Woo stub changes. */
+final class ShippingItem {
+	private array $data = [ 'taxes' => [ 'total' => [] ], 'total' => '0.00' ];
+	private array $meta = [];
+	public function get_meta_data(): array { return $this->meta; }
+	public function set_method_title( string $value ): void { $this->data['method_title'] = $value; }
+	public function set_method_id( string $value ): void { $this->data['method_id'] = $value; }
+	public function set_instance_id( int $value ): void { $this->data['instance_id'] = $value; }
+	public function set_total( string $value ): void { if ( 'setter' === Boundary::$failure ) { throw new \RuntimeException( 'Native setter failed' ); } $this->data['total'] = $value; }
+	public function set_taxes( array $value ): void { $this->data['taxes'] = $value; }
+	public function add_meta_data( string $key, mixed $value, bool $unique = false ): void { $this->meta[$key] = $value; }
+	public function get_meta( string $key, bool $single = true ): mixed { return $this->meta[$key] ?? ''; }
+	public function get_method_title( string $context = 'view' ): string { return $this->data['method_title']; }
+	public function get_method_id( string $context = 'view' ): string { return $this->data['method_id']; }
+	public function get_instance_id( string $context = 'view' ): int { return $this->data['instance_id']; }
+	public function get_total( string $context = 'view' ): string { return $this->data['total']; }
+	public function get_total_tax( string $context = 'view' ): string { return '0'; }
+	public function get_taxes( string $context = 'view' ): array { return $this->data['taxes']; }
+}
+
+/** Native edit getters backed by the existing mutable line fixture. */
+final class MerchandiseItem extends \WC_Order_Item_Product {
+	public function __construct( private array $data ) {}
+	public function set_quantity( float $quantity ): void { $this->data['quantity'] = $quantity; }
+	public function get_meta_data(): array { return []; }
+	private function read( string $field, string $context ): mixed {
+		if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); }
+		return $this->data[$field] ?? 0;
+	}
+	public function get_product_id( string $context = 'view' ): int { return (int) $this->read( 'product_id', $context ); }
+	public function get_variation_id( string $context = 'view' ): int { return (int) $this->read( 'variation_id', $context ); }
+	public function get_quantity( string $context = 'view' ): float { return (float) $this->read( 'quantity', $context ); }
+	public function get_subtotal( string $context = 'view' ): string { return (string) $this->read( 'subtotal', $context ); }
+	public function get_total( string $context = 'view' ): string { return (string) $this->read( 'total', $context ); }
+	public function get_name( string $context = 'view' ): string { return (string) $this->read( 'name', $context ); }
+	public function get_meta( string $key, bool $single = true, string $context = 'view' ): mixed { return 'SKU' === $key ? $this->read( 'sku', $context ) : ''; }
+}
+
+final class Variation extends \WC_Product {
+	public function get_parent_id(): int { return 412; }
+}
+
+final class Order extends \WC_Order {
+	public function add_product( \WC_Product $product, float $quantity = 1, array $args = [] ): int {
+		$id = parent::add_product( $product, $quantity, $args );
+		if ( $id && $product instanceof Variation ) { $this->items[$id - 1]['product_id'] = $product->get_parent_id(); $this->items[$id - 1]['variation_id'] = $product->get_id(); }
+		return $id;
+	}
+	public function get_shipping_first_name( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_first_name'] ?? ''; }
+	public function get_shipping_last_name( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_last_name'] ?? ''; }
+	public function get_shipping_company( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_company'] ?? ''; }
+	public function get_shipping_address_1( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_address_1'] ?? ''; }
+	public function get_shipping_address_2( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_address_2'] ?? ''; }
+	public function get_shipping_city( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_city'] ?? ''; }
+	public function get_shipping_state( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_state'] ?? ''; }
+	public function get_shipping_postcode( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_postcode'] ?? ''; }
+	public function get_shipping_country( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_country'] ?? ''; }
+	public function get_shipping_phone( string $context = 'view' ): string { if ( 'edit' !== $context ) { throw new \RuntimeException( 'Expected edit context' ); } return $this->props['shipping_phone'] ?? ''; }
+	private string $customer_note = '';
+	public function set_customer_note( string $note ): void { $this->customer_note = $note; }
+	public function get_customer_note( string $context = 'view' ): string { return $this->customer_note; }
+	private array $shipping_items = [];
+	private string $total = '0.00';
+	private string $shipping_total = '0.00';
+	public function add_item( mixed $item ): mixed {
+		if ( ! $item instanceof ShippingItem ) { return parent::add_item( $item ); }
+		if ( 'add' === Boundary::$failure ) { return false; }
+		$this->shipping_items[] = $item; return null;
+	}
+	private array $merchandise_items = [];
+	private array $cached_rows = [];
+	/** Mirror native loaded item groups while retaining the older fixture's public rows for existing callers. */
+	public function replace_merchandise_collection(): void {
+		$this->merchandise_items = array_map( static fn( $item ) => clone $item, $this->merchandise_items );
+		$this->merchandise_items[0]->set_quantity( 6 );
+	}
+	public function native_item_groups(): array {
+		if ( $this->cached_rows !== $this->items ) {
+			$this->merchandise_items = array_map( static fn( array $data ): MerchandiseItem => new MerchandiseItem( $data ), $this->items );
+			$this->cached_rows = $this->items;
+		}
+		return [ 'line_items' => $this->merchandise_items, 'shipping_lines' => $this->shipping_items ];
+	}
+	public function get_items( string $type = 'line_item' ): array {
+		$groups = $this->native_item_groups();
+		$items = 'shipping' === $type ? $groups['shipping_lines'] : $groups['line_items'];
+		return isset( $GLOBALS['pow_test_order_get_items'] ) ? ( $GLOBALS['pow_test_order_get_items'] )( $this, $type, $items ) : $items;
+	}
+	public function get_total( string $context = 'view' ): string { return $this->total; }
+	public function get_shipping_total( string $context = 'view' ): string { return $this->shipping_total; }
+	public function get_total_tax( string $context = 'view' ): string { return '0'; }
+	public function get_currency( string $context = 'view' ): string { return $this->currency; }
+	public function calculate_totals( bool $and_taxes = true ): float {
+		$this->totals_calls[] = $and_taxes;
+		$shipping = array_sum( array_map( static fn( ShippingItem $item ): int => \POW\Cxml\Money::to_cents( $item->get_total() ), $this->shipping_items ) );
+		$this->shipping_total = \POW\Cxml\Money::format( $shipping );
+		$this->total = \POW\Cxml\Money::format( $shipping + array_sum( array_map( static fn( array $item ): int => \POW\Cxml\Money::to_cents( $item['total'] ), $this->items ) ) );
+		if ( 'save_during_totals' === Boundary::$failure ) { $this->save(); }
+		return (float) $this->total;
+	}
+	public function get_meta_data(): array {
+		if ( isset( $GLOBALS['pow_test_order_metadata_read'] ) ) { ( $GLOBALS['pow_test_order_metadata_read'] )( $this ); }
+		return $this->meta;
+	}
+	public function save_meta_data(): void {
+		if ( isset( $GLOBALS['pow_test_order_meta_save'] ) ) { ( $GLOBALS['pow_test_order_meta_save'] )( $this ); }
+		if ( $this->save_throws ) { throw new \RuntimeException( 'Native metadata save failed' ); }
+	}
+	public function get_customer_id( string $context = 'view' ): int { return $this->customer_id; }
+	public function save(): int {
+		if ( \POW\Orders\Status::SLUG === $this->get_status() ) {
+			if ( 'cpt_unslash' === Boundary::$failure ) {
+				$data = [ 'post_excerpt' => $this->customer_note ];
+				foreach ( Boundary::$note_filters as $filter ) { $data = $filter( $data, [ 'ID' => $this->get_id() ] ); }
+				$this->customer_note = stripslashes( $data['post_excerpt'] );
+			}
+			if ( 'lost_confirmation' === Boundary::$failure ) { unset( $this->meta['_pow_delivery_confirmation'] ); }
+			if ( 'changed_note' === Boundary::$failure ) { $this->customer_note = 'Changed'; }
+			if ( 'lost_meta' === Boundary::$failure ) { unset( $this->meta['_pow_delivery'] ); }
+			if ( 'changed_item' === Boundary::$failure && $this->shipping_items ) { $this->shipping_items[0]->set_total( '0.01' ); }
+			if ( 'changed_total' === Boundary::$failure ) { $this->total = '0.01'; }
+		}
+		return parent::save();
+	}
+}
+
+function wc_create_order( array $args = [] ): Order {
+	static $next = 5000;
+	$order = new Order( ++$next ); $order->set_customer_id( $args['customer_id'] ); $order->set_status( $args['status'] );
+	$GLOBALS['pow_test_orders'][$order->get_id()] = $order;
+	if ( isset( $GLOBALS['pow_test_after_create_order'] ) ) { ( $GLOBALS['pow_test_after_create_order'] )( $order ); }
+	return $order;
+}
+
+/** Read-only native cache boundary; the shared historical WC stub exposes flat rows instead of Woo's protected grouped item cache. */
+function get_mangled_object_vars( object $order ): array {
+	return [ "\0*\0items" => $order->native_item_groups() ] + \get_mangled_object_vars( $order );
+}
+
+function sanitize_textarea_field( string $value ): string { return trim( strip_tags( $value ) ); }
+function wp_slash( string $value ): string { return addslashes( $value ); }
+function add_filter( string $hook, callable $callback, int $priority = 10, int $args = 1 ): void { Boundary::$note_filters[spl_object_id( $callback )] = $callback; }
+function remove_filter( string $hook, callable $callback, int $priority = 10 ): void { unset( Boundary::$note_filters[spl_object_id( $callback )] ); }
+}
+
+namespace POW\Tests\ReturnShipping {
+/** The peer return fixture reuses the same native Order double. */
+function get_mangled_object_vars( object $order ): array { return \POW\Tests\QuoteShipping\get_mangled_object_vars( $order ); }
 }

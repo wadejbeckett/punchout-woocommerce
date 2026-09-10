@@ -196,7 +196,9 @@ final class Builder {
 		// Optional header order is Total, ShipTo, then the newer order reference.
 		// Freight is an ItemIn supplied by the native estimate mapper, never header Shipping.
 		if ( $postal_and_notes && true === ( $args['emit_ship_to'] ?? false ) && null !== ( $args['ship_to'] ?? null ) ) {
-			$this->ship_to( $doc, $poom_header, $args['ship_to'], $code, $extended, $lang );
+			// Postal export does not implicitly enable code export, including code-bearing Address attributes.
+			$address_code = true === ( $args['emit_delivery_code'] ?? false ) ? $code : '';
+			$this->ship_to( $doc, $poom_header, $args['ship_to'], $address_code, $extended, $lang );
 		}
 		if ( $extended && ! empty( $args['supplier_order_info'] ) ) {
 			$info = $this->el( $doc, $poom_header, 'SupplierOrderInfo' );

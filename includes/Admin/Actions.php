@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Admin;
 
+use POW\Support\Transport;
+
 use POW\Checkout\ExitPolicy;
 use POW\Audit\Log;
 use POW\Partners\Registry;
@@ -240,6 +242,7 @@ final class Actions {
 	 * Capability + nonce gate for every handler.
 	 */
 	private function authorise( string $nonce_action ): void {
+		Transport::require_https();
 		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
 			wp_die( esc_html__( 'This action requires a POST request.', 'punchout-woocommerce' ), '', [ 'response' => 405 ] );
 		}
@@ -249,6 +252,10 @@ final class Actions {
 		$nonce = $_POST['_wpnonce'] ?? null;
 		if ( ! is_string( $nonce ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $nonce ) ), $nonce_action ) ) {
 			wp_die( esc_html__( 'Security check failed — please go back and try again.', 'punchout-woocommerce' ), '', [ 'response' => 403 ] );
+		}
+		// Delivery forms post to the partner page and Fields, never to an admin-post credential or entitlement action.
+		if ( array_key_exists( 'pow_address_action', $_POST ) ) {
+			wp_die( esc_html__( 'Delivery address changes must use the company delivery editor.', 'punchout-woocommerce' ), '', [ 'response' => 400 ] );
 		}
 		foreach ( $_POST as $value ) {
 			if ( ! is_scalar( $value ) ) { wp_die( esc_html__( 'Invalid form value.', 'punchout-woocommerce' ), '', [ 'response' => 400 ] ); }

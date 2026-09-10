@@ -11,7 +11,7 @@ The plugin implements selected direct cXML messages, not every cXML transaction.
 | Cart return | Browser posts PunchOutOrderMessage to the initiating request's BrowserFormPost URL. |
 | POST `/punchout/order` | Unsupported; responds with cXML 450, not purchase-order acceptance. |
 
-BuyerCookie and BrowserFormPost are transaction context supplied by the purchasing system. Do not substitute a destination chosen at transfer time. Return encoding is configured per connection: `cxml-base64` or `cxml-urlencoded`. Their transport encoding does not encrypt the document; deploy HTTPS throughout. Current URL checks allow HTTP(S), so HTTPS must also be enforced operationally.
+BuyerCookie and BrowserFormPost are transaction context supplied by the purchasing system. Do not substitute a destination chosen at transfer time. Return encoding is configured per connection: `cxml-base64` or `cxml-urlencoded`. Their transport encoding does not encrypt the document; deploy HTTPS throughout. The plugin requires HTTPS requests and HTTPS BrowserFormPost targets in production and staging, including when cXML deploymentMode is `test`. Only WordPress environments explicitly configured as `local` or `development` allow HTTP. Saved return targets are revalidated before handoff and are never silently rewritten. See [transport and deployment](transport-security.md).
 
 Setup uses HTTP 200 for its cXML response envelope. Inspect the embedded status: 200 success, 401 authentication, 406 invalid document, 409 duplicate request, 450 unsupported, 500 internal failure, 550 rate limit. An edge-server HTTP failure can occur before this handler.
 

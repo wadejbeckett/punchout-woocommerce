@@ -1,10 +1,10 @@
 # PunchOut for WooCommerce
 
-An AGPLv3 WordPress plugin that makes a WooCommerce store a **cXML PunchOut supplier site** for enterprise procurement buyers — Microsoft Dynamics 365 Finance & Operations / Supply Chain Management first, any direct-cXML buyer by configuration.
+An AGPLv3 WordPress plugin that makes a WooCommerce store a **cXML PunchOut supplier site** for direct-cXML procurement buyers, configured independently per company.
 
-A buyer clicks the store's catalog tile inside their procurement system; the system POSTs a cXML `PunchOutSetupRequest` to the store; the plugin authenticates it by shared secret, provisions a per-buyer user, and returns a one-time StartPage URL that auto-logs the buyer's browser in. The buyer shops the ordinary WooCommerce cart at their configured prices, then exits by sending the cart back to their purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines for internal approval) — or, where the customer's policy allows it, by paying through the completely untouched standard WooCommerce checkout.
+A buyer opens the store from their procurement system. It sends a cXML `PunchOutSetupRequest`; the plugin authenticates the company, provisions a separate buyer account and returns a one-time StartPage login URL. The buyer shops the ordinary WooCommerce cart at their configured prices, reviews the destination, native shipping methods and notes, then returns a cXML `PunchOutOrderMessage` for requisition/RFQ approval. Where their effective exit policy permits it, they can instead pay through native WooCommerce checkout.
 
-**Status: complete build, not yet certified against a live buyer tenant.** Every layer is implemented and the protocol/security core is unit-tested, but no cXML document has been exchanged with a real Dynamics 365 environment — see [Untested against a real D365 tenant](#untested-against-a-real-d365-tenant) before any production onboarding.
+**Status: supplier implementation; release acceptance and receiver certification are separate gates.** The generated samples are checked against the exact offline cXML 1.2.008 and 1.2.071 DTDs. This does not establish consumption by a buyer system, including Dynamics 365. See [Receiver acceptance](#receiver-acceptance) before onboarding.
 
 - **Licence:** AGPL-3.0-or-later (full text in `LICENSE`)
 - **Requires:** PHP 8.2+, WordPress 6.4+, WooCommerce 8.0+
@@ -14,7 +14,7 @@ A buyer clicks the store's catalog tile inside their procurement system; the sys
 
 ## Why AGPL
 
-The plugin encodes real integration knowledge — the D365 punchout dialect, its parser fragilities, the session/security model — and is exactly the kind of thing a third party would gate behind a SaaS. AGPL means anyone who takes it, including anyone running a modified copy as a hosted punchout service, has to publish their changes.
+The plugin makes its cXML integration and session model available as free software under AGPL-3.0-or-later. See `LICENSE` for the corresponding-source availability requirements and their conditions. This project does not require upstream contribution.
 
 ---
 
@@ -44,30 +44,31 @@ Buyer's procurement system         The store (this plugin)              Buyer's 
         │                                │◀───────────────────────────────────▶│
         │                                │ 8. cart exits:                      │
         │                                │    (a) "Send for approval"          │
-        │                                │        → POST /punchout/return      │
+        │                                │        → /punchout/confirm          │
+        │                                │        review, confirm and return   │
         │                                │    (b) stock Woo checkout           │
-        │                                │        (dual_exit customers only)   │
+        │                                │        (when exit policy allows)    │
         │ 9. browser POSTs the cXML PunchOutOrderMessage (cxml-base64          │
         │    hidden field) top-level to the BrowserFormPost URL; the           │
         │    store login is destroyed either way                               │
         │◀───────────────────────────────┼─────────────────────────────────────│
 ```
 
-Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. No session exists between the two — the one-time token is the only bridge. The pay exit (b) still closes the buyer-side session cleanly: the order-received page offers "Return to your purchasing system", which posts an **empty** PunchOutOrderMessage (the cXML cancel semantic) carrying the Woo order reference in `SupplierOrderInfo`.
+Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. The one-time token links the pending setup to the buyer login. The pay exit (b) offers "Return to your purchasing system" on the order-received page, posting an **empty** PunchOutOrderMessage. The Woo order reference uses `SupplierOrderInfo` only in verified cXML 1.2.071; 1.2.008 omits it. Empty and paid closeouts add no delivery charge.
 
 ### Key design decisions
 
-**Additive, never invasive.** The plugin never overrides, replaces or filters the WooCommerce checkout or any payment gateway. The RFQ exit is an extra button; the pay path is stock WooCommerce with three listeners (order meta tagging, a session-state flip at `woocommerce_payment_complete`, a close-out CTA on the thank-you page). The one exception is deliberate and scoped: customers in `requisition_only` mode get a checkout block — 302 plus a `woocommerce_checkout_process` hard fail — applied only inside that customer's punchout sessions.
+**Native checkout, scoped exit permission.** The reviewed cart return is an additional exit. Global, company and buyer policy determine whether the punchout login may also use native checkout. Punchout-only sessions are blocked at classic, Blocks and direct payment entry points; ordinary shoppers are unaffected. The allowed pay path retains native checkout, order linkage, payment lifecycle handling and an empty-cart closeout.
 
 **Multi-tenant registry, policy over code.** Every customer difference is a column, not a branch: identities, cXML version, return encoding, exit mode, TTLs, IP allowlist, ALL-CAPS outbound transform, optional customer-group mapping. Adding a second buyer is a registry row plus a certification exercise.
 
-**Hand-rolled cXML codec on DOMDocument.** The plugin needs exactly four document shapes (parse `PunchOutSetupRequest`/`ProfileRequest`; emit `PunchOutSetupResponse`, `PunchOutOrderMessage`, `Status`). A library (cxml-php) would drag a Composer graph into a no-vendor plugin for four small documents. Parsing is XXE-hardened (entity declarations rejected outright, `LIBXML_NONET`, no runtime DTD fetch) and validates structurally, not against the DTD; the 1.2.071 DTD ships in `includes/Cxml/dtd/` for offline reference.
+**cXML codec on DOMDocument.** The parser accepts `PunchOutSetupRequest` and `ProfileRequest`; the builder emits setup/profile responses, `PunchOutOrderMessage` and `Status`. Parsing rejects entity declarations, uses `LIBXML_NONET`, performs structural validation and never fetches a DTD at runtime. Tests validate generated samples against hash-verified offline fixtures for the exact declared 1.2.008 or 1.2.071 version. Optional field support uses those exact versions, not a guessed version threshold.
 
 **Raw `parse_request` routing, no rewrites.** `/punchout/setup` must accept a raw `text/xml` POST whose body survives untouched. The router matches the raw request path at `parse_request` priority 0 and exits — no rewrite rules, no canonical processing (WP core cannot 301 a POST), no theme bootstrap. Webserver/CDN-level redirects remain a deployment concern: the URL given to buyers must be the exact canonical origin (see the runbook).
 
 **cXML failures inside HTTP 200.** The setup endpoint answers `Status` codes (`401` auth, `406` invalid, `409` replay, `450` unsupported, `500`, `550` rate-limited) in an HTTP 200 — procurement clients read the envelope, and an HTTP 4xx alongside a valid response has broken real integrations.
 
-**One WP user per (customer, buyer identity).** WooCommerce keys the session — and therefore the cart — on the user ID, so a shared punchout user would merge every concurrent buyer into one cart. Identity comes from the agreed extrinsics (`UserEmail`, then `UniqueUsername`, then `Contact/Email`), falling back to a flagged ephemeral per-session user. Same buyer punching out twice: **latest punchout wins** — the new setup expires the old session and destroys its login.
+**One WP user per (company, buyer identity).** WooCommerce keys the session and cart on the user ID. Identity comes from `UserEmail`, then `UniqueUsername`, then `UniqueName`, then `Contact/Email`, falling back to a flagged ephemeral user for that session. The purchasing system's authorised buyers are automatically recognised without a second employee approval queue; they do not share the company owner's login. Same buyer punching out twice: **latest punchout wins** — the new setup expires the old session and destroys its login.
 
 **One cart, two exits.** The live `WC()->cart` serves both exits, so the POOM quotes exactly the prices the buyer would have paid at checkout — pricing plugins apply their prices at cart time and the mapper reads the cart's own line totals. Persistent carts are disabled inside punchout sessions and the cart is emptied once at session start.
 
@@ -124,8 +125,8 @@ Four custom indexed tables (options/postmeta neither index nor GC well for per-r
 
 | Table | Holds |
 |---|---|
-| `wp_pow_partners` | Customer-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit mode, ALL-CAPS flag, IP allowlist, ordinary owner account association, TTLs |
-| `wp_pow_sessions` | One row per PunchOutSetupRequest: BuyerCookie, BrowserFormPost URL, user, hashed one-time token, exact WP session token, state machine (`pending → active → returned/ordered/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics |
+| `wp_pow_partners` | Company-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, exit entitlement, delivery configuration, ALL-CAPS flag, IP allowlist, ordinary owner account association, TTLs |
+| `wp_pow_sessions` | One row per PunchOutSetupRequest: BuyerCookie, BrowserFormPost URL, user, hashed one-time token, exact WP session token, state machine (`pending → active → returned/ordered/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics, confirmed delivery choice and cart/policy/rate/notes snapshot |
 | `wp_pow_log` | The audit/compliance trail: every transaction, full POOM XML archives, secrets redacted; retention-trimmed by cron |
 
 ---
@@ -141,6 +142,60 @@ Admin creation, replacement, rotation, approval and reset show any newly issued 
 Save identity changes before **Reset connection**. Reset uses the saved identity, immediately revokes both credentials and recorded buyer sessions, then issues a replacement only after checked cleanup. Pending connections cannot reset. If cleanup or persistence fails, the admin notice reports the incomplete reset instead of claiming success; inspect the connection and retry after recovery. The owner and company book association stay intact. Owner **Deactivate connection now** immediately disables the connection and revokes its recorded sessions; it is not a request for later manual review.
 
 For a legacy connection with owner user ID zero, the edit screen offers a separate admin-only **Associate company account** POST. Select an existing ordinary WordPress user ID that owns no other connection. Provisioned buyers and claimed accounts are refused; matching is never inferred from email, names or third-party company groups. Existing nonzero associations cannot be transferred or cleared. Association does not copy addresses or sign employees in as the owner.
+
+## Company delivery book and confirmation
+
+Cart confirmation currently supports **ZAR only**. Set the WooCommerce store currency and the receiving catalogue currency to ZAR. Confirmation refuses a different currency; the plugin does not convert currencies.
+
+The core book belongs to the associated company account. The company owner and authorised shop administrators manage **Company delivery addresses** on the account integration or customer administration screen; company buyers select all enabled entries in their own shopping sessions. No third-party address-book plugin, additional credential store or directory integration is required.
+
+Add an address manually, or preview and explicitly copy the owner's normal WooCommerce billing or shipping address. New entries and imports start disabled. Review the saved entry, then enable it separately (`use_for_punchout`). A normal Woo address save never synchronises the book. Inbound `ShipTo` and the current buyer's saved shipping address are session candidates for explicit review; they do not silently replace the company master data or provide an address-list pull API.
+
+Every physical cart return requires the **same logged-in buyer** to review and confirm a full destination, a native shipping method for each package and optional notes. This includes pickup, a singleton address or method, and all export flags being off. The cart control opens `/punchout/confirm`; `[punchout_delivery_confirmation]` renders the same review on a page. Both post to that dedicated nonced route. A direct `/punchout/return` POST cannot bypass the confirmation checks. Virtual-only baskets record delivery as `not_required`.
+
+A valid existing buyer shipping choice is preserved; otherwise WooCommerce's native default helper selects within the current cart context. The plugin adds no cheapest-rate or pickup preference. Unknown delivery is `null`/unavailable, never zero. With `emit_delivery_line` enabled, the default `delivery_unknown_policy=require_rate` refuses confirmation if a rate is unavailable. Explicit `quote_separately` allows the buyer to acknowledge the omission and continue without a freight line or Quote shipping charge. A real quoted zero remains a known rate. With charge export off, the available estimate or unavailable state is reviewed and retained locally without a charge.
+
+Confirmation binds the cart, destination, rates, configuration and notes to the buyer session. Changes require fresh review. A selected company entry must still exist, be enabled and match its confirmed address, label and code at confirmation and final return. Removal or disablement requires an eligible reselection; a changed selected entry requires reconfirmation. An unrelated revision of the book does not invalidate an unchanged selected entry. Completed return and Quote snapshots remain immutable after later master edits.
+
+Notes are sanitised plain text, at most 2,000 characters and 8,000 bytes. They are local by default. `delivery_notes_policy=item_detail_extrinsic` additionally copies the basket note into every merchandise `ItemDetail/Extrinsic` named `DeliveryInstructions`, excluding freight, under either verified DTD. Agree this repetition with the receiver before enabling it.
+
+Address codes are company-scoped references, not URLs or registered receiver records. They allow `A–Z`, `0–9`, `_` and `-`, up to 32 characters; the optional prefix is limited to 24 characters and address labels to 190. Changed or removed issued codes leave their claims retired permanently, so another address cannot reuse them. A blank code preserves an existing code; for a new entry, a configured prefix generates one, otherwise it remains uncoded.
+
+### Independent delivery configuration
+
+These are actual connection keys; optional emission is off by default. The supplier review remains mandatory independently of receiver export.
+
+| Key | Default | Effect |
+|---|---|---|
+| `emit_ship_to` | `false` | Export the full confirmed destination in `ShipTo`, with or without a code |
+| `emit_delivery_code` | `false` | Export a usable code through the fields allowed by the exact cXML version |
+| `emit_delivery_line` | `false` | Include one native freight total and matching optional Quote shipping items |
+| `delivery_unknown_policy` | `require_rate` | When charge export is enabled, refuse an unavailable estimate; `quote_separately` permits acknowledged omission |
+| `delivery_notes_policy` | `off` | Keep notes local; `item_detail_extrinsic` additionally exports repeated merchandise notes |
+| `delivery_code_prefix` | empty | Optional prefix for generated company codes |
+| `delivery_code_extrinsic_name` | `DeliveryAddressCode` | Name of the optional direct `ItemIn/Extrinsic` |
+| `freight_supplier_part_id` | `DELIVERY` | Supplier ID of the typed freight line |
+| `freight_uom` | `EA` | Freight unit of measure |
+| `freight_classification_domain` | `supplier` | Freight classification domain |
+| `freight_classification` | `freight` | Freight classification value |
+
+| Outbound field | cXML 1.2.008 | cXML 1.2.071 |
+|---|---|---|
+| Header `ShipTo` / full `PostalAddress` | Supported with `emit_ship_to` | Supported with `emit_ship_to` |
+| `Address/@addressID` | Usable code with address and code export | Usable code with address and code export |
+| `Address/@addressIDDomain="supplier"` | Omitted | With a usable emitted `addressID` |
+| Direct `ItemIn/Extrinsic` code | Omitted; code-only export has no output | Supported with `emit_delivery_code`, independently of full address |
+| `ItemDetail/Extrinsic` notes | Supported with `item_detail_extrinsic` | Supported with `item_detail_extrinsic` |
+| One quantity-one freight `ItemIn` | Supported with `emit_delivery_line` and a known rate | Supported with `emit_delivery_line` and a known rate |
+| `SupplierOrderInfo` | Omitted | Supported when an order reference is supplied |
+
+Unverified versions do not gain optional postal, code or note fields through version-number comparisons, and unsupported fields are not relocated to invented elements. Codes, freight and full address do not enable one another. The integration docs page generates a flags-off example and full enabled examples for both exact DTDs through the real Parser/Builder, with totals derived from the emitted lines. Exact-DTD validation proves document structure; it does not prove receiver field consumption.
+
+### Global, company and buyer exit policy
+
+Shop administrators set global and company `exit_policy` to `inherit`, `punchout_only` or `punchout_and_checkout`. A company inherits the global setting unless explicitly configured; global `inherit` resolves securely to `punchout_only`. The effective company entitlement is the upper bound for an existing buyer. An administrator may restrict that buyer to punchout only; a buyer setting cannot grant checkout above the company entitlement. Company owners and buyers cannot grant themselves entitlement.
+
+The effective policy is checked for the current buyer at return and payment boundaries. Punchout only blocks classic, Blocks and direct pay entry points inside the punchout session. Punchout and checkout retains native checkout alongside the confirmed cart return. Ordinary shoppers are unaffected.
 
 ## Security model
 
@@ -182,15 +237,16 @@ wp punchout generate-key
 | Buyer inactivity | 90 days | Flag (never delete) unseen buyers |
 | Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |
 | Cancel button label | "Return without a cart" | Text on the abandon control; blank = the default |
+| Exit policy (`exit_policy`) | `inherit` | Global Inherit resolves to Punchout only; company entitlement and buyer restriction are resolved as described above |
 | Default UNSPSC | empty | Classification fallback for unmapped SKUs |
 | Convert quotes to | Pending payment | Status the order action moves a Punchout Quote to |
 | Quote retention | 90 days | Unconverted quotes cancelled (never deleted) after this; 0 = keep for ever |
 
 ---
 
-## Partner onboarding runbook (D365 buyer)
+## Partner onboarding runbook
 
-Punchout onboarding is a data exchange plus a certification session against the buyer's tenant. There is no Microsoft-side registry or certification program: their admin types your values into **Procurement and sourcing ▸ Catalogs ▸ External catalogs** and clicks *Validate settings*.
+Punchout onboarding is a data exchange followed by testing in the buyer's own purchasing system. Its administrator configures the external catalogue connection, identity mapping and returned-line mapping using the agreed values. A successful supplier-side test is only one part of acceptance.
 
 **You provide the buyer:**
 
@@ -199,8 +255,8 @@ Punchout onboarding is a data exchange plus a certification session against the 
 | Punchout catalog URL (test and production) | `https://{canonical-host}/punchout/setup` — the exact canonical origin: any webserver/CDN redirect (apex→www, http→https) will silently drop the POST body |
 | Your identity + domain | the partner row's To credential (DUNS number, or an agreed `NetworkID` value) |
 | Shared secret | generate in the partner form or `wp punchout rotate-secret`; state the rotation policy (dual-slot overlap; suggest annual + on-suspicion) |
-| Supported cXML version | emit per partner row (D365 default 1.2.008); any 1.2.x accepted inbound |
-| Vendor logo | **square** PNG — D365 renders non-square images wrong |
+| Supported cXML version | `cxml_version` per connection, default 1.2.008; use the exact optional-field support table above |
+| Vendor logo | Format and dimensions required by the buyer's catalogue |
 | Vendor/commercial data | vendor account number, name, contacts, approved procurement categories |
 
 **The buyer provides you (per partner row):**
@@ -208,20 +264,20 @@ Punchout onboarding is a data exchange plus a certification session against the 
 | Item | Why |
 |---|---|
 | Their From credential (domain + identity) and Sender identity | registry row; the Sender pair is the auth lookup key |
-| Which legal entities get catalog access | multiple entities can mean multiple identities/currencies — possibly multiple partner rows |
+| Which legal entities get catalog access | Multiple entities can require separate identities or partner rows. Every returned cart currently uses ZAR. |
 | The cXML version their system emits | codec config |
-| **SameSite/Chrome-80 punchback remediation status**, in writing, with evidence of a successful cross-site cart return from a non-Microsoft supplier | the top integration risk — see below |
-| Test tenant access, a named D365 admin/partner contact, a certification window | certification is only possible against their tenant |
-| Exact UOM codes and currency configured in their D365 | UOM/currency mismatches are silent line-level failures; lines ship UOM EA — rewrite via the `pow_poom_lines` filter if a buyer needs different codes |
-| Agreed extrinsic names and value sources (`UserEmail`, `UniqueUsername`, …) | buyer identity mapping |
-| Which cart-return encoding their basket wizard accepts (`cxml-base64` / `cxml-urlencoded`) | undocumented by Microsoft; per-partner switch, settle empirically on day one |
+| Evidence of a successful cross-site browser form return in the intended browser and purchasing system | Verify the receiver retains the buyer's authenticated session |
+| Test environment access, a named buyer administrator and an acceptance window | Receiver consumption is proved in that environment |
+| Exact UOM codes and currency configured in the receiver | Verify mapped merchandise and freight units and currency, not just XML parsing |
+| Agreed extrinsic names and value sources (`UserEmail`, `UniqueUsername`, `UniqueName`) | Stable company-scoped buyer identity mapping |
+| Which cart-return encoding the receiver accepts (`cxml-base64` / `cxml-urlencoded`) | Per-connection switch, verified with an actual received basket |
 | Whether an empty PunchOutOrderMessage closes a session cleanly (and whether `SupplierOrderInfo` is retained in their cart message log) | pay-path close-out behaviour |
-| IP allowlisting requirements, `PUNCHOUTSHIPTO` intentions, PO delivery mode | deployment + future scope |
+| IP allowlisting requirements and the agreed destination, code, notes and freight mapping | Deployment plus independent optional-field acceptance; no address-list API is implied |
 | For dual-exit: written sign-off that direct pay from a punchout session is sanctioned, and how paid orders reconcile in their AP | a paid order creates no requisition/PO/receipt on their side |
 
 **Deployment checklist (outside the plugin):** the buyer-facing URL must be the canonical host with no redirect in the path; any WAF/bot-management layer needs a skip rule for `POST /punchout/setup` (a challenge page kills setup invisibly); CDN cache rules must bypass `/punchout/*` and cookie-carrying requests; `robots.txt` gets `Disallow: /punchout/`. Prove all of it by POSTing a real setup body through the full public path.
 
-**The SameSite risk, named honestly:** the cart return is a cross-site, top-level POST to an authenticated page in the buyer's D365 web client. Chrome's SameSite=Lax default can drop D365's session cookie on that POST, bouncing the buyer to a sign-in page — a publicly reported, unresolved failure mode for exactly this scenario, fixable only on the Microsoft/buyer side (current evergreen platform build; Chrome enterprise policy as a stopgap). The plugin does everything a supplier can (top-level form POST, correct encoding, immediate return, support reference on the handoff page) — get the buyer's remediation status in writing before committing dates.
+**Browser return acceptance:** the cart return is a cross-site, top-level form POST. Verify that the buyer stays signed in and receives the basket in the intended browser and purchasing system. A supplier-generated handoff alone cannot prove the receiver's authentication and cookie behaviour.
 
 ---
 
@@ -232,6 +288,8 @@ Three equivalent ways; all render only inside an active punchout session and out
 - Shortcode: `[punchout_return_button]` (page builders, widgets, block editor shortcode block)
 - PHP: `pow_return_button();` in any template
 - Automatic: injected on the cart page after the checkout button (`woocommerce_proceed_to_checkout`, priority 30)
+
+The cart-return control opens the mandatory delivery review at `/punchout/confirm`. For a dedicated review placement, use `[punchout_delivery_confirmation]`; its forms still post to the protected confirmation route. Custom cart markup cannot bypass the final return checks.
 
 Markup comes from `templates/return-button.php` — override it by copying to `{theme}/punchout-woocommerce/return-button.php`, or point the `pow_template_return-button` filter anywhere. Same pattern for `handoff.php`, `closeout-button.php` and `abandon-button.php`.
 
@@ -257,20 +315,26 @@ Quote persistence and diagnostic failures do not block the prepared handoff. Can
 
 Before deploying, verify conversion on staging for each configured target: the status and note must land, Processing/On hold must apply normal stock reduction where applicable, and Pending payment must leave an unreduced quote's stock unchanged. Check native email behaviour with a mail logger. Stub tests do not prove these WooCommerce effects.
 
-**Order meta.** Four keys, each underscore-prefixed and therefore protected: WooCommerce neither shows them in the order screen's custom-fields box nor lets anyone edit them there.
+**Order meta.** The returned document and confirmation provenance use protected, underscore-prefixed keys:
 
 | Key | Holds |
 |---|---|
 | `_pow_poom_xml` | The cXML PunchOutOrderMessage that was returned to the buyer |
 | `_pow_session_id` | The punchout session (`wp_pow_sessions.id`) the order came from |
 | `_pow_partner_id` | The customer connection |
-| `_pow_delivery_code` | The buyer's own code for the delivery address, when one was supplied |
+| `_pow_delivery_code` | The code on the confirmed destination, when one is available |
+| `_pow_delivery` | Accepted native delivery estimate, package rates, freight configuration and emission state |
+| `_pow_delivery_choice` | Exact stored destination-choice JSON from the return winner |
+| `_pow_delivery_confirmation` | Exact stored confirmation JSON, including cart/policy binding and notes |
+| `_pow_delivery_notes` | Confirmed plain notes, also copied to the native order customer note |
 
-The delivery address is settled in a fixed order: the `pow_quote_shipping_address` filter, then the `ShipTo` the buyer's system sent at setup, then the customer's saved shipping address.
+The confirmed cart-return path uses the winner's immutable destination, delivery estimate and notes. It does not resolve a fresh fallback or let `pow_quote_shipping_address` replace that accepted snapshot. Legacy direct Quote callers without a prepared destination retain that filter, then inbound `ShipTo`, then saved-customer shipping precedence.
+
+When `emit_delivery_line` is enabled and the confirmed rate is known, the POOM adds one quantity-one freight line equal to the sum of selected native package rates. The matching optional Quote adds native shipping items per package with the same ex-tax sum, exactly once; freight is never added as merchandise or a second fee. Quote totals and emitted XML use the same integer-cent amounts. When charge export is off, or the buyer acknowledges an unavailable estimate under `quote_separately`, the Quote keeps delivery metadata and an estimate note but adds no shipping charge. Later company-book changes cannot rewrite this completed snapshot.
 
 ## Integration documentation page
 
-Everything a buyer's developer needs to connect — endpoints, identities, the annotated setup request, the cart we send back, every status code and what to do about it, delivery-address fields, rate limits, secret rotation, and what is deliberately not supported. The samples are generated by the same `Cxml\Parser` and `Cxml\Builder` that serve live traffic, so the page cannot document a document the plugin does not actually send.
+The page covers endpoints, identities, the annotated setup request, returned carts, status codes, company addresses and confirmation, independent delivery flags, exit hierarchy, rate limits and secret rotation. The inbound example is parsed by `Cxml\Parser`; outbound examples use `Cxml\Builder` and the real freight-line producer with invented rates. Flags-off and full enabled examples use exact verified DTD fixtures; displayed totals are derived from the same lines. These samples do not certify a receiving tenant or execute native shipping callbacks.
 
 Publish it by creating a page and adding the shortcode, then send buyers that page's URL:
 
@@ -294,13 +358,13 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 | `pow_abandon_button_label` | filter | "Return without a cart" text (applied after the setting) |
 | `pow_button_classes` | filter | Class list of either exit control (`$classes, $base, $themed`) |
 | `pow_template_{return-button,abandon-button,handoff,closeout-button,docs/page,docs/self-test}` | filter | Replace any buyer-facing template |
-| `pow_delivery_codes_enabled` | filter | Whether the documentation page presents delivery codes as live rather than forthcoming |
+| `pow_delivery_codes_enabled` | filter | Legacy custom-docs-template display hint; the bundled docs show all delivery settings, and this filter does not control emission |
 | `pow_handoff_copy` / `pow_closeout_copy` / `pow_expired_token_message` | filter | Buyer-facing strings |
 | `pow_buyer_identity` | filter | Change how buyer identity is derived from the setup request |
 | `pow_product_in_range` | filter | Tighten the add-to-cart range check (e.g. a contract-range rule) |
 | `pow_poom_unit_price_cents` | filter | VAT treatment / price policy per POOM line |
 | `pow_poom_lines` | filter | The assembled line set before the document is built |
-| `pow_quote_shipping_address` | filter | The delivery address stamped on the Punchout Quote order (`null, $session, $partner`) |
+| `pow_quote_shipping_address` | filter | Legacy Quote address candidate (`null, $session, $partner`); cannot replace a prepared, confirmed return destination |
 | `pow_start_redirect` | filter | Post-login destination |
 | `pow_client_ip` | filter | Trust a proxy header for rate limiting / allowlists / audit |
 | `pow_route_guard` | action | Extend the blocked-surface set inside punchout sessions |
@@ -325,19 +389,19 @@ wp punchout gc                # run housekeeping now
 ## What is deliberately NOT built
 
 - **Inbound cXML `OrderRequest` receiver** (`/punchout/order`): answers cXML 450. Building it means idempotent Woo order creation, SKU/price reconciliation and an agreed acknowledgement contract — priced separately once a buyer confirms cXML PO delivery.
-- **edit/inspect re-entry**: D365 F&O sends `operation="create"` only and its fixed post-back mapping cannot round-trip the keys re-entry needs; non-create operations answer cXML 450 and the POOM declares `operationAllowed="create"`. (The registry carries an `allow_reentry` column for forward compatibility; no code path services it yet.)
+- **edit/inspect re-entry**: non-create operations answer cXML 450 and the POOM declares `operationAllowed="create"`. The registry retains `allow_reentry` for compatibility; no re-entry flow is implemented.
 - **Ariba network hops, CredentialMac, client certificates, `ds:Signature`**: only direct punchout with SharedSecret auth is implemented.
 - **Invoicing (`InvoiceDetailRequest`), order-status write-back, catalog uploads**: out of scope.
-- **Checkout prefill / per-partner gateway filtering / shipping policy wiring**: deliberately omitted — the client requirement is that the pay path be *stock* WooCommerce with no checkout-flow filters. The registry keeps `gateway_allowlist` / `company_profile` columns so this can become policy later without a schema change.
+- **Per-company payment gateway lists and external address-list APIs**: not implemented. The exit entitlement controls whether native checkout is available; native Woo shipping calculates the reviewed delivery estimate. A company book or inbound `ShipTo` does not imply an external address service.
 - **A parallel requisition cart**: rejected by design; the live cart is the single source of truth for both exits.
 
-## Untested against a real D365 tenant
+## Receiver acceptance
 
-Everything cXML-shaped here was built from the cXML 1.2.071 DTD + Reference Guide and Microsoft's public documentation, and the codec is unit-tested against the documented D365 template shape — but **no document has been exchanged with a live Dynamics 365 tenant**. Before first certification, treat these as open until observed:
+The supplier implements company-owned addresses, explicit delivery confirmation and optional destination, code, notes and freight export. Generated samples validate against the exact 1.2.008 and 1.2.071 DTDs. **Positive supplier support and valid XML do not establish receiver consumption**, including in Dynamics 365. Before enabling a company connection, verify:
 
-1. **Cart-return encoding**: whether D365's basket wizard accepts `cxml-base64`, `cxml-urlencoded`, or both is documented nowhere. Default is base64; the fallback is one partner-row flip. Their cXML cart message log is the verification tool.
-2. **Empty-POOM close-out**: whether the basket wizard handles a zero-line POOM gracefully (and keeps `SupplierOrderInfo` in the log) is undocumented. Fallback: let the session expire; buyers see the documented expiry behaviour.
-3. **SameSite punchback** (above): supplier-side obligations are met; the outcome depends on the buyer's platform build and browser policy.
-4. **Exact template dialect**: the parser tolerates the documented fragilities (no DOCTYPE, empty BuyerCookie, timestamps with/without offset, extrinsic placement) — their *Validate settings* run is the first real proof.
-5. **UOM/currency acceptance**: emitted UOM codes must pre-exist in the buyer's D365 or lines fail silently on their side; only their configuration answers this.
+1. **Returned basket and encoding:** inspect the actual received lines for the configured `cxml-base64` or `cxml-urlencoded` mapping.
+2. **Empty and paid closeout:** verify zero-line returns and any order-reference mapping. `SupplierOrderInfo` is omitted for 1.2.008; no extra freight is added.
+3. **Browser authentication:** test the cross-site return without losing the buyer session.
+4. **Destination, code and notes:** enable each mapping independently and verify consumed values, including the repeated per-merchandise-line `DeliveryInstructions` policy. An address code is a reference, not a registration request.
+5. **Freight, units and currency:** verify one freight charge, merchandise-plus-freight arithmetic, accepted UOM/classification and the explicitly omitted unavailable estimate. Do not infer acceptance from the absence of a parse error.
 6. **Catalogue-restriction plugins**: the add-to-cart guard uses WooCommerce's own visibility filter chain plus the `pow_product_in_range` seam. Whether a specific third-party restriction setup filters every leak surface (search, direct URL, REST) is a site-deployment test, not a plugin guarantee — verify on staging with a contract-priced catalogue before onboarding a buyer whose pricing is confidential.

@@ -5,6 +5,8 @@ node_modules/
 vendor/
 .DS_Store
 *.local.php
+.superpowers/
+*.zip
 
 # Test artefacts
 .phpunit.result.cache

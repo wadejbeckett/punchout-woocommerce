@@ -30,7 +30,7 @@ cp "$plugin_dir/punchout-woocommerce.php" \
    "$plugin_dir/LICENSE" \
    "$stage/punchout-woocommerce/"
 
-cp -R "$plugin_dir/includes" "$plugin_dir/templates" "$stage/punchout-woocommerce/"
+cp -R "$plugin_dir/includes" "$plugin_dir/templates" "$plugin_dir/assets" "$stage/punchout-woocommerce/"
 
 zip_file="$out_dir/punchout-woocommerce-$version.zip"
 rm -f "$zip_file"

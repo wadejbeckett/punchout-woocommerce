@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Http;
 
+use POW\Support\Transport;
+
 use POW\Audit\Log;
 use POW\Installer;
 use POW\Partners\Registry;
@@ -39,6 +41,7 @@ final class StartEndpoint {
 	) {}
 
 	public function handle( string $token ): void {
+		Transport::require_https();
 		$session = null;
 		$logged_in = false;
 		try {
@@ -98,7 +101,7 @@ final class StartEndpoint {
 		 */
 		$target = (string) apply_filters( 'pow_start_redirect', $target, $session );
 
-		wp_safe_redirect( $target, 302 );
+		wp_safe_redirect( Transport::supplier_url( $target ), 302 );
 	}
 
 	/**

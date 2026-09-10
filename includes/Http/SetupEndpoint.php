@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Http;
 
+use POW\Support\Transport;
+
 use POW\Audit\Log;
 use POW\Buyers\Provisioner;
 use POW\Cxml\Builder;
@@ -82,6 +84,7 @@ final class SetupEndpoint {
 	) {}
 
 	public function handle(): void {
+		if ( ! Transport::request_allowed() ) { $this->transport_denied(); return; }
 		$ip = $this->client_ip();
 
 		try {
@@ -115,6 +118,7 @@ final class SetupEndpoint {
 	 * cXML 450 for the not-built /punchout/order endpoint (option O2).
 	 */
 	public function not_implemented(): void {
+		if ( ! Transport::request_allowed() ) { $this->transport_denied(); return; }
 		$this->audit_event(
 			'po_rx',
 			[
@@ -124,6 +128,12 @@ final class SetupEndpoint {
 			]
 		);
 		$this->respond( $this->status_doc( self::STATUS_UNSUPPORTED, 'Not implemented' ) );
+	}
+
+	/** Preserve the endpoint's HTTP-200/cXML-status contract without reading the request body or changing state. */
+	public function transport_denied(): void {
+		Transport::private_headers();
+		$this->respond( $this->status_doc( self::STATUS_AUTH_FAILED, Transport::message() ) );
 	}
 
 	private function handle_inner( string $ip ): void {
@@ -251,8 +261,8 @@ final class SetupEndpoint {
 
 		// The punchback target the handoff form will POST to; anything but
 		// plain http(s) is refused before it can reach a template.
-		if ( ! preg_match( '#^https?://#i', $message->browser_form_post ) ) {
-			throw new ParseException( 'BrowserFormPost URL must be http(s)', self::STATUS_INVALID );
+		if ( ! Transport::receiver_allowed( $message->browser_form_post ) ) {
+			throw new ParseException( 'BrowserFormPost requires a valid HTTPS URL (HTTP is allowed only in local/development environments)', self::STATUS_INVALID );
 		}
 
 		$payload_id = '' !== $message->payload_id ? $message->payload_id : 'noid-' . substr( $body_hash, 0, 32 );
@@ -286,7 +296,7 @@ final class SetupEndpoint {
 		$issued  = Tokens::issue();
 		$expires = gmdate( 'Y-m-d H:i:s', time() + $partner->token_ttl );
 
-		$start_url = home_url( '/punchout/start/' . $issued['token'] );
+		$start_url = Transport::supplier_url( home_url( '/punchout/start/' . $issued['token'] ) );
 		$response = $this->builder->setup_response( $partner->cxml_version, Builder::payload_id( $this->host() ), Builder::timestamp(), $start_url );
 		$session_id = 0;
 		$response = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash, $user_id, $issued, $expires, $response, &$session_id ) {

@@ -99,6 +99,24 @@ class Store {
 		return $expired && $destroyed;
 	}
 
+	/**
+	 * Failed-consent recovery only. Caller holds the partner mutex, but a paid winner may race without it. CAS the exact ACTIVE login and verify that win before native cleanup; never reuse general lifecycle expiry here. Expiry/native validity need not hold to REMOVE consent. False grants no authority over another status or replacement login.
+	 */
+	public function expire_active_login_locked( Session $session ): bool {
+		global $wpdb;
+		if ( Session::ACTIVE !== $session->status || $session->id <= 0 || $session->partner_id <= 0 || $session->user_id <= 0 || '' === $session->wp_session_token ) { return false; }
+		try {
+			$won = $wpdb->query( $wpdb->prepare(
+				'UPDATE ' . $this->table() . ' SET status = %s WHERE id = %d AND status = %s AND partner_id = %d AND user_id = %d AND BINARY wp_session_token = BINARY %s',
+				Session::EXPIRED, $session->id, Session::ACTIVE, $session->partner_id, $session->user_id, $session->wp_session_token
+			) );
+			if ( 1 !== $won || '' !== ( $wpdb->last_error ?? '' ) ) { return false; }
+			$fresh = $this->find( $session->id );
+			if ( ! $fresh || $fresh->id !== $session->id || Session::EXPIRED !== $fresh->status || $fresh->partner_id !== $session->partner_id || $fresh->user_id !== $session->user_id || $fresh->wp_session_token !== $session->wp_session_token ) { return false; }
+			return $this->destroy_login_checked( $fresh );
+		} catch ( \Throwable $error ) { return false; }
+	}
+
 	/** Existing cleanup callers share the lifecycle lock and exact-token implementation. */
 	public function expire_and_destroy( Session $session, \POW\Partners\Registry $registry ): bool {
 		try { return $registry->with_partner_lock( $session->partner_id, fn() => $this->expire_locked( $session ) ); }
@@ -143,6 +161,56 @@ class Store {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
 		return false !== $wpdb->update( $this->table(), $data, [ 'id' => $id ] );
+	}
+
+	/**
+	 * Caller holds the partner mutex and has freshly checked company/address/cart/policy eligibility. Raw expected values come from the loaded server session, never POST. One conditional native UPDATE stores the bound pair; exact byte predicates preserve NULL and resist collation-equivalent stale values. An empty choice represents SQL NULL only for a schema-valid virtual/not-required confirmation.
+	 */
+	public function save_delivery( int $session_id, int $user_id, string $login_token, ?string $expected_choice, ?string $expected_confirmation, array $choice, array $confirmation ): bool {
+		global $wpdb;
+		try {
+			if ( $session_id <= 0 || $user_id <= 0 || '' === $login_token ) { return false; }
+			$session = $this->find( $session_id );
+			if ( ! $session || $session->user_id !== $user_id || $session->wp_session_token !== $login_token || Session::ACTIVE !== $session->status || ! $session->expires || $session->expires <= gmdate( 'Y-m-d H:i:s' ) || $session->delivery_choice_json !== $expected_choice || $session->delivery_confirmation_json !== $expected_confirmation || ! $this->login_valid_checked( $session ) ) { return false; }
+			$flags = JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+			$choice_json = [] === $choice ? null : json_encode( $choice, $flags, 16 );
+			$accepted = null === $choice_json ? null : \POW\Addresses\DeliveryData::choice( $choice_json, $session->partner_id );
+			$confirmation_json = json_encode( $confirmation, $flags, 16 );
+			\POW\Addresses\DeliveryData::confirmation( $confirmation_json, $session_id, $user_id, $accepted );
+			if ( $choice_json === $expected_choice && $confirmation_json === $expected_confirmation ) { return true; }
+			$set = 'delivery_choice = ' . ( null === $choice_json ? 'NULL' : '%s' ) . ', delivery_confirmation = %s';
+			$args = null === $choice_json ? [] : [ $choice_json ];
+			array_push( $args, $confirmation_json, $session_id, $session->partner_id, $user_id, $login_token, Session::ACTIVE, gmdate( 'Y-m-d H:i:s' ) );
+			$where = 'id = %d AND partner_id = %d AND user_id = %d AND BINARY wp_session_token = %s AND status = %s AND expires > %s';
+			foreach ( [ 'delivery_choice' => $expected_choice, 'delivery_confirmation' => $expected_confirmation ] as $column => $expected ) {
+				$where .= ' AND ' . ( null === $expected ? $column . ' IS NULL' : 'BINARY ' . $column . ' = %s' );
+				if ( null !== $expected ) { $args[] = $expected; }
+			}
+			$written = $wpdb->query( $wpdb->prepare( 'UPDATE ' . $this->table() . ' SET ' . $set . ' WHERE ' . $where, ...$args ) );
+			if ( 1 !== $written || '' !== $wpdb->last_error ) { return false; }
+			$after = $this->find( $session_id );
+			return $after && $after->partner_id === $session->partner_id && $after->user_id === $user_id && $after->wp_session_token === $login_token && Session::ACTIVE === $after->status && $after->expires && $after->expires > gmdate( 'Y-m-d H:i:s' ) && $after->delivery_choice_json === $choice_json && $after->delivery_confirmation_json === $confirmation_json && $this->login_valid_checked( $after );
+		} catch ( \Throwable $error ) { return false; }
+	}
+
+	/**
+	 * Caller holds the partner mutex. Remove consent after a cart mutation or an unacknowledged save, preserving the selected destination. Exact stored login binding is required, but the native token may already be revoked: recovery must still remove that ACTIVE row's consent. Completed snapshots are never changed. False requires caller recovery/fencing, not an assumption that old state survived.
+	 */
+	public function invalidate_delivery( int $session_id, int $user_id, string $login_token ): bool {
+		global $wpdb;
+		try {
+			if ( $session_id <= 0 || $user_id <= 0 || '' === $login_token ) { return false; }
+			$before = $this->find( $session_id );
+			if ( ! $before || $before->user_id !== $user_id || $before->wp_session_token !== $login_token || Session::ACTIVE !== $before->status ) { return false; }
+			if ( null === $before->delivery_confirmation_json ) { return true; }
+			$affected = $wpdb->query( $wpdb->prepare(
+				'UPDATE ' . $this->table() . ' SET delivery_confirmation = NULL WHERE id = %d AND partner_id = %d AND user_id = %d AND BINARY wp_session_token = %s AND status = %s AND BINARY delivery_confirmation = %s',
+				$session_id, $before->partner_id, $user_id, $login_token, Session::ACTIVE, $before->delivery_confirmation_json
+			) );
+			if ( 1 !== $affected || '' !== $wpdb->last_error ) { return false; }
+			$after = $this->find( $session_id );
+			return $after && $after->partner_id === $before->partner_id && $after->user_id === $user_id && $after->wp_session_token === $login_token && Session::ACTIVE === $after->status && null === $after->delivery_confirmation_json && $after->delivery_choice_json === $before->delivery_choice_json;
+		} catch ( \Throwable $error ) { return false; }
 	}
 
 	/**
@@ -226,11 +294,17 @@ class Store {
 	/**
 	 * Guarded state transition mirroring Session::can_transition().
 	 */
-	public function transition( int $id, string $from, string $to, array $extra = [] ): bool {
+	public function transition( int $id, string $from, string $to, array $extra = [], ?array $expected_guard = null ): bool {
 		global $wpdb;
 
 		if ( ! Session::can_transition( $from, $to ) ) {
 			return false;
+		}
+		// Cart return keeps the existing single winner UPDATE. The caller holds the partner mutex and has validated native login/address/cart state; these byte-exact predicates close the remaining persisted-consent race. Legacy callers retain their existing status-only transition.
+		if ( null !== $expected_guard ) {
+			$keys = [ 'user_id', 'wp_session_token', 'delivery_choice', 'delivery_confirmation' ];
+			if ( Session::ACTIVE !== $from || Session::RETURNED !== $to || $id <= 0 || array_diff( $keys, array_keys( $expected_guard ) ) || array_diff( array_keys( $expected_guard ), $keys ) || ! is_int( $expected_guard['user_id'] ) || $expected_guard['user_id'] <= 0 || ! is_string( $expected_guard['wp_session_token'] ) || '' === $expected_guard['wp_session_token'] || ( null !== $expected_guard['delivery_choice'] && ! is_string( $expected_guard['delivery_choice'] ) ) || ! is_string( $expected_guard['delivery_confirmation'] ) || '' === $expected_guard['delivery_confirmation'] ) { return false; }
+			if ( strlen( $expected_guard['delivery_confirmation'] ) > \POW\Addresses\DeliveryData::MAX_JSON_BYTES || ( null !== $expected_guard['delivery_choice'] && strlen( $expected_guard['delivery_choice'] ) > \POW\Addresses\DeliveryData::MAX_JSON_BYTES ) ) { return false; }
 		}
 
 		$set    = [ 'status = %s' ];
@@ -248,11 +322,20 @@ class Store {
 
 		$values[] = $id;
 		$values[] = $from;
+		$where = ' WHERE id = %d AND status = %s';
+		if ( null !== $expected_guard ) {
+			$where .= ' AND user_id = %d AND BINARY wp_session_token = BINARY %s AND expires > %s';
+			array_push( $values, $expected_guard['user_id'], $expected_guard['wp_session_token'], gmdate( 'Y-m-d H:i:s' ) );
+			foreach ( [ 'delivery_choice', 'delivery_confirmation' ] as $column ) {
+				if ( null === $expected_guard[$column] ) { $where .= " AND {$column} IS NULL"; }
+				else { $where .= " AND BINARY {$column} = BINARY %s"; $values[] = $expected_guard[$column]; }
+			}
+		}
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$affected = $wpdb->query(
 			$wpdb->prepare(
-				'UPDATE ' . $this->table() . ' SET ' . implode( ', ', $set ) . ' WHERE id = %d AND status = %s',
+				'UPDATE ' . $this->table() . ' SET ' . implode( ', ', $set ) . $where,
 				...$values
 			)
 		);

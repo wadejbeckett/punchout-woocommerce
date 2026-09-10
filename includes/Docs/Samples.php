@@ -14,6 +14,7 @@ use POW\Cxml\Builder;
 use POW\Cxml\Money;
 use POW\Cxml\Parser;
 use POW\Cxml\SetupMessage;
+use POW\Addresses\DeliveryEstimate;
 use POW\Http\SetupEndpoint;
 
 defined( 'ABSPATH' ) || exit;
@@ -51,18 +52,18 @@ final class Samples {
   <To><Credential domain="DUNS"><Identity>SUPPLIER-DUNS</Identity></Credential></To>
   <Sender>
    <Credential domain="NetworkId"><Identity>AN01000000123-T</Identity><SharedSecret>your-shared-secret</SharedSecret></Credential>
-   <UserAgent>Buyer procurement system 10.0</UserAgent>
+   <UserAgent>Example procurement system</UserAgent>
   </Sender>
  </Header>
  <Request deploymentMode="test">
   <PunchOutSetupRequest operation="create">
-   <BuyerCookie>1CX26RCJDQ9OS</BuyerCookie>
+   <BuyerCookie>EXAMPLE-BUYER-COOKIE</BuyerCookie>
    <Extrinsic name="UserEmail">buyer@example.com</Extrinsic>
    <Extrinsic name="UniqueName">buyer@example.com</Extrinsic>
    <BrowserFormPost><URL>https://buyer.example.com/punchout/receive</URL></BrowserFormPost>
    <Contact role="endUser"><Name xml:lang="en">A Buyer</Name><Email>buyer@example.com</Email></Contact>
    <ShipTo>
-    <Address addressID="LEMA-001" addressIDDomain="supplier">
+    <Address addressID="BUYER-001">
      <Name xml:lang="en">Head office</Name>
      <PostalAddress name="default">
       <DeliverTo>Receiving</DeliverTo>
@@ -189,19 +190,42 @@ XML;
 		return ( new Builder() )->poom( self::poom_args() );
 	}
 
-	/** Neutral opted-in example; receipt still requires the purchasing system's agreed mapping. */
-	public static function delivery_poom( string $version = self::VERSION ): string {
+	/** Neutral opted-in example; overrides use the real connection flag names. No-argument output remains the full example. */
+	public static function delivery_poom( string $version = self::VERSION, array $configuration = [] ): string {
+		return ( new Builder() )->poom( self::delivery_args( $version, $configuration ) );
+	}
+
+	/** @return list<array{version:string,xml:string,total:string,freight_total:string}> */
+	public static function delivery_examples(): array {
+		$examples = [];
+		foreach ( [ '1.2.008', '1.2.071' ] as $version ) {
+			$args = self::delivery_args( $version );
+			$freight = array_values( array_filter( $args['items'], static fn( array $line ): bool => 'freight' === ( $line['line_type'] ?? '' ) ) );
+			$examples[] = [ 'version' => $version, 'xml' => ( new Builder() )->poom( $args ), 'total' => Money::format( $args['total_cents'] ), 'freight_total' => Money::format( self::total_cents( $freight ) ) ];
+		}
+		return $examples;
+	}
+
+	/** Invented confirmed rates; this pure fixture never requests native rates or creates an order. */
+	private static function delivery_args( string $version, array $configuration = [] ): array {
+		$config = array_replace( [ 'emit_ship_to' => true, 'emit_delivery_code' => true, 'emit_delivery_line' => true, 'delivery_notes_policy' => 'item_detail_extrinsic' ], $configuration );
 		$args = self::poom_args();
 		$args['version'] = $version;
 		$args['ship_to'] = [ 'name' => 'Example Company Receiving', 'deliver_to' => [ 'Example Buyer' ], 'street' => [ '1 Example Road' ], 'city' => 'Cape Town', 'state' => 'WC', 'postal_code' => '8001', 'iso_country' => 'ZA' ];
 		$args['delivery_code'] = 'BUYER-001';
-		$args['emit_ship_to'] = true;
-		$args['emit_delivery_code'] = true;
+		$args['emit_ship_to'] = $config['emit_ship_to'];
+		$args['emit_delivery_code'] = $config['emit_delivery_code'];
 		$args['delivery_notes'] = 'Please deliver to the receiving desk.';
-		$args['delivery_notes_policy'] = 'item_detail_extrinsic';
-		$args['items'][] = [ 'line_type' => 'freight', 'quantity' => 1, 'supplier_part_id' => 'DELIVERY', 'aux_id' => '', 'unit_price_cents' => 3500, 'description' => 'Delivery estimate', 'uom' => 'EA', 'classification_domain' => 'supplier', 'classification' => 'freight' ];
+		$args['delivery_notes_policy'] = $config['delivery_notes_policy'];
+		$rates = [
+			[ 'package_key' => 0, 'rate_id' => 'flat_rate:1', 'method_id' => 'flat_rate', 'instance_id' => 1, 'label' => 'Example package one', 'amount_cents' => 1700, 'taxes' => [] ],
+			[ 'package_key' => 1, 'rate_id' => 'flat_rate:2', 'method_id' => 'flat_rate', 'instance_id' => 2, 'label' => 'Example package two', 'amount_cents' => 1800, 'taxes' => [] ],
+		];
+		$delivery = [ 'status' => $config['emit_delivery_line'] ? 'quoted' : 'disabled', 'amount_cents' => array_sum( array_column( $rates, 'amount_cents' ) ), 'currency' => self::CURRENCY, 'code' => $args['delivery_code'], 'emit' => $config['emit_delivery_line'], 'rates' => $rates, 'freight' => [ 'supplier_part_id' => 'DELIVERY', 'uom' => 'EA', 'classification_domain' => 'supplier', 'classification' => 'freight' ] ];
+		$freight = DeliveryEstimate::poom_line( $delivery );
+		if ( null !== $freight ) { $args['items'][] = $freight; }
 		$args['total_cents'] = self::total_cents( $args['items'] );
-		return ( new Builder() )->poom( $args );
+		return $args;
 	}
 
 	/** Shared deterministic envelope and merchandise, never parsed from generated XML. */
