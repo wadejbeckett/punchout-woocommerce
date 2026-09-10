@@ -39,6 +39,15 @@ php tests/run-tests.php
 
 The standalone runner uses a minimal PHPUnit-compatible `TestCase` shim (`tests/Support/testcase-shim.php`) that defines itself only when the real PHPUnit classes are absent, so the same test files run identically under both.
 
+Cart block integration has separate PHP and JavaScript checks. Run both from the repository root alongside the unit suite; they use PHP and Node's built-in test runner without installing packages:
+
+```bash
+php tests/CartBlocks/surface.php
+node --test tests/CartBlocks/cart-blocks.test.js
+```
+
+These checks exercise policy resolution, script dependencies and WooCommerce's public button-filter contract. A real browser must also verify the hydrated Cart block and subsequent cart updates; passing the isolated checks does not establish that behavior.
+
 ## Required PHP extensions
 
 | Extension | Needed by | If missing |

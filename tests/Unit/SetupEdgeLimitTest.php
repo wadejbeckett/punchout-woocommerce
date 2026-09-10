@@ -34,7 +34,7 @@ final class SetupEdgeLimitTest extends TestCase {
 		}
 		$this->server = $_SERVER;
 		$this->libxml_errors = libxml_use_internal_errors( false );
-		foreach ( [ 'wpdb', 'pow_test_setup_io', 'pow_test_status_headers', 'pow_test_filters' ] as $key ) {
+		foreach ( [ 'wpdb', 'pow_test_setup_io', 'pow_test_status_headers', 'pow_test_filters', 'pow_test_environment_type' ] as $key ) {
 			$this->saved_globals[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 		}
 		$this->database = new SetupEdgeDatabase();
@@ -95,6 +95,54 @@ final class SetupEdgeLimitTest extends TestCase {
 
 	private function valid_body( string $sender = 'unknown' ): string {
 		return '<cXML version="1.2.008" payloadID="edge-test"><Header><From><Credential domain="NetworkID"><Identity>buyer</Identity></Credential></From><To><Credential domain="NetworkID"><Identity>shop</Identity></Credential></To><Sender><Credential domain="NetworkID"><Identity>' . $sender . '</Identity><SharedSecret>fixture-secret</SharedSecret></Credential></Sender></Header><Request><PunchOutSetupRequest operation="create"><BuyerCookie>cookie</BuyerCookie><BrowserFormPost><URL>https://buyer.example.test/return</URL></BrowserFormPost></PunchOutSetupRequest></Request></cXML>';
+	}
+
+	public function test_production_http_refuses_before_body_parse_audit_or_state_even_with_test_deployment(): void {
+		$GLOBALS['pow_test_environment_type'] = 'production';
+		$_SERVER['HTTPS'] = 'off'; $_SERVER['SERVER_PORT'] = '80';
+		$_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
+		$xml = str_replace( '<cXML ', '<cXML deploymentMode="test" ', $this->valid_body() );
+		self::assertSame( 401, $this->request( $this->endpoint( 10 ), $xml ) );
+		self::assertSame( 0, $GLOBALS['pow_test_setup_io']['reads'] );
+		self::assertSame( 0, $GLOBALS['pow_test_setup_io']['parses'] );
+		self::assertSame( [], $this->database->lookups );
+		self::assertSame( [], $this->audit->rows );
+		self::assertSame( [], $this->downstream );
+	}
+
+	public function test_production_setup_refuses_http_receiver_before_replay_or_provisioning_but_local_accepts(): void {
+		$secret = ( new Secrets( str_repeat( 't', 32 ) ) )->seal( 'fixture-secret' );
+		$this->database->partner = [
+			'id' => 7, 'name' => 'Test buyer', 'status' => 'active',
+			'from_domain' => 'NetworkID', 'from_identity' => 'buyer',
+			'sender_domain' => 'NetworkID', 'sender_identity' => 'known',
+			'to_domain' => 'NetworkID', 'to_identity' => 'shop',
+			'secret_current' => $secret, 'secret_previous' => '', 'secret_rotated_at' => null,
+			'cxml_version' => '1.2.008', 'deployment_mode' => 'test', 'return_encoding' => 'base64',
+			'mode' => 'requisition_only', 'allow_reentry' => 0, 'allcaps_transform' => 0,
+			'gateway_allowlist' => null, 'company_profile' => null, 'ip_allowlist' => null,
+			'session_ttl' => 14400, 'token_ttl' => 300, 'owner_user_id' => 0,
+		];
+		$GLOBALS['pow_test_environment_type']='production'; $_SERVER['HTTPS']='on';
+		$provisions=0;
+		$GLOBALS['pow_test_filters']['pow_buyer_identity']=static function($identity) use (&$provisions){++$provisions;throw new \RuntimeException('Fixture stopped before user mutation');};
+		$body=str_replace('https://buyer.example.test/return','http://buyer.example.test/return',$this->valid_body('known'));
+		self::assertSame(406,$this->request($this->endpoint(10),$body));
+		self::assertSame(0,$provisions);
+		self::assertCount(1,$this->database->lookups); // Authentication only; no replay/session read.
+		$GLOBALS['pow_test_environment_type']='local'; $_SERVER['HTTPS']='off';
+		self::assertSame(500,$this->request($this->endpoint(10),$body));
+		self::assertSame(1,$provisions);
+	}
+
+	public function test_native_https_and_explicit_local_http_reach_normal_setup_processing(): void {
+		foreach ( [ ['production', 'on'], ['local', 'off'], ['development', 'off'] ] as [$environment, $https] ) {
+			$GLOBALS['pow_test_environment_type'] = $environment;
+			$_SERVER['HTTPS'] = $https;
+			self::assertSame( 401, $this->request( $this->endpoint( 10 ), $this->valid_body() ) );
+		}
+		self::assertSame( 3, $GLOBALS['pow_test_setup_io']['reads'] );
+		self::assertSame( 3, $GLOBALS['pow_test_setup_io']['parses'] );
 	}
 
 	public function test_edge_accepts_exactly_n_then_rejects_without_read_parse_archive_lookup_or_downstream_charge(): void {

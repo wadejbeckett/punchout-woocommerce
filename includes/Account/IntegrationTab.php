@@ -10,6 +10,9 @@ declare( strict_types = 1 );
 
 namespace POW\Account;
 
+use POW\Support\Transport;
+
+use POW\Addresses\Fields;
 use POW\Audit\Log;
 use POW\Docs\Page as DocsPage;
 use POW\Http\RateLimiter;
@@ -31,6 +34,7 @@ final class IntegrationTab {
 		private Registration $registration,
 		private Log $audit,
 		private RateLimiter $limiter,
+		private ?Fields $addresses = null,
 	) {}
 
 	/** Endpoint registration stays unconditional; permission checks guard each surface. */
@@ -80,6 +84,7 @@ final class IntegrationTab {
 	}
 
 	public function render(): void {
+		Transport::require_https();
 		if ( 0 === $this->actor() ) { return; }
 		try {
 			// GET views have no secret source. Neither slots nor reveal storage are read for display.
@@ -92,7 +97,11 @@ final class IntegrationTab {
 
 	/** All action results are direct POST responses; no secret or notice reveal store exists. */
 	public function handle_post(): void {
-		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! is_account_page() || ! is_wc_endpoint_url( self::ENDPOINT ) || 0 === $this->actor() ) { return; }
+		// Fields owns its own scoped nonce, failed input and same-page result. Never interpret an address POST as a credential command.
+		if ( array_key_exists( 'pow_address_action', $_POST ) ) { return; }
+		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! is_account_page() || ! is_wc_endpoint_url( self::ENDPOINT ) ) { return; }
+		Transport::require_https();
+		if ( 0 === $this->actor() ) { return; }
 		// Never issue a credential after output has made no-store headers impossible.
 		if ( headers_sent() ) { return; }
 		$this->private_headers();
@@ -124,6 +133,7 @@ final class IntegrationTab {
 
 	/** @return array{status:int,notice:array{text:string,type:string},secret:string}|null */
 	private function post_result(): ?array {
+		if ( array_key_exists( 'pow_address_action', $_POST ) ) { return null; }
 		$actor = $this->actor();
 		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! is_account_page() || ! is_wc_endpoint_url( self::ENDPOINT ) || 0 === $actor ) { return null; }
 		$action = $_POST['pow_account_action'] ?? null;
@@ -226,6 +236,7 @@ final class IntegrationTab {
 		$vars = $this->base_vars();
 		$vars['state'] = null === $p ? 'none' : ( $p->is_pending() ? 'pending' : ( $p->is_active() ? 'active' : 'disabled' ) );
 		if ( null !== $p ) {
+			$vars['delivery_addresses'] = $this->addresses?->markup( $p->id ) ?? '';
 			$vars['connection'] = [ 'name' => $p->name, 'from' => $p->from_domain . ' / ' . $p->from_identity, 'sender' => $p->sender_domain . ' / ' . $p->sender_identity, 'to' => $p->to_domain . ' / ' . $p->to_identity, 'deployment_mode' => $p->deployment_mode, 'cxml_version' => $p->cxml_version, 'return_encoding' => $p->return_encoding ];
 			$vars['connection']['exit_policy'] = \POW\Checkout\ExitPolicy::labels()[ $p->exit_policy ];
 			$vars['connection']['effective_exit_policy'] = \POW\Checkout\ExitPolicy::labels()[ \POW\Checkout\ExitPolicy::resolve( $this->plugin->settings()->exit_policy(), $p->exit_policy, 'inherit' ) ];
@@ -251,6 +262,7 @@ final class IntegrationTab {
 	private function empty_vars(): array {
 		return [
 			'state' => 'unavailable', 'connection' => [], 'rotation_open' => false, 'notice' => null, 'secret' => '',
+			'delivery_addresses' => '',
 			'setup_url' => '', 'last_setup' => null, 'docs_url' => '', 'action_url' => '', 'nonce' => '',
 		];
 	}

@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Docs;
 
+use POW\Support\Transport;
+
 use POW\Audit\Log;
 use POW\Cxml\ParseException;
 use POW\Cxml\Parser;
@@ -103,6 +105,9 @@ final class SelfTest {
 	 * @return array{checks: list<array{label: string, result: string, detail: string}>, verdict: int, verdict_text: string}
 	 */
 	public function run( string $xml, bool $privileged = false, string $client_ip = '' ): array {
+		if ( ! Transport::request_allowed() ) {
+			return $this->report( [ $this->check( __( 'Transport', 'punchout-woocommerce' ), self::RESULT_FAIL, Transport::message() ) ], SetupEndpoint::STATUS_AUTH_FAILED );
+		}
 		if ( strlen( $xml ) > SetupEndpoint::MAX_BODY_BYTES ) {
 			return $this->report(
 				[
@@ -177,11 +182,11 @@ final class SelfTest {
 		);
 
 		// The endpoint's own rule, kept identical on purpose.
-		$url_ok   = 1 === preg_match( '#^https?://#i', $message->browser_form_post );
+		$url_ok   = Transport::receiver_allowed( $message->browser_form_post );
 		$checks[] = $this->check(
 			__( 'BrowserFormPost URL', 'punchout-woocommerce' ),
 			$url_ok ? self::RESULT_PASS : self::RESULT_FAIL,
-			$url_ok ? $message->browser_form_post : __( 'Must be an absolute http(s) URL.', 'punchout-woocommerce' )
+			$url_ok ? $message->browser_form_post : __( 'Requires a valid HTTPS URL; HTTP is allowed only in local/development environments.', 'punchout-woocommerce' )
 		);
 
 		// Informational, not a fault: the parser accepts an empty

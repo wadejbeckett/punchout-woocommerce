@@ -37,6 +37,21 @@ final class DocsReferenceTest extends TestCase {
 		foreach ( $this->reference()->endpoints() as $url ) {
 			self::assertStringStartsWith( 'https://shop.example.com/punchout/', $url );
 		}
+		self::assertContains( 'https://shop.example.com/punchout/confirm', array_values( $this->reference()->endpoints() ) );
+	}
+
+	public function test_documented_delivery_defaults_match_the_real_partner_contract(): void {
+		$constructor = new ReflectionMethod( POW\Partners\Partner::class, '__construct' );
+		$defaults = [];
+		foreach ( $constructor->getParameters() as $parameter ) {
+			if ( $parameter->isDefaultValueAvailable() ) { $defaults[$parameter->getName()] = $parameter->getDefaultValue(); }
+		}
+		$rows = $this->reference()->delivery_settings();
+		foreach ( [ 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'delivery_unknown_policy', 'delivery_notes_policy', 'delivery_code_prefix', 'delivery_code_extrinsic_name', 'freight_supplier_part_id', 'freight_uom', 'freight_classification_domain', 'freight_classification' ] as $key ) {
+			self::assertArrayHasKey( $key, $rows );
+			self::assertSame( $defaults[$key], $rows[$key]['default'] );
+			self::assertNotSame( '', $rows[$key]['note'] );
+		}
 	}
 
 	public function test_not_supported_list_is_explicit(): void {

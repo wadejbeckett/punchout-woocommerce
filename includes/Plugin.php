@@ -93,8 +93,13 @@ final class Plugin {
 		}
 
 		$secrets        = new Secrets( $this->sealing_key() );
+		// Refuse insecure buyer traffic before Woo initializes carts, even with new sessions switched off.
+		\POW\Support\Transport::register();
 		$this->registry = new Registry( $secrets );
 		$this->sessions = new Store();
+		// Select the guarded native cookie handler before Woo hydrates any buyer cart, including Store API requests.
+		$native_sessions = new Cart\NativeSessionGuard( $this->registry, $this->sessions );
+		$native_sessions->register();
 		$this->audit    = new Log( $this->logger );
 		$registration  = new \POW\Partners\Registration( $this->registry, $this->sessions, $this->audit );
 
@@ -102,17 +107,28 @@ final class Plugin {
 		$parser      = new Parser();
 		$builder     = new Builder();
 		$mapper      = new PoomMapper( $this->settings, $this->logger );
+		$address_book = new Addresses\CompanyBook( $this->registry, $this->audit );
+		$address_resolver = new Addresses\Resolver( $this->registry, $address_book );
+		$address_fields = new Addresses\Fields( $this->registry, $address_book, new Addresses\NativeImport( $this->registry, $address_book ) );
 
 		// Built before the master-switch gate because housekeeping needs it:
 		// the retention sweep that cancels unconverted quotes runs in the
 		// hourly job, which is registered whatever the switch says.
 		$quotes = new \POW\Orders\QuoteOrder( $this->sessions, $this->audit, $this->settings, $this->logger );
+		// Historical quotes still need exact compatibility copies when new Punchout sessions are disabled.
+		( new \POW\Orders\QuoteCompatibility( $this->audit, $this->logger ) )->register();
 
 		// Admin, schema upgrade, CLI and housekeeping run regardless of the
 		// master switch.
-		( new AdminPage( $this->settings, $this->registry, $this->audit ) )->register();
+		// One editor instance retains same-request validation feedback across account and admin rendering.
+		if ( $this->enabled() ) {
+			$address_fields->register();
+		} else {
+			add_action( 'admin_init', [ $address_fields, 'handle' ] );
+		}
+		( new AdminPage( $this->settings, $this->registry, $this->audit, $address_fields ) )->register();
 		( new AdminActions( $this->registry, $this->audit, $registration ) )->register();
-		( new \POW\Account\IntegrationTab( $this, $this->registry, $registration, $this->audit, new RateLimiter( RateLimiter::public_limit( \POW\Partners\Registration::RATE_LIMIT_PER_HOUR, 5 ), null, null, HOUR_IN_SECONDS ) ) )->register();
+		( new \POW\Account\IntegrationTab( $this, $this->registry, $registration, $this->audit, new RateLimiter( RateLimiter::public_limit( \POW\Partners\Registration::RATE_LIMIT_PER_HOUR, 5 ), null, null, HOUR_IN_SECONDS ), $address_fields ) )->register();
 		( new AdminDetails() )->register();
 		( new Cron( $this->sessions, $this->audit, $this->settings, $quotes ) )->register();
 
@@ -161,9 +177,12 @@ final class Plugin {
 		$edge_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'edge_rate_limit_per_min' ), 120 ) );
 		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $provisioner, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter );
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
-		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes );
+		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), new Checkout\ExitPolicy( $this->settings, $this->registry ), $address_resolver, $mapper, $native_sessions );
+		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
+		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions );
 
-		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint ) )->register();
+		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser ) )->register();
+		$chooser->register();
 		$return_endpoint->register();
 
 		$this->surface = new Surface( $this, $this->registry );

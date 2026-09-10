@@ -10,7 +10,12 @@ declare( strict_types = 1 );
 
 namespace POW\Http;
 
+use POW\Support\Transport;
+
 use POW\Audit\Log;
+use POW\Addresses\DeliveryEstimate;
+use POW\Addresses\QuoteAddress;
+use POW\Addresses\ReturnConfirmation;
 use POW\Cart\PoomMapper;
 use POW\Cxml\Builder;
 use POW\Cxml\FormPack;
@@ -51,6 +56,7 @@ final class ReturnEndpoint {
 		private Builder $builder,
 		private Log $audit,
 		private QuoteOrder $quotes,
+		private ?ReturnConfirmation $confirmation = null,
 	) {}
 
 	/**
@@ -66,6 +72,7 @@ final class ReturnEndpoint {
 	}
 
 	public function handle(): void {
+		Transport::require_https();
 		if ( 'POST' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ) {
 			$this->error_page( __( 'Invalid request.', 'punchout-woocommerce' ) );
 			return;
@@ -98,6 +105,12 @@ final class ReturnEndpoint {
 			return;
 		}
 
+		if ( ! Transport::receiver_allowed( $session->browser_form_post_url ) ) {
+			Transport::private_headers();
+			$this->error_page( __( 'The saved BrowserFormPost requires a valid HTTPS URL. Start a new PunchOut session with a secure receiver.', 'punchout-woocommerce' ) );
+			return;
+		}
+
 		$partner = $this->registry->find( $session->partner_id );
 
 		if ( null === $partner ) {
@@ -108,7 +121,15 @@ final class ReturnEndpoint {
 		$notices = [];
 
 		if ( 'cart' === $mode ) {
-			$mapped = $this->mapper->from_cart( $partner );
+			// The optional constructor argument preserves old integrations, but absence never bypasses mandatory cart consent. Quote/rate/mapper callbacks run entirely before acquiring the winner mutex.
+			if ( null === $this->confirmation ) { $this->review_page(); return; }
+			try { $mapped = $this->confirmation->for_return( $session, $partner ); }
+			catch ( \Throwable $error ) { $this->review_page(); return; }
+			if ( $mapped instanceof \WP_Error ) { $this->review_page( $mapped ); return; }
+			// Preparation can refresh protected company options. Build from that current row; the final confirmation guard still rejects any subsequent policy change before the sole winner transition.
+			try { $partner = $this->registry->find( $session->partner_id ); }
+			catch ( \Throwable $error ) { $this->review_page(); return; }
+			if ( null === $partner || ! $partner->is_active() ) { $this->review_page(); return; }
 
 			foreach ( $mapped['skipped'] as $name ) {
 				$notices[] = sprintf(
@@ -123,6 +144,26 @@ final class ReturnEndpoint {
 				'total_cents' => 0,
 				'currency'    => get_woocommerce_currency(),
 			];
+		}
+
+		// The immutable mapped envelope goes to the optional Quote unchanged. Freight belongs only in this Builder copy, once, while the Quote consumes the native package rates separately.
+		$wire_items = $mapped['items'];
+		$delivery_args = [];
+		if ( 'cart' === $mode ) {
+			try {
+				$freight = DeliveryEstimate::poom_line( $mapped['delivery'] );
+				if ( null !== $freight ) { $wire_items[] = $freight; }
+				$destination = $mapped['delivery_destination'];
+				$delivery_args = [
+					'ship_to' => null === $destination ? null : QuoteAddress::to_cxml( $destination ),
+					'emit_ship_to' => $partner->emit_ship_to,
+					'emit_delivery_code' => $partner->emit_delivery_code,
+					'delivery_code' => $destination['code'] ?? '',
+					'delivery_code_extrinsic_name' => $partner->delivery_code_extrinsic_name,
+					'delivery_notes' => $mapped['delivery_notes'],
+					'delivery_notes_policy' => $partner->delivery_notes_policy,
+				];
+			} catch ( \Throwable $error ) { $this->review_page(); return; }
 		}
 
 		$supplier_order_info = null;
@@ -157,8 +198,8 @@ final class ReturnEndpoint {
 				'currency'            => $mapped['currency'],
 				'total_cents'         => $mapped['total_cents'],
 				'supplier_order_info' => $supplier_order_info,
-				'items'               => $mapped['items'],
-			]
+				'items'               => $wire_items,
+			] + $delivery_args
 		);
 
 		// Prepare the complete response before consuming the session. The same mapped
@@ -173,14 +214,26 @@ final class ReturnEndpoint {
 		// This conditional transition is the only winner selection. A losing request
 		// never creates or attaches a quote, even if it read an earlier active snapshot.
 		$transitioned = false;
+		$delivery_error = null;
 		try {
-			$this->registry->with_partner_lock( $partner->id, function () use ( $partner, $session, $mode, $user, &$transitioned ) {
+			$this->registry->with_partner_lock( $partner->id, function () use ( $partner, $session, $mode, $user, $mapped, &$transitioned, &$delivery_error ) {
 				$fresh_partner = $this->registry->find( $partner->id );
 				$fresh = $this->sessions->find( $session->id );
-				if ( ! $fresh_partner || ! $fresh_partner->is_active() || ! $fresh || $fresh->partner_id !== $partner->id || $fresh->user_id !== (int) $user->ID || ! $fresh->expires || $fresh->expires <= gmdate( 'Y-m-d H:i:s' ) || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) || ! $this->sessions->login_valid_checked( $fresh ) ) { return; }
+				if ( ! $fresh_partner || ! $fresh_partner->is_active() || ! $fresh || ! Transport::receiver_allowed( $fresh->browser_form_post_url )
+				|| $fresh->browser_form_post_url !== $session->browser_form_post_url
+				|| $fresh->partner_id !== $partner->id || $fresh->user_id !== (int) $user->ID || ! $fresh->expires || $fresh->expires <= gmdate( 'Y-m-d H:i:s' ) || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) || ! $this->sessions->login_valid_checked( $fresh ) ) { return; }
 				$expected = 'cart' === $mode ? Session::ACTIVE : $session->status;
 				if ( $fresh->status !== $expected ) { return; }
-				$transitioned = $this->sessions->transition( $fresh->id, $expected, 'cart' === $mode ? Session::RETURNED : Session::CLOSED );
+				$expected_guard = null;
+				if ( 'cart' === $mode ) {
+					$delivery_error = new \WP_Error( 'delivery_review_required', __( 'Delivery changed or could not be verified. Review it before returning the cart.', 'punchout-woocommerce' ) );
+					$valid = $this->confirmation->validate_prepared_locked( $fresh, $fresh_partner, $mapped );
+					if ( true !== $valid ) { if ( $valid instanceof \WP_Error ) { $delivery_error = $valid; } return; }
+					$guard = $mapped['_guard'] ?? null;
+					if ( ! is_array( $guard ) || ! array_key_exists( 'choice_json', $guard ) || ! array_key_exists( 'confirmation_json', $guard ) ) { return; }
+					$expected_guard = [ 'user_id' => $fresh->user_id, 'wp_session_token' => $fresh->wp_session_token, 'delivery_choice' => $guard['choice_json'], 'delivery_confirmation' => $guard['confirmation_json'] ];
+				}
+				$transitioned = $this->sessions->transition( $fresh->id, $expected, 'cart' === $mode ? Session::RETURNED : Session::CLOSED, [], $expected_guard );
 				if ( $transitioned && ! $this->sessions->destroy_login_checked( $fresh ) ) {
 					$fenced = $this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
 					$this->audit_best_effort( 'return_login_cleanup_failed', [ 'partner_id' => $partner->id, 'session_id' => $session->id, 'user_id' => $user->ID, 'result' => $fenced ? 'disabled' : 'fence_unconfirmed' ] );
@@ -191,6 +244,7 @@ final class ReturnEndpoint {
 		}
 
 		if ( ! $transitioned ) {
+			if ( $delivery_error instanceof \WP_Error ) { $this->review_page( $delivery_error ); return; }
 			$this->expired_page();
 			return;
 		}
@@ -316,7 +370,11 @@ final class ReturnEndpoint {
 		);
 	}
 
-	private function error_page( string $message, int $status = 403 ): void {
+	private function review_page( ?\WP_Error $error = null ): void {
+		$this->error_page( $error?->get_error_message() ?? __( 'Review and confirm delivery before returning your cart.', 'punchout-woocommerce' ), 409, true );
+	}
+
+	private function error_page( string $message, int $status = 403, bool $review = false ): void {
 		status_header( $status );
 		header( 'Content-Type: text/html; charset=utf-8' );
 
@@ -324,6 +382,8 @@ final class ReturnEndpoint {
 		echo esc_html__( 'Punchout', 'punchout-woocommerce' );
 		echo '</title></head><body style="font-family:sans-serif;max-width:36em;margin:4em auto;padding:0 1em"><p>';
 		echo esc_html( $message );
-		echo '</p></body></html>';
+		echo '</p>';
+		if ( $review ) { echo '<p><a href="' . esc_url( Transport::supplier_url( home_url( '/punchout/confirm' ) ) ) . '">' . esc_html__( 'Review delivery again', 'punchout-woocommerce' ) . '</a></p>'; }
+		echo '</body></html>';
 	}
 }

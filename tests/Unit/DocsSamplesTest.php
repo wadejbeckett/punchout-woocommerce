@@ -35,6 +35,60 @@ final class DocsSamplesTest extends TestCase {
 		self::assertNotSame( '', $message->buyer_cookie );
 	}
 
+	public function test_inbound_example_is_neutral_and_valid_in_its_declared_dtd(): void {
+		$this->assert_validates( Samples::setup_request(), 'setup_request' );
+		self::assertStringContainsString( 'addressID="BUYER-001"', Samples::setup_request() );
+		self::assertStringContainsString( 'EXAMPLE-BUYER-COOKIE', Samples::parsed()->buyer_cookie );
+	}
+
+	public function test_published_delivery_totals_are_derived_from_the_emitted_lines(): void {
+		$examples = Samples::delivery_examples();
+		self::assertSame( [ '1.2.008', '1.2.071' ], array_column( $examples, 'version' ) );
+		foreach ( $examples as $example ) {
+			$this->assert_validates( $example['xml'], 'published delivery ' . $example['version'] );
+			self::assertSame( Samples::delivery_poom( $example['version'] ), $example['xml'] );
+			$doc = new DOMDocument(); $doc->loadXML( $example['xml'], LIBXML_NONET );
+			$xpath = new DOMXPath( $doc ); $sum = 0; $freight = 0;
+			foreach ( $xpath->query( '//ItemIn' ) as $line ) {
+				$cents = POW\Cxml\Money::to_cents( $xpath->evaluate( 'string(ItemDetail/UnitPrice/Money)', $line ) );
+				$sum += (int) round( (float) $line->getAttribute( 'quantity' ) * $cents );
+				if ( 'DELIVERY' === $xpath->evaluate( 'string(ItemID/SupplierPartID)', $line ) ) {
+					++$freight;
+					self::assertSame( '1', $line->getAttribute( 'quantity' ) );
+					self::assertSame( $example['freight_total'], POW\Cxml\Money::format( $cents ) );
+					self::assertSame( 0, $xpath->query( 'ItemDetail/Extrinsic', $line )->length );
+				}
+			}
+			self::assertSame( 1, $freight );
+			self::assertSame( $example['total'], POW\Cxml\Money::format( $sum ) );
+			self::assertSame( $example['total'], $xpath->evaluate( 'string(//PunchOutOrderMessageHeader/Total/Money)' ) );
+			self::assertSame( 0, $xpath->query( '//PunchOutOrderMessageHeader/Shipping' )->length );
+		}
+	}
+
+	public function test_sample_flags_are_independent_and_respect_exact_version_capabilities(): void {
+		$off = [ 'emit_ship_to' => false, 'emit_delivery_code' => false, 'emit_delivery_line' => false, 'delivery_notes_policy' => 'off' ];
+		$unexpected_codes = [];
+		foreach ( [ '1.2.008', '1.2.071' ] as $version ) {
+			foreach ( [ [], [ 'emit_ship_to' => true ], [ 'emit_delivery_code' => true ], [ 'emit_delivery_line' => true ], [ 'delivery_notes_policy' => 'item_detail_extrinsic' ] ] as $on ) {
+				$config = array_replace( $off, $on );
+				$xml = Samples::delivery_poom( $version, $config );
+				$this->assert_validates( $xml, 'independent flags ' . $version );
+				$doc = new DOMDocument(); $doc->loadXML( $xml, LIBXML_NONET ); $xpath = new DOMXPath( $doc );
+				self::assertSame( $config['emit_ship_to'] ? 1 : 0, $xpath->query( '//ShipTo' )->length );
+				// Collect this mismatch so both exact dialects and every independent flag still execute.
+				if ( 0 !== $xpath->query( '//Address/@addressID | //Address/@addressIDDomain' )->length ) { $unexpected_codes[] = $version . ': destination-only export leaked code attributes'; }
+				self::assertSame( $config['emit_delivery_code'] && '1.2.071' === $version ? 2 : 0, $xpath->query( '//ItemIn/Extrinsic[@name="DeliveryAddressCode"]' )->length );
+				self::assertSame( $config['emit_delivery_line'] ? 3 : 2, $xpath->query( '//ItemIn' )->length );
+				self::assertSame( 'item_detail_extrinsic' === $config['delivery_notes_policy'] ? 2 : 0, $xpath->query( '//ItemDetail/Extrinsic[@name="DeliveryInstructions"]' )->length );
+			}
+			$doc = new DOMDocument(); $doc->loadXML( Samples::delivery_poom( $version ), LIBXML_NONET ); $xpath = new DOMXPath( $doc );
+			self::assertSame( 'BUYER-001', $xpath->evaluate( 'string(//ShipTo/Address/@addressID)' ) );
+			self::assertSame( '1.2.071' === $version ? 'supplier' : '', $xpath->evaluate( 'string(//ShipTo/Address/@addressIDDomain)' ) );
+		}
+		self::assertSame( [], $unexpected_codes );
+	}
+
 	public function test_annotations_are_read_off_the_parse_result(): void {
 		$annotations = Samples::annotations();
 

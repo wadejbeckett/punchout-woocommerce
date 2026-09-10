@@ -364,6 +364,15 @@ final class DocsPageTest extends TestCase {
 		self::assertStringNotContainsString( '<cXML>', $html );
 	}
 
+	public function test_confirmation_and_delivery_examples_render_even_with_legacy_codes_hint_off(): void {
+		$vars = $this->page_vars();
+		$vars['delivery_samples'] = [ [ 'version' => '1.2.071', 'xml' => '<cXML>delivery-example</cXML>', 'total' => '123.45', 'freight_total' => '6.78' ] ];
+		$html = Templates::render( 'docs/page', $vars );
+		foreach ( [ '/punchout/confirm', '[punchout_delivery_confirmation]', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'quote_separately', 'punchout_and_checkout', '123.45', '6.78', '&lt;cXML&gt;delivery-example&lt;/cXML&gt;' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		self::assertStringNotContainsString( '<cXML>', $html );
+		self::assertStringNotContainsString( 'Available when delivery codes are enabled', $html );
+	}
+
 	/**
 	 * The connection block is admin-only: a public visitor never learns
 	 * which buyers are connected.
@@ -438,6 +447,7 @@ final class DocsPageTest extends TestCase {
 			'setup_response' => '<cXML>response</cXML>',
 			'poom'           => '<cXML>poom</cXML>',
 			'poom_total'     => 'R 599.00',
+			'delivery_samples' => [],
 			'cxml_version'   => '1.2.008',
 			'rate_limit'     => 30,
 			'connections'    => [],

@@ -395,3 +395,17 @@ if ( ! function_exists( 'admin_url' ) ) {
 		return 'https://shop.example.test/wp-admin/' . $path;
 	}
 }
+
+// Explicit local environment for this DB-free suite. Native WordPress always owns these symbols when loaded.
+if ( ! function_exists( 'wp_get_environment_type' ) ) {
+	function wp_get_environment_type(): string { return $GLOBALS['pow_test_environment_type'] ?? 'local'; }
+}
+if ( ! function_exists( 'is_ssl' ) ) {
+	function is_ssl(): bool {
+		if ( isset( $_SERVER['HTTPS'] ) ) { return 'on' === strtolower( $_SERVER['HTTPS'] ) || '1' === (string) $_SERVER['HTTPS']; }
+		return isset( $_SERVER['SERVER_PORT'] ) && '443' === (string) $_SERVER['SERVER_PORT'];
+	}
+}
+if ( ! function_exists( 'set_url_scheme' ) ) {
+	function set_url_scheme( string $url, ?string $scheme = null ): string { return preg_replace( '#^\w+://#', ( $scheme ?? ( is_ssl() ? 'https' : 'http' ) ) . '://', trim( $url ) ); }
+}

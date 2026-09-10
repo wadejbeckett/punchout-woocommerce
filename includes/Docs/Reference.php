@@ -25,8 +25,8 @@ defined( 'ABSPATH' ) || exit;
  * (and the suite fails until someone writes the copy).
  *
  * No WordPress calls beyond __(): the values the page needs from
- * WordPress — the site URL, our To credential, whether delivery codes are
- * switched on — are passed in by Docs\Page, which keeps this class pure
+ * WordPress — the site URL, our To credential and a legacy display hint —
+ * are passed in by Docs\Page, which keeps this class pure
  * and unit-testable. Translation happens at call time, not at load time,
  * for the same reason.
  */
@@ -36,7 +36,7 @@ final class Reference {
 	 * @param string $home_url               Site URL, no trailing slash.
 	 * @param string $to_domain              Our To credential domain; read by the page.
 	 * @param string $to_identity            Our To credential identity; read by the page.
-	 * @param bool   $delivery_codes_enabled Whether we emit delivery codes today.
+	 * @param bool   $delivery_codes_enabled Legacy custom-template display hint; not a connection policy.
 	 */
 	public function __construct(
 		private readonly string $home_url,
@@ -50,6 +50,7 @@ final class Reference {
 		return [
 			__( 'Setup (PunchOutSetupRequest, ProfileRequest)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/setup',
 			__( 'Start page (one-time token, opened in the browser)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/start/{token}',
+			__( 'Delivery confirmation (buyer review; GET and nonced POST)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/confirm',
 			__( 'Return (BrowserFormPost target is yours; this is ours)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/return',
 			__( 'Inbound orders (answers 450 — not implemented)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/order',
 		];
@@ -88,12 +89,14 @@ final class Reference {
 	/** @return list<string> */
 	public function supported(): array {
 		return [
-			__( 'cXML 1.2.x. We echo the version your connection is configured with (1.2.008 by default).', 'punchout-woocommerce' ),
+			__( 'cXML envelopes use the connection cxml_version (1.2.008 by default). Optional postal and note fields are verified for exactly 1.2.008 and 1.2.071; additional fields below require 1.2.071. Other configured versions do not inherit those optional capabilities.', 'punchout-woocommerce' ),
 			__( 'PunchOutSetupRequest with operation="create".', 'punchout-woocommerce' ),
 			__( 'ProfileRequest.', 'punchout-woocommerce' ),
 			__( 'PunchOutOrderMessage returned over your BrowserFormPost URL as cxml-base64 (default) or cxml-urlencoded (per-connection switch).', 'punchout-woocommerce' ),
 			__( 'Identity extrinsics UserEmail and UniqueName on the setup request.', 'punchout-woocommerce' ),
 			__( 'An inbound ShipTo on the setup request, stored against the session.', 'punchout-woocommerce' ),
+			__( 'A company-owned delivery book in WordPress/WooCommerce, automatic separate buyer accounts, and mandatory delivery review before physical cart return.', 'punchout-woocommerce' ),
+			__( 'Native WooCommerce shipping estimates, optional freight and destination export, and an optional non-payable Punchout Quote recording the accepted return.', 'punchout-woocommerce' ),
 		];
 	}
 
@@ -107,15 +110,12 @@ final class Reference {
 			__( 'operation="edit", "inspect" and "source" — all answered 450.', 'punchout-woocommerce' ),
 			__( 'Inbound OrderRequest / cXML purchase orders. /punchout/order answers 450.', 'punchout-woocommerce' ),
 			__( 'Different delivery addresses per merchandise line. One destination is confirmed for the basket.', 'punchout-woocommerce' ),
-			__( 'Multi-currency. One store currency per connection.', 'punchout-woocommerce' ),
+			__( 'Currencies other than ZAR. Cart confirmation currently requires the WooCommerce store and returned cart to use ZAR; currency conversion is not provided.', 'punchout-woocommerce' ),
 		];
 	}
 
 	/**
-	 * Delivery address fields. Documented unconditionally — a buyer's
-	 * developer builds the receiving mapping before we switch emission on
-	 * — with delivery_codes_enabled() telling the page whether to show
-	 * the "available when delivery codes are enabled" banner.
+	 * Delivery address fields, documented independently of any connection's flags.
 	 *
 	 * @return list<array{field: string, source: string, note: string}>
 	 */
@@ -159,6 +159,45 @@ final class Reference {
 		];
 	}
 
+	/** @return list<string> */
+	public function delivery_workflow(): array {
+		return [
+			__( 'The company owner and authorised shop administrators manage Company delivery addresses on the account integration or customer administration screen. Each company has its own private book. Automatically provisioned buyers select all enabled entries from that company using their own login and cart; they do not edit the master book.', 'punchout-woocommerce' ),
+			__( 'Add an address manually, or preview and explicitly copy the owner’s normal WooCommerce billing or shipping address. New entries and imports start disabled; review and enable them separately with use_for_punchout. Normal address saves do not synchronise this book. Inbound ShipTo and a buyer’s saved shipping address can be reviewed as session candidates; neither silently overwrites the company book.', 'punchout-woocommerce' ),
+			__( 'Every physical cart return requires the same signed-in buyer to review and confirm the full destination, native shipping method for each package and optional notes. This applies to pickup, a single available address or method, and all export flags being off. Open /punchout/confirm from the cart control, or place [punchout_delivery_confirmation] on a page; both use the same review and protected POST route. A direct /punchout/return POST cannot bypass confirmation. Virtual-only baskets record delivery as not_required.', 'punchout-woocommerce' ),
+			__( 'A valid existing native shipping choice is preserved. Otherwise WooCommerce chooses its configured native default in the current cart context; the plugin adds no cheapest-rate or pickup preference. When emit_delivery_line is enabled, require_rate refuses unavailable rates. quote_separately permits return only after the buyer acknowledges the missing estimate; neither a freight line nor a Quote shipping charge is added. With charge export off, the available estimate or unavailable state is still reviewed and stored locally. A quoted zero is a real rate; unavailable is null, never zero.', 'punchout-woocommerce' ),
+			__( 'Confirmation binds the current cart, destination, rates, configuration and notes to that buyer’s session. Changing those facts requires a fresh review. A selected company entry must still exist and be enabled at confirmation and final return: removal or disablement requires reselection, and changes to its address, label or code require reconfirmation. An unrelated book revision does not invalidate an unchanged selected entry. Completed return and Quote snapshots remain unchanged by later master edits.', 'punchout-woocommerce' ),
+			__( 'Notes are sanitised plain text, limited to 2,000 characters and 8,000 bytes. They default to local confirmation storage. delivery_notes_policy=item_detail_extrinsic additionally copies the basket note to DeliveryInstructions on every merchandise ItemDetail, excluding freight, for the exact supported DTDs. Agree this repetition with the receiver before enabling it.', 'punchout-woocommerce' ),
+			__( 'If enabled and available, delivery is one quantity-one freight ItemIn equal to the sum of the selected native package rates. The optional winner Quote uses native shipping items per package with the same sum, once. Prices and totals use ex-tax integer cents; merchandise stays separate. With export off or an acknowledged unavailable estimate, the Quote retains delivery metadata and an estimate note without a shipping charge. Empty and paid-order closeouts add no freight.', 'punchout-woocommerce' ),
+			__( 'Codes are company-scoped references, not URLs, registered receiver records or an address-list API. Codes allow A–Z, 0–9, underscore and hyphen, up to 32 characters; an optional prefix is limited to 24, and labels to 190 characters. Changed or removed issued codes retain their claims permanently. No external address-book plugin, additional credential store or directory integration is required.', 'punchout-woocommerce' ),
+		];
+	}
+
+	/** Exact connection keys and defaults, displayed without exposing any connection values. @return array<string,array{default:bool|string,note:string}> */
+	public function delivery_settings(): array {
+		return [
+			'emit_ship_to' => [ 'default' => false, 'note' => __( 'Export the full confirmed ShipTo, independently of address code and charge.', 'punchout-woocommerce' ) ],
+			'emit_delivery_code' => [ 'default' => false, 'note' => __( 'Export a usable selected code in the exact-version fields below. Does not enable full ShipTo or freight.', 'punchout-woocommerce' ) ],
+			'emit_delivery_line' => [ 'default' => false, 'note' => __( 'Include one available native freight total in the cart return and matching optional Quote shipping items.', 'punchout-woocommerce' ) ],
+			'delivery_unknown_policy' => [ 'default' => 'require_rate', 'note' => __( 'require_rate refuses missing charge estimates; quote_separately allows acknowledged omission when charge export is enabled.', 'punchout-woocommerce' ) ],
+			'delivery_notes_policy' => [ 'default' => 'off', 'note' => __( 'off keeps notes local; item_detail_extrinsic exports DeliveryInstructions on merchandise ItemDetail for the verified dialects.', 'punchout-woocommerce' ) ],
+			'delivery_code_prefix' => [ 'default' => '', 'note' => __( 'Optional prefix for generated company address codes; empty leaves a new blank code uncoded.', 'punchout-woocommerce' ) ],
+			'delivery_code_extrinsic_name' => [ 'default' => 'DeliveryAddressCode', 'note' => __( 'Name of the optional direct ItemIn/Extrinsic, available only for 1.2.071.', 'punchout-woocommerce' ) ],
+			'freight_supplier_part_id' => [ 'default' => 'DELIVERY', 'note' => __( 'SupplierPartID of the typed freight line; agree its interpretation with the receiver.', 'punchout-woocommerce' ) ],
+			'freight_uom' => [ 'default' => 'EA', 'note' => __( 'UnitOfMeasure of the quantity-one freight line.', 'punchout-woocommerce' ) ],
+			'freight_classification_domain' => [ 'default' => 'supplier', 'note' => __( 'Classification domain for freight, independent of merchandise classification.', 'punchout-woocommerce' ) ],
+			'freight_classification' => [ 'default' => 'freight', 'note' => __( 'Classification value for freight.', 'punchout-woocommerce' ) ],
+		];
+	}
+
+	/** @return list<string> */
+	public function exit_policy(): array {
+		return [
+			__( 'Shop administrators set exit_policy globally and per company, then may restrict an existing company buyer. The values are inherit, punchout_only and punchout_and_checkout. A company inherits the global default unless explicitly configured; global inherit resolves to punchout_only. The resulting company entitlement is the buyer’s upper bound: a buyer restriction can remove checkout, but cannot grant it when the company does not allow it.', 'punchout-woocommerce' ),
+			__( 'Company owners and buyers cannot grant themselves checkout entitlement. Punchout only blocks classic, Blocks and direct payment entry points within the punchout session. Punchout and checkout permits the native WooCommerce checkout alongside the reviewed cart return. Ordinary shoppers are unaffected. A changed or unavailable entitlement is checked again before return or payment.', 'punchout-woocommerce' ),
+		];
+	}
+
 	/** @return array<string, string> */
 	public function links(): array {
 		return [
@@ -169,10 +208,8 @@ final class Reference {
 	}
 
 	/**
-	 * Whether we currently emit delivery codes. The value is decided by the
-	 * caller (Docs\Page passes the pow_delivery_codes_enabled filter's
-	 * result) and merely carried here, so this class stays WordPress-free
-	 * and unit-testable.
+	 * Legacy custom-template display hint. Actual connection emission uses
+	 * emit_ship_to, emit_delivery_code and emit_delivery_line independently.
 	 */
 	public function delivery_codes_enabled(): bool {
 		return $this->delivery_codes_enabled;

@@ -15,6 +15,29 @@ final class Resolver {
 
 	public function current(): Provider { return new NativeProvider( $this->registry, $this->book ); }
 
+	/** Full server-owned choices for confirmation. This producer owns its one book-read mutex; callers never supply revision, fingerprint or owner authority. Exact native login/session checks remain Confirmation's responsibility on both sides of its callbacks. */
+	public function choices_for_session( Session $session, Partner $partner ): array|\WP_Error {
+		try {
+			if ( get_current_user_id() !== $session->user_id || Session::ACTIVE !== $session->status || $session->partner_id !== $partner->id ) { return self::error( 'address_unavailable' ); }
+			$associated = $this->partner_for_user( $session->user_id );
+			$user = get_userdata( $session->user_id );
+			if ( ! $user || ! in_array( Installer::ROLE, (array) $user->roles, true ) || ! $associated || ! $associated->is_active() || $associated->id !== $partner->id || $associated->owner_user_id !== $partner->owner_user_id ) { return self::error( 'address_unavailable' ); }
+			return $this->registry->with_partner_lock( $partner->id, function () use ( $session, $partner ) {
+				$fresh = $this->partner_for_user( $session->user_id );
+				$user = get_userdata( $session->user_id );
+				if ( get_current_user_id() !== $session->user_id || ! $user || ! in_array( Installer::ROLE, (array) $user->roles, true ) || ! $fresh || ! $fresh->is_active() || $fresh->id !== $partner->id || $fresh->owner_user_id !== $partner->owner_user_id ) { return self::error( 'address_unavailable' ); }
+				$book = $this->book->read_for_partner_locked( $fresh );
+				if ( $book instanceof \WP_Error ) { return self::error( 'address_state_unavailable' ); }
+				$choices = [];
+				foreach ( $book['addresses'] as $key => $entry ) {
+					if ( true !== $entry['use_for_punchout'] ) { continue; }
+					$choices[] = [ 'schema' => 1, 'partner_id' => $fresh->id, 'storage_user_id' => $fresh->owner_user_id, 'provider' => 'native', 'key' => (string) $key, 'code' => $entry['code'], 'address' => $entry['address'], 'label' => $entry['label'], 'source' => 'company_book', 'book_revision' => $book['revision'], 'entry_fingerprint' => CompanyBook::entry_fingerprint( (string) $key, $entry ) ];
+				}
+				return $choices;
+			} );
+		} catch ( \Throwable $error ) { return self::error( 'address_state_unavailable' ); }
+	}
+
 	/** Resolution alone grants neither book editing nor an active shopping session. */
 	public function storage_user_id( int $user_id ): int {
 		try { return $this->partner_for_user( $user_id )?->owner_user_id ?? 0; }
