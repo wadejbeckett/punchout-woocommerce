@@ -67,7 +67,7 @@ function pow_native_wait( callable $ready, float $seconds, string $message ): vo
 	throw new RuntimeException( $message );
 }
 
-function pow_native_setup_message( Partner $partner, string $payload_id, string $identity ): SetupMessage {
+function pow_native_setup_message( Partner $partner, string $payload_id, string $identity, string $shared_secret = 'fixture-secret-not-used-by-provisioner' ): SetupMessage {
 	return new SetupMessage(
 		kind: SetupMessage::KIND_SETUP,
 		payload_id: $payload_id,
@@ -81,7 +81,7 @@ function pow_native_setup_message( Partner $partner, string $payload_id, string 
 		to_identity: $partner->to_identity,
 		sender_domain: $partner->sender_domain,
 		sender_identity: $partner->sender_identity,
-		shared_secret: 'fixture-secret-not-used-by-provisioner',
+		shared_secret: $shared_secret,
 		user_agent: 'POW native fixture',
 		buyer_cookie: 'native-cookie-' . $payload_id,
 		browser_form_post: 'https://buyer.example.test/return',
@@ -202,6 +202,19 @@ function pow_native_rate_worker(): void {
 	pow_native_write_private( (string) getenv( 'POW_NATIVE_RESULT' ), wp_json_encode( [ 'allowed' => $allowed ] ) );
 }
 
+function pow_native_partner_lock_worker(): void {
+	$plugin = \POW\Plugin::instance();
+	$registry = $plugin->registry();
+	$directory = (string) getenv( 'POW_NATIVE_RUN_DIRECTORY' );
+	$partner_id = (int) getenv( 'POW_NATIVE_LOCK_PARTNER' );
+	if ( ! $registry || $partner_id <= 0 ) { throw new RuntimeException( 'Partner lock worker fixture unavailable.' ); }
+	$registry->with_partner_lock( $partner_id, static function () use ( $directory ): void {
+		touch( $directory . '/partner-lock-ready' );
+		pow_native_wait( static fn(): bool => is_file( $directory . '/partner-lock-release' ), 12.0, 'Partner lock release barrier timed out.' );
+	} );
+	pow_native_write_private( (string) getenv( 'POW_NATIVE_RESULT' ), wp_json_encode( [ 'released' => true ] ) );
+}
+
 $mode = (string) getenv( 'POW_NATIVE_CONCURRENCY_MODE' );
 if ( 'setup-worker' === $mode ) {
 	pow_native_setup_worker();
@@ -209,6 +222,10 @@ if ( 'setup-worker' === $mode ) {
 }
 if ( 'rate-worker' === $mode ) {
 	pow_native_rate_worker();
+	return;
+}
+if ( 'partner-lock-worker' === $mode ) {
+	pow_native_partner_lock_worker();
 	return;
 }
 if ( 'suite' !== $mode ) {
@@ -314,6 +331,40 @@ $callback_success_audits_after = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT C
 $check( 500 === $callback_failed['status'] && 0 === $callback_rows_before && 0 === $callback_success_audits_before && 1 === $callback_failure_audits, 'callback failure leaves no replay claim, records the claimed request failure, and emits no successful-looking setup audit' );
 $check( 200 === $callback_retry['status'] && 1 === $callback_rows_after && 1 === $callback_success_audits_after, 'the same setup can retry after callback failure' );
 
+$claim_method = new ReflectionMethod( SetupEndpoint::class, 'claim_setup' );
+$auth_claim_payload = 'auth-claim-' . $run . '@example.test';
+$auth_claim_hash = hash( 'sha256', 'auth-claim-body-' . $run );
+$auth_claim_token = hash( 'sha256', 'auth-claim-token-' . $run );
+$auth_claim_id = $sessions->create( [ 'partner_id' => $partner_id, 'user_id' => 0, 'status' => POW\Sessions\Session::PENDING, 'payload_id' => $auth_claim_payload, 'body_hash' => $auth_claim_hash, 'one_time_token_hash' => $auth_claim_token, 'expires' => gmdate( 'Y-m-d H:i:s', time() + 300 ), 'response_xml' => null ] );
+$auth_failed = false;
+try {
+	$claim_method->invoke( pow_native_endpoint(), $partner, pow_native_setup_message( $partner, $auth_claim_payload, 'claim-auth-' . $run . '@example.test', 'wrong-secret' ), '203.0.113.42', $auth_claim_payload, $auth_claim_hash, hash( 'sha256', random_bytes( 16 ) ), gmdate( 'Y-m-d H:i:s', time() + 300 ) );
+} catch ( Throwable $error ) {
+	$auth_failed = true;
+}
+$auth_claim_after = $sessions->find( $auth_claim_id );
+$auth_claim_token_after = $wpdb->get_var( $wpdb->prepare( 'SELECT one_time_token_hash FROM ' . \POW\Installer::sessions_table() . ' WHERE id = %d', $auth_claim_id ) );
+$check( $auth_failed && $auth_claim_after && $auth_claim_after->user_id === 0 && null === $auth_claim_after->response_xml && $auth_claim_token === $auth_claim_token_after, 'a second request authentication failure before insert cannot delete the existing in-flight claim' );
+
+$lock_claim_payload = 'lock-claim-' . $run . '@example.test';
+$lock_claim_hash = hash( 'sha256', 'lock-claim-body-' . $run );
+$lock_claim_token = hash( 'sha256', 'lock-claim-token-' . $run );
+$lock_claim_id = $sessions->create( [ 'partner_id' => $partner_id, 'user_id' => 0, 'status' => POW\Sessions\Session::PENDING, 'payload_id' => $lock_claim_payload, 'body_hash' => $lock_claim_hash, 'one_time_token_hash' => $lock_claim_token, 'expires' => gmdate( 'Y-m-d H:i:s', time() + 300 ), 'response_xml' => null ] );
+$lock_processes = pow_native_spawn( 'partner-lock-worker', 1, $run_directory, [ 'POW_NATIVE_RUN_DIRECTORY' => $run_directory, 'POW_NATIVE_LOCK_PARTNER' => (string) $partner_id ] );
+pow_native_wait( static fn(): bool => is_file( $run_directory . '/partner-lock-ready' ), 10.0, 'Partner lock worker did not acquire the lock.' );
+$lock_failed = false;
+try {
+	$claim_method->invoke( pow_native_endpoint(), $partner, pow_native_setup_message( $partner, $lock_claim_payload, 'claim-lock-' . $run . '@example.test', $secret ), '203.0.113.43', $lock_claim_payload, $lock_claim_hash, hash( 'sha256', random_bytes( 16 ) ), gmdate( 'Y-m-d H:i:s', time() + 300 ) );
+} catch ( Throwable $error ) {
+	$lock_failed = true;
+} finally {
+	touch( $run_directory . '/partner-lock-release' );
+}
+$lock_results = pow_native_finish( $lock_processes );
+$lock_claim_after = $sessions->find( $lock_claim_id );
+$lock_claim_token_after = $wpdb->get_var( $wpdb->prepare( 'SELECT one_time_token_hash FROM ' . \POW\Installer::sessions_table() . ' WHERE id = %d', $lock_claim_id ) );
+$check( $lock_failed && true === ( $lock_results[0]['released'] ?? false ) && $lock_claim_after && $lock_claim_after->user_id === 0 && null === $lock_claim_after->response_xml && $lock_claim_token === $lock_claim_token_after, 'a second request lock timeout before insert cannot delete the existing in-flight claim' );
+
 $provisioner = new Provisioner( $sessions, $audit, $plugin->logger() );
 $privileged_message = pow_native_setup_message( $partner, 'privileged-' . $run, 'privileged-' . $run . '@example.test' );
 $privileged_id = $provisioner->provision( $partner, $privileged_message );
@@ -335,6 +386,48 @@ $admin_id = wp_insert_user( [ 'user_login' => 'ordinary-admin-' . $run, 'user_pa
 $email_buyer_id = is_wp_error( $admin_id ) ? 0 : $provisioner->provision( $partner, pow_native_setup_message( $partner, 'email-' . $run, $admin_email ) );
 $admin_after = is_wp_error( $admin_id ) ? false : get_userdata( (int) $admin_id );
 $check( ! is_wp_error( $admin_id ) && $email_buyer_id > 0 && $email_buyer_id !== (int) $admin_id && $admin_after && in_array( 'administrator', $admin_after->roles, true ) && '' === get_user_meta( (int) $admin_id, '_pow_partner_id', true ), 'UserEmail matching an administrator creates an isolated buyer instead of taking over the account' );
+
+foreach ( [ 'false', 'throw', 'lost-readback' ] as $metadata_failure ) {
+	$failure_identity = 'metadata-' . $metadata_failure . '-' . $run . '@example.test';
+	$failure_message = pow_native_setup_message( $partner, 'metadata-' . $metadata_failure . '-' . $run, $failure_identity );
+	$users_before = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->users}" );
+	$hook_calls = 0;
+	$hook = static function ( int $user_id, Partner $hook_partner ) use ( $partner_id, &$hook_calls ): void { if ( $hook_partner->id === $partner_id ) { ++$hook_calls; } };
+	add_action( 'pow_buyer_provisioned', $hook, 20, 2 );
+	$metadata_filter = null;
+	$filter_name = '';
+	if ( 'lost-readback' === $metadata_failure ) {
+		$filter_name = 'get_user_metadata';
+		$lost = false;
+		$metadata_filter = static function ( $value, int $user_id, string $key, bool $single ) use ( &$lost ) {
+			if ( ! $lost && $single && '_pow_partner_id' === $key ) { $lost = true; return ''; }
+			return $value;
+		};
+		add_filter( $filter_name, $metadata_filter, 10, 4 );
+	} else {
+		$filter_name = 'update_user_metadata';
+		$failed_once = false;
+		$metadata_filter = static function ( $check, int $user_id, string $key ) use ( $metadata_failure, &$failed_once ) {
+			if ( ! $failed_once && '_pow_partner_id' === $key ) {
+				$failed_once = true;
+				if ( 'throw' === $metadata_failure ) { throw new RuntimeException( 'Injected buyer metadata failure.' ); }
+				return false;
+			}
+			return $check;
+		};
+		add_filter( $filter_name, $metadata_filter, 10, 3 );
+	}
+	try { $metadata_failed_id = $provisioner->provision( $partner, $failure_message ); }
+	catch ( Throwable $error ) { $metadata_failed_id = 0; }
+	remove_filter( $filter_name, $metadata_filter, 10 );
+	$users_after_failure = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->users}" );
+	$metadata_retry_id = $provisioner->provision( $partner, $failure_message );
+	remove_action( 'pow_buyer_provisioned', $hook, 20 );
+	$mapped = get_users( [ 'fields' => 'ids', 'meta_key' => '_pow_identity', 'meta_value' => $failure_identity ] );
+	$metadata_recovered = 0 === $metadata_failed_id && $users_before === $users_after_failure && $metadata_retry_id > 0 && [ $metadata_retry_id ] === array_map( 'intval', $mapped ) && 1 === $hook_calls;
+	if ( ! $metadata_recovered ) { echo 'DETAIL metadata-' . $metadata_failure . ' failed=' . $metadata_failed_id . ' users=' . $users_before . '/' . $users_after_failure . ' retry=' . $metadata_retry_id . ' mapped=' . count( $mapped ) . ' hooks=' . $hook_calls . "\n"; }
+	$check( $metadata_recovered, 'new buyer ' . $metadata_failure . ' metadata failure removes only the unhooked account and a clean retry succeeds' );
+}
 
 $rate_bucket = 'native-rate|' . $run;
 $rate_processes = pow_native_spawn( 'rate-worker', 20, $run_directory, [ 'POW_NATIVE_RUN_DIRECTORY' => $run_directory, 'POW_NATIVE_RATE_BUCKET' => $rate_bucket ] );

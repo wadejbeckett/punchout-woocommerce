@@ -31,6 +31,7 @@ defined( 'ABSPATH' ) || exit;
  * mapping hint, never proof of identity.
  */
 final class Provisioner {
+	private const PRIVILEGED_CAPABILITIES = [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ];
 
 	public function __construct(
 		private Store $sessions,
@@ -136,15 +137,22 @@ final class Provisioner {
 			return 0;
 		}
 
-		update_user_meta( $user_id, '_pow_partner_id', $partner->id );
-		update_user_meta( $user_id, '_pow_identity', $identity );
-		update_user_meta( $user_id, '_pow_last_seen', time() );
-
-		if ( $ephemeral ) {
-			update_user_meta( $user_id, '_pow_ephemeral', 1 );
+		$metadata_ok = false;
+		try {
+			$writes = [
+				update_user_meta( $user_id, '_pow_partner_id', $partner->id ),
+				update_user_meta( $user_id, '_pow_identity', $identity ),
+				update_user_meta( $user_id, '_pow_last_seen', time() ),
+			];
+			if ( $ephemeral ) { $writes[] = update_user_meta( $user_id, '_pow_ephemeral', 1 ); }
+			$metadata_ok = ! in_array( false, $writes, true ) && null !== $this->fresh_owned_buyer( (int) $user_id, $partner->id, $identity );
+		} catch ( \Throwable $error ) {
+			$metadata_ok = false;
 		}
-		if ( ! $this->fresh_owned_buyer( (int) $user_id, $partner->id, $identity ) ) {
+		if ( ! $metadata_ok ) {
+			$removed = $this->remove_unhooked_new_buyer( (int) $user_id, $username );
 			$this->logger->error( 'Buyer ownership could not be confirmed', [ 'partner' => $partner->id ] );
+			if ( ! $removed ) { $this->logger->error( 'Unconfirmed new buyer cleanup failed', [ 'partner' => $partner->id ] ); }
 			return 0;
 		}
 
@@ -184,15 +192,36 @@ final class Provisioner {
 		clean_user_cache( $user_id );
 		wp_cache_delete( $user_id, 'user_meta' );
 		$user = get_userdata( $user_id );
-		if ( ! $user || [ Installer::ROLE ] !== array_values( (array) $user->roles ) || (string) $partner_id !== (string) get_user_meta( $user_id, '_pow_partner_id', true ) || $identity !== (string) get_user_meta( $user_id, '_pow_identity', true ) || ( ! $allow_deactivated && (bool) get_user_meta( $user_id, '_pow_deactivated', true ) ) ) {
+		if ( ! $user || ! $this->safe_buyer_account( $user ) || (string) $partner_id !== (string) get_user_meta( $user_id, '_pow_partner_id', true ) || $identity !== (string) get_user_meta( $user_id, '_pow_identity', true ) || ( ! $allow_deactivated && (bool) get_user_meta( $user_id, '_pow_deactivated', true ) ) ) {
 			return null;
 		}
-		foreach ( [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ] as $capability ) {
+		return $user;
+	}
+
+	/** Delete only the exact buyer-only account returned by this invocation, before the provisioning hook runs. */
+	private function remove_unhooked_new_buyer( int $user_id, string $username ): bool {
+		try {
+			clean_user_cache( $user_id );
+			$user = get_userdata( $user_id );
+			if ( ! $user ) { return true; }
+			if ( $user->ID !== $user_id || $user->user_login !== $username || ! $this->safe_buyer_account( $user ) ) { return false; }
+			if ( ! function_exists( 'wp_delete_user' ) ) { require_once ABSPATH . 'wp-admin/includes/user.php'; }
+			if ( ! wp_delete_user( $user_id ) ) { return false; }
+			clean_user_cache( $user_id );
+			return false === get_userdata( $user_id );
+		} catch ( \Throwable $error ) {
+			return false;
+		}
+	}
+
+	private function safe_buyer_account( \WP_User $user ): bool {
+		if ( [ Installer::ROLE ] !== array_values( (array) $user->roles ) ) { return false; }
+		foreach ( self::PRIVILEGED_CAPABILITIES as $capability ) {
 			if ( user_can( $user, $capability ) ) {
-				return null;
+				return false;
 			}
 		}
-		return $user;
+		return true;
 	}
 
 	/**
