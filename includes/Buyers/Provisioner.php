@@ -32,6 +32,8 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Provisioner {
 	private const PRIVILEGED_CAPABILITIES = [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ];
+	/** Reject recursive provisioning of the same identity from a buyer hook. */
+	private static array $identity_locks = [];
 
 	public function __construct(
 		private Store $sessions,
@@ -40,7 +42,7 @@ final class Provisioner {
 	) {}
 
 	/**
-	 * Locate or create the buyer user. 0 on failure.
+	 * Locate or create the buyer user. 0 on account failure; lock/callback failures propagate to the setup failure handler.
 	 */
 	public function provision( Partner $partner, SetupMessage $message ): int {
 		$identity  = $this->resolve_identity( $partner, $message );
@@ -54,6 +56,39 @@ final class Provisioner {
 			$this->logger->warning( 'No buyer identity in setup request; provisioning ephemeral user', [ 'partner' => $partner->id ] );
 		}
 
+		return $this->with_identity_lock( $partner->id, $identity, fn(): int => $this->provision_identity( $partner, $message, $identity, $ephemeral ) );
+	}
+
+	/**
+	 * WordPress checks username availability separately from its INSERT; the
+	 * users table does not enforce unique logins. Serialize lookup, creation,
+	 * ownership confirmation and callbacks across distinct setup payloads.
+	 * Setup holds no partner lock here and commits its session only after this
+	 * lock is released. Different companies/identities remain independent.
+	 */
+	private function with_identity_lock( int $partner_id, string $identity, callable $operation ): int {
+		global $wpdb;
+		if ( $partner_id <= 0 ) { throw new \InvalidArgumentException( 'Invalid buyer partner.' ); }
+		$key = 'pow_buyer_' . substr( hash( 'sha256', ( defined( 'DB_NAME' ) ? DB_NAME : '' ) . '|' . $wpdb->prefix . '|' . $partner_id . '|' . $identity ), 0, 54 );
+		if ( isset( self::$identity_locks[ $key ] ) ) { throw new \RuntimeException( 'Recursive buyer provisioning refused.' ); }
+		$previous = $wpdb->suppress_errors( true );
+		$acquired = false;
+		try {
+			$acquired = '1' === (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $key, 5 ) );
+			if ( ! $acquired ) { throw new \RuntimeException( 'Buyer identity lock unavailable.' ); }
+			self::$identity_locks[ $key ] = true;
+			return $operation();
+		} finally {
+			unset( self::$identity_locks[ $key ] );
+			try {
+				if ( $acquired && '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $key ) ) ) {
+					throw new \RuntimeException( 'Buyer identity lock release unconfirmed.' );
+				}
+			} finally { $wpdb->suppress_errors( $previous ); }
+		}
+	}
+
+	private function provision_identity( Partner $partner, SetupMessage $message, string $identity, bool $ephemeral ): int {
 		$username = $this->username( $partner, $identity );
 		$existing = get_user_by( 'login', $username );
 
