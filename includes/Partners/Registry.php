@@ -277,8 +277,8 @@ final class Registry {
 		global $wpdb;
 
 		if ( array_key_exists( 'exit_policy', $data ) && ! \POW\Checkout\ExitPolicy::administrator( get_current_user_id() ) ) { return 0; }
-		// Newly provisioned companies inherit; only an explicit admin policy sets a cap.
-		$data['exit_policy'] = $data['exit_policy'] ?? 'inherit';
+		// Every new connection carries its own explicit cap; approval never depends on a storefront-wide switch.
+		$data['exit_policy'] = $data['exit_policy'] ?? \POW\Checkout\ExitPolicy::CHECKOUT;
 		$data = $this->sanitise( $data );
 
 		$data['secret_current'] = '' !== $secret ? $this->secrets->seal( $secret ) : '';
@@ -447,7 +447,7 @@ final class Registry {
 		}
 
 		if ( array_key_exists( 'exit_policy', $data ) ) {
-			$data['exit_policy'] = \POW\Checkout\ExitPolicy::normalise( $data['exit_policy'] );
+			$data['exit_policy'] = \POW\Checkout\ExitPolicy::normalise_company( $data['exit_policy'] );
 		}
 
 		if ( isset( $data['return_encoding'] ) ) {

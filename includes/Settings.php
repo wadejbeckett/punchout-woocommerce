@@ -16,7 +16,8 @@ defined( 'ABSPATH' ) || exit;
  * Typed accessor over the plugin's single option row.
  *
  * Per-partner configuration lives in the partners table (Partners\Registry);
- * this option holds only the global defaults and operational knobs.
+ * this option holds operational knobs and the retired exit-policy value
+ * while schema migration freezes old inherited company rows.
  *
  * The sodium key that seals partner secrets is NOT a setting: it must live
  * in wp-config.php as POW_SECRET_KEY so a database dump alone cannot
@@ -31,7 +32,7 @@ class Settings {
 		// pre-auth XML endpoint until an operator has configured at least
 		// one customer connection and flipped it on.
 		'enabled'              => 'no',
-		'exit_policy'          => 'inherit',
+		'exit_policy'          => 'punchout_and_checkout',
 
 		// Default TTLs; each partner row can override its own.
 		'token_ttl'            => 300,     // StartPage token, seconds (~5 min).
