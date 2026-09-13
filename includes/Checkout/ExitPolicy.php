@@ -19,12 +19,14 @@ final class ExitPolicy {
 
 	public static function valid( mixed $value ): bool { return in_array( $value, [ self::INHERIT, self::ONLY, self::CHECKOUT ], true ); }
 	public static function normalise( mixed $value ): string { return self::valid( $value ) ? $value : self::ONLY; }
-	public static function labels(): array { return [ self::INHERIT => __( 'Inherit', 'punchout-woocommerce' ), self::ONLY => __( 'Punchout only', 'punchout-woocommerce' ), self::CHECKOUT => __( 'Punchout and checkout', 'punchout-woocommerce' ) ]; }
+	/** New company writes are always explicit; a stale inherited or malformed submission narrows safely. */
+	public static function normalise_company( mixed $value ): string { return self::CHECKOUT === $value ? self::CHECKOUT : self::ONLY; }
+	public static function labels(): array { return [ self::INHERIT => __( 'Legacy inherited policy', 'punchout-woocommerce' ), self::ONLY => __( 'PunchOut only', 'punchout-woocommerce' ), self::CHECKOUT => __( 'PunchOut and checkout', 'punchout-woocommerce' ) ]; }
 
-	public static function resolve( string $global, string $company, string $buyer ): string {
-		if ( ! self::valid( $global ) || ! self::valid( $company ) || ! self::valid( $buyer ) ) { return self::ONLY; }
-		$cap = self::INHERIT === $company ? ( self::INHERIT === $global ? self::ONLY : $global ) : $company;
-		return self::ONLY === $cap || self::ONLY === $buyer ? self::ONLY : self::CHECKOUT;
+	/** The first argument remains for call compatibility with the retired global policy and is deliberately ignored. */
+	public static function resolve( string $legacy_global, string $company, string $buyer ): string {
+		if ( ! self::valid( $company ) || ! self::valid( $buyer ) || self::INHERIT === $company ) { return self::ONLY; }
+		return self::ONLY === $company || self::ONLY === $buyer ? self::ONLY : self::CHECKOUT;
 	}
 
 	/** Never authorize using a caller's stale Partner snapshot or cached user metadata. */
@@ -32,7 +34,7 @@ final class ExitPolicy {
 		try {
 			$fresh = $this->registry->find( $partner->id );
 			if ( ! $fresh || ! $fresh->is_active() || ! $this->member( $fresh->id, $buyer_user_id ) ) { return self::ONLY; }
-			return self::resolve( $this->settings->exit_policy(), $fresh->exit_policy, $this->buyer_value( $fresh->id, $buyer_user_id ) );
+			return self::resolve( self::INHERIT, $fresh->exit_policy, $this->buyer_value( $fresh->id, $buyer_user_id ) );
 		} catch ( \Throwable $e ) { return self::ONLY; }
 	}
 
@@ -59,7 +61,7 @@ final class ExitPolicy {
 			return $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $actor, $buyer_id, $value ) {
 				$partner = $this->registry->find( $partner_id );
 				if ( ! self::administrator( $actor ) || ! $partner || ! $partner->is_active() || ! $this->member( $partner_id, $buyer_id ) ) { return self::refused(); }
-				if ( self::CHECKOUT === $value && self::CHECKOUT !== self::resolve( $this->settings->exit_policy(), $partner->exit_policy, self::INHERIT ) ) { return self::refused(); }
+				if ( self::CHECKOUT === $value && self::CHECKOUT !== self::resolve( self::INHERIT, $partner->exit_policy, self::INHERIT ) ) { return self::refused(); }
 				$key = self::meta_key( $partner_id );
 				$old = $this->meta( $buyer_id, $key );
 				if ( $old === $value ) { return true; }
