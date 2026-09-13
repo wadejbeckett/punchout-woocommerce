@@ -3,6 +3,7 @@
  * Opt-in exit-policy native acceptance, using real WP/Woo hooks, metadata, SQL and REST dispatch.
  * Rationale: standalone doubles cannot establish migration preservation, native checkout/payment vetoes or persistent buyer isolation.
  * Coordinator must grant exclusive ownership of a disposable local fixture before running.
+ * Enable the plugin master switch in a separate process before this test boots WordPress; restore the original option after this process exits.
  * POW_NATIVE_TESTS=disposable POW_NATIVE_SCRIPT=<this file> wp --user=<fixture-admin> eval 'require getenv("POW_NATIVE_SCRIPT");'
  * POW_EXIT_RESULT optionally names a private result JSON for independent-process readback. Fixtures remain for inspection.
  * No gateway transport: the payment sentinel stops before any real gateway. External mail/HTTP capture must already be installed.
@@ -11,6 +12,18 @@
 declare(strict_types=1);
 if (!defined('WP_CLI') || !WP_CLI || getenv('POW_NATIVE_TESTS') !== 'disposable' || wp_get_environment_type() !== 'local' || !current_user_can('manage_woocommerce') || !function_exists('WC') || !has_filter('pre_wp_mail') || !has_filter('pre_http_request') || function_exists('mail')) {
  throw new RuntimeException('Requires opted-in disposable local WP/Woo, admin and existing outbound guards.');
+}
+// Updating settings below cannot register callbacks that were skipped during boot.
+$pay_exit_registered = false;
+global $wp_filter;
+foreach (($wp_filter['woocommerce_payment_complete']->callbacks ?? []) as $callbacks) {
+ foreach ($callbacks as $callback) {
+  $handler = $callback['function'] ?? null;
+  if (is_array($handler) && ($handler[0] ?? null) instanceof POW\Checkout\PayExit && ($handler[1] ?? null) === 'payment_complete') { $pay_exit_registered = true; }
+ }
+}
+if (!POW\Plugin::instance()->enabled() || !$pay_exit_registered) {
+ throw new RuntimeException('Enable PunchOut before WordPress boots this fixture so the native payment callback is registered.');
 }
 final class ExitNativeResponse extends RuntimeException { public function __construct(public array $args=[]) { parent::__construct('Native response intercepted'); } }
 final class ExitPolicyNative {
