@@ -102,9 +102,9 @@ final class ExitPolicyNative {
    foreach($before as $table=>$rows) { $after=$wpdb->get_results('SELECT * FROM '.$table,ARRAY_A); foreach($after as &$row) { if($table===POW\Installer::partners_table())unset($row['exit_policy']); } unset($row); $expected=$rows; foreach($expected as &$row)unset($row['exit_policy']); unset($row); $this->check($expected===$after,'prior rows preserved '.substr($table,strlen($wpdb->prefix))); }
    if((int)$old_version<5) { $bad=(int)$wpdb->get_var("SELECT COUNT(*) FROM ".POW\Installer::partners_table()." WHERE exit_policy <> CASE WHEN mode = 'dual_exit' THEN 'punchout_and_checkout' ELSE 'punchout_only' END"); $this->check(0===$bad,'legacy mode equivalence migrated for every existing company'); }
    $this->policy=new POW\Checkout\ExitPolicy(new POW\Settings(),$this->registry);
-   $owner=$this->user('customer');$buyer=$this->user(POW\Installer::ROLE);$other=$this->user(POW\Installer::ROLE);$suffix=bin2hex(random_bytes(8));
+   $owner=$this->user('customer');$ordinary=$this->user('customer');$buyer=$this->user(POW\Installer::ROLE);$other=$this->user(POW\Installer::ROLE);$suffix=bin2hex(random_bytes(8));
    $id=$this->registry->insert(['name'=>'Example exit company','status'=>'active','owner_user_id'=>$owner,'sender_domain'=>'NetworkID','sender_identity'=>'exit-'.$suffix,'from_domain'=>'NetworkID','from_identity'=>'buyer-'.$suffix,'to_domain'=>'NetworkID','to_identity'=>'supplier','mode'=>'dual_exit']);
-   $this->fixture=['partner'=>$id,'buyer'=>$buyer,'other'=>$other,'owner'=>$owner]; update_user_meta($buyer,'_pow_partner_id',$id);update_user_meta($other,'_pow_partner_id',$id);
+   $this->fixture=['partner'=>$id,'buyer'=>$buyer,'other'=>$other,'owner'=>$owner,'ordinary'=>$ordinary]; update_user_meta($buyer,'_pow_partner_id',$id);update_user_meta($other,'_pow_partner_id',$id);
    $this->check($id>0 && 'punchout_and_checkout'===$this->registry->find($id)->exit_policy,'new companies default to explicit checkout regardless of old mode field');
    POW\Installer::activate(); $this->check('punchout_and_checkout'===$this->registry->find($id)->exit_policy,'reactivation preserves explicit checkout');
    $this->settings('punchout_only');
@@ -185,7 +185,20 @@ final class ExitPolicyNative {
    ob_start();do_action('woocommerce_thankyou',$order->get_id());$html=ob_get_clean();$this->check(str_contains($html,'punchout/return'),'same buyer paid closeout remains visible after tightening');
    $this->check(!$guard->checkout_allowed($order),'paid closeout cannot reopen payment');
    $this->login($other);ob_start();do_action('woocommerce_thankyou',$order->get_id());$html=ob_get_clean();$this->check(!str_contains($html,'punchout/return'),'other buyer cannot see paid closeout');
-   $this->login($owner);$this->check($guard->checkout_allowed(),'ordinary shoppers remain native');$ordinary_exits=do_shortcode('[punchout_cart_exits]');$this->check(str_contains($ordinary_exits,wc_get_checkout_url()) && !str_contains($ordinary_exits,'pow-return-form'),'ordinary native cart control renders checkout only');$this->denied(fn()=>do_action('woocommerce_before_pay_action',$order),'ordinary actor cannot pay tagged punchout order');
+   $this->login($ordinary);$this->check($guard->checkout_allowed(),'ordinary B2B remains independent of another company policy');$ordinary_exits=do_shortcode('[punchout_cart_exits]');$this->check(str_contains($ordinary_exits,wc_get_checkout_url()) && !str_contains($ordinary_exits,'pow-return-form'),'ordinary native cart control renders checkout only');$this->denied(fn()=>do_action('woocommerce_before_pay_action',$order),'ordinary actor cannot pay tagged punchout order');
+   $this->login($owner);$this->check(null===$this->plugin->current_session(),'direct owner login has no fabricated purchasing-system session');
+   $this->check(!$guard->checkout_allowed(),'active PunchOut-only company denies its direct owner checkout');
+   $owner_exits=do_shortcode('[punchout_cart_exits]');$this->check(!str_contains($owner_exits,'pow-return-form'),'direct owner never receives a fake PO return control');
+   $account_items=apply_filters('woocommerce_account_menu_items',['dashboard'=>'Dashboard']);$this->check(isset($account_items[POW\Account\IntegrationTab::ENDPOINT]),'PunchOut-only owner retains My Account integration access');
+   $owner_order=wc_create_order(['customer_id'=>$owner,'status'=>'pending']);$owner_order->set_total(10);$owner_order->save();$this->fixture['owner_order']=$owner_order->get_id();
+   $this->check(!$guard->checkout_allowed($owner_order),'direct owner ordinary unpaid order is denied under company ONLY');
+   wc_clear_notices();do_action('woocommerce_checkout_process');$this->check(wc_notice_count('error')>0,'direct owner classic checkout process is denied');wc_clear_notices();
+   $this->denied(fn()=>do_action('woocommerce_checkout_create_order',$owner_order),'direct owner classic order boundary is denied');
+   $this->denied(fn()=>do_action('woocommerce_store_api_checkout_update_order_from_request',$owner_order,new WP_REST_Request('POST','/wc/store/v1/checkout')),'direct owner Store API boundary is denied');
+   $this->denied(fn()=>do_action('woocommerce_before_pay_action',$owner_order),'direct owner order-pay boundary is denied');
+   $this->company('punchout_and_checkout');$this->login($owner);$this->check($guard->checkout_allowed($owner_order),'active company BOTH permits its direct owner ordinary checkout');
+   $owner_exits=do_shortcode('[punchout_cart_exits]');$this->check(str_contains($owner_exits,wc_get_checkout_url()) && !str_contains($owner_exits,'pow-return-form'),'BOTH owner receives checkout without a fake PO return');
+   $this->company('punchout_only');
    wp_set_current_user($this->admin);$this->check(true===$this->policy->save_buyer($id,$this->admin,$buyer,'punchout_only'),'persist final restriction for restart readback');
    $before_reset=$this->registry->find($id);$reg=new POW\Partners\Registration($this->registry,$this->plugin->sessions(),$this->plugin->audit());$identity=[];foreach(['from_domain','from_identity','sender_domain','sender_identity','to_domain','to_identity'] as $field)$identity[$field]=$before_reset->$field;$secret=$reg->reset($id,$identity,$this->admin);
    $after_reset=$this->registry->find($id);$this->check($secret!=='' && $after_reset->exit_policy===$before_reset->exit_policy && $after_reset->owner_user_id===$owner && $this->policy->buyer_value($id,$buyer)==='punchout_only','native connection reset preserves company cap, owner and buyer restriction');unset($secret);

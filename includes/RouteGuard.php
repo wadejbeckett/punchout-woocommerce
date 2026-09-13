@@ -17,7 +17,7 @@ use POW\Sessions\Session;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Keeps punchout logins on permitted surfaces and enforces the fresh exit hierarchy at native order/payment boundaries. Ordinary shoppers retain native behavior; paid-order information remains separate from permission to make another payment.
+ * Keeps punchout logins on permitted surfaces and enforces fresh company entitlement at native order/payment boundaries. Unrelated shoppers retain native behavior; paid-order information remains separate from permission to make another payment.
  */
 final class RouteGuard {
 
@@ -43,13 +43,10 @@ final class RouteGuard {
 	public function guard(): void {
 		$session = $this->plugin->current_session();
 
-		if ( null === $session ) {
-			return;
-		}
-
 		// Account surfaces (order history, addresses, downloads, password
-		// changes) are outside a punchout session's remit.
-		if ( function_exists( 'is_account_page' ) && is_account_page() ) {
+		// changes) are outside a punchout session's remit. A direct company
+		// owner has no PunchOut session and retains ordinary account access.
+		if ( null !== $session && function_exists( 'is_account_page' ) && is_account_page() ) {
 			$this->redirect_to_landing();
 			return;
 		}
@@ -68,10 +65,14 @@ final class RouteGuard {
 		}
 
 		// Ordinary checkout follows current entitlement; order-pay has its own payment check above, while owned order-received information remains reachable.
-		if ( $this->requisition_only() && function_exists( 'is_checkout' ) && is_checkout() && 0 === $endpoint_order_id ) {
+		if ( function_exists( 'is_checkout' ) && is_checkout() && 0 === $endpoint_order_id && $this->requisition_only() ) {
 			$target = function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : $this->settings->landing_url();
 			wp_safe_redirect( $target, 302 );
 			exit;
+		}
+
+		if ( null === $session ) {
+			return;
 		}
 
 		/**
@@ -115,12 +116,18 @@ final class RouteGuard {
 	}
 
 	/**
-	 * The requisition-only refusal, naming the exit control by whatever
-	 * the operator called it — the Punchout button label setting, then
-	 * the same filter the button itself passes through, so the message
-	 * always points at the control the buyer can actually see.
+	 * Direct owners retain My Account guidance. Session buyers receive the
+	 * operator's configured and filtered PunchOut return-button label.
 	 */
 	private function checkout_blocked_message(): string {
+		if ( null === $this->plugin->current_session() ) {
+			$actor = get_current_user_id();
+			$owner_policy = ( new ExitPolicy( $this->settings, $this->registry ) )->effective_for_owner( $actor );
+			if ( ExitPolicy::ONLY === $owner_policy ) {
+				return __( 'Checkout is not available for this PunchOut-only company. My Account remains available for company configuration.', 'punchout-woocommerce' );
+			}
+		}
+
 		$label = (string) apply_filters(
 			'pow_return_button_label',
 			$this->settings->button_label(
@@ -163,7 +170,11 @@ final class RouteGuard {
 			$session = $this->plugin->current_session();
 			$buyer = $user && ( in_array( Installer::ROLE, (array) $user->roles, true ) || get_user_meta( $actor, '_pow_partner_id', true ) );
 			$tagged = $order && ( $order->get_meta( '_pow_session' ) || $order->get_meta( '_pow_partner' ) );
-			if ( ! $buyer && ! $session && ! $tagged ) { return true; }
+			if ( ! $buyer && ! $session && ! $tagged ) {
+				if ( ! $this->plugin->enabled() ) { return true; }
+				$owner_policy = ( new ExitPolicy( $this->settings, $this->registry ) )->effective_for_owner( $actor );
+				return null === $owner_policy || ExitPolicy::CHECKOUT === $owner_policy;
+			}
 			if ( ! $this->plugin->enabled() || ! $session || $session->user_id !== $actor ) { return false; }
 			$fresh = $this->plugin->sessions()?->find_for_login( $actor, wp_get_session_token(), [ Session::ACTIVE ] );
 			if ( ! $fresh || $fresh->id !== $session->id || $fresh->partner_id !== $session->partner_id || ! $fresh->expires || strtotime( $fresh->expires . ' UTC' ) <= time() ) { return false; }

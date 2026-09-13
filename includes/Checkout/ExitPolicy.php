@@ -38,6 +38,17 @@ final class ExitPolicy {
 		} catch ( \Throwable $e ) { return self::ONLY; }
 	}
 
+	/** An active company cap also governs its ordinary owner; no company means no PunchOut policy. */
+	public function effective_for_owner( int $owner_user_id ): ?string {
+		try {
+			$partner = $this->registry->find_by_owner( $owner_user_id );
+			if ( ! $partner ) { return null; }
+			if ( ! $partner->is_owned_by( $owner_user_id ) ) { return self::ONLY; }
+			if ( ! $partner->is_active() ) { return null; }
+			return self::resolve( self::INHERIT, $partner->exit_policy, self::INHERIT );
+		} catch ( \Throwable $e ) { return self::ONLY; }
+	}
+
 	/** A stored buyer is an automatically provisioned member, never a posted owner or editable email. */
 	public function member( int $partner_id, int $buyer_id ): bool {
 		$user = $buyer_id > 0 ? get_userdata( $buyer_id ) : false;
