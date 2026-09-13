@@ -91,17 +91,19 @@ final class RateLimiterTest extends TestCase {
 		self::assertFalse( $hour->allow( 'acct|i203.0.113.9' ) );
 	}
 
-	public function test_default_setter_passes_each_window_ttl_and_rejection_does_not_write(): void {
-		$GLOBALS['pow_test_transients'] = [];
-		$GLOBALS['pow_test_transient_expirations'] = [];
-		foreach ( [ 60, 3600 ] as $seconds ) {
-			$limiter = new RateLimiter( 1, null, null, $seconds );
-			self::assertTrue( $limiter->allow( 'shared' ) );
-			$key = 'pow_rl_' . $seconds . '_' . md5( 'shared' );
-			self::assertSame( 1, $GLOBALS['pow_test_transients'][ $key ] ?? null );
-			self::assertSame( [ $seconds ], $GLOBALS['pow_test_transient_expirations'][ $key ] ?? null );
-			self::assertFalse( $limiter->allow( 'shared' ) );
-			self::assertSame( [ $seconds ], $GLOBALS['pow_test_transient_expirations'][ $key ] );
+	public function test_injected_storage_write_failure_fails_closed(): void {
+		$limiter = new RateLimiter( 1, static fn(): int => 0, static fn(): bool => false );
+
+		self::assertFalse( $limiter->allow( 'shared' ) );
+	}
+
+	public function test_missing_native_database_fails_closed_without_transient_fallback(): void {
+		$previous = $GLOBALS['wpdb'] ?? null;
+		unset( $GLOBALS['wpdb'] );
+		try {
+			self::assertFalse( ( new RateLimiter( 1 ) )->allow( 'shared' ) );
+		} finally {
+			if ( null !== $previous ) { $GLOBALS['wpdb'] = $previous; }
 		}
 	}
 
@@ -148,5 +150,32 @@ final class RateLimiterTest extends TestCase {
 		for ( $i = 0; $i < 100; $i++ ) {
 			self::assertTrue( $limiter->allow( 'p1|1.2.3.4' ) );
 		}
+	}
+
+	public function test_atomic_consumer_receives_the_shared_window_key_and_decides_the_permit(): void {
+		$calls = [];
+		$consume = static function ( string $key, int $limit, int $window ) use ( &$calls ): bool {
+			$calls[] = [ $key, $limit, $window ];
+			return 1 === count( $calls );
+		};
+		$limiter = new RateLimiter( 10, null, null, 60, $consume );
+
+		self::assertTrue( $limiter->allow( 'partner-7|203.0.113.8' ) );
+		self::assertFalse( $limiter->allow( 'partner-7|203.0.113.8' ) );
+		self::assertSame(
+			[
+				[ 'pow_rl_60_' . md5( 'partner-7|203.0.113.8' ), 10, 60 ],
+				[ 'pow_rl_60_' . md5( 'partner-7|203.0.113.8' ), 10, 60 ],
+			],
+			$calls
+		);
+	}
+
+	public function test_atomic_storage_failure_and_exception_fail_closed(): void {
+		$failed = new RateLimiter( 10, null, null, 60, static fn(): bool => false );
+		$thrown = new RateLimiter( 10, null, null, 60, static function (): bool { throw new RuntimeException( 'storage unavailable' ); } );
+
+		self::assertFalse( $failed->allow( 'credential-checker' ) );
+		self::assertFalse( $thrown->allow( 'credential-checker' ) );
 	}
 }

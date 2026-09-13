@@ -13,7 +13,7 @@ namespace POW\Http;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Transient-backed counter for a named bucket, with a fixed window duration per limiter and injectable storage. Each accepted hit refreshes the transient TTL; rejected hits do not write. This is a blunt anti-abuse counter, not atomic or precise traffic shaping.
+ * Database-backed atomic counter for a named bucket, with a fixed window duration per limiter and injectable storage for deterministic unit boundaries.
  *
  * Window-specific keys separate minute and hourly consumers. Introducing the window namespace resets existing live counters once on deploy.
  */
@@ -25,21 +25,54 @@ final class RateLimiter {
 	/** @var callable(string, int): void */
 	private $set;
 
+	/** @var callable(string, int, int): bool */
+	private $consume;
+
 	/**
 	 * @param int           $per_minute Threshold per window (<= 0 disables limiting).
 	 * @param callable|null $get        fn(string $key): int — current count.
 	 * @param callable|null $set        fn(string $key, int $count): void — store with the window TTL.
 	 * @param int           $window_seconds Fixed window duration in seconds (default 60).
+	 * @param callable|null $consume         Atomic fn(string $key, int $limit, int $window): bool. Production defaults to RateLimitStore; tests may inject a deterministic boundary.
 	 */
 	public function __construct(
 		private int $per_minute,
 		?callable $get = null,
 		?callable $set = null,
 		private int $window_seconds = 60,
+		?callable $consume = null,
 	) {
-		$this->get = $get ?? static fn( string $key ): int => (int) get_transient( $key );
-		$this->set = $set ?? function ( string $key, int $count ): void {
-			set_transient( $key, $count, $this->window_seconds );
+		if ( null !== $consume ) {
+			$this->consume = $consume;
+			$this->get = static fn(): int => 0;
+			$this->set = static function (): void {};
+			return;
+		}
+		if ( null === $get && null === $set ) {
+			global $wpdb;
+			if ( isset( $wpdb ) && class_exists( '\\wpdb', false ) && $wpdb instanceof \wpdb ) {
+				$store = new RateLimitStore();
+				$this->consume = [ $store, 'consume' ];
+				$this->get = static fn(): int => 0;
+				$this->set = static function (): void {};
+				return;
+			}
+			$this->consume = static fn(): bool => false;
+			$this->get = static fn(): int => 0;
+			$this->set = static function (): void {};
+			return;
+		}
+		if ( null === $get || null === $set ) {
+			throw new \InvalidArgumentException( 'Both rate-limit storage callbacks are required.' );
+		}
+		$this->get = $get;
+		$this->set = $set;
+		$this->consume = function ( string $key, int $limit ): bool {
+			$count = ( $this->get )( $key );
+			if ( $count >= $limit ) {
+				return false;
+			}
+			return false !== ( $this->set )( $key, $count + 1 );
 		};
 	}
 
@@ -60,15 +93,14 @@ final class RateLimiter {
 			return true;
 		}
 
-		$key   = 'pow_rl_' . $this->window_seconds . '_' . md5( $bucket );
-		$count = ( $this->get )( $key );
-
-		if ( $count >= $this->per_minute ) {
+		if ( $this->window_seconds <= 0 ) {
 			return false;
 		}
-
-		( $this->set )( $key, $count + 1 );
-
-		return true;
+		$key = 'pow_rl_' . $this->window_seconds . '_' . md5( $bucket );
+		try {
+			return true === ( $this->consume )( $key, $this->per_minute, $this->window_seconds );
+		} catch ( \Throwable $error ) {
+			return false;
+		}
 	}
 }

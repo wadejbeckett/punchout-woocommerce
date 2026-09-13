@@ -82,11 +82,29 @@ final class Provisioner {
 		}
 
 		if ( false !== $existing && $existing instanceof \WP_User ) {
+			$existing = $this->fresh_owned_buyer( $existing->ID, $partner->id, $identity, true );
+			if ( ! $existing ) {
+				$this->logger->warning( 'Refusing buyer account outside the current punchout mapping', [ 'partner' => $partner->id ] );
+				return 0;
+			}
 			update_user_meta( $existing->ID, '_pow_last_seen', time() );
 			delete_user_meta( $existing->ID, '_pow_deactivated' );
+			$existing = $this->fresh_owned_buyer( $existing->ID, $partner->id, $identity );
+			if ( ! $existing ) {
+				return 0;
+			}
 
 			/** This hook is documented below, at the new-user call site. */
 			do_action( 'pow_buyer_provisioned', $existing->ID, $partner, false );
+			$existing = $this->fresh_owned_buyer( $existing->ID, $partner->id, $identity );
+			if ( ! $existing ) {
+				$this->logger->warning( 'Buyer callback changed account ownership or privileges', [ 'partner' => $partner->id ] );
+				return 0;
+			}
+			$this->audit->write_checked(
+				'buyer_provisioned',
+				[ 'partner_id' => $partner->id, 'user_id' => $existing->ID, 'result' => 'reused' ]
+			);
 
 			return $existing->ID;
 		}
@@ -125,6 +143,10 @@ final class Provisioner {
 		if ( $ephemeral ) {
 			update_user_meta( $user_id, '_pow_ephemeral', 1 );
 		}
+		if ( ! $this->fresh_owned_buyer( (int) $user_id, $partner->id, $identity ) ) {
+			$this->logger->error( 'Buyer ownership could not be confirmed', [ 'partner' => $partner->id ] );
+			return 0;
+		}
 
 		/**
 		 * Fires every time a punchout buyer is provisioned — on first
@@ -137,8 +159,12 @@ final class Provisioner {
 		 * @param bool    $is_new  True only on first creation.
 		 */
 		do_action( 'pow_buyer_provisioned', $user_id, $partner, true );
+		if ( ! $this->fresh_owned_buyer( (int) $user_id, $partner->id, $identity ) ) {
+			$this->logger->warning( 'Buyer callback changed account ownership or privileges', [ 'partner' => $partner->id ] );
+			return 0;
+		}
 
-		$this->audit->write(
+		$this->audit->write_checked(
 			'buyer_provisioned',
 			[
 				'partner_id' => $partner->id,
@@ -148,6 +174,25 @@ final class Provisioner {
 		);
 
 		return $user_id;
+	}
+
+	/** Freshly prove that a deterministic login still belongs only to this buyer mapping. */
+	private function fresh_owned_buyer( int $user_id, int $partner_id, string $identity, bool $allow_deactivated = false ): ?\WP_User {
+		if ( $user_id <= 0 || $partner_id <= 0 || '' === $identity ) {
+			return null;
+		}
+		clean_user_cache( $user_id );
+		wp_cache_delete( $user_id, 'user_meta' );
+		$user = get_userdata( $user_id );
+		if ( ! $user || [ Installer::ROLE ] !== array_values( (array) $user->roles ) || (string) $partner_id !== (string) get_user_meta( $user_id, '_pow_partner_id', true ) || $identity !== (string) get_user_meta( $user_id, '_pow_identity', true ) || ( ! $allow_deactivated && (bool) get_user_meta( $user_id, '_pow_deactivated', true ) ) ) {
+			return null;
+		}
+		foreach ( [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ] as $capability ) {
+			if ( user_can( $user, $capability ) ) {
+				return null;
+			}
+		}
+		return $user;
 	}
 
 	/**
