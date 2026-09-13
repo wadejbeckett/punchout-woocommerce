@@ -23,7 +23,7 @@
  * @var list<array{version:string,xml:string,total:string,freight_total:string}> $delivery_samples Full enabled examples from the live Builder.
  * @var string                $cxml_version   cXML version of the samples.
  * @var int                   $rate_limit     Configured setup requests per minute (nonpositive = default 30).
- * @var list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string}> $connections Per-connection block; empty unless privileged.
+ * @var list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string, setup_template: string}> $connections Per-connection block; empty unless privileged.
  * @var string                $self_test      Pre-rendered self-test box.
  * @var bool                  $privileged     Whether the viewer is a store administrator.
  *
@@ -90,6 +90,11 @@ defined( 'ABSPATH' ) || exit;
 				<?php endforeach; ?>
 			</tbody>
 		</table>
+		<?php foreach ( $connections as $pow_connection ) : ?>
+			<h4><?php echo esc_html( (string) $pow_connection['name'] ); ?></h4>
+			<p><?php esc_html_e( 'Copy this company-specific template into the buyer system. Replace the SharedSecret placeholder privately; the remaining example runtime values must be supplied by the buyer system for each launch.', 'punchout-woocommerce' ); ?></p>
+			<pre class="pow-docs-sample"><?php echo esc_html( (string) $pow_connection['setup_template'] ); ?></pre>
+		<?php endforeach; ?>
 	<?php endif; ?>
 
 	<h3><?php esc_html_e( 'What we speak', 'punchout-woocommerce' ); ?></h3>
@@ -101,6 +106,11 @@ defined( 'ABSPATH' ) || exit;
 	<p><?php esc_html_e( 'The DOCTYPE on our documents is a SYSTEM identifier only. We never fetch it, and we do not expect you to: inbound documents declaring entities are refused outright.', 'punchout-woocommerce' ); ?></p>
 
 	<h3><?php esc_html_e( 'The setup request, annotated', 'punchout-woocommerce' ); ?></h3>
+	<ol>
+		<?php foreach ( $reference->setup_template_steps() as $pow_step ) : ?>
+			<li><?php echo esc_html( $pow_step ); ?></li>
+		<?php endforeach; ?>
+	</ol>
 	<pre class="pow-docs-sample"><?php echo esc_html( $setup_request ); ?></pre>
 	<table class="pow-docs-table">
 		<thead>

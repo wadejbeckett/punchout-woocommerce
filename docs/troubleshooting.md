@@ -12,7 +12,7 @@ Establish the installed build and available features. A preview, sample or self-
 | Returning buyer becomes new user | Runtime identity value, email changes, blank higher-priority extrinsics or missing identity. |
 | Cart returns but lines differ | SKU omissions, EA unit acceptance, classification, currency, quantity/price rounding and ShortName handling. |
 | Return reaches purchasing-system login | Cross-site receiver cookies/session and actual BrowserFormPost target. Supplier authentication success does not establish receiver acceptance. |
-| Address or freight absent | Whether planned confirmation/export is installed, enabled and accepted by this receiver. |
+| Address or freight absent | Whether the release-candidate confirmation flow ran, the separate connection export option is enabled, the selected dialect supports the field and the receiver accepts it. |
 
 Default StartPage lifetime is 300 seconds; shopping lifetime is 14,400 seconds, with connection overrides. Latest shopping supersedes the same buyer's prior open session. Different employees should have distinct records. Rate limiting and expiry are separate controls; repeated retries can obscure the original fault.
 
@@ -23,7 +23,7 @@ Use supplier audit records and the Dynamics cart message log. Microsoft document
 1. Confirm an ordinary owner can apply with technical details and pending cannot authenticate; approve through the completed administrator workflow.
 2. Launch two distinct employees, verify separate carts, then recognize a returning employee without manual approval.
 3. Return actual cart lines and compare names, quantities, units, currency and totals in the purchasing system.
-4. When confirmation is installed, exercise Back to cart, changed addresses/rates, free/pickup/no-rate outcomes and snapshot durability. Punchout-only must offer no payment.
+4. Exercise Back to cart, changed addresses/rates, free/pickup/no-rate outcomes and snapshot durability. Punchout-only must offer no payment.
 5. Verify rotation overlap, closure, deactivation, expiry and secret-free subsequent page loads.
 
 Record each result with its installed build and tenant configuration. Supplier success, DTD validity and business approval are separate outcomes; none proves a future inbound PO receiver works.
