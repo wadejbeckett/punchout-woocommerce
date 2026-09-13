@@ -37,14 +37,14 @@ final class DocsSamplesTest extends TestCase {
 		self::assertNotSame( '', $message->buyer_cookie );
 	}
 
-	public function test_inbound_example_is_neutral_and_valid_in_its_declared_dtd(): void {
+	public function test_populated_buyer_sent_specimen_is_neutral_parseable_and_valid_in_its_declared_dtd(): void {
 		$this->assert_validates( Samples::setup_request(), 'setup_request' );
 		self::assertStringContainsString( 'addressID="BUYER-001"', Samples::setup_request() );
 		self::assertStringContainsString( 'EXAMPLE-BUYER-COOKIE', Samples::parsed()->buyer_cookie );
 		self::assertStringContainsString( '<SupplierSetup><URL>https://shop.example.com/punchout/setup</URL></SupplierSetup>', Samples::setup_request() );
 	}
 
-	public function test_company_template_uses_exact_connection_fields_and_safe_runtime_examples(): void {
+	public function test_company_configuration_template_uses_confirmed_dynamics_shape_and_blank_runtime_fields(): void {
 		$partner = $this->partner(
 			'production',
 			[
@@ -60,29 +60,59 @@ final class DocsSamplesTest extends TestCase {
 		);
 		$xml = Samples::setup_template( $partner, 'https://shop.example.com/punchout/setup?tenant=one&channel=cxml' );
 
-		$this->assert_validates( $xml, 'company setup template' );
 		$doc = new DOMDocument();
 		self::assertTrue( $doc->loadXML( $xml, LIBXML_NONET ) );
 		$xpath = new DOMXPath( $doc );
+		self::assertSame( '', $xpath->evaluate( 'string(/cXML/@payloadID)' ) );
+		self::assertSame( '', $xpath->evaluate( 'string(/cXML/@timestamp)' ) );
+		self::assertSame( '1.2.008', $xpath->evaluate( 'string(/cXML/@version)' ) );
 		self::assertSame( 'Buyer&"<', $xpath->evaluate( 'string(/cXML/Header/From/Credential/@domain)' ) );
 		self::assertSame( 'FROM<&', $xpath->evaluate( 'string(/cXML/Header/From/Credential/Identity)' ) );
 		self::assertSame( 'Sender&"<', $xpath->evaluate( 'string(/cXML/Header/Sender/Credential/@domain)' ) );
 		self::assertSame( 'SENDER<&', $xpath->evaluate( 'string(/cXML/Header/Sender/Credential/Identity)' ) );
 		self::assertSame( 'Supplier&"<', $xpath->evaluate( 'string(/cXML/Header/To/Credential/@domain)' ) );
 		self::assertSame( 'TO<&', $xpath->evaluate( 'string(/cXML/Header/To/Credential/Identity)' ) );
+		self::assertSame( 'Dynamics 365 for Operations', $xpath->evaluate( 'string(/cXML/Header/Sender/UserAgent)' ) );
 		self::assertSame( 'production', $xpath->evaluate( 'string(/cXML/Request/@deploymentMode)' ) );
 		self::assertSame( 'https://shop.example.com/punchout/setup?tenant=one&channel=cxml', $xpath->evaluate( 'string(//SupplierSetup/URL)' ) );
 		self::assertSame( 'REPLACE-WITH-ISSUED-SHARED-SECRET', $xpath->evaluate( 'string(//SharedSecret)' ) );
-		self::assertSame( 'BUYER-SYSTEM-RUNTIME-VALUE', $xpath->evaluate( 'string(//BuyerCookie)' ) );
-		self::assertSame( 'buyer.user@example.invalid', $xpath->evaluate( 'string(//Extrinsic[@name="UserEmail"] )' ) );
-		self::assertSame( 'https://buyer.example.invalid/punchout-return', $xpath->evaluate( 'string(//BrowserFormPost/URL)' ) );
+		self::assertSame( '', $xpath->evaluate( 'string(//BuyerCookie)' ) );
+		self::assertSame( 0, $xpath->query( '//Extrinsic[@name="UserEmail"]' )->length );
+		self::assertSame( '', $xpath->evaluate( 'string(//BrowserFormPost/URL)' ) );
+		self::assertTrue( strpos( $xml, '<SupplierSetup>' ) < strpos( $xml, '<BuyerCookie ' ) );
 		self::assertStringNotContainsString( 'SEALED-CURRENT-MATERIAL', $xml );
 		self::assertStringNotContainsString( 'SEALED-PREVIOUS-MATERIAL', $xml );
-		$parsed = ( new Parser() )->parse( $xml );
-		self::assertSame( 'Buyer&"<', $parsed->from_domain );
-		self::assertSame( 'FROM<&', $parsed->from_identity );
-		self::assertSame( 'Sender&"<', $parsed->sender_domain );
-		self::assertSame( 'SENDER<&', $parsed->sender_identity );
+		foreach ( [ 'BUYER-SYSTEM-RUNTIME-VALUE', 'buyer.user@example.invalid', 'buyer.example.invalid', 'buyer-system-generates-this' ] as $invented ) {
+			self::assertStringNotContainsString( $invented, $xml );
+		}
+	}
+
+	public function test_company_configuration_template_requires_https_unless_http_is_explicitly_allowed_for_development(): void {
+		$had_environment = array_key_exists( 'pow_test_environment_type', $GLOBALS );
+		$old_environment = $GLOBALS['pow_test_environment_type'] ?? null;
+		try {
+			foreach ( [ 'local', 'development' ] as $environment ) {
+				$GLOBALS['pow_test_environment_type'] = $environment;
+				$local = Samples::setup_template( $this->partner( 'test' ), 'http://shop.example.test/punchout/setup' );
+				self::assertStringContainsString( '<SupplierSetup><URL>http://shop.example.test/punchout/setup</URL></SupplierSetup>', $local );
+			}
+
+			foreach ( [ 'staging', 'production' ] as $environment ) {
+				$GLOBALS['pow_test_environment_type'] = $environment;
+				try {
+					Samples::setup_template( $this->partner( 'test' ), 'http://shop.example.test/punchout/setup' );
+					self::fail( 'Published ' . $environment . ' template accepted an HTTP supplier URL.' );
+				} catch ( DomainException $error ) {
+					self::assertSame( 'Invalid supplier setup URL.', $error->getMessage() );
+				}
+			}
+		} finally {
+			if ( $had_environment ) {
+				$GLOBALS['pow_test_environment_type'] = $old_environment;
+			} else {
+				unset( $GLOBALS['pow_test_environment_type'] );
+			}
+		}
 	}
 
 	public function test_company_template_selects_each_supported_deployment_mode(): void {

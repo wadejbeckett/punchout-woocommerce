@@ -413,6 +413,8 @@ final class DocsPageTest extends TestCase {
 		self::assertCount( 1, $rows );
 		self::assertStringContainsString( '<Identity>SENDER-ONE</Identity>', $rows[0]['setup_template'] );
 		self::assertStringContainsString( '<SupplierSetup><URL>https://shop.example.com/punchout/setup</URL></SupplierSetup>', $rows[0]['setup_template'] );
+		self::assertStringContainsString( 'payloadID="" timestamp=""', $rows[0]['setup_template'] );
+		self::assertStringContainsString( '<BrowserFormPost><URL /></BrowserFormPost>', $rows[0]['setup_template'] );
 		self::assertStringNotContainsString( 'SEALED-PRIVATE', $rows[0]['setup_template'] );
 		$vars = $this->page_vars();
 		$vars['privileged'] = true;
