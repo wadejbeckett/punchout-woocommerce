@@ -55,7 +55,7 @@ defined( 'ABSPATH' ) || exit;
 			<?php endforeach; ?>
 		</tbody></table>
 		<p><?php esc_html_e( 'Connection identities and purchasing permissions are managed by the store. Contact the store if your purchasing system changes.', 'punchout-woocommerce' ); ?></p>
-		<p><?php esc_html_e( 'Download the company setup XML, replace its SharedSecret placeholder in your purchasing system, and configure BuyerCookie, UserEmail and BrowserFormPost as runtime values. The download never contains your stored secret.', 'punchout-woocommerce' ); ?></p>
+		<p><?php esc_html_e( 'Download the company Dynamics setup XML and replace its SharedSecret placeholder in your purchasing system. The blank payloadID, timestamp, BuyerCookie and BrowserFormPost fields must be supplied at runtime; configure UserEmail separately in the extrinsics mapping. The download never contains your stored secret.', 'punchout-woocommerce' ); ?></p>
 		<form method="post" action="<?php echo esc_url( $action_url ); ?>">
 			<input type="hidden" name="_wpnonce" value="<?php echo esc_attr( $nonce ); ?>" />
 			<button type="submit" name="pow_account_action" value="download_setup_template" class="woocommerce-Button button"><?php esc_html_e( 'Download setup XML', 'punchout-woocommerce' ); ?></button>

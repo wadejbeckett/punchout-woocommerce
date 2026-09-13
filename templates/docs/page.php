@@ -92,7 +92,7 @@ defined( 'ABSPATH' ) || exit;
 		</table>
 		<?php foreach ( $connections as $pow_connection ) : ?>
 			<h4><?php echo esc_html( (string) $pow_connection['name'] ); ?></h4>
-			<p><?php esc_html_e( 'Copy this company-specific template into the buyer system. Replace the SharedSecret placeholder privately; the remaining example runtime values must be supplied by the buyer system for each launch.', 'punchout-woocommerce' ); ?></p>
+			<p><?php esc_html_e( 'Copy this company-specific Dynamics configuration into the buyer system. Replace the SharedSecret placeholder privately. The blank payloadID, timestamp, BuyerCookie and BrowserFormPost fields must be supplied at runtime; configure UserEmail separately in the buyer system’s extrinsics mapping.', 'punchout-woocommerce' ); ?></p>
 			<pre class="pow-docs-sample"><?php echo esc_html( (string) $pow_connection['setup_template'] ); ?></pre>
 		<?php endforeach; ?>
 	<?php endif; ?>
@@ -105,7 +105,7 @@ defined( 'ABSPATH' ) || exit;
 	</ul>
 	<p><?php esc_html_e( 'The DOCTYPE on our documents is a SYSTEM identifier only. We never fetch it, and we do not expect you to: inbound documents declaring entities are refused outright.', 'punchout-woocommerce' ); ?></p>
 
-	<h3><?php esc_html_e( 'The setup request, annotated', 'punchout-woocommerce' ); ?></h3>
+	<h3><?php esc_html_e( 'Populated setup request specimen, annotated', 'punchout-woocommerce' ); ?></h3>
 	<ol>
 		<?php foreach ( $reference->setup_template_steps() as $pow_step ) : ?>
 			<li><?php echo esc_html( $pow_step ); ?></li>

@@ -2,9 +2,9 @@
 
 Use Microsoft's [external catalog setup instructions](https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/set-up-external-catalog-for-punchout). Configure vendor/category access, units and currency; validate and activate the catalog. Validation alone is not a requisition-to-cart-return test.
 
-Download the company setup XML from **My Account → Punchout integration**. Paste its complete cXML document into the external catalog's setup template, then put the privately issued credential in place of `REPLACE-WITH-ISSUED-SHARED-SECRET`. The file contains the company's exact static From, Sender, To, `deploymentMode` and `SupplierSetup/URL`; it never contains a stored secret.
+Download the company setup XML from **My Account → Punchout integration**. Paste its complete cXML document into the external catalog's setup template, then put the privately issued credential in place of `REPLACE-WITH-ISSUED-SHARED-SECRET`. The file contains the company's exact static From, Sender, To, `deploymentMode` and HTTPS `SupplierSetup/URL`; it never contains a stored secret.
 
-Dynamics must supply `payloadID`, `timestamp`, `BuyerCookie`, the initiating user's `UserEmail` and its own `BrowserFormPost/URL` at runtime. Configure those through Microsoft's documented template and extrinsic controls. The example values in the downloaded XML show the required shape; they are not literal values for every launch or invented Dynamics substitution tokens. `BrowserFormPost/URL` is the Dynamics cart-return receiver and must not be replaced with the supplier setup URL.
+The downloaded `payloadID`, `timestamp`, `BuyerCookie` and `BrowserFormPost/URL` fields are blank by design. Configure Dynamics to supply them at runtime. Configure the initiating user's `UserEmail` separately through the catalog's extrinsics grid described below; the downloaded XML does not duplicate that element. The download contains no invented Dynamics substitution syntax. `BrowserFormPost/URL` is the Dynamics cart-return receiver and must not be replaced with the supplier setup URL.
 
 ## Nine setup fields, nine returned mappings
 

@@ -83,9 +83,10 @@ final class Samples {
 XML;
 	}
 
-	/** Complete company-specific setup request with runtime examples and no stored secret. */
+	/** Dynamics configuration with blank session fields and no stored secret. */
 	public static function setup_template( Partner $partner, string $supplier_url ): string {
-		return SetupTemplate::for_partner( $partner, $supplier_url );
+		$allow_http = in_array( wp_get_environment_type(), [ 'local', 'development' ], true );
+		return SetupTemplate::for_partner( $partner, $supplier_url, $allow_http );
 	}
 
 	/**

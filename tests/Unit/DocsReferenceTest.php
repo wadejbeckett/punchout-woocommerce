@@ -91,6 +91,8 @@ final class DocsReferenceTest extends TestCase {
 		foreach ( [ 'From', 'Sender', 'To', 'SupplierSetup', 'SharedSecret', 'BuyerCookie', 'UserEmail', 'BrowserFormPost', 'runtime' ] as $term ) {
 			self::assertStringContainsString( $term, $text );
 		}
+		self::assertStringContainsString( 'blank', $text );
+		self::assertStringContainsString( 'separate', $text );
 		self::assertStringContainsString( 'not the supplier setup URL', $text );
 	}
 }

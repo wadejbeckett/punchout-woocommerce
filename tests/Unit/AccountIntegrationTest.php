@@ -180,6 +180,11 @@ namespace {
 			self::assertStringContainsString('<SupplierSetup><URL>https://shop.example.test/punchout/setup</URL></SupplierSetup>',$result['xml']);
 			self::assertStringContainsString('deploymentMode="production"',$result['xml']);
 			self::assertStringContainsString('REPLACE-WITH-ISSUED-SHARED-SECRET',$result['xml']);
+			self::assertStringContainsString('payloadID="" timestamp=""',$result['xml']);
+			self::assertStringContainsString('<BuyerCookie />',$result['xml']);
+			self::assertStringContainsString('<BrowserFormPost><URL /></BrowserFormPost>',$result['xml']);
+			self::assertStringNotContainsString('<Extrinsic name="UserEmail">',$result['xml']);
+			foreach(['buyer.example.invalid','buyer.user@example.invalid','BUYER-SYSTEM-RUNTIME-VALUE'] as $invented) { self::assertStringNotContainsString($invented,$result['xml']); }
 			foreach(['SEALED-CURRENT','SEALED-PREVIOUS','old-secret'] as $secret) { self::assertStringNotContainsString($secret,$result['xml']); }
 		}
 		public function test_template_download_rejects_other_owners_pending_connections_and_bad_nonce(): void {

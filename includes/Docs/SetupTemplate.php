@@ -14,15 +14,12 @@ use POW\Partners\Partner;
 
 defined( 'ABSPATH' ) || exit;
 
-/** Builds a DTD-valid setup request without accepting secret material. */
+/** Builds a Dynamics external-catalog configuration without accepting secret material. */
 final class SetupTemplate {
 
 	public const SHARED_SECRET = 'REPLACE-WITH-ISSUED-SHARED-SECRET';
-	public const BUYER_COOKIE = 'BUYER-SYSTEM-RUNTIME-VALUE';
-	public const USER_EMAIL = 'buyer.user@example.invalid';
-	public const BROWSER_FORM_POST = 'https://buyer.example.invalid/punchout-return';
 
-	public static function for_partner( Partner $partner, string $supplier_url ): string {
+	public static function for_partner( Partner $partner, string $supplier_url, bool $allow_http = false ): string {
 		return self::render(
 			[
 				'version'           => $partner->cxml_version,
@@ -34,20 +31,22 @@ final class SetupTemplate {
 				'to_domain'         => $partner->to_domain,
 				'to_identity'       => $partner->to_identity,
 			],
-			$supplier_url
+			$supplier_url,
+			$allow_http
 		);
 	}
 
 	/**
 	 * @param array{version:string,deployment_mode:string,from_domain:string,from_identity:string,sender_domain:string,sender_identity:string,to_domain:string,to_identity:string} $connection Safe connection fields only; no secret slot is accepted.
 	 */
-	public static function render( array $connection, string $supplier_url ): string {
+	public static function render( array $connection, string $supplier_url, bool $allow_http = false ): string {
 		$version = self::version( $connection['version'] ?? '' );
 		$mode = $connection['deployment_mode'] ?? '';
 		if ( ! in_array( $mode, [ 'test', 'production' ], true ) ) {
 			throw new \DomainException( 'Invalid setup template deployment mode.' );
 		}
-		if ( ! filter_var( $supplier_url, FILTER_VALIDATE_URL ) || ! in_array( strtolower( (string) parse_url( $supplier_url, PHP_URL_SCHEME ) ), [ 'http', 'https' ], true ) ) {
+		$scheme = strtolower( (string) parse_url( $supplier_url, PHP_URL_SCHEME ) );
+		if ( ! filter_var( $supplier_url, FILTER_VALIDATE_URL ) || ( 'https' !== $scheme && ! ( $allow_http && 'http' === $scheme ) ) ) {
 			throw new \DomainException( 'Invalid supplier setup URL.' );
 		}
 
@@ -61,18 +60,17 @@ final class SetupTemplate {
 
 		return '<?xml version="1.0" encoding="UTF-8"?>' . "\n"
 			. '<!DOCTYPE cXML SYSTEM "http://xml.cxml.org/schemas/cXML/' . $version . '/cXML.dtd">' . "\n"
-			. '<cXML payloadID="buyer-system-generates-this@example.invalid" timestamp="2000-01-01T00:00:00+00:00" xml:lang="en-US">' . "\n"
+			. '<cXML payloadID="" timestamp="" version="' . $version . '" xml:lang="en-US">' . "\n"
 			. ' <Header>' . "\n"
 			. '  <From><Credential domain="' . $from_domain . '"><Identity>' . $from_identity . '</Identity></Credential></From>' . "\n"
 			. '  <To><Credential domain="' . $to_domain . '"><Identity>' . $to_identity . '</Identity></Credential></To>' . "\n"
-			. '  <Sender><Credential domain="' . $sender_domain . '"><Identity>' . $sender_identity . '</Identity><SharedSecret>' . self::SHARED_SECRET . '</SharedSecret></Credential><UserAgent>Purchasing system</UserAgent></Sender>' . "\n"
+			. '  <Sender><Credential domain="' . $sender_domain . '"><Identity>' . $sender_identity . '</Identity><SharedSecret>' . self::SHARED_SECRET . '</SharedSecret></Credential><UserAgent>Dynamics 365 for Operations</UserAgent></Sender>' . "\n"
 			. ' </Header>' . "\n"
 			. ' <Request deploymentMode="' . $mode . '">' . "\n"
 			. '  <PunchOutSetupRequest operation="create">' . "\n"
-			. '   <BuyerCookie>' . self::BUYER_COOKIE . '</BuyerCookie>' . "\n"
-			. '   <Extrinsic name="UserEmail">' . self::USER_EMAIL . '</Extrinsic>' . "\n"
-			. '   <BrowserFormPost><URL>' . self::BROWSER_FORM_POST . '</URL></BrowserFormPost>' . "\n"
 			. '   <SupplierSetup><URL>' . $supplier_url . '</URL></SupplierSetup>' . "\n"
+			. '   <BuyerCookie />' . "\n"
+			. '   <BrowserFormPost><URL /></BrowserFormPost>' . "\n"
 			. '  </PunchOutSetupRequest>' . "\n"
 			. ' </Request>' . "\n"
 			. '</cXML>' . "\n";
