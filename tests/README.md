@@ -48,6 +48,12 @@ node --test tests/CartBlocks/cart-blocks.test.js
 
 These checks exercise policy resolution, script dependencies and WooCommerce's public button-filter contract. A real browser must also verify the hydrated Cart block and subsequent cart updates; passing the isolated checks does not establish that behavior.
 
+## Native setup concurrency
+
+`Integration/ConcurrencyNative.php` runs against an explicitly opted-in disposable local WordPress/WooCommerce database and starts independent WP-CLI workers. It verifies same-payload replay, distinct-payload first-time buyer creation, normalization of UserEmail, one open session per buyer, callback failure recovery, exact pending-claim ownership, metadata-write recovery and atomic rate budgets. A native `wp_pre_insert_user_data` barrier reproduces WordPress's username check/INSERT race without a production test seam. Buyer locking is scoped by database, site, company and resolved identity; a held lock must reject the affected setup within its timeout while allowing another buyer, and a retry must succeed after release. Fault injection also checks that a mismatched claim token cannot commit or delete a row. The suite creates disposable fixtures and leaves them available for inspection. It never authorizes use against a production database.
+
+The implementation follows the native [WordPress user creation API](https://developer.wordpress.org/reference/functions/wp_insert_user/) and database [GET_LOCK semantics](https://mariadb.com/docs/server/reference/sql-functions/secondary-functions/miscellaneous-functions/get_lock). Ordinary unit stubs alone do not prove these concurrency properties.
+
 ## Required PHP extensions
 
 | Extension | Needed by | If missing |
