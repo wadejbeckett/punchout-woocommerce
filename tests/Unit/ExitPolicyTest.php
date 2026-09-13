@@ -26,7 +26,7 @@ final class ExitPolicyDatabase {
 	public function prepare( string $sql, mixed ...$args ): string { $key = 'q' . count($this->queries); $this->queries[$key] = [$sql,$args]; return $key; }
 	public function suppress_errors( bool $value = true ): bool { return false; }
 	public function get_var( string $key ): string|int { [$sql,$args] = $this->queries[$key]; if (str_contains($sql,'COUNT(*)') && str_contains($sql,'exit_policy')) return count(array_filter($this->migration_rows,fn($row)=>($row['exit_policy']??null)===($args[0]??null))); if (str_contains($sql,'GET_LOCK')) { if ($this->lock_fail) return '0'; $this->held = true; if ($this->on_lock) { ($this->on_lock)(); $this->on_lock = null; } return '1'; } $this->held = false; return '1'; }
-	public function get_row( string $key, string $format ): ?array { [, $args] = $this->queries[$key]; return ($this->row['id'] ?? 0) === $args[0] ? $this->row : null; }
+	public function get_row( string $key, string $format ): ?array { [$sql, $args] = $this->queries[$key]; if (str_contains($sql,'WHERE owner_user_id')) return ($this->row['owner_user_id'] ?? 0) === $args[0] ? $this->row : null; return ($this->row['id'] ?? 0) === $args[0] ? $this->row : null; }
 	public function get_results( string $key, string $format ): ?array { [, $args] = $this->queries[$key]; $this->last_error = $this->read_fail ? 'injected' : ''; return $this->read_fail ? null : array_map(fn($v)=>['meta_value'=>$v],$this->meta[$args[0]][$args[1]] ?? []); }
 	public function write_meta( int $id, string $key, mixed $value, mixed $previous ): mixed { if (!$this->held) throw new LogicException('Unlocked exit mutation'); ++$this->writes; if ('false' === $this->write_mode) return false; if ('lie' === $this->write_mode) return true; if (null !== $previous && ($this->meta[$id][$key] ?? []) !== [$previous]) return false; $this->meta[$id][$key] = [$value]; return true; }
 	public function insert( string $table, array $data ): int|false { $data['id']=++$this->insert_id; $this->row=$data; return 1; }
@@ -54,7 +54,7 @@ final class ExitPolicyTest extends PHPUnit\Framework\TestCase {
 		$GLOBALS['pow_test_current_user_id'] = 1;
 		$GLOBALS['pow_test_options'] = [POW\Settings::OPTION_KEY => ['exit_policy'=>'inherit']];
 		$GLOBALS['pow_test_users'] = [];
-		foreach ([1=>['administrator'],20=>['customer'],30=>['punchout_buyer'],31=>['punchout_buyer']] as $id=>$roles) $GLOBALS['pow_test_users'][$id] = (object)['ID'=>$id,'roles'=>$roles,'allcaps'=>['read'=>true,'manage_woocommerce'=>1===$id]];
+		foreach ([1=>['administrator'],20=>['customer'],21=>['customer'],30=>['punchout_buyer'],31=>['punchout_buyer']] as $id=>$roles) $GLOBALS['pow_test_users'][$id] = (object)['ID'=>$id,'roles'=>$roles,'allcaps'=>['read'=>true,'manage_woocommerce'=>1===$id]];
 	}
 	protected function tearDown(): void { foreach($this->saved as $key=>[$exists,$value]) { if($exists)$GLOBALS[$key]=$value; else unset($GLOBALS[$key]); } }
 
@@ -74,7 +74,28 @@ final class ExitPolicyTest extends PHPUnit\Framework\TestCase {
 		$this->policy(); $g=$this->guard(); $GLOBALS['pow_test_current_user_id']=30; $o=new ExitPolicyOrder(); $o->customer=31; self::assertFalse($g->checkout_allowed($o)); $o->customer=30; $o->update_meta_data('_pow_session','99'); self::assertFalse($g->checkout_allowed($o));
 	}
 	public function test_server_enforcement_keeps_ordinary_shoppers_native_and_orphan_buyers_closed(): void {
-		$this->policy(); $g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20; self::assertTrue($g->checkout_allowed()); $GLOBALS['pow_test_current_user_id']=30; self::assertFalse($g->checkout_allowed()); $g=$this->guard('ordered'); self::assertFalse($g->checkout_allowed());
+		$this->policy(); $g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=21; self::assertTrue($g->checkout_allowed()); $GLOBALS['pow_test_current_user_id']=30; self::assertFalse($g->checkout_allowed()); $g=$this->guard('ordered'); self::assertFalse($g->checkout_allowed());
+	}
+	public function test_active_company_only_denies_its_direct_owner_without_a_punchout_session(): void {
+		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20; $this->db->row['exit_policy']='punchout_only';
+		self::assertFalse($g->checkout_allowed());
+		$o=new ExitPolicyOrder(); $o->customer=20; self::assertFalse($g->checkout_allowed($o));
+	}
+	public function test_active_company_both_permits_its_direct_owner_without_creating_return_context(): void {
+		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20; $this->db->row['exit_policy']='punchout_and_checkout';
+		self::assertTrue($g->checkout_allowed());
+		$o=new ExitPolicyOrder(); $o->customer=20; self::assertTrue($g->checkout_allowed($o));
+	}
+	public function test_inactive_company_owner_and_unrelated_ordinary_b2b_remain_independent(): void {
+		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20;
+		foreach (['pending','disabled'] as $status) { $this->db->row['status']=$status; $this->db->row['exit_policy']='punchout_only'; self::assertTrue($g->checkout_allowed()); }
+		$this->db->row['status']='active'; $GLOBALS['pow_test_current_user_id']=21; self::assertTrue($g->checkout_allowed());
+	}
+	public function test_active_owner_malformed_company_policy_fails_closed_with_direct_login_guidance(): void {
+		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20; $this->db->row['exit_policy']='unknown';
+		self::assertFalse($g->checkout_allowed());
+		try { $g->enforce_order(null); self::fail('Missing direct owner checkout veto'); }
+		catch (Exception $error) { self::assertStringContainsString('My Account',$error->getMessage()); self::assertStringNotContainsString('Please use',$error->getMessage()); }
 	}
 	public function test_order_boundary_blocks_store_api_and_zero_total_checkout(): void {
 		$this->policy(); $g=$this->guard(); $GLOBALS['pow_test_current_user_id']=30; $this->db->row['exit_policy']='punchout_only';

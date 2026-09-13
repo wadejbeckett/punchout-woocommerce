@@ -191,11 +191,11 @@ These are actual connection keys; optional emission is off by default. The suppl
 
 Unverified versions do not gain optional postal, code or note fields through version-number comparisons, and unsupported fields are not relocated to invented elements. Codes, freight and full address do not enable one another. The integration docs page generates a flags-off example and full enabled examples for both exact DTDs through the real Parser/Builder, with totals derived from the emitted lines. Exact-DTD validation proves document structure; it does not prove receiver field consumption.
 
-### Global, company and buyer exit policy
+### Company and buyer exit policy
 
-Shop administrators set global and company `exit_policy` to `inherit`, `punchout_only` or `punchout_and_checkout`. A company inherits the global setting unless explicitly configured; global `inherit` resolves securely to `punchout_only`. The effective company entitlement is the upper bound for an existing buyer. An administrator may restrict that buyer to punchout only; a buyer setting cannot grant checkout above the company entitlement. Company owners and buyers cannot grant themselves entitlement.
+Shop administrators set each approved company to `punchout_only` or `punchout_and_checkout`. New companies default to `punchout_and_checkout`; migrated inherited values are frozen to their prior effective company cap. An administrator may restrict an existing buyer to PunchOut only, but a buyer setting cannot grant checkout above the company entitlement. Company owners and buyers cannot grant themselves entitlement.
 
-The effective policy is checked for the current buyer at return and payment boundaries. Punchout only blocks classic, Blocks and direct pay entry points inside the punchout session. Punchout and checkout retains native checkout alongside the confirmed cart return. Ordinary shoppers are unaffected.
+The effective policy is checked at classic checkout, Store API and direct payment boundaries. `punchout_only` also blocks ordinary checkout for the active approved company's owner after a direct WordPress login while preserving My Account configuration. `punchout_and_checkout` permits that owner's normal checkout. A direct login never creates purchasing-system return context, so a PunchOut return remains available only inside a valid PunchOut session. Unrelated ordinary retail and B2B accounts remain independent.
 
 ## Security model
 
