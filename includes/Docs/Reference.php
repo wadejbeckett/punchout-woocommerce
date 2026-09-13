@@ -105,7 +105,7 @@ final class Reference {
 		return [
 			__( 'Copy the company-specific XML into the purchasing system’s cXML setup template. Its From, Sender, To, Request deploymentMode and SupplierSetup/URL values are the static connection values issued by the supplier.', 'punchout-woocommerce' ),
 			__( 'Replace only the SharedSecret placeholder with the issued company credential, using the purchasing system’s private credential field. The download never contains a stored secret.', 'punchout-woocommerce' ),
-			__( 'At launch, the purchasing system must generate the payloadID, timestamp and BuyerCookie, insert the initiating user’s UserEmail, and supply its own BrowserFormPost callback. BrowserFormPost is a runtime buyer-system value, not the supplier setup URL.', 'punchout-woocommerce' ),
+			__( 'The payloadID, timestamp, BuyerCookie and BrowserFormPost/URL fields are intentionally blank. Configure them as purchasing-system runtime values, and configure UserEmail through the separate extrinsics mapping; the downloaded XML does not duplicate that element. BrowserFormPost is not the supplier setup URL.', 'punchout-woocommerce' ),
 			__( 'Validate the catalogue configuration, then run a real launch and cart return with buyer IT. A valid template or supplier self-test does not prove receiver acceptance.', 'punchout-woocommerce' ),
 		];
 	}
