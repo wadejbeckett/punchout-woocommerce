@@ -137,7 +137,8 @@ namespace {
 		protected function tearDown(): void { foreach ($this->saved as $key=>[$exists,$value]) { if ($exists) {$GLOBALS[$key]=$value;} else {unset($GLOBALS[$key]);} } }
 		private function make_tab( int $limit = 5 ): IntegrationTab {
 			$plugin = (new ReflectionClass(POW\Plugin::class))->newInstanceWithoutConstructor();
-			return new IntegrationTab($plugin,$this->registry,new Registration($this->registry,new Store(),$this->audit),$this->audit,new RateLimiter(RateLimiter::public_limit($limit,5),null,null,3600));
+			$rate = [];
+			return new IntegrationTab($plugin,$this->registry,new Registration($this->registry,new Store(),$this->audit),$this->audit,new RateLimiter(RateLimiter::public_limit($limit,5),static function(string $key)use(&$rate):int{return $rate[$key]??0;},static function(string $key,int $count)use(&$rate):void{$rate[$key]=$count;},3600));
 		}
 		private function invoke( string $method, mixed ...$args ): mixed { return (new ReflectionMethod($this->tab,$method))->invoke($this->tab,...$args); }
 		private function seed( array $overrides = [] ): void {

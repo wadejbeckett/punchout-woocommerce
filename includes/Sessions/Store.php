@@ -154,6 +154,45 @@ class Store {
 	}
 
 	/**
+	 * Complete the exact setup claim created before provisioning. The claim
+	 * remains pending for StartPage redemption; user_id/response_xml distinguish
+	 * a committed setup response from an in-flight claim.
+	 */
+	public function complete_setup_claim( Session $claim, int $user_id, string $response_xml ): bool {
+		global $wpdb;
+		if ( $claim->id <= 0 || $claim->partner_id <= 0 || $user_id <= 0 || '' === $claim->payload_id || '' === $claim->body_hash || '' === $response_xml || Session::PENDING !== $claim->status || 0 !== $claim->user_id || null !== $claim->response_xml ) {
+			return false;
+		}
+		$wpdb->last_error = '';
+		$affected = $wpdb->query( $wpdb->prepare(
+			'UPDATE ' . $this->table() . ' SET user_id = %d, response_xml = %s WHERE id = %d AND partner_id = %d AND payload_id = %s AND BINARY body_hash = BINARY %s AND status = %s AND user_id = 0 AND response_xml IS NULL AND expires > %s',
+			$user_id, $response_xml, $claim->id, $claim->partner_id, $claim->payload_id, $claim->body_hash, Session::PENDING, gmdate( 'Y-m-d H:i:s' )
+		) );
+		if ( 1 !== $affected || '' !== ( $wpdb->last_error ?? '' ) ) {
+			return false;
+		}
+		$fresh = $this->find( $claim->id );
+		return $fresh && $fresh->partner_id === $claim->partner_id && $fresh->payload_id === $claim->payload_id && $fresh->body_hash === $claim->body_hash && Session::PENDING === $fresh->status && $fresh->user_id === $user_id && $fresh->response_xml === $response_xml;
+	}
+
+	/** Remove only this request's uncommitted setup claim so the same payload can retry. */
+	public function abandon_setup_claim( Session $claim ): bool {
+		global $wpdb;
+		if ( $claim->id <= 0 || $claim->partner_id <= 0 || '' === $claim->payload_id || '' === $claim->body_hash || Session::PENDING !== $claim->status || 0 !== $claim->user_id || null !== $claim->response_xml ) {
+			return false;
+		}
+		$wpdb->last_error = '';
+		$affected = $wpdb->query( $wpdb->prepare(
+			'DELETE FROM ' . $this->table() . ' WHERE id = %d AND partner_id = %d AND payload_id = %s AND BINARY body_hash = BINARY %s AND status = %s AND user_id = 0 AND response_xml IS NULL',
+			$claim->id, $claim->partner_id, $claim->payload_id, $claim->body_hash, Session::PENDING
+		) );
+		if ( 1 !== $affected || '' !== ( $wpdb->last_error ?? '' ) ) {
+			return false;
+		}
+		return null === $this->find( $claim->id );
+	}
+
+	/**
 	 * @param array<string, mixed> $data Column values.
 	 */
 	public function update( int $id, array $data ): bool {
