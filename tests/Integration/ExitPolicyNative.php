@@ -48,6 +48,15 @@ final class ExitPolicyNative {
   if(!$sid)throw new RuntimeException('Fixture session creation failed'); $this->fixture['session']=$sid;
  }
  private function denied(callable $fn,string $label): void { try{$fn();}catch(Throwable $e){$this->check($e instanceof ExitNativeResponse || str_contains($e->getMessage(),'Checkout is not available'),$label); return;} throw new RuntimeException('FAIL missing veto '.$label); }
+ /** Native redirects are intercepted before exit; Woo keeps responsibility for ordinary order keys/login/email verification. */
+ private function route_passes(POW\RouteGuard $guard,string $endpoint,int $order_id): bool {
+  global $wp;
+  $before=$wp->query_vars;
+  $redirect=static function($url){throw new ExitNativeResponse(['redirect'=>$url]);};
+  $wp->query_vars=[$endpoint=>$order_id];add_filter('wp_redirect',$redirect,-9999);
+  try {$guard->guard();return true;} catch(ExitNativeResponse $e){return false;}
+  finally {$wp->query_vars=$before;remove_filter('wp_redirect',$redirect,-9999);}
+ }
  /** Persist corrupt option states deliberately, then restore the exact native row before any other fixture work. */
  private function global_state_checks(int $partner_id,int $buyer): void {
   global $wpdb;
@@ -191,6 +200,12 @@ final class ExitPolicyNative {
    $owner_exits=do_shortcode('[punchout_cart_exits]');$this->check(!str_contains($owner_exits,'pow-return-form'),'direct owner never receives a fake PO return control');
    $account_items=apply_filters('woocommerce_account_menu_items',['dashboard'=>'Dashboard']);$this->check(isset($account_items[POW\Account\IntegrationTab::ENDPOINT]),'PunchOut-only owner retains My Account integration access');
    $owner_order=wc_create_order(['customer_id'=>$owner,'status'=>'pending']);$owner_order->set_total(10);$owner_order->save();$this->fixture['owner_order']=$owner_order->get_id();
+   $this->check(!$this->route_passes($guard,'order-pay',$owner_order->get_id()),'direct owner ONLY order-pay route is denied before native payment');
+   $this->check($this->route_passes($guard,'order-received',$owner_order->get_id()),'direct owner ONLY retains native order-received information');
+   $this->login($ordinary);
+   $this->check($this->route_passes($guard,'order-received',$owner_order->get_id()),'ordinary order-received route retains Woo login and ownership verification');
+   $this->check($this->route_passes($guard,'order-pay',$owner_order->get_id()),'ordinary order-pay route retains Woo key and identity verification');
+   $this->login($owner);
    $this->check(!$guard->checkout_allowed($owner_order),'direct owner ordinary unpaid order is denied under company ONLY');
    wc_clear_notices();do_action('woocommerce_checkout_process');$this->check(wc_notice_count('error')>0,'direct owner classic checkout process is denied');wc_clear_notices();
    $this->denied(fn()=>do_action('woocommerce_checkout_create_order',$owner_order),'direct owner classic order boundary is denied');
