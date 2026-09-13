@@ -111,7 +111,7 @@ final class Partner {
 			freight_uom: $delivery['freight_uom'] ?? 'EA',
 			freight_classification_domain: $delivery['freight_classification_domain'] ?? 'supplier',
 			freight_classification: $delivery['freight_classification'] ?? 'freight',
-			exit_policy: \POW\Checkout\ExitPolicy::normalise( $row['exit_policy'] ?? \POW\Checkout\ExitPolicy::CHECKOUT ),
+			exit_policy: \POW\Checkout\ExitPolicy::normalise( $row['exit_policy'] ?? \POW\Checkout\ExitPolicy::ONLY ),
 		);
 	}
 
