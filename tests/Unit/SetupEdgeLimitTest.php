@@ -133,6 +133,7 @@ final class SetupEdgeLimitTest extends TestCase {
 		$GLOBALS['pow_test_environment_type']='local'; $_SERVER['HTTPS']='off';
 		self::assertSame(500,$this->request($this->endpoint(10),$body));
 		self::assertSame(1,$provisions);
+		self::assertGreaterThan( 1, count( $this->database->lookups ) );
 	}
 
 	public function test_native_https_and_explicit_local_http_reach_normal_setup_processing(): void {
@@ -193,14 +194,15 @@ final class SetupEdgeLimitTest extends TestCase {
 		self::assertSame( 500, $this->request( $endpoint, $this->valid_body( 'known' ) ) );
 		self::assertSame( 1, $provisions );
 		self::assertSame( 'Request processing failed', $this->audit->rows[1][1]['detail']['error'] );
-		self::assertCount( 2, $this->database->lookups ); // Partner resolution and replay lookup both executed.
+		$lookups = $this->database->lookups;
+		self::assertGreaterThan( 3, count( $lookups ) ); // Resolution, fresh authorization and exact claim reads executed.
 		$rows = $this->audit->rows;
 		$counters = $this->downstream;
 		self::assertSame( 550, $this->request( $endpoint, $this->valid_body( 'known' ) ) );
 		self::assertSame( 1, $provisions );
 		self::assertSame( 1, $GLOBALS['pow_test_setup_io']['reads'] );
 		self::assertSame( 1, $GLOBALS['pow_test_setup_io']['parses'] );
-		self::assertCount( 2, $this->database->lookups );
+		self::assertSame( $lookups, $this->database->lookups );
 		self::assertSame( $rows, $this->audit->rows );
 		self::assertSame( $counters, $this->downstream );
 	}
@@ -243,13 +245,34 @@ final class SetupEdgeAudit extends Log {
 
 final class SetupEdgeDatabase {
 	public string $prefix = 'wp_';
+	public string $last_error = '';
+	public int $insert_id = 0;
 	public ?array $partner = null;
+	public ?array $session = null;
 	public array $lookups = [];
+	public function suppress_errors( bool $suppress ): bool { return false; }
 	public function prepare( string $sql, mixed ...$args ): array {
 		return [ $sql, $args ];
 	}
 	public function get_row( array $query, string $format ): ?array {
 		$this->lookups[] = $query;
-		return str_contains( $query[0], 'wp_pow_partners' ) ? $this->partner : null;
+		if ( str_contains( $query[0], 'wp_pow_partners' ) ) { return $this->partner; }
+		if ( ! str_contains( $query[0], 'wp_pow_sessions' ) || ! $this->session ) { return null; }
+		if ( str_contains( $query[0], 'WHERE id = %d' ) ) { return (int) $query[1][0] === (int) $this->session['id'] ? $this->session : null; }
+		return (int) $query[1][0] === (int) $this->session['partner_id'] && (string) $query[1][1] === (string) $this->session['payload_id'] ? $this->session : null;
+	}
+	public function get_var( array $query ): string { return str_contains( $query[0], 'GET_LOCK' ) || str_contains( $query[0], 'RELEASE_LOCK' ) ? '1' : ''; }
+	public function insert( string $table, array $data ): int {
+		if ( ! str_contains( $table, 'wp_pow_sessions' ) || $this->session ) { return 0; }
+		$this->insert_id = 1;
+		$this->session = array_replace( [ 'id' => 1, 'wp_session_token' => '', 'order_id' => 0, 'created' => gmdate( 'Y-m-d H:i:s' ) ], $data );
+		return 1;
+	}
+	public function query( array $query ): int|false {
+		if ( str_starts_with( $query[0], 'DELETE FROM wp_pow_sessions' ) && $this->session && (int) $query[1][0] === (int) $this->session['id'] ) {
+			$this->session = null;
+			return 1;
+		}
+		return false;
 	}
 }

@@ -60,6 +60,11 @@ final class SetupEndpoint {
 	public const STATUS_UNSUPPORTED  = 450;
 	public const STATUS_INTERNAL     = 500;
 	public const STATUS_RATE_LIMITED = 550;
+	private const REPLAY_WAIT_MICROSECONDS = 3_000_000;
+	private const REPLAY_POLL_MICROSECONDS = 25_000;
+
+	/** @var array<string, mixed> Safe request identifiers for terminal failure audit. */
+	private array $failure_context = [];
 
 	/** @var array<int, string> Canonical Status/@text for each code. */
 	public const STATUS_REASONS = [
@@ -86,31 +91,36 @@ final class SetupEndpoint {
 	public function handle(): void {
 		if ( ! Transport::request_allowed() ) { $this->transport_denied(); return; }
 		$ip = $this->client_ip();
+		$this->failure_context = [ 'direction' => 'in', 'ip' => $ip ];
 
 		try {
 			$this->handle_inner( $ip );
 		} catch ( ParseException $e ) {
 			$this->audit_event(
 				'setup_fail',
-				[
-					'direction' => 'in',
+				array_replace(
+					$this->failure_context,
+					[
 					'result'    => (string) $e->cxml_status,
 					'detail'    => [ 'error' => 'Request processing failed' ],
-					'ip'        => $ip,
-				]
+					]
+				)
 			);
 			$this->respond( $this->status_doc( $e->cxml_status, $e->getMessage() ) );
 		} catch ( \Throwable $e ) {
 			$this->audit_event(
 				'setup_fail',
-				[
-					'direction' => 'in',
+				array_replace(
+					$this->failure_context,
+					[
 					'result'    => '500',
 					'detail'    => [ 'error' => 'Request processing failed' ],
-					'ip'        => $ip,
-				]
+					]
+				)
 			);
 			$this->respond( $this->status_doc( self::STATUS_INTERNAL, 'Internal error' ) );
+		} finally {
+			$this->failure_context = [];
 		}
 	}
 
@@ -172,6 +182,7 @@ final class SetupEndpoint {
 
 		$message   = $this->parser->parse( $body );
 		$body_hash = hash( 'sha256', $body );
+		$this->failure_context['payload_id'] = $message->payload_id;
 
 		// Resolve the customer connection by the Sender credential; failures
 		// are all the same generic 401 with no detail (scope §7).
@@ -187,6 +198,7 @@ final class SetupEndpoint {
 			$this->deny_auth( $message, $ip, 'unknown sender' );
 			return;
 		}
+		$this->failure_context['partner_id'] = $partner->id;
 
 		if ( ! $this->rate_limiter->allow( $partner->id . '|' . $ip ) ) {
 			$this->audit_event(
@@ -267,74 +279,69 @@ final class SetupEndpoint {
 
 		$payload_id = '' !== $message->payload_id ? $message->payload_id : 'noid-' . substr( $body_hash, 0, 32 );
 
-		// Replay semantics (scope §7), decided by the pure policy and
-		// enforced twice: here, and by the UNIQUE(partner_id, payload_id)
-		// key underneath.
-		$existing = $this->sessions->find_by_payload( $partner->id, $payload_id );
-		$decision = ReplayPolicy::decide( $existing?->status, $existing?->body_hash, $body_hash );
-
-		if ( ReplayPolicy::DECISION_NEW !== $decision ) {
-			$replay = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash ) {
-				$this->fresh_authorized( $partner, $message, $ip );
-				$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
-				return $current && $current->expires && $current->expires > gmdate( 'Y-m-d H:i:s' ) && ReplayPolicy::DECISION_REPLAY === ReplayPolicy::decide( $current->status, $current->body_hash, $body_hash ) && $current->response_xml ? $current : null;
-			} );
-			$this->audit_event( $replay ? 'setup_ok' : 'setup_fail', [ 'partner_id' => $partner->id, 'session_id' => $replay?->id ?? 0, 'direction' => 'out', 'payload_id' => $payload_id, 'result' => $replay ? 'ok' : '409', 'detail' => [ 'replay' => (bool) $replay ], 'ip' => $ip ] );
-			$this->respond( $replay ? $replay->response_xml : $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
-			return;
-		}
-
-		// Provision (or locate) the per-(partner, buyer) user and apply
-		// latest-punchout-wins to their open sessions (scope §5.1).
-		$user_id = $this->provisioner->provision( $partner, $message );
-
-		if ( 0 === $user_id ) {
-			$this->respond( $this->status_doc( self::STATUS_INTERNAL, 'Provisioning failed', $partner->cxml_version ) );
-			return;
-		}
-
-		$issued  = Tokens::issue();
-		$expires = gmdate( 'Y-m-d H:i:s', time() + $partner->token_ttl );
-
-		$start_url = Transport::supplier_url( home_url( '/punchout/start/' . $issued['token'] ) );
-		$response = $this->builder->setup_response( $partner->cxml_version, Builder::payload_id( $this->host() ), Builder::timestamp(), $start_url );
-		$session_id = 0;
-		$response = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash, $user_id, $issued, $expires, $response, &$session_id ) {
-			$this->fresh_authorized( $partner, $message, $ip );
-			$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
-			if ( $current ) {
-				if ( $current->expires && $current->expires > gmdate( 'Y-m-d H:i:s' ) && ReplayPolicy::DECISION_REPLAY === ReplayPolicy::decide( $current->status, $current->body_hash, $body_hash ) && $current->response_xml ) { $session_id = $current->id; return $current->response_xml; }
-				throw new ParseException( 'Duplicate payloadID', self::STATUS_DUPLICATE );
+		$this->failure_context['payload_id'] = $payload_id;
+		$claim = null;
+		$replay = null;
+		$response = '';
+		for ( $attempt = 0; $attempt < 2 && ! $claim && ! $replay; ++$attempt ) {
+			$issued = Tokens::issue();
+			$expires = gmdate( 'Y-m-d H:i:s', time() + $partner->token_ttl );
+			$start_url = Transport::supplier_url( home_url( '/punchout/start/' . $issued['token'] ) );
+			$candidate_response = $this->builder->setup_response( $partner->cxml_version, Builder::payload_id( $this->host() ), Builder::timestamp(), $start_url );
+			$outcome = $this->claim_setup( $partner, $message, $ip, $payload_id, $body_hash, $issued['hash'], $expires );
+			if ( 'conflict' === $outcome['state'] ) {
+				$this->audit_event( 'setup_fail', [ 'partner_id' => $partner->id, 'session_id' => $outcome['session']?->id ?? 0, 'direction' => 'out', 'payload_id' => $payload_id, 'result' => '409', 'detail' => [ 'replay' => false ], 'ip' => $ip ] );
+				$this->respond( $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
+				return;
 			}
-			try {
-				$session_id = $this->sessions->create(
-				[
-					'partner_id'            => $partner->id,
-					'buyer_cookie'          => $message->buyer_cookie,
-					'operation'             => $message->operation,
-					'browser_form_post_url' => $message->browser_form_post,
-					'selected_item'         => null !== $message->selected_item ? (string) wp_json_encode( $message->selected_item ) : null,
-					'ship_to'               => $message->ship_to_xml,
-					'user_id'               => $user_id,
-					'one_time_token_hash'   => $issued['hash'],
-					'status'                => Session::PENDING,
-					'payload_id'            => $payload_id,
-					'body_hash'             => $body_hash,
-					'cxml_version'          => $message->version,
-					'deployment_mode'       => $message->deployment_mode,
-					'extrinsics'            => (string) wp_json_encode( $message->extrinsics ),
-					'itemout_lines'         => [] !== $message->item_out ? (string) wp_json_encode( $message->item_out ) : null,
-					'cart_ready'            => 0,
-					'expires'               => $expires,
-					'response_xml'          => $response,
-				]
-				);
-				if ( $session_id <= 0 ) { throw new ParseException( 'Session creation failed', self::STATUS_INTERNAL ); }
-				$created = $this->sessions->find( $session_id );
-				if ( ! $created || $created->response_xml !== $response || $created->status !== Session::PENDING ) { throw new ParseException( 'Session creation unconfirmed', self::STATUS_INTERNAL ); }
-				// Provisioning hooks already ran outside the lock; only exact cleanup runs here.
+			if ( 'replay' === $outcome['state'] ) {
+				$replay = $outcome['session'];
+				break;
+			}
+			if ( 'waiting' === $outcome['state'] ) {
+				$replay = $this->await_setup_response( $partner->id, $payload_id, $body_hash );
+				continue;
+			}
+			$claim = $outcome['session'];
+			$response = $candidate_response;
+		}
+
+		if ( $replay ) {
+			$this->audit_event( 'setup_ok', [ 'partner_id' => $partner->id, 'session_id' => $replay->id, 'user_id' => $replay->user_id, 'direction' => 'out', 'payload_id' => $payload_id, 'result' => 'replay', 'detail' => [ 'replay' => true ], 'ip' => $ip ] );
+			$this->respond( (string) $replay->response_xml );
+			return;
+		}
+		if ( ! $claim ) {
+			throw new ParseException( 'Setup still processing', self::STATUS_INTERNAL );
+		}
+		$this->failure_context['session_id'] = $claim->id;
+
+		try {
+			$user_id = $this->provisioner->provision( $partner, $message );
+			if ( $user_id <= 0 ) {
+				throw new ParseException( 'Provisioning failed', self::STATUS_INTERNAL );
+			}
+		} catch ( \Throwable $error ) {
+			$this->abandon_setup_claim( $claim );
+			throw $error;
+		}
+		$this->failure_context['user_id'] = $user_id;
+
+		$committed = null;
+		try {
+			$committed = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $claim, $user_id, $response ) {
+				$this->fresh_authorized( $partner, $message, $ip );
+				if ( ! $this->sessions->complete_setup_claim( $claim, $user_id, $response ) ) {
+					$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+					throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
+				}
+				$created = $this->sessions->find( $claim->id );
+				if ( ! $this->is_committed_setup( $created, $partner->id, $claim->payload_id, $claim->body_hash, $user_id, $response ) ) {
+					$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+					throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
+				}
 				foreach ( $this->sessions->open_for_user( $user_id ) as $older ) {
-					if ( $older->id === $session_id ) { continue; }
+					if ( $older->id === $claim->id ) { continue; }
 					if ( $older->partner_id !== $partner->id || ! $this->sessions->expire_locked( $older ) ) {
 						$this->sessions->expire_locked( $created );
 						$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
@@ -342,17 +349,21 @@ final class SetupEndpoint {
 					}
 					$this->audit_event( 'session_expired', [ 'partner_id' => $partner->id, 'session_id' => $older->id, 'user_id' => $user_id, 'result' => 'superseded' ] );
 				}
-			} catch ( \Throwable $e ) {
-				$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
-				if ( $session_id > 0 ) {
-					$failed = $this->sessions->find( $session_id );
-					if ( $failed ) { $this->sessions->expire_locked( $failed ); }
-				}
-				throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
+				return $created;
+			} );
+		} catch ( \Throwable $error ) {
+			$fresh = $this->sessions->find( $claim->id );
+			if ( $this->is_committed_setup( $fresh, $partner->id, $payload_id, $body_hash, $user_id, $response ) ) {
+				$committed = $fresh;
+			} else {
+				$this->abandon_setup_claim( $claim );
+				throw $error;
 			}
-
-			return $response;
-		} );
+		}
+		if ( ! $committed ) {
+			throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
+		}
+		$session_id = $committed->id;
 
 		$this->audit_event(
 			'setup_ok',
@@ -378,6 +389,126 @@ final class SetupEndpoint {
 	/* ---------------------------------------------------------------------
 	 * Helpers
 	 * ------------------------------------------------------------------ */
+
+	/** @return array{state: 'winner'|'waiting'|'replay'|'conflict', session: ?Session} */
+	private function claim_setup( Partner $partner, SetupMessage $message, string $ip, string $payload_id, string $body_hash, string $token_hash, string $expires ): array {
+		try {
+			return $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash, $token_hash, $expires ) {
+				$this->fresh_authorized( $partner, $message, $ip );
+				$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
+				if ( $this->is_uncommitted_setup( $current, $partner->id, $payload_id, $body_hash ) && ( ! $current->expires || $current->expires <= gmdate( 'Y-m-d H:i:s' ) ) ) {
+					if ( ! $this->sessions->abandon_setup_claim( $current ) ) {
+						throw new ParseException( 'Stale setup claim could not be released', self::STATUS_INTERNAL );
+					}
+					$current = null;
+				}
+				if ( $current ) {
+					return $this->setup_outcome( $current, $partner->id, $payload_id, $body_hash );
+				}
+
+				$session_id = $this->sessions->create(
+					[
+						'partner_id'            => $partner->id,
+						'buyer_cookie'          => $message->buyer_cookie,
+						'operation'             => $message->operation,
+						'browser_form_post_url' => $message->browser_form_post,
+						'selected_item'         => null !== $message->selected_item ? (string) wp_json_encode( $message->selected_item ) : null,
+						'ship_to'               => $message->ship_to_xml,
+						'user_id'               => 0,
+						'one_time_token_hash'   => $token_hash,
+						'status'                => Session::PENDING,
+						'payload_id'            => $payload_id,
+						'body_hash'             => $body_hash,
+						'cxml_version'          => $message->version,
+						'deployment_mode'       => $message->deployment_mode,
+						'extrinsics'            => (string) wp_json_encode( $message->extrinsics ),
+						'itemout_lines'         => [] !== $message->item_out ? (string) wp_json_encode( $message->item_out ) : null,
+						'cart_ready'            => 0,
+						'expires'               => $expires,
+						'response_xml'          => null,
+					]
+				);
+				if ( $session_id <= 0 ) {
+					$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
+					if ( $current ) {
+						return $this->setup_outcome( $current, $partner->id, $payload_id, $body_hash );
+					}
+					throw new ParseException( 'Session claim failed', self::STATUS_INTERNAL );
+				}
+				$claim = $this->sessions->find( $session_id );
+				if ( ! $this->is_uncommitted_setup( $claim, $partner->id, $payload_id, $body_hash ) || ! $claim->expires || $claim->expires <= gmdate( 'Y-m-d H:i:s' ) ) {
+					if ( $claim ) { $this->sessions->abandon_setup_claim( $claim ); }
+					throw new ParseException( 'Session claim unconfirmed', self::STATUS_INTERNAL );
+				}
+				return [ 'state' => 'winner', 'session' => $claim ];
+			} );
+		} catch ( \Throwable $error ) {
+			// If RELEASE_LOCK itself failed after inserting our claim, remove the
+			// exact uncommitted row while this connection still owns the lock.
+			try {
+				$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
+				if ( $this->is_uncommitted_setup( $current, $partner->id, $payload_id, $body_hash ) ) {
+					$this->sessions->abandon_setup_claim( $current );
+				}
+			} catch ( \Throwable $cleanup_error ) {
+				// The original bounded lock/persistence failure remains authoritative.
+			}
+			throw $error;
+		}
+	}
+
+	/** @return array{state: 'waiting'|'replay'|'conflict', session: Session} */
+	private function setup_outcome( Session $session, int $partner_id, string $payload_id, string $body_hash ): array {
+		if ( ReplayPolicy::DECISION_REPLAY !== ReplayPolicy::decide( $session->status, $session->body_hash, $body_hash ) || $session->partner_id !== $partner_id || $session->payload_id !== $payload_id || ! $session->expires || $session->expires <= gmdate( 'Y-m-d H:i:s' ) ) {
+			return [ 'state' => 'conflict', 'session' => $session ];
+		}
+		if ( $this->is_uncommitted_setup( $session, $partner_id, $payload_id, $body_hash ) ) {
+			return [ 'state' => 'waiting', 'session' => $session ];
+		}
+		if ( $session->user_id > 0 && null !== $session->response_xml && '' !== $session->response_xml ) {
+			return [ 'state' => 'replay', 'session' => $session ];
+		}
+		throw new ParseException( 'Stored setup response is incomplete', self::STATUS_INTERNAL );
+	}
+
+	/** Poll only the persisted claim, bounded well below request timeouts; null means the failed winner released it. */
+	private function await_setup_response( int $partner_id, string $payload_id, string $body_hash ): ?Session {
+		$deadline = hrtime( true ) + ( self::REPLAY_WAIT_MICROSECONDS * 1000 );
+		do {
+			$current = $this->sessions->find_by_payload( $partner_id, $payload_id );
+			if ( ! $current ) {
+				return null;
+			}
+			$outcome = $this->setup_outcome( $current, $partner_id, $payload_id, $body_hash );
+			if ( 'replay' === $outcome['state'] ) {
+				return $current;
+			}
+			if ( 'conflict' === $outcome['state'] ) {
+				throw new ParseException( 'Duplicate payloadID', self::STATUS_DUPLICATE );
+			}
+			usleep( self::REPLAY_POLL_MICROSECONDS );
+		} while ( hrtime( true ) < $deadline );
+		throw new ParseException( 'Setup still processing', self::STATUS_INTERNAL );
+	}
+
+	private function abandon_setup_claim( Session $claim ): bool {
+		try {
+			$released = $this->registry->with_partner_lock( $claim->partner_id, fn(): bool => $this->sessions->abandon_setup_claim( $claim ) );
+			if ( $released ) { return true; }
+		} catch ( \Throwable $error ) {
+			// A release exception after the DELETE is resolved by the fresh read below.
+		}
+		try { return null === $this->sessions->find( $claim->id ); }
+		catch ( \Throwable $error ) { return false; }
+	}
+
+	private function is_uncommitted_setup( ?Session $session, int $partner_id, string $payload_id, string $body_hash ): bool {
+		return $session && $session->partner_id === $partner_id && $session->payload_id === $payload_id && $session->body_hash === $body_hash && Session::PENDING === $session->status && 0 === $session->user_id && null === $session->response_xml;
+	}
+
+	private function is_committed_setup( ?Session $session, int $partner_id, string $payload_id, string $body_hash, int $user_id, string $response_xml ): bool {
+		return $session && $session->partner_id === $partner_id && $session->payload_id === $payload_id && $session->body_hash === $body_hash && Session::PENDING === $session->status && $session->user_id === $user_id && $session->response_xml === $response_xml && $session->expires && $session->expires > gmdate( 'Y-m-d H:i:s' );
+	}
 
 	/** Must run inside the partner lock immediately before a setup result is committed. */
 	private function fresh_authorized( Partner $snapshot, SetupMessage $message, string $ip ): void {
