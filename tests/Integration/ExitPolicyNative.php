@@ -49,7 +49,7 @@ final class ExitPolicyNative {
     // Serialize null explicitly so native option decoding returns null rather than an SQL empty-string coercion.
     if(false===$wpdb->update($wpdb->options,['option_value'=>serialize($stored)],['option_name'=>$name]))throw new RuntimeException('Native option fault setup failed');$clear();
     $this->check(get_option($name,['missing'])===$stored,'native option fault readback '.$label);
-    $this->check(!POW\Checkout\ExitPolicy::valid($settings->exit_policy()) && $policy->effective($company,$buyer)==='punchout_only','native Settings to effective rejects '.$label.' despite company checkout');
+    $this->check(!POW\Checkout\ExitPolicy::valid($settings->exit_policy()) && $policy->effective($company,$buyer)==='punchout_and_checkout','retired invalid global cannot narrow explicit company checkout '.$label);
    }
    foreach(['inherit','punchout_only','punchout_and_checkout'] as $value) {
     if(false===$wpdb->update($wpdb->options,['option_value'=>serialize(['exit_policy'=>$value])],['option_name'=>$name]))throw new RuntimeException('Native valid option setup failed');$clear();
@@ -57,7 +57,7 @@ final class ExitPolicyNative {
    }
    if(false===$wpdb->update($wpdb->options,['option_value'=>serialize([])],['option_name'=>$name]))throw new RuntimeException('Native missing key setup failed');$clear();
    $this->check($settings->exit_policy()==='inherit','native absent policy key is valid secure inheritance');
-   if(!$this->registry->update($partner_id,['exit_policy'=>'inherit']))throw new RuntimeException('Native inheritance setup failed');
+   if(false===$wpdb->update(POW\Installer::partners_table(),['exit_policy'=>'inherit'],['id'=>$partner_id]))throw new RuntimeException('Native legacy inheritance setup failed');
    $this->check($policy->effective($company,$buyer)==='punchout_only','native absent policy key resolves securely for an inheriting company');
    if(!$this->registry->update($partner_id,['exit_policy'=>'punchout_and_checkout']))throw new RuntimeException('Native explicit company restore failed');
    $this->check($policy->effective($company,$buyer)==='punchout_and_checkout','native valid absent key preserves explicit company override');
@@ -68,7 +68,7 @@ final class ExitPolicyNative {
    $suppressed=$wpdb->suppress_errors(true);add_filter('query',$fail_read);
    try {
     foreach([1,2] as $attempt)$this->check($settings->exit_policy()==='' && $faults===$attempt,'native unavailable option remains invalid on read '.$attempt);
-    $this->check($policy->effective($company,$buyer)==='punchout_only' && $faults===3,'native SQL-unavailable global refuses explicit company checkout');
+    $this->check($policy->effective($company,$buyer)==='punchout_and_checkout' && $faults===2,'retired SQL-unavailable global cannot narrow explicit company checkout');
    } finally {remove_filter('query',$fail_read);$wpdb->suppress_errors($suppressed);$clear();}
 
   } finally {
@@ -85,21 +85,34 @@ final class ExitPolicyNative {
    $this->check(class_exists(POW\Checkout\ExitPolicy::class),'candidate exit service exists');
    $before=[]; foreach([POW\Installer::partners_table(),POW\Installer::sessions_table(),POW\Installer::log_table()] as $table) $before[$table]=$wpdb->get_results('SELECT * FROM '.$table,ARRAY_A);
    $old_version=get_option(POW\Installer::DB_VERSION_KEY); POW\Installer::maybe_upgrade();
-   $this->check('5'===get_option(POW\Installer::DB_VERSION_KEY),'actual schema five installed');
+   $this->check('6'===get_option(POW\Installer::DB_VERSION_KEY),'actual schema six installed');
    foreach($before as $table=>$rows) { $after=$wpdb->get_results('SELECT * FROM '.$table,ARRAY_A); foreach($after as &$row) { if($table===POW\Installer::partners_table())unset($row['exit_policy']); } unset($row); $expected=$rows; foreach($expected as &$row)unset($row['exit_policy']); unset($row); $this->check($expected===$after,'prior rows preserved '.substr($table,strlen($wpdb->prefix))); }
    if((int)$old_version<5) { $bad=(int)$wpdb->get_var("SELECT COUNT(*) FROM ".POW\Installer::partners_table()." WHERE exit_policy <> CASE WHEN mode = 'dual_exit' THEN 'punchout_and_checkout' ELSE 'punchout_only' END"); $this->check(0===$bad,'legacy mode equivalence migrated for every existing company'); }
    $this->policy=new POW\Checkout\ExitPolicy(new POW\Settings(),$this->registry);
    $owner=$this->user('customer');$buyer=$this->user(POW\Installer::ROLE);$other=$this->user(POW\Installer::ROLE);$suffix=bin2hex(random_bytes(8));
    $id=$this->registry->insert(['name'=>'Example exit company','status'=>'active','owner_user_id'=>$owner,'sender_domain'=>'NetworkID','sender_identity'=>'exit-'.$suffix,'from_domain'=>'NetworkID','from_identity'=>'buyer-'.$suffix,'to_domain'=>'NetworkID','to_identity'=>'supplier','mode'=>'dual_exit']);
    $this->fixture=['partner'=>$id,'buyer'=>$buyer,'other'=>$other,'owner'=>$owner]; update_user_meta($buyer,'_pow_partner_id',$id);update_user_meta($other,'_pow_partner_id',$id);
-   $this->check($id>0 && 'inherit'===$this->registry->find($id)->exit_policy,'new companies default inherit regardless of old mode field');
-   POW\Installer::activate(); $this->check('inherit'===$this->registry->find($id)->exit_policy,'reactivation does not remigrate explicit inherit');
-   foreach(['inherit','punchout_only','punchout_and_checkout'] as $g) foreach(['inherit','punchout_only','punchout_and_checkout'] as $c) {
+   $this->check($id>0 && 'punchout_and_checkout'===$this->registry->find($id)->exit_policy,'new companies default to explicit checkout regardless of old mode field');
+   POW\Installer::activate(); $this->check('punchout_and_checkout'===$this->registry->find($id)->exit_policy,'reactivation preserves explicit checkout');
+   $this->settings('punchout_only');
+   if(false===$wpdb->update(POW\Installer::partners_table(),['exit_policy'=>'inherit'],['id'=>$id]))throw new RuntimeException('Native inherited freeze setup failed');
+   POW\Installer::freeze_inherited_exit_policies(); POW\Installer::freeze_inherited_exit_policies();
+   $this->check('punchout_only'===$this->registry->find($id)->exit_policy,'native inherited denial freezes idempotently');
+   $this->settings('punchout_and_checkout');
+   if(false===$wpdb->update(POW\Installer::partners_table(),['exit_policy'=>'inherit'],['id'=>$id]))throw new RuntimeException('Native failed freeze setup failed');
+   $table=POW\Installer::partners_table();$fail_freeze=static fn($sql)=>str_starts_with($sql,'UPDATE '.$table.' SET exit_policy')?str_replace('exit_policy =','pow_missing_exit_policy =',$sql):$sql;add_filter('query',$fail_freeze);
+   $failed=false;try{POW\Installer::freeze_inherited_exit_policies();}catch(RuntimeException $e){$failed=true;}finally{remove_filter('query',$fail_freeze);}
+   $this->check($failed && 'inherit'===$this->registry->find($id)->exit_policy,'failed native freeze leaves inherited row and cannot complete');
+   POW\Installer::freeze_inherited_exit_policies();$this->check('punchout_and_checkout'===$this->registry->find($id)->exit_policy,'native freeze retry uses the prior effective checkout cap');
+   foreach(['inherit','punchout_only','punchout_and_checkout'] as $g) foreach(['punchout_only','punchout_and_checkout'] as $c) {
     $this->settings($g); wp_set_current_user($this->admin); if(!$this->registry->update($id,['exit_policy'=>$c]))throw new RuntimeException('Matrix configuration failed');
     foreach(['inherit','punchout_only','punchout_and_checkout'] as $b) { update_user_meta($buyer,'_pow_exit_policy_'.$id,$b); $want=POW\Checkout\ExitPolicy::resolve($g,$c,$b);$this->check($want===$this->policy->effective($this->registry->find($id),$buyer),'native matrix '.$g.'/'.$c.'/'.$b); }
    }
+   if(false===$wpdb->update(POW\Installer::partners_table(),['exit_policy'=>'inherit'],['id'=>$id]))throw new RuntimeException('Native unmigrated policy setup failed');
+   $this->check('punchout_only'===$this->policy->effective($this->registry->find($id),$buyer),'native unmigrated company fails closed');
+   $this->company('punchout_and_checkout');
    update_user_meta($buyer,'_pow_exit_policy_'.$id,'inherit');$this->global_state_checks($id,$buyer);
-   $this->settings('punchout_and_checkout'); $this->company('inherit'); update_user_meta($buyer,'_pow_exit_policy_'.$id,'inherit');
+   $this->settings('punchout_and_checkout'); $this->company('punchout_and_checkout'); update_user_meta($buyer,'_pow_exit_policy_'.$id,'inherit');
    $this->check(true===$this->policy->save_buyer($id,$this->admin,$buyer,'punchout_only'),'native administrator restriction saves');
    $this->check(true===$this->policy->save_buyer($id,$this->admin,$buyer,'punchout_only'),'native verified no-op saves');
    $this->check('punchout_and_checkout'===$this->policy->effective($this->registry->find($id),$other),'other buyer remains independent');
@@ -129,11 +142,13 @@ final class ExitPolicyNative {
    $this->check(str_contains($admin_html,'pow_save_buyer_exit') && str_contains($admin_html,'value="'.$buyer.'"') && str_contains($admin_html,'value="'.$other.'"'),'native admin form lists existing company buyers with restriction controls');$_GET=[];
    $_POST=[];$_SERVER['REQUEST_METHOD']='GET';$this->check(true===$this->policy->save_buyer($id,$this->admin,$buyer,'inherit'),'native restore buyer inherit');
    $this->live_buyer($buyer); WC()->initialize_session(); WC()->initialize_cart(); WC()->customer=new WC_Customer($buyer);
+   $cart_exits=do_shortcode('[punchout_cart_exits]');$this->check(str_contains($cart_exits,wc_get_checkout_url()) && str_contains($cart_exits,'pow-return-form'),'native BOTH cart control renders checkout and purchasing exits');
    $order=wc_create_order(['customer_id'=>$buyer,'status'=>'pending']); $order->set_total(10); $order->update_meta_data('_pow_session',(string)$this->fixture['session']);$order->update_meta_data('_pow_partner',(string)$id);$order->save();$this->fixture['order']=$order->get_id();
    $guard=new POW\RouteGuard($this->plugin,$this->registry,new POW\Settings());
    $this->check($guard->checkout_allowed($order),'native active exact-login own unpaid payment allowed');
    $order->set_customer_id($other);$this->check(!$guard->checkout_allowed($order),'another buyers order denied');$order->set_customer_id($buyer);
    $this->company('punchout_only');wp_set_current_user($buyer);
+   $cart_exits=do_shortcode('[punchout_cart_exits]');$this->check(!str_contains($cart_exits,wc_get_checkout_url()) && str_contains($cart_exits,'pow-return-form'),'native PunchOut-only cart control renders only the purchasing exit');
    $this->check(!$guard->checkout_allowed($order),'tightening blocks existing unpaid order on fresh read');
    wc_clear_notices(); do_action('woocommerce_checkout_process'); $this->check(wc_notice_count('error')>0,'classic forged checkout POST validation veto'); wc_clear_notices();
    $this->denied(fn()=>do_action('woocommerce_checkout_create_order',$order),'classic server order creation veto');
@@ -157,7 +172,7 @@ final class ExitPolicyNative {
    ob_start();do_action('woocommerce_thankyou',$order->get_id());$html=ob_get_clean();$this->check(str_contains($html,'punchout/return'),'same buyer paid closeout remains visible after tightening');
    $this->check(!$guard->checkout_allowed($order),'paid closeout cannot reopen payment');
    $this->login($other);ob_start();do_action('woocommerce_thankyou',$order->get_id());$html=ob_get_clean();$this->check(!str_contains($html,'punchout/return'),'other buyer cannot see paid closeout');
-   $this->login($owner);$this->check($guard->checkout_allowed(),'ordinary shoppers remain native');$this->denied(fn()=>do_action('woocommerce_before_pay_action',$order),'ordinary actor cannot pay tagged punchout order');
+   $this->login($owner);$this->check($guard->checkout_allowed(),'ordinary shoppers remain native');$ordinary_exits=do_shortcode('[punchout_cart_exits]');$this->check(str_contains($ordinary_exits,wc_get_checkout_url()) && !str_contains($ordinary_exits,'pow-return-form'),'ordinary native cart control renders checkout only');$this->denied(fn()=>do_action('woocommerce_before_pay_action',$order),'ordinary actor cannot pay tagged punchout order');
    wp_set_current_user($this->admin);$this->check(true===$this->policy->save_buyer($id,$this->admin,$buyer,'punchout_only'),'persist final restriction for restart readback');
    $before_reset=$this->registry->find($id);$reg=new POW\Partners\Registration($this->registry,$this->plugin->sessions(),$this->plugin->audit());$identity=[];foreach(['from_domain','from_identity','sender_domain','sender_identity','to_domain','to_identity'] as $field)$identity[$field]=$before_reset->$field;$secret=$reg->reset($id,$identity,$this->admin);
    $after_reset=$this->registry->find($id);$this->check($secret!=='' && $after_reset->exit_policy===$before_reset->exit_policy && $after_reset->owner_user_id===$owner && $this->policy->buyer_value($id,$buyer)==='punchout_only','native connection reset preserves company cap, owner and buyer restriction');unset($secret);

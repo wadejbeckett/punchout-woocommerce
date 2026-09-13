@@ -15,7 +15,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * One configured customer connection (buyer-side tenant).
  *
- * Immutable snapshot of a registry row; all persistence goes through Registry. `exit_policy` is the company entitlement, resolved with the global default and buyer restriction by Checkout\ExitPolicy. `mode`, its constants and is_requisition_only() remain legacy compatibility APIs; runtime authorization never uses that snapshot flag.
+ * Immutable snapshot of a registry row; all persistence goes through Registry. `exit_policy` is the explicit company entitlement, narrowed by a checked buyer restriction in Checkout\ExitPolicy. Persisted inherited values remain closed until migration freezes them. `mode`, its constants and is_requisition_only() remain legacy compatibility APIs; runtime authorization never uses that snapshot flag.
  *
  * `status` is the lifecycle: STATUS_PENDING (self-service registration
  * submitted, awaiting an administrator — never authenticates), then
@@ -67,7 +67,7 @@ final class Partner {
 		public readonly string $freight_uom = 'EA',
 		public readonly string $freight_classification_domain = 'supplier',
 		public readonly string $freight_classification = 'freight',
-		public readonly string $exit_policy = 'inherit',
+		public readonly string $exit_policy = 'punchout_and_checkout',
 	) {}
 
 	/**
@@ -111,7 +111,7 @@ final class Partner {
 			freight_uom: $delivery['freight_uom'] ?? 'EA',
 			freight_classification_domain: $delivery['freight_classification_domain'] ?? 'supplier',
 			freight_classification: $delivery['freight_classification'] ?? 'freight',
-			exit_policy: \POW\Checkout\ExitPolicy::normalise( $row['exit_policy'] ?? 'inherit' ),
+			exit_policy: \POW\Checkout\ExitPolicy::normalise( $row['exit_policy'] ?? \POW\Checkout\ExitPolicy::CHECKOUT ),
 		);
 	}
 

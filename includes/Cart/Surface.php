@@ -15,6 +15,8 @@ use POW\Support\Transport;
 use POW\Checkout\ExitPolicy;
 use POW\Partners\Registry;
 use POW\Plugin;
+use POW\RouteGuard;
+use POW\Sessions\Session;
 use POW\Support\Templates;
 
 defined( 'ABSPATH' ) || exit;
@@ -34,7 +36,8 @@ defined( 'ABSPATH' ) || exit;
  * without a cart"). Both are presentation only; ReturnEndpoint owns
  * every authorisation check.
  *
- * Four placement paths for the return button, most flexible first:
+ * Five placement paths for the return button, most flexible first:
+ * - [punchout_cart_exits] complete policy-aware cart control;
  * - [punchout_return_button] shortcode (builders, widgets);
  * - pow_return_button() PHP helper (theme code);
  * - automatic injection on the classic cart page (woocommerce_proceed_to_checkout);
@@ -52,6 +55,7 @@ final class Surface {
 	) {}
 
 	public function register(): void {
+		add_shortcode( 'punchout_cart_exits', [ $this, 'cart_exits_shortcode' ] );
 		add_shortcode( 'punchout_return_button', [ $this, 'shortcode' ] );
 		add_shortcode( 'punchout_abandon_button', [ $this, 'abandon_shortcode' ] );
 		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
@@ -145,14 +149,9 @@ final class Surface {
 	/**
 	 * The class attribute for one of the plugin's submit controls.
 	 *
-	 * Theme compatibility, not theme knowledge: a punchout session's exit
-	 * controls are usually placed in a builder's global header/footer, i.e.
-	 * OUTSIDE the `.woocommerce` wrapper that most themes hang their button
-	 * styling off, so `button alt` alone leaves them looking like an
-	 * unstyled `<button>` on exactly the pages that matter. Where a theme
-	 * publishes a generic default-button class, add it so the control
-	 * inherits that theme's own button options instead of shipping a
-	 * bespoke stylesheet. Anything else belongs on the filter.
+	 * Generic WooCommerce and WordPress button classes give a site stable
+	 * styling hooks without detecting a theme or assuming its callbacks.
+	 * Site-specific classes can be added through the existing filter.
 	 *
 	 * The abandon control passes $themed = false: it is a secondary "leave
 	 * with nothing" action that reads as a text link beside the primary
@@ -163,10 +162,6 @@ final class Surface {
 	 */
 	private function button_classes( string $base, bool $themed = true ): string {
 		$classes = $themed ? [ 'button', 'alt', 'wp-element-button', $base ] : [ $base ];
-
-		if ( $themed && defined( 'AVADA_VERSION' ) ) {
-			$classes[] = 'button-default';
-		}
 
 		/**
 		 * Filter the class list of a punchout submit control.
@@ -182,6 +177,45 @@ final class Surface {
 
 	public function shortcode(): string {
 		return $this->markup();
+	}
+
+	/**
+	 * A complete classic-cart exit control independent of theme callbacks.
+	 *
+	 * Sites using this shortcode can hide their theme's native cart button.
+	 * The plugin then owns both authorized choices without identifying or
+	 * removing callbacks installed by WooCommerce, a theme, or another plugin.
+	 */
+	public function cart_exits_shortcode(): string {
+		if ( null === $this->plugin->current_session() ) {
+			$ordinary_checkout = ( new RouteGuard( $this->plugin, $this->registry, $this->plugin->settings() ) )->checkout_allowed();
+			return $ordinary_checkout ? '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>' : '';
+		}
+
+		$policy = $this->current_cart_policy();
+
+		if ( null === $policy ) {
+			return '';
+		}
+
+		$return = $this->markup();
+		if ( '' === $return ) {
+			return '';
+		}
+
+		$checkout = ExitPolicy::CHECKOUT === $policy ? $this->checkout_button_markup() : '';
+
+		return '<div class="pow-cart-exits">' . $checkout . $return . '</div>';
+	}
+
+	/** Native WooCommerce checkout link used by the complete cart control. */
+	private function checkout_button_markup(): string {
+		return sprintf(
+			'<a href="%s" class="%s">%s</a>',
+			esc_url( wc_get_checkout_url() ),
+			esc_attr( $this->button_classes( 'checkout-button' ) . ' wc-forward' ),
+			esc_html( __( 'Proceed to checkout', 'woocommerce' ) )
+		);
 	}
 
 	public function abandon_shortcode(): string {
@@ -227,6 +261,27 @@ final class Surface {
 			return null !== $partner && ExitPolicy::CHECKOUT === ( new ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() );
 		} catch ( \Throwable $error ) {
 			return false;
+		}
+	}
+
+	/** Return the current valid cart session's effective policy, or null. */
+	private function current_cart_policy(): ?string {
+		$session = $this->plugin->current_session();
+
+		if ( null === $session || Session::ACTIVE !== $session->status || $session->user_id !== get_current_user_id() ) {
+			return null;
+		}
+
+		try {
+			$policy  = new ExitPolicy( $this->plugin->settings(), $this->registry );
+			$partner = $this->registry->find( $session->partner_id );
+			if ( null === $partner || ! $partner->is_active() || ! $policy->member( $partner->id, $session->user_id ) ) {
+				return null;
+			}
+
+			return $policy->effective( $partner, $session->user_id );
+		} catch ( \Throwable $error ) {
+			return null;
 		}
 	}
 

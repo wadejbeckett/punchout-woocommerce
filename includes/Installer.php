@@ -29,7 +29,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '5';
+	public const DB_VERSION     = '6';
 	public const DB_VERSION_KEY = 'pow_db_version';
 	// Routing changes independently of the table schema.
 	public const REWRITE_VERSION = '1';
@@ -136,8 +136,7 @@ final class Installer {
 	/**
 	 * Register the punchout_buyer role.
 	 *
-	 * The role name is public API: theme builders (e.g. Avada render
-	 * logics) and site audience rules gate on it, so treat a rename as a
+	 * The role name is public API: site audience rules can gate on it, so treat a rename as a
 	 * breaking change. Capabilities mirror the Woo customer role:
 	 * read-only, no admin access.
 	 */
@@ -157,10 +156,16 @@ final class Installer {
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
+		$from_version    = (int) get_option( self::DB_VERSION_KEY, '0' );
 		$charset_collate = $wpdb->get_charset_collate();
 		$partners        = self::partners_table();
 		$sessions        = self::sessions_table();
 		$log             = self::log_table();
+		$previous_errors = $wpdb->suppress_errors( true );
+		$prior_column    = $wpdb->get_results( "SHOW COLUMNS FROM {$partners} LIKE 'exit_policy'", ARRAY_A );
+		$wpdb->suppress_errors( $previous_errors );
+		$had_exit_policy = is_array( $prior_column ) && 1 === count( $prior_column );
+		$wpdb->last_error = '';
 
 		// Trading-partner registry (scope §4.1). One row per buyer-side
 		// tenant; the (sender_domain, sender_identity) pair is the auth
@@ -186,7 +191,7 @@ final class Installer {
 			deployment_mode VARCHAR(16) NOT NULL DEFAULT 'test',
 			return_encoding VARCHAR(16) NOT NULL DEFAULT 'base64',
 			mode VARCHAR(32) NOT NULL DEFAULT 'requisition_only',
-			exit_policy VARCHAR(32) NOT NULL DEFAULT 'inherit',
+			exit_policy VARCHAR(32) NOT NULL DEFAULT 'punchout_and_checkout',
 			allow_reentry TINYINT NOT NULL DEFAULT 0,
 			allcaps_transform TINYINT NOT NULL DEFAULT 0,
 			gateway_allowlist TEXT NULL,
@@ -283,14 +288,28 @@ final class Installer {
 		dbDelta( $sql_partners );
 		$exit_column = $wpdb->get_results( "SHOW COLUMNS FROM {$partners} LIKE 'exit_policy'", ARRAY_A );
 		if ( '' !== $wpdb->last_error || count( $exit_column ?? [] ) !== 1 ) { throw new \RuntimeException( 'Exit policy schema upgrade failed.' ); }
-		// A single statement is atomic and retryable while the schema marker remains below five.
-		// Never remigrate on activation or a subsequent upgrade once the marker is five.
-		if ( (int) get_option( self::DB_VERSION_KEY, '0' ) < 5 ) {
-			if ( false === $wpdb->query( "UPDATE {$partners} SET exit_policy = CASE WHEN mode = 'dual_exit' THEN 'punchout_and_checkout' ELSE 'punchout_only' END WHERE exit_policy = 'inherit'" ) ) {
+		// Schema four had no explicit policy. A partial schema-five run may have the column and explicit rows already, so only its inherited rows are retryable.
+		if ( $from_version < 5 ) {
+			$where = $had_exit_policy ? " WHERE exit_policy = 'inherit'" : '';
+			if ( false === $wpdb->query( "UPDATE {$partners} SET exit_policy = CASE WHEN mode = 'dual_exit' THEN 'punchout_and_checkout' ELSE 'punchout_only' END{$where}" ) ) {
 				throw new \RuntimeException( 'Exit policy migration failed.' );
 			}
 		}
+		if ( $from_version < 6 ) { self::freeze_inherited_exit_policies(); }
 		dbDelta( $sql_sessions );
 		dbDelta( $sql_log );
+	}
+
+	/** Freeze schema-five inheritance to its prior effective cap before the schema-six marker advances. */
+	public static function freeze_inherited_exit_policies(): void {
+		global $wpdb;
+		$legacy = ( new Settings() )->exit_policy();
+		if ( ! Checkout\ExitPolicy::valid( $legacy ) ) { throw new \RuntimeException( 'Legacy exit policy unavailable.' ); }
+		$frozen = Checkout\ExitPolicy::CHECKOUT === $legacy ? Checkout\ExitPolicy::CHECKOUT : Checkout\ExitPolicy::ONLY;
+		$wpdb->last_error = '';
+		$result = $wpdb->query( $wpdb->prepare( 'UPDATE ' . self::partners_table() . ' SET exit_policy = %s WHERE exit_policy = %s', $frozen, Checkout\ExitPolicy::INHERIT ) );
+		if ( false === $result || '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Exit policy migration failed.' ); }
+		$remaining = $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . self::partners_table() . ' WHERE exit_policy = %s', Checkout\ExitPolicy::INHERIT ) );
+		if ( '' !== ( $wpdb->last_error ?? '' ) || 0 !== (int) $remaining ) { throw new \RuntimeException( 'Exit policy migration could not be verified.' ); }
 	}
 }

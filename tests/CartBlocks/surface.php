@@ -24,6 +24,7 @@ namespace POW\Cart {
 	}
 	function wp_json_encode( mixed $value, int $flags = 0 ): string|false { return json_encode( $value, $flags ); }
 	function wp_create_nonce( string $action ): string { return 'fixture-' . $action; }
+	function wc_get_checkout_url(): string { return 'https://shop.example.test/checkout/'; }
 	function remove_action( string $hook, mixed $callback, int $priority = 10 ): void { $GLOBALS['pow_blocks_removed'][] = [ $hook, $callback, $priority ]; }
 }
 
@@ -98,6 +99,7 @@ namespace {
 			self::assertTrue( 1 === preg_match( '/^window\.powCartBlocks = (.+);$/s', $last, $matches ), 'Expected one JSON configuration assignment' );
 			return json_decode( $matches[1], true, 512, JSON_THROW_ON_ERROR );
 		}
+		private function set_session( ?POW\Sessions\Session $session ): void { ( new ReflectionProperty( $this->plugin, 'current_session' ) )->setValue( $this->plugin, $session ); }
 
 		public function test_restricted_keeps_native_wrapper_without_an_extra_button(): void {
 			self::assertSame( self::BLOCK, $this->render() );
@@ -146,7 +148,7 @@ namespace {
 		public function test_missing_partner_is_restricted(): void { $this->db->partner = null; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
 		public function test_failed_initial_partner_read_is_restricted_without_fatal(): void { $this->db->partner_error = true; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
 		public function test_failed_buyer_read_is_restricted(): void { $this->db->partner['exit_policy'] = 'punchout_and_checkout'; $this->db->meta_error = true; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
-		public function test_invalid_global_policy_cannot_display_dual_exit(): void { $this->db->partner['exit_policy'] = 'punchout_and_checkout'; $GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY]['exit_policy'] = 'invalid'; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
+		public function test_retired_global_policy_cannot_narrow_explicit_company_checkout(): void { $this->db->partner['exit_policy'] = 'punchout_and_checkout'; $GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY]['exit_policy'] = 'invalid'; $html = $this->render(); self::assertTrue( str_starts_with( $html, self::BLOCK ) ); self::assertSame( 1, substr_count( $html, 'class="pow-return-form"' ) ); self::assertSame( [], $GLOBALS['pow_blocks_scripts']->inline ); }
 		public function test_current_company_restriction_overrides_first_partner_snapshot(): void {
 			$this->db->partner['exit_policy'] = 'punchout_and_checkout';
 			$this->db->after_partner_read = function (): void { $this->db->partner['exit_policy'] = 'punchout_only'; };
@@ -170,6 +172,36 @@ namespace {
 			self::assertStringContainsString( '/punchout/confirm', $html ); self::assertStringContainsString( 'fixture-pow_confirm_delivery', $html );
 			$this->surface->maybe_unhook_checkout_button();
 			self::assertSame( [ [ 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 ] ], $GLOBALS['pow_blocks_removed'] );
+		}
+		public function test_cart_exits_shortcode_is_registered_and_po_only_has_no_checkout_link(): void {
+			self::assertSame( [ $this->surface, 'cart_exits_shortcode' ], $GLOBALS['pow_blocks_hooks']['shortcode']['punchout_cart_exits'] ?? null );
+			$html = $this->surface->cart_exits_shortcode();
+			self::assertSame( 1, substr_count( $html, 'class="pow-return-form"' ) );
+			self::assertStringNotContainsString( 'https://shop.example.test/checkout/', $html );
+		}
+		public function test_cart_exits_shortcode_gives_both_authorized_exits_without_theme_callbacks(): void {
+			$this->db->partner['exit_policy'] = 'punchout_and_checkout';
+			$html = $this->surface->cart_exits_shortcode();
+			self::assertSame( 1, substr_count( $html, 'class="pow-return-form"' ) );
+			self::assertSame( 1, substr_count( $html, 'href="https://shop.example.test/checkout/"' ) );
+			self::assertStringContainsString( 'class="button alt wp-element-button checkout-button wc-forward"', $html );
+			self::assertStringContainsString( '>Proceed to checkout</a>', $html );
+		}
+		public function test_cart_exits_shortcode_gives_checkout_only_to_an_ordinary_shopper_with_no_session(): void {
+			$this->set_session( null );
+			$GLOBALS['pow_test_current_user_id'] = 20;
+			$GLOBALS['pow_test_users'][20] = (object) [ 'ID' => 20, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ];
+			$html = $this->surface->cart_exits_shortcode();
+			self::assertSame( 1, substr_count( $html, 'href="https://shop.example.test/checkout/"' ) );
+			self::assertStringNotContainsString( 'pow-return-form', $html );
+		}
+		public function test_cart_exits_shortcode_is_empty_for_an_orphaned_buyer_with_no_session(): void {
+			$this->set_session( null );
+			self::assertSame( '', $this->surface->cart_exits_shortcode() );
+		}
+		public function test_cart_exits_shortcode_is_empty_for_an_invalid_session(): void {
+			$this->set_session( POW\Sessions\Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 31, 'status' => 'active', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] ) );
+			self::assertSame( '', $this->surface->cart_exits_shortcode() );
 		}
 	}
 

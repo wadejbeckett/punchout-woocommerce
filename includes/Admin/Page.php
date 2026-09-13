@@ -89,7 +89,6 @@ final class Page {
 		);
 
 		$fields = [
-			'exit_policy' => [ __( 'Default exit policy', 'punchout-woocommerce' ), 'select', __( 'Inherit means Punchout only. Each company may have an explicit entitlement; buyers cannot exceed it.', 'punchout-woocommerce' ), ExitPolicy::labels() ],
 			'enabled'              => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
 			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
 			'return_button_label'  => [ __( 'Punchout button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button that sends the cart back to the buyer\'s purchasing system. Blank uses the default: “Punchout”.', 'punchout-woocommerce' ) ],
@@ -213,7 +212,6 @@ final class Page {
 		$input = is_array( $input ) ? $input : [];
 
 		return [
-			'exit_policy' => ExitPolicy::administrator( get_current_user_id() ) ? ExitPolicy::normalise( $input['exit_policy'] ?? 'inherit' ) : $this->settings->exit_policy(),
 			'enabled'              => ( isset( $input['enabled'] ) && 'yes' === $input['enabled'] ) ? 'yes' : 'no',
 			'landing_page_id'      => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
 			'return_button_label'  => sanitize_text_field( (string) ( $input['return_button_label'] ?? '' ) ),
@@ -438,8 +436,8 @@ final class Page {
 		);
 
 		$this->form_row(
-			__( 'Company exit policy', 'punchout-woocommerce' ),
-			$this->select( 'exit_policy', ExitPolicy::labels(), $partner->exit_policy ?? ExitPolicy::INHERIT ) . '<p class="description">' . esc_html__( 'The resolved company policy is the maximum permission for its buyers. Inherit follows the global policy.', 'punchout-woocommerce' ) . '</p>'
+			__( 'Checkout access', 'punchout-woocommerce' ),
+			'<input type="hidden" name="exit_policy" value="' . esc_attr( ExitPolicy::CHECKOUT ) . '" /><label><input type="checkbox" name="exit_policy" value="' . esc_attr( ExitPolicy::ONLY ) . '" ' . checked( ExitPolicy::ONLY, $partner->exit_policy ?? ExitPolicy::CHECKOUT, false ) . ' /> ' . esc_html__( 'PunchOut only', 'punchout-woocommerce' ) . '</label><p class="description">' . esc_html__( 'Normal checkout is available during a valid PunchOut session when this setting is off. Buyer restrictions may narrow this company permission.', 'punchout-woocommerce' ) . '</p>'
 		);
 
 		$identity_help = '<p class="description">' . esc_html__( 'The Sender credential is the authentication key: it must match what the buyer\'s system sends. From = the buyer; To = this store, as they address it.', 'punchout-woocommerce' ) . '</p>';
