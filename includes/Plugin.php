@@ -167,6 +167,8 @@ final class Plugin {
 		add_action( 'update_option_' . Settings::OPTION_KEY, [ $this, 'on_settings_updated' ], 10, 2 );
 
 		( new RouteGuard( $this, $this->registry, $this->settings ) )->register();
+		$this->surface = new Surface( $this, $this->registry );
+		$this->surface->register_cart_exits_shortcode();
 
 		if ( ! $this->enabled() ) {
 			return;
@@ -185,8 +187,7 @@ final class Plugin {
 		$chooser->register();
 		$return_endpoint->register();
 
-		$this->surface = new Surface( $this, $this->registry );
-		$this->surface->register();
+		$this->surface->register_runtime();
 
 		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
 		( new PayExit( $this, $this->sessions, $this->audit ) )->register();

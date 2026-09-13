@@ -55,7 +55,17 @@ final class Surface {
 	) {}
 
 	public function register(): void {
+		$this->register_cart_exits_shortcode();
+		$this->register_runtime();
+	}
+
+	/** Register the complete cart region even while new PunchOut sessions are disabled. */
+	public function register_cart_exits_shortcode(): void {
 		add_shortcode( 'punchout_cart_exits', [ $this, 'cart_exits_shortcode' ] );
+	}
+
+	/** Register controls and filters that are meaningful only while PunchOut is enabled. */
+	public function register_runtime(): void {
 		add_shortcode( 'punchout_return_button', [ $this, 'shortcode' ] );
 		add_shortcode( 'punchout_abandon_button', [ $this, 'abandon_shortcode' ] );
 		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );

@@ -167,7 +167,22 @@ final class ExitPolicyTest extends PHPUnit\Framework\TestCase {
 		self::assertFalse($this->registry->with_partner_lock(12,fn()=>$this->registry->transition_status(12,'active',['exit_policy'=>'punchout_and_checkout'])));
 	}
 
-	public function test_new_row_snapshot_and_settings_default_to_both_on_schema_six(): void { $this->policy(); self::assertSame('punchout_and_checkout',POW\Partners\Partner::from_row(['id'=>2])->exit_policy); unset($GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY]); self::assertSame('punchout_and_checkout',(new POW\Settings())->all()['exit_policy']); self::assertSame('6',POW\Installer::DB_VERSION); }
+	public function test_new_constructor_insert_and_settings_defaults_are_both_on_schema_six(): void {
+		$this->policy();
+		$parameters = ( new ReflectionMethod( POW\Partners\Partner::class, '__construct' ) )->getParameters();
+		$exit_policy = array_values( array_filter( $parameters, static fn( ReflectionParameter $parameter ): bool => 'exit_policy' === $parameter->getName() ) )[0];
+		self::assertSame( 'punchout_and_checkout', $exit_policy->getDefaultValue() );
+		unset( $GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY] );
+		self::assertSame( 'punchout_and_checkout', ( new POW\Settings() )->all()['exit_policy'] );
+		self::assertSame( '6', POW\Installer::DB_VERSION );
+	}
+
+	public function test_persisted_missing_null_and_malformed_policies_fail_closed(): void {
+		foreach ( [ [], [ 'exit_policy' => null ], [ 'exit_policy' => 'unknown' ] ] as $row ) {
+			self::assertSame( 'punchout_only', POW\Partners\Partner::from_row( array_replace( [ 'id' => 2 ], $row ) )->exit_policy );
+		}
+		self::assertSame( 'punchout_and_checkout', POW\Partners\Partner::from_row( [ 'id' => 2, 'exit_policy' => 'punchout_and_checkout' ] )->exit_policy );
+	}
 	public function test_pending_registration_persists_explicit_checkout_before_approval(): void {
 		$GLOBALS['pow_test_current_user_id']=20;
 		$id=$this->registry->insert(['name'=>'New company','status'=>'pending','owner_user_id'=>20,'from_domain'=>'NetworkID','from_identity'=>'BUYER','sender_domain'=>'NetworkID','sender_identity'=>'BUYER','to_domain'=>'NetworkID','to_identity'=>'STORE']);
