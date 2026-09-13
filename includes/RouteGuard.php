@@ -51,14 +51,17 @@ final class RouteGuard {
 			return;
 		}
 
-		// order-pay / order-received only for the buyer's OWN orders — the
-		// order-key check is Woo's, this is the customer-id belt (§5.5).
+		// PunchOut sessions may inspect only their own orders. Ordinary order
+		// keys, login prompts and email verification remain WooCommerce's;
+		// direct owners are subject to their company cap on payment only.
 		$endpoint_order_id = $this->endpoint_order_id();
 
 		if ( $endpoint_order_id > 0 && function_exists( 'wc_get_order' ) ) {
 			$order = wc_get_order( $endpoint_order_id );
 
-			if ( ! $order || (int) $order->get_customer_id() !== get_current_user_id() || ( is_wc_endpoint_url( 'order-pay' ) && ! $this->checkout_allowed( $order ) ) ) {
+			$wrong_session_order = null !== $session && ( ! $order || (int) $order->get_customer_id() !== get_current_user_id() );
+			$payment_denied = is_wc_endpoint_url( 'order-pay' ) && ! $this->checkout_allowed( $order instanceof \WC_Order ? $order : null );
+			if ( $wrong_session_order || $payment_denied ) {
 				$this->redirect_to_landing();
 				return;
 			}
