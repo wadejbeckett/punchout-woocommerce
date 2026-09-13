@@ -8,7 +8,7 @@ use POW\Sessions\Store;
 final class RegistrationLifecycleTest extends TestCase {
 	public function test_approval_requires_complete_identity_and_valid_entitlements(): void {
 		self::assertTrue( method_exists( Registration::class, 'valid_approval' ), 'Approval policy is missing' );
-		$row = [ 'name' => 'Example', 'status' => 'pending', 'from_domain' => 'NetworkID', 'from_identity' => 'BUYER', 'sender_domain' => 'NetworkID', 'sender_identity' => 'BUYER', 'to_domain' => 'NetworkID', 'to_identity' => 'SUPPLIER' ];
+		$row = [ 'name' => 'Example', 'status' => 'pending', 'from_domain' => 'NetworkID', 'from_identity' => 'BUYER', 'sender_domain' => 'NetworkID', 'sender_identity' => 'BUYER', 'to_domain' => 'NetworkID', 'to_identity' => 'SUPPLIER', 'exit_policy' => POW\Checkout\ExitPolicy::CHECKOUT ];
 		self::assertTrue( Registration::valid_approval( Partner::from_row( $row ) ) );
 		self::assertSame( POW\Checkout\ExitPolicy::CHECKOUT, Partner::from_row( $row )->exit_policy );
 		foreach ( [ 'to_domain' => '', 'to_identity' => str_repeat( 'x', 191 ), 'mode' => 'invalid', 'exit_policy' => 'inherit', 'return_encoding' => 'invalid', 'deployment_mode' => 'invalid', 'cxml_version' => 'invalid', 'secret_current' => 'unexpected', 'secret_previous' => 'unexpected' ] as $key => $value ) {
