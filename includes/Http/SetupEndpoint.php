@@ -392,8 +392,9 @@ final class SetupEndpoint {
 
 	/** @return array{state: 'winner'|'waiting'|'replay'|'conflict', session: ?Session} */
 	private function claim_setup( Partner $partner, SetupMessage $message, string $ip, string $payload_id, string $body_hash, string $token_hash, string $expires ): array {
+		$inserted_claim = null;
 		try {
-			return $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash, $token_hash, $expires ) {
+			return $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash, $token_hash, $expires, &$inserted_claim ) {
 				$this->fresh_authorized( $partner, $message, $ip );
 				$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
 				if ( $this->is_uncommitted_setup( $current, $partner->id, $payload_id, $body_hash ) && ( ! $current->expires || $current->expires <= gmdate( 'Y-m-d H:i:s' ) ) ) {
@@ -435,24 +436,30 @@ final class SetupEndpoint {
 					}
 					throw new ParseException( 'Session claim failed', self::STATUS_INTERNAL );
 				}
+				$inserted_claim = Session::from_row(
+					[
+						'id'                  => $session_id,
+						'partner_id'          => $partner->id,
+						'user_id'             => 0,
+						'one_time_token_hash' => $token_hash,
+						'status'              => Session::PENDING,
+						'payload_id'          => $payload_id,
+						'body_hash'           => $body_hash,
+						'expires'             => $expires,
+						'response_xml'        => null,
+					]
+				);
 				$claim = $this->sessions->find( $session_id );
-				if ( ! $this->is_uncommitted_setup( $claim, $partner->id, $payload_id, $body_hash ) || ! $claim->expires || $claim->expires <= gmdate( 'Y-m-d H:i:s' ) ) {
-					if ( $claim ) { $this->sessions->abandon_setup_claim( $claim ); }
+				if ( ! $this->is_uncommitted_setup( $claim, $partner->id, $payload_id, $body_hash, $token_hash ) || ! $claim->expires || $claim->expires <= gmdate( 'Y-m-d H:i:s' ) ) {
 					throw new ParseException( 'Session claim unconfirmed', self::STATUS_INTERNAL );
 				}
+				$inserted_claim = $claim;
 				return [ 'state' => 'winner', 'session' => $claim ];
 			} );
 		} catch ( \Throwable $error ) {
-			// If RELEASE_LOCK itself failed after inserting our claim, remove the
-			// exact uncommitted row while this connection still owns the lock.
-			try {
-				$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
-				if ( $this->is_uncommitted_setup( $current, $partner->id, $payload_id, $body_hash ) ) {
-					$this->sessions->abandon_setup_claim( $current );
-				}
-			} catch ( \Throwable $cleanup_error ) {
-				// The original bounded lock/persistence failure remains authoritative.
-			}
+			// Only this invocation's freshly inserted ID/token pair is eligible for
+			// guarded cleanup. Pre-insert auth/lock failures own no row.
+			if ( $inserted_claim ) { $this->abandon_setup_claim( $inserted_claim ); }
 			throw $error;
 		}
 	}
@@ -502,8 +509,8 @@ final class SetupEndpoint {
 		catch ( \Throwable $error ) { return false; }
 	}
 
-	private function is_uncommitted_setup( ?Session $session, int $partner_id, string $payload_id, string $body_hash ): bool {
-		return $session && $session->partner_id === $partner_id && $session->payload_id === $payload_id && $session->body_hash === $body_hash && Session::PENDING === $session->status && 0 === $session->user_id && null === $session->response_xml;
+	private function is_uncommitted_setup( ?Session $session, int $partner_id, string $payload_id, string $body_hash, ?string $token_hash = null ): bool {
+		return $session && $session->partner_id === $partner_id && $session->payload_id === $payload_id && $session->body_hash === $body_hash && ( null === $token_hash || $session->one_time_token_hash === $token_hash ) && Session::PENDING === $session->status && 0 === $session->user_id && null === $session->response_xml;
 	}
 
 	private function is_committed_setup( ?Session $session, int $partner_id, string $payload_id, string $body_hash, int $user_id, string $response_xml ): bool {
