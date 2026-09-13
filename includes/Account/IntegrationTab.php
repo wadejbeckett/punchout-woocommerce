@@ -15,6 +15,7 @@ use POW\Support\Transport;
 use POW\Addresses\Fields;
 use POW\Audit\Log;
 use POW\Docs\Page as DocsPage;
+use POW\Docs\Samples;
 use POW\Http\RateLimiter;
 use POW\Http\Router;
 use POW\Installer;
@@ -105,11 +106,49 @@ final class IntegrationTab {
 		// Never issue a credential after output has made no-store headers impossible.
 		if ( headers_sent() ) { return; }
 		$this->private_headers();
+		if ( 'download_setup_template' === ( $_POST['pow_account_action'] ?? null ) ) {
+			$download = $this->template_download_result();
+			if ( null === $download ) { return; }
+			status_header( $download['status'] );
+			if ( 200 === $download['status'] ) {
+				header( 'Content-Type: application/xml; charset=UTF-8', true );
+				header( 'Content-Disposition: attachment; filename="' . $download['filename'] . '"', true );
+				header( 'X-Content-Type-Options: nosniff', true );
+				echo $download['xml']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- generated XML attachment.
+				exit;
+			}
+			echo Templates::render( 'account/integration', $this->result_vars( $download ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped template.
+			exit;
+		}
 		$result = $this->post_result();
 		if ( null === $result ) { return; }
 		status_header( $result['status'] );
 		echo Templates::render( 'account/integration', $this->result_vars( $result ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped template.
 		exit;
+	}
+
+	/** @return array{status:int,notice:array{text:string,type:string},secret:string,filename:string,xml:string}|null */
+	private function template_download_result(): ?array {
+		if ( 'download_setup_template' !== ( $_POST['pow_account_action'] ?? null ) ) { return null; }
+		$actor = $this->actor();
+		$nonce = $_POST['_wpnonce'] ?? null;
+		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! is_account_page() || ! is_wc_endpoint_url( self::ENDPOINT ) || 0 === $actor || ! is_string( $nonce ) || ! wp_verify_nonce( wp_unslash( $nonce ), self::NONCE ) ) {
+			return $this->download_result( 403, __( 'This setup template could not be authorised. Reload the integration page and try again.', 'punchout-woocommerce' ) );
+		}
+		try {
+			$partner = $this->registry->find_by_owner( $actor );
+			if ( null === $partner || ! $partner->is_owned_by( $actor ) || ! $partner->is_active() ) {
+				return $this->download_result( 403, __( 'This connection cannot be managed from this account.', 'punchout-woocommerce' ) );
+			}
+			return $this->download_result( 200, '', Samples::setup_template( $partner, Router::setup_url() ), 'punchout-setup-' . $partner->id . '.xml' );
+		} catch ( \Throwable $e ) {
+			return $this->download_result( 503, __( 'The setup template is unavailable. Reload the integration page and try again.', 'punchout-woocommerce' ) );
+		}
+	}
+
+	/** @return array{status:int,notice:array{text:string,type:string},secret:string,filename:string,xml:string} */
+	private function download_result( int $status, string $text, string $xml = '', string $filename = '' ): array {
+		return array_merge( $this->result( $status, $text ), [ 'filename' => $filename, 'xml' => $xml ] );
 	}
 
 	/** Keep a confirmed secret available even when subsequent view or permalink queries fail. */

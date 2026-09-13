@@ -167,6 +167,27 @@ namespace {
 			}
 			$html = Templates::render('account/integration',$this->view(['state'=>'active','rotation_open'=>true]));
 			self::assertStringContainsString('value="finish_rotation"',$html); self::assertStringNotContainsString('value="rotate"',$html);
+			self::assertStringContainsString('value="download_setup_template"',$html);
+		}
+		public function test_active_owner_download_uses_company_fields_without_revealing_secret_material(): void {
+			$this->seed(['from_domain'=>'Buyer&"<','from_identity'=>'FROM<&','sender_domain'=>'Sender&"<','sender_identity'=>'SENDER<&','to_domain'=>'Supplier&"<','to_identity'=>'TO<&','deployment_mode'=>'production','cxml_version'=>'1.2.008','secret_current'=>'SEALED-CURRENT','secret_previous'=>'SEALED-PREVIOUS']);
+			$_POST=['pow_account_action'=>'download_setup_template','_wpnonce'=>'account-nonce'];
+			$result=$this->invoke('template_download_result');
+			self::assertSame(200,$result['status']);
+			self::assertSame('punchout-setup-20.xml',$result['filename']);
+			self::assertStringContainsString('domain="Buyer&amp;&quot;&lt;"',$result['xml']);
+			self::assertStringContainsString('<Identity>SENDER&lt;&amp;</Identity>',$result['xml']);
+			self::assertStringContainsString('<SupplierSetup><URL>https://shop.example.test/punchout/setup</URL></SupplierSetup>',$result['xml']);
+			self::assertStringContainsString('deploymentMode="production"',$result['xml']);
+			self::assertStringContainsString('REPLACE-WITH-ISSUED-SHARED-SECRET',$result['xml']);
+			foreach(['SEALED-CURRENT','SEALED-PREVIOUS','old-secret'] as $secret) { self::assertStringNotContainsString($secret,$result['xml']); }
+		}
+		public function test_template_download_rejects_other_owners_pending_connections_and_bad_nonce(): void {
+			$_POST=['pow_account_action'=>'download_setup_template','_wpnonce'=>'account-nonce','partner_id'=>20];
+			$this->seed(['owner_user_id'=>8]); self::assertSame(403,$this->invoke('template_download_result')['status']);
+			$this->seed(['status'=>'pending']); self::assertSame(403,$this->invoke('template_download_result')['status']);
+			$this->seed(); $_POST['_wpnonce']='forged'; self::assertSame(403,$this->invoke('template_download_result')['status']);
+			self::assertSame([],$this->db->writes);
 		}
 		public function test_request_boundaries_refuse_before_lookup_or_mutation(): void {
 			foreach (['method','endpoint','account','nonce','nonce_missing','nonce_array','action_array','unknown','anonymous','role','metadata','capability','disabled'] as $case) {

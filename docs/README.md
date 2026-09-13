@@ -11,8 +11,8 @@ Source reviewed on 9 September 2026. Check the installed build before following 
 | State | Features |
 |---|---|
 | Existing 0.2.4 functionality | Admin connection settings; shared-secret setup; automatic buyer accounts; cart return; connection-specific checkout policy; audit logging. |
-| Local 0.3 release-candidate work | Quote recording, documentation/self-test, company application and lifecycle services, Account controller/template. Account wiring and admin approval/secret-display integration remain unfinished; this is not a released or deployed feature promise. |
-| Planned 0.3 work | Company address book, delivery/method confirmation, optional address/freight export and expanded exit-policy inheritance. |
+| Local 0.3 release-candidate work | Quote recording, documentation/self-test, company application and lifecycle services, owner Account management, company setup-template download, company address book, mandatory delivery review, optional address/freight export and expanded exit-policy inheritance. This is not a released or deployed feature promise. |
+| Separate acceptance work | Buyer-system launch and cart-return acceptance, production installation and release/version integration. |
 | Not implemented | Incoming purchase-order receiver, multi-currency conversion, ERP profile picker and manufacturer-field mapping. |
 
 An interactive preview demonstrates proposed screens; it neither configures connections nor proves live transactions.

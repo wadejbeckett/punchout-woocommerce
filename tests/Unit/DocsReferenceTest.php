@@ -84,4 +84,13 @@ final class DocsReferenceTest extends TestCase {
 		self::assertContains( 'https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/set-up-external-catalog-for-punchout', $links );
 		self::assertContains( 'https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/purchasing-cxml-enhancements', $links );
 	}
+
+	public function test_setup_template_steps_separate_static_connection_fields_from_runtime_values(): void {
+		$text = implode( ' ', $this->reference()->setup_template_steps() );
+
+		foreach ( [ 'From', 'Sender', 'To', 'SupplierSetup', 'SharedSecret', 'BuyerCookie', 'UserEmail', 'BrowserFormPost', 'runtime' ] as $term ) {
+			self::assertStringContainsString( $term, $text );
+		}
+		self::assertStringContainsString( 'not the supplier setup URL', $text );
+	}
 }
