@@ -16,6 +16,7 @@ use POW\Cxml\Parser;
 use POW\Cxml\SetupMessage;
 use POW\Addresses\DeliveryEstimate;
 use POW\Http\SetupEndpoint;
+use POW\Partners\Partner;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -51,17 +52,18 @@ final class Samples {
   <From><Credential domain="NetworkId"><Identity>AN01000000123-T</Identity></Credential></From>
   <To><Credential domain="DUNS"><Identity>SUPPLIER-DUNS</Identity></Credential></To>
   <Sender>
-   <Credential domain="NetworkId"><Identity>AN01000000123-T</Identity><SharedSecret>your-shared-secret</SharedSecret></Credential>
+   <Credential domain="NetworkId"><Identity>AN01000000123-T</Identity><SharedSecret>REPLACE-WITH-ISSUED-SHARED-SECRET</SharedSecret></Credential>
    <UserAgent>Example procurement system</UserAgent>
   </Sender>
  </Header>
  <Request deploymentMode="test">
   <PunchOutSetupRequest operation="create">
    <BuyerCookie>EXAMPLE-BUYER-COOKIE</BuyerCookie>
-   <Extrinsic name="UserEmail">buyer@example.com</Extrinsic>
-   <Extrinsic name="UniqueName">buyer@example.com</Extrinsic>
+   <Extrinsic name="UserEmail">buyer.user@example.invalid</Extrinsic>
+   <Extrinsic name="UniqueName">buyer.user@example.invalid</Extrinsic>
    <BrowserFormPost><URL>https://buyer.example.com/punchout/receive</URL></BrowserFormPost>
-   <Contact role="endUser"><Name xml:lang="en">A Buyer</Name><Email>buyer@example.com</Email></Contact>
+   <Contact role="endUser"><Name xml:lang="en">A Buyer</Name><Email>buyer.user@example.invalid</Email></Contact>
+   <SupplierSetup><URL>https://shop.example.com/punchout/setup</URL></SupplierSetup>
    <ShipTo>
     <Address addressID="BUYER-001">
      <Name xml:lang="en">Head office</Name>
@@ -79,6 +81,11 @@ final class Samples {
  </Request>
 </cXML>
 XML;
+	}
+
+	/** Complete company-specific setup request with runtime examples and no stored secret. */
+	public static function setup_template( Partner $partner, string $supplier_url ): string {
+		return SetupTemplate::for_partner( $partner, $supplier_url );
 	}
 
 	/**

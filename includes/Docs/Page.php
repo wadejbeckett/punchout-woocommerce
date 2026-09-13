@@ -242,7 +242,7 @@ final class Page {
 		$home_url = untrailingslashit( Transport::supplier_url( home_url() ) );
 		$partners = $this->registry->all();
 
-		[ $to_domain, $to_identity ] = self::to_credential( $partners );
+		[ $to_domain, $to_identity ] = self::to_credential( $partners, $privileged );
 
 		$annotations = [];
 
@@ -265,7 +265,7 @@ final class Page {
 			'delivery_samples' => Samples::delivery_examples(),
 			'cxml_version'   => Samples::VERSION,
 			'rate_limit'     => $this->settings->int( 'rate_limit_per_min' ),
-			'connections'    => $privileged ? self::connection_rows( $partners ) : [],
+			'connections'    => $privileged ? self::connection_rows( $partners, $home_url . '/punchout/setup' ) : [],
 			'self_test'      => $this->self_test_box( $privileged ),
 			'privileged'     => $privileged,
 		];
@@ -280,7 +280,10 @@ final class Page {
 	 * @param list<Partner> $partners Registry rows.
 	 * @return array{0: string, 1: string}
 	 */
-	private static function to_credential( array $partners ): array {
+	private static function to_credential( array $partners, bool $privileged ): array {
+		if ( ! $privileged ) {
+			return [ '', '' ];
+		}
 		foreach ( $partners as $partner ) {
 			if ( $partner->is_active() && '' !== $partner->to_identity ) {
 				return [ $partner->to_domain, $partner->to_identity ];
@@ -295,9 +298,9 @@ final class Page {
 	 * configured to send and receive. Never assembled for a public view.
 	 *
 	 * @param list<Partner> $partners Registry rows.
-	 * @return list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string}>
+	 * @return list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string, setup_template: string}>
 	 */
-	private static function connection_rows( array $partners ): array {
+	private static function connection_rows( array $partners, string $setup_url ): array {
 		$rows = [];
 
 		foreach ( $partners as $partner ) {
@@ -311,6 +314,7 @@ final class Page {
 				'cxml_version'    => $partner->cxml_version,
 				'deployment_mode' => $partner->deployment_mode,
 				'return_encoding' => 'urlencoded' === $partner->return_encoding ? 'cxml-urlencoded' : 'cxml-base64',
+				'setup_template'  => Samples::setup_template( $partner, $setup_url ),
 			];
 		}
 

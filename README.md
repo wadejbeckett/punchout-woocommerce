@@ -334,7 +334,7 @@ When `emit_delivery_line` is enabled and the confirmed rate is known, the POOM a
 
 ## Integration documentation page
 
-The page covers endpoints, identities, the annotated setup request, returned carts, status codes, company addresses and confirmation, independent delivery flags, exit hierarchy, rate limits and secret rotation. The inbound example is parsed by `Cxml\Parser`; outbound examples use `Cxml\Builder` and the real freight-line producer with invented rates. Flags-off and full enabled examples use exact verified DTD fixtures; displayed totals are derived from the same lines. These samples do not certify a receiving tenant or execute native shipping callbacks.
+The page covers endpoints, identities, the annotated setup request, returned carts, status codes, company addresses and confirmation, independent delivery flags, exit hierarchy, rate limits and secret rotation. Store administrators also receive a complete setup template for each active company; company owners download the same XML from My Account. It uses the company's static From, Sender, To, cXML version, mode and supplier setup URL, a SharedSecret placeholder, and explicit buyer-system runtime examples. The inbound example is parsed by `Cxml\Parser`; outbound examples use `Cxml\Builder` and the real freight-line producer with invented rates. Flags-off and full enabled examples use exact verified DTD fixtures; displayed totals are derived from the same lines. These samples do not certify a receiving tenant or execute native shipping callbacks.
 
 Publish it by creating a page and adding the shortcode, then send buyers that page's URL:
 
@@ -346,7 +346,7 @@ Shortcode only — core's Shortcode block inserts it in the block editor, so a c
 
 It carries a **self-test**: paste a PunchOutSetupRequest or ProfileRequest, get back the cXML Status the live endpoint would have answered with, and why. Nothing is stored, no session is created, and any `SharedSecret` in the paste is redacted before it is echoed back. For an anonymous visitor the three authentication stages collapse into one result — splitting them on a public page would be a credential oracle — and the run is throttled on the setup endpoint's own rate limiter and written to the audit log (`docs_self_test`).
 
-Store administrators get the same page with more on it at **WooCommerce > PunchOut > Integration docs**: a per-connection block (each active customer's Sender identity, cXML version, deployment mode and return encoding) and a self-test that names the exact authentication stage.
+Store administrators get the same page with more on it at **WooCommerce > PunchOut > Integration docs**: a per-connection block with the complete setup XML and a self-test that names the exact authentication stage. Company owners download their own template from **My Account → Punchout integration**; ownership is resolved server-side and the request carries a nonce.
 
 Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (or `docs/self-test.php`), or via the `pow_template_docs/page` filter.
 

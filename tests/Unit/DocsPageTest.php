@@ -22,6 +22,7 @@ use POW\Docs\Reference;
 use POW\Docs\SelfTest;
 use POW\Http\RateLimiter;
 use POW\Logger;
+use POW\Partners\Partner;
 use POW\Partners\Registry;
 use POW\Partners\Secrets;
 use POW\Settings;
@@ -389,12 +390,48 @@ final class DocsPageTest extends TestCase {
 				'cxml_version'    => '1.2.008',
 				'deployment_mode' => 'test',
 				'return_encoding' => 'cxml-base64',
+				'setup_template'  => '<cXML>Example Buyer private template</cXML>',
 			],
 		];
 		$public['connections'] = $admin['connections'];
 
 		self::assertStringContainsString( 'Example Buyer', Templates::render( 'docs/page', $admin ) );
 		self::assertStringNotContainsString( 'Example Buyer', Templates::render( 'docs/page', $public ) );
+	}
+
+	public function test_privileged_connection_rows_include_the_exact_company_template(): void {
+		$partner = Partner::from_row( [
+			'id' => 20, 'owner_user_id' => 7, 'name' => 'Example Buyer', 'status' => 'active',
+			'from_domain' => 'NetworkID', 'from_identity' => 'BUYER-ONE', 'sender_domain' => 'NetworkID', 'sender_identity' => 'SENDER-ONE',
+			'to_domain' => 'DUNS', 'to_identity' => 'SUPPLIER-ONE', 'secret_current' => 'SEALED-PRIVATE', 'secret_previous' => '',
+			'cxml_version' => '1.2.008', 'deployment_mode' => 'production', 'return_encoding' => 'base64',
+		] );
+		$method = new ReflectionMethod( Page::class, 'connection_rows' );
+		$method->setAccessible( true );
+		$rows = $method->invoke( null, [ $partner ], 'https://shop.example.com/punchout/setup' );
+
+		self::assertCount( 1, $rows );
+		self::assertStringContainsString( '<Identity>SENDER-ONE</Identity>', $rows[0]['setup_template'] );
+		self::assertStringContainsString( '<SupplierSetup><URL>https://shop.example.com/punchout/setup</URL></SupplierSetup>', $rows[0]['setup_template'] );
+		self::assertStringNotContainsString( 'SEALED-PRIVATE', $rows[0]['setup_template'] );
+		$vars = $this->page_vars();
+		$vars['privileged'] = true;
+		$vars['connections'] = $rows;
+		self::assertStringContainsString( '&lt;Identity&gt;SENDER-ONE&lt;/Identity&gt;', Templates::render( 'docs/page', $vars ) );
+	}
+
+	public function test_public_reference_never_receives_a_configured_company_identity(): void {
+		$partner = Partner::from_row( [
+			'id' => 20, 'owner_user_id' => 7, 'name' => 'Private Buyer', 'status' => 'active',
+			'from_domain' => 'PrivateDomain', 'from_identity' => 'PRIVATE-FROM', 'sender_domain' => 'PrivateDomain', 'sender_identity' => 'PRIVATE-SENDER',
+			'to_domain' => 'PrivateSupplierDomain', 'to_identity' => 'PRIVATE-SUPPLIER', 'secret_current' => 'SEALED-PRIVATE', 'secret_previous' => '',
+			'cxml_version' => '1.2.008', 'deployment_mode' => 'test', 'return_encoding' => 'base64',
+		] );
+		$method = new ReflectionMethod( Page::class, 'to_credential' );
+		$method->setAccessible( true );
+
+		self::assertSame( [ '', '' ], $method->invoke( null, [ $partner ], false ) );
+		self::assertSame( [ 'PrivateSupplierDomain', 'PRIVATE-SUPPLIER' ], $method->invoke( null, [ $partner ], true ) );
 	}
 
 	/* ---------------------------------------------------------------------

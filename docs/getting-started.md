@@ -1,6 +1,6 @@
 # Getting started
 
-For supplier administrators and company managers. This approved 0.3 application workflow still needs release integration. Existing installations use the supplier's admin connection screen.
+For supplier administrators and company managers. This workflow is present in the local 0.3 release candidate; installation and release integration remain separate.
 
 ## Prepare the supplier
 
@@ -16,7 +16,9 @@ The company manager supplies technical details **during application**: connectio
 
 Submission creates a pending connection without a secret. The supplier administrator reviews the request, completes supplier identity and purchasing permissions, then explicitly approves. Notification contains no credential. Company approval does not require entering or approving every employee separately.
 
-Use the generator for company credentials and arrange private handover. The new owner response displays a rotated secret directly; legacy admin reveal handling still needs its planned replacement before claiming the whole build has that behavior. Never put credentials in examples, tickets or email templates.
+After activation, the company owner downloads the company-specific setup XML from **My Account → Punchout integration**. The file contains the saved From, Sender and To credentials, cXML version, deployment mode and supplier setup URL. It contains a SharedSecret placeholder, never the stored secret. Arrange the actual credential handover privately; never put credentials in examples, tickets or email templates.
+
+Paste the XML into the buyer system's cXML template editor, replace only the SharedSecret placeholder, and configure the buyer system to generate payloadID, timestamp and BuyerCookie and to insert the initiating UserEmail and its own BrowserFormPost URL at runtime. BrowserFormPost is the buyer's cart-return receiver, not the supplier setup URL. Do not invent substitution tokens: use the buyer product's documented runtime mapping controls.
 
 After activation, owner identities are read-only. Rotation temporarily accepts both secrets; verify the replacement in the purchasing system before finishing rotation. An already-open rotation is refused. Deactivation is immediate, including session cleanup; an incomplete cleanup result requires supplier attention.
 
