@@ -1,6 +1,6 @@
 <?php
 /**
- * Reproduction attempts for hypotheses H1 and H3 of the 2026-09-15 quantity rollback review.
+ * Regression tests for hypotheses H1 and H3 of the 2026-09-15 quantity rollback review: a compare-and-set loss is retried once on the fresh row, and every final refusal is logged (hashed key + reason).
  *
  * Production NativeSessionGuard/NativeSessionHandler bodies run against the REAL POW\Sessions\Store
  * (so Store::invalidate_delivery's own predicates decide), a fake partner registry and an
@@ -33,7 +33,7 @@ namespace {
 final class RollbackDatabase {
 	public string $prefix='wp_';public string $usermeta='wp_usermeta';public string $last_error='';public array $queries=[];
 	public array $rows=[];public array $session=[];public array $metadata=[['umeta_id'=>'1','meta_key'=>'session_tokens','meta_value'=>'native-login']];
-	public ?int $invalidate_affected=null;public mixed $after_invalidate=null;public int $consent_clears=0;public array $log=[];
+	public ?int $invalidate_affected=null;public mixed $after_invalidate=null;public mixed $before_cas=null;public int $consent_clears=0;public array $log=[];
 	public function prepare(string $sql,mixed ...$args):string{$key='q'.count($this->queries);$this->queries[$key]=[$sql,$args];return $key;}
 	public function get_row(string $key,mixed $format):?array{[$sql,$a]=$this->queries[$key];if(!str_contains($sql,'wp_pow_sessions')){throw new LogicException('Unexpected row query: '.$sql);}
 		if(str_contains($sql,'WHERE id = %d')){return (int)$a[0]===(int)$this->session['id']?$this->session:null;}
@@ -51,10 +51,11 @@ final class RollbackDatabase {
 			if(null!==$this->invalidate_affected){return $this->invalidate_affected;}
 			if(!$matches){return 0;}$this->session['delivery_confirmation']=null;if($this->after_invalidate){$f=$this->after_invalidate;$this->after_invalidate=null;$f();}return 1;}
 		if(!str_contains($sql,'BINARY session_value = BINARY %s')||!str_contains($sql,'BINARY session_key = BINARY %s')){throw new LogicException('Missing exact CAS');}
-		[$value,$expiry,$key,$expected]=$a;if(!isset($this->rows[$key])||$this->rows[$key]['session_value']!==$expected){return 0;}$changed=$this->rows[$key]!==['session_value'=>$value,'session_expiry'=>(string)$expiry];$this->rows[$key]=['session_value'=>$value,'session_expiry'=>(string)$expiry];return (int)$changed;}
+		if($this->before_cas){$f=$this->before_cas;$this->before_cas=null;$f();}[$value,$expiry,$key,$expected]=$a;if(!isset($this->rows[$key])||$this->rows[$key]['session_value']!==$expected){return 0;}$changed=$this->rows[$key]!==['session_value'=>$value,'session_expiry'=>(string)$expiry];$this->rows[$key]=['session_value'=>$value,'session_expiry'=>(string)$expiry];return (int)$changed;}
 }
+final class RollbackLogger extends \POW\Logger {public array $warnings=[];public function __construct(){}public function warning(string $message,array $context=[]):void{$this->warnings[]=[$message,$context];}}
 final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
-	private mixed $previous;private mixed $previous_tokens;private mixed $s;private RollbackDatabase $db;private mixed $guard;private array $logged=[];
+	private mixed $previous;private mixed $previous_tokens;private mixed $s;private RollbackDatabase $db;private mixed $guard;private array $logged=[];private RollbackLogger $logger;
 	protected function setUp():void{
 		\POW\Tests\Rollback\load_source();
 		$this->previous=$GLOBALS['wpdb']??null;$this->previous_tokens=$GLOBALS['pow_test_session_tokens']??null;
@@ -63,7 +64,7 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 		$this->s->registry->partner=POW\Partners\Partner::from_row(['id'=>7,'status'=>'active','owner_user_id'=>20]);
 		$this->db->session=['id'=>42,'partner_id'=>7,'user_id'=>99,'wp_session_token'=>'exact','status'=>'active','expires'=>gmdate('Y-m-d H:i:s',time()+3600),'delivery_choice'=>'{"provider":"book","key":"hq"}','delivery_confirmation'=>'{"confirmed":true}'];
 		$this->db->rows['99']=['session_value'=>serialize(['cart'=>['item'=>['quantity'=>1]]]),'session_expiry'=>'9999999999'];
-		$this->guard=new \POW\Tests\Rollback\NativeSessionGuard($this->s->registry,new POW\Sessions\Store());$this->guard->register();
+		$this->logger=new RollbackLogger();$this->guard=new \POW\Tests\Rollback\NativeSessionGuard($this->s->registry,new POW\Sessions\Store(),$this->logger);$this->guard->register();
 		$this->logged=[];set_error_handler(function(int $no,string $msg):bool{$this->logged[]=$msg;return true;});
 	}
 	protected function tearDown():void{restore_error_handler();$GLOBALS['wpdb']=$this->previous;$GLOBALS['pow_test_session_tokens']=$this->previous_tokens;unset($GLOBALS['rollback_test']);}
@@ -71,22 +72,34 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 	private function request():object{$handler=new \POW\Tests\Rollback\NativeSessionHandler();$this->s->session=$handler;$handler->init();return $handler;}
 	private function stored():array{return unserialize($this->db->rows['99']['session_value']);}
 	private function quantity(object $handler,int $qty):void{$this->s->session=$handler;$handler->set('cart',['item'=>['quantity'=>$qty]]);}
+	/** One warning with the hashed key and reason; never the raw key, session data or secrets. */
+	private function assertRefusalLogged(string $reason):void{self::assertCount(1,$this->logger->warnings);[$message,$context]=$this->logger->warnings[0];self::assertSame('Native cart commit refused',$message);self::assertSame(['session_key_hash'=>substr(hash('sha256','99'),0,16),'reason'=>$reason],$context);self::assertStringNotContainsString('"99"',json_encode($context));}
 
 	// ---- H1: optimistic compare-and-set loses to an overlapping request ----
 
-	public function test_h1_overlapping_request_that_rewrites_the_row_silently_drops_the_quantity_change():void{
+	public function test_h1_overlapping_request_that_rewrites_the_row_no_longer_drops_the_quantity_change():void{
 		$quantity=$this->request();$fragments=$this->request(); // both hydrated from quantity=1
 		self::assertSame(1,$quantity->get('cart')['item']['quantity']);
 		// The overlapping request persists first, with a different value (e.g. recalculated shipping/cart_totals keys).
 		$this->s->session=$fragments;$fragments->set('cart_totals',['total'=>'10.00']);self::assertTrue($fragments->save_checked());
-		// The quantity request then commits its own in-memory snapshot, whose baseline is the pre-fragments value.
+		// The quantity request's first compare-and-set loses; it rehydrates once and replays only its own changed key.
 		$this->quantity($quantity,2);
-		$result=$quantity->save_checked();
-		self::assertFalse($result,'Second writer must lose the compare-and-set');
-		self::assertSame(1,$this->stored()['cart']['item']['quantity'],'Quantity 2 was never persisted');
-		self::assertSame(['total'=>'10.00'],$this->stored()['cart_totals'],'The overlapping request\'s value wins');
-		self::assertSame('',$this->db->last_error,'No SQL error');self::assertSame([],$this->logged,'Nothing logged');self::assertSame(0,$quantity->parent_saves,'No native fallback save');
-		// Shutdown retry from the same request stays refused: the loss is final for that request.
+		self::assertTrue($quantity->save_checked(),'Retry on the fresh row succeeds');
+		self::assertSame(2,$this->stored()['cart']['item']['quantity'],'Quantity 2 persisted via the retry');
+		self::assertSame(['total'=>'10.00'],$this->stored()['cart_totals'],'The overlapping request\'s value is preserved, not overwritten by the stale snapshot');
+		self::assertSame('',$this->db->last_error,'No SQL error');self::assertSame([],$this->logged);self::assertSame([],$this->logger->warnings,'Success is not logged');self::assertSame(0,$quantity->parent_saves,'No native fallback save');self::assertNull($quantity->last_refusal());
+		self::assertSame(2,count(array_filter($this->db->log,fn($q)=>str_contains($q,'wp_woocommerce_sessions'))),'Exactly one retry write after the fragments write');
+	}
+	public function test_h1_second_conflict_during_the_retry_is_refused_and_logged():void{
+		$quantity=$this->request();$fragments=$this->request();
+		$this->s->session=$fragments;$fragments->set('cart_totals',['total'=>'10.00']);self::assertTrue($fragments->save_checked());
+		// Another writer lands between the retry's rehydration and its compare-and-set.
+		$this->db->before_cas=function(){$this->db->rows['99']['session_value']=serialize(['cart'=>['item'=>['quantity'=>1]],'cart_totals'=>['total'=>'12.00']]);};
+		$this->quantity($quantity,2);
+		self::assertFalse($quantity->save_checked(),'Only one retry');
+		self::assertSame(1,$this->stored()['cart']['item']['quantity']);self::assertSame(['total'=>'12.00'],$this->stored()['cart_totals'],'Latest concurrent value untouched');
+		self::assertSame('row_conflict',$quantity->last_refusal());$this->assertRefusalLogged('row_conflict');self::assertSame(0,$quantity->parent_saves,'No native fallback save');
+		// The refused request stays blocked through shutdown.
 		$this->quantity($quantity,2);self::assertFalse($quantity->save_checked());self::assertSame(1,$this->stored()['cart']['item']['quantity']);
 	}
 	public function test_h1_overlapping_request_that_only_refreshes_expiry_does_not_lose_the_quantity_change():void{
@@ -99,8 +112,8 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 	public function test_h1_first_writer_wins_regardless_of_which_request_carries_the_quantity():void{
 		$quantity=$this->request();$fragments=$this->request();
 		$this->quantity($quantity,2);self::assertTrue($quantity->save_checked());
-		$this->s->session=$fragments;$fragments->set('cart_totals',['total'=>'10.00']);self::assertFalse($fragments->save_checked(),'Late overlapping request refused, no rollback of quantity');
-		self::assertSame(2,$this->stored()['cart']['item']['quantity']);self::assertSame([],$this->logged);
+		$this->s->session=$fragments;$fragments->set('cart_totals',['total'=>'10.00']);self::assertTrue($fragments->save_checked(),'Late overlapping request replays its own key over the quantity row');
+		self::assertSame(2,$this->stored()['cart']['item']['quantity'],'No rollback of quantity');self::assertSame(['total'=>'10.00'],$this->stored()['cart_totals']);self::assertSame([],$this->logged);self::assertSame([],$this->logger->warnings);
 	}
 
 	// ---- H3: consent invalidation gating the cart write ----
@@ -122,24 +135,28 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 		// With mark_changed the outcome is identical: the drop is the identity check, not the consent gate.
 		$this->db->session['status']='active';$again=$this->request();$this->db->session['status']='returned';$this->guard->mark_changed();$this->quantity($again,2);
 		self::assertFalse($again->save_checked());self::assertSame(0,$this->db->consent_clears);self::assertSame(1,$this->stored()['cart']['item']['quantity']);self::assertSame([],$this->logged);
+		// The pre-lock login re-check in stage_identity() throws, so both attempts surface as 'exception' (identity_locked is never reached).
+		self::assertSame('exception',$again->last_refusal());self::assertCount(2,$this->logger->warnings);self::assertSame(['exception','exception'],array_column(array_column($this->logger->warnings,1),'reason'));
 	}
-	public function test_h3_consent_clear_affecting_zero_rows_drops_the_whole_cart_commit_silently():void{
+	public function test_h3_consent_clear_affecting_zero_rows_drops_the_cart_commit_and_logs_it():void{
 		$quantity=$this->request();$this->guard->mark_changed();$this->quantity($quantity,2);
 		$this->db->invalidate_affected=0; // DB matched nothing (or reported 0) although the snapshot said a confirmation exists
 		$result=$quantity->save_checked();
 		self::assertFalse($result);self::assertSame(1,$this->db->consent_clears);self::assertSame(1,$this->stored()['cart']['item']['quantity'],'Cart commit dropped');
-		self::assertSame('',$this->db->last_error);self::assertSame([],$this->logged,'Nothing logged');
+		self::assertSame('',$this->db->last_error);self::assertSame([],$this->logged);
 		self::assertSame(0,count(array_filter($this->db->log,fn($q)=>str_contains($q,'wp_woocommerce_sessions'))),'No cart write attempted');
+		self::assertSame('consent_invalidation',$quantity->last_refusal());$this->assertRefusalLogged('consent_invalidation');self::assertSame(0,$quantity->parent_saves,'No native fallback save');
 	}
 	public function test_h3_same_failure_without_mark_changed_commits_normally():void{
 		$quantity=$this->request();$this->quantity($quantity,2);$this->db->invalidate_affected=0;
 		self::assertTrue($quantity->save_checked());self::assertSame(0,$this->db->consent_clears);self::assertSame(2,$this->stored()['cart']['item']['quantity']);
 	}
-	public function test_h3_delivery_choice_drift_during_clear_removes_consent_and_drops_cart_commit():void{
+	public function test_h3_delivery_choice_drift_during_clear_removes_consent_drops_cart_commit_and_logs_it():void{
 		$quantity=$this->request();$this->guard->mark_changed();$this->quantity($quantity,2);
 		$this->db->after_invalidate=function(){$this->db->session['delivery_choice']='{"provider":"book","key":"branch"}';};
 		self::assertFalse($quantity->save_checked());
 		self::assertNull($this->db->session['delivery_confirmation'],'Consent already removed');self::assertSame(1,$this->stored()['cart']['item']['quantity'],'Cart change lost');self::assertSame([],$this->logged);
+		self::assertSame('consent_invalidation',$quantity->last_refusal());$this->assertRefusalLogged('consent_invalidation');
 	}
 	public function test_h3_already_cleared_confirmation_is_not_a_gate():void{
 		$this->db->session['delivery_confirmation']=null;$quantity=$this->request();$this->guard->mark_changed();$this->quantity($quantity,2);
