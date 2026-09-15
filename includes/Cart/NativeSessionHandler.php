@@ -16,6 +16,8 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 	/** Decoded native data at hydration; the retry merge applies only keys this request changed. */
 	private array $baseline = [];
 	private ?string $refusal = null;
+	/** Throwable class and message behind an 'exception' refusal; never session data. */
+	private ?string $refusal_detail = null;
 	public const REFUSED_ROW_CONFLICT = 'row_conflict';
 	public const REFUSED_IDENTITY = 'identity';
 	public const REFUSED_CONSENT_INVALIDATION = 'consent_invalidation';
@@ -70,7 +72,9 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 	public function is_protected(): bool { return null !== $this->row || $this->blocked || NativeSessionGuard::registered()->protected_key( (string) $this->get_customer_id() ); }
 	public function refuse(): void { $this->blocked = true; $this->row?->refuse(); }
 	/** First refusal reason of the current save attempt wins; later cascading refusals do not overwrite it. */
-	private function refuse_for( string $reason ): void { $this->refusal ??= $reason; $this->refuse(); }
+	private function refuse_for( string $reason, ?string $detail = null ): void { if ( null === $this->refusal ) { $this->refusal = $reason; $this->refusal_detail = $detail; } $this->refuse(); }
+	/** A throwable escaping the guarded commit is a refusal that records what was thrown. */
+	public function refuse_for_error( \Throwable $error ): void { $this->refuse_for( self::REFUSED_EXCEPTION, get_class( $error ) . ': ' . substr( $error->getMessage(), 0, 160 ) ); }
 	/** Why the last save_checked() was refused (one of the REFUSED_* constants), or null after success. */
 	public function last_refusal(): ?string { return $this->refusal; }
 	public function mark_changed(): void { $this->changed = true; }
@@ -109,6 +113,7 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 		if ( ! $this->is_protected() ) { parent::save_data(); return true; }
 		$guard = NativeSessionGuard::registered();
 		$this->refusal = null;
+		$this->refusal_detail = null;
 		try {
 			if ( $guard->save( $this, $this->stage() ) ) { return true; }
 			if ( self::REFUSED_ROW_CONFLICT === $this->refusal && $this->rehydrate() ) {
@@ -117,10 +122,10 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 				$this->refusal ??= self::REFUSED_ROW_CONFLICT;
 			}
 		}
-		catch ( \Throwable $error ) { $this->refuse_for( self::REFUSED_EXCEPTION ); }
+		catch ( \Throwable $error ) { $this->refuse_for_error( $error ); }
 		finally { $this->flush_cache(); }
 		$this->refusal ??= self::REFUSED_EXCEPTION; // Guard::save() swallowed a throwable inside the mutex.
-		$guard->log_refusal( (string) $this->get_customer_id(), $this->refusal );
+		$guard->log_refusal( (string) $this->get_customer_id(), $this->refusal, $this->refusal_detail );
 		return false;
 	}
 	/** Only after a row conflict: reload the native row and replay this request's own changes (keys that differ from its hydration baseline) on top of the other writer's value. Identity, consent and snapshot refusals are never retried. */
@@ -143,6 +148,8 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 		if ( ! $this->is_protected() ) { parent::save_data( $old_session_key ); return; }
 		// Migration/clone callbacks precede destination hydration. Let native initialization finish its cookie/authentication work, then load the destination row in init(); never copy guest data over it.
 		if ( $this->initializing && ! $this->row ) { return; }
+		// A handler refused at init (e.g. the redeem request, whose new login cookie is not yet visible to itself) never loaded a row: there is nothing to commit, so no refusal to log.
+		if ( $this->blocked && ! $this->row ) { return; }
 		$this->save_checked();
 	}
 	public function flush_cache(): void {

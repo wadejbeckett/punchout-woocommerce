@@ -17,3 +17,5 @@ Paid sessions keep their exact-login native saves. Terminal cleanup removes only
 Cross-request preservation of unconfirmed address-choice and notes drafts is deferred UX. It is separate from native session concurrency and persisted buyer consent.
 
 These are plugin compatibility boundaries, not a claim that every WooCommerce extension or native request flow has been certified. Native acceptance must verify actual selected handlers and direct stored rows across independent requests, in addition to the isolated source tests.
+
+A handler that was refused during initialization never loads a buyer row, so its shutdown save is skipped silently: there is nothing to commit and nothing to log. This is the normal state of the StartPage redeem request, whose new login cookie is not visible to the request that set it; the next request binds the session normally.

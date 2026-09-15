@@ -137,6 +137,15 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 		self::assertFalse($again->save_checked());self::assertSame(0,$this->db->consent_clears);self::assertSame(1,$this->stored()['cart']['item']['quantity']);self::assertSame([],$this->logged);
 		// The pre-lock login re-check in stage_identity() throws, so both attempts surface as 'exception' (identity_locked is never reached).
 		self::assertSame('exception',$again->last_refusal());self::assertCount(2,$this->logger->warnings);self::assertSame(['exception','exception'],array_column(array_column($this->logger->warnings,1),'reason'));
+		// An 'exception' refusal names the throwable so a benign login-window refusal can be told from a storage fault. Still no raw key or session data.
+		foreach($this->logger->warnings as [$message,$context]){self::assertSame('RuntimeException: Native cart login unavailable.',$context['detail']);self::assertStringNotContainsString('"99"',json_encode($context));self::assertStringNotContainsString('quantity',json_encode($context));}
+	}
+	/** A handler whose native login failed during init never loaded a row; its shutdown save has nothing to commit and must not log a refusal (the redeem request's cookie is not yet visible to itself). */
+	public function test_handler_blocked_at_init_skips_shutdown_save_without_logging():void{
+		$this->db->session['status']='expired';$handler=$this->request();
+		$handler->save_data();
+		self::assertSame([],$this->logger->warnings,'Nothing to save, nothing to log');self::assertNull($handler->last_refusal());self::assertSame(0,$handler->parent_saves,'No native fallback save');
+		self::assertSame(1,$this->stored()['cart']['item']['quantity'],'Buyer row untouched');
 	}
 	public function test_h3_consent_clear_affecting_zero_rows_drops_the_cart_commit_and_logs_it():void{
 		$quantity=$this->request();$this->guard->mark_changed();$this->quantity($quantity,2);
