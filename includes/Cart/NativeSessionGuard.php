@@ -80,11 +80,13 @@ final class NativeSessionGuard {
 	}
 	public function save( NativeSessionHandler $handler, array $prepared ): bool {
 		try { return $this->registry->with_partner_lock( $prepared['identity']['partner'], fn() => $handler->commit_locked( $prepared ) ); }
-		catch ( \Throwable $error ) { $handler->refuse(); return false; }
+		catch ( \Throwable $error ) { $handler->refuse_for_error( $error ); return false; }
 	}
-	/** Operational visibility for a refused protected save. The key is hashed; no session data, secrets or raw identifiers are logged. Logging failures never alter the refusal. */
-	public function log_refusal( string $key, string $reason ): void {
-		try { $this->logger?->warning( 'Native cart commit refused', [ 'session_key_hash' => substr( hash( 'sha256', $key ), 0, 16 ), 'reason' => $reason ] ); }
+	/** Operational visibility for a refused protected save. The key is hashed; no session data, secrets or raw identifiers are logged. An 'exception' refusal names the throwable class and message. Logging failures never alter the refusal. */
+	public function log_refusal( string $key, string $reason, ?string $detail = null ): void {
+		$context = [ 'session_key_hash' => substr( hash( 'sha256', $key ), 0, 16 ), 'reason' => $reason ];
+		if ( null !== $detail ) { $context['detail'] = $detail; }
+		try { $this->logger?->warning( 'Native cart commit refused', $context ); }
 		catch ( \Throwable $error ) { /* A logging failure must not change the refusal outcome. */ }
 	}
 	public function invalidate_locked( Session $session ): bool {
