@@ -98,7 +98,7 @@ final class Plugin {
 		$this->registry = new Registry( $secrets );
 		$this->sessions = new Store();
 		// Select the guarded native cookie handler before Woo hydrates any buyer cart, including Store API requests.
-		$native_sessions = new Cart\NativeSessionGuard( $this->registry, $this->sessions );
+		$native_sessions = new Cart\NativeSessionGuard( $this->registry, $this->sessions, $this->logger );
 		$native_sessions->register();
 		$this->audit    = new Log( $this->logger );
 		$registration  = new \POW\Partners\Registration( $this->registry, $this->sessions, $this->audit );

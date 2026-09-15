@@ -6,12 +6,13 @@ use POW\Partners\Registry;
 use POW\Sessions\Store;
 use POW\Sessions\Session;
 use POW\Installer;
+use POW\Logger;
 use Automattic\WooCommerce\StoreApi\Utilities\CartTokenUtils;
 defined( 'ABSPATH' ) || exit;
 
 final class NativeSessionGuard {
 	private static ?self $registered = null;
-	public function __construct( private Registry $registry, private Store $sessions ) {}
+	public function __construct( private Registry $registry, private Store $sessions, private ?Logger $logger = null ) {}
 	public static function registered(): self {
 		if ( ! self::$registered ) { throw new \RuntimeException( 'Native cart guard unavailable.' ); }
 		return self::$registered;
@@ -80,6 +81,11 @@ final class NativeSessionGuard {
 	public function save( NativeSessionHandler $handler, array $prepared ): bool {
 		try { return $this->registry->with_partner_lock( $prepared['identity']['partner'], fn() => $handler->commit_locked( $prepared ) ); }
 		catch ( \Throwable $error ) { $handler->refuse(); return false; }
+	}
+	/** Operational visibility for a refused protected save. The key is hashed; no session data, secrets or raw identifiers are logged. Logging failures never alter the refusal. */
+	public function log_refusal( string $key, string $reason ): void {
+		try { $this->logger?->warning( 'Native cart commit refused', [ 'session_key_hash' => substr( hash( 'sha256', $key ), 0, 16 ), 'reason' => $reason ] ); }
+		catch ( \Throwable $error ) { /* A logging failure must not change the refusal outcome. */ }
 	}
 	public function invalidate_locked( Session $session ): bool {
 		return Session::ORDERED === $session->status || $this->sessions->invalidate_delivery( $session->id, $session->user_id, $session->wp_session_token );
