@@ -7,6 +7,7 @@ use POW\Partners\Partner;
 use POW\Partners\Registry;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
+use POW\Sessions\ConsentFence;
 use POW\Checkout\ExitPolicy;
 use POW\Cart\PoomMapper;
 use POW\Cart\NativeSessionGuard;
@@ -19,6 +20,7 @@ final class Confirmation implements ReturnConfirmation {
 	private PoomMapper $mapper;
 	private int $refresh_depth = 0;
 	private NativeSessionGuard $native;
+	private ConsentFence $fence;
 
 	/** Chooser's external mutation hooks use this same instance; internal quote refresh still undergoes the complete locked guard. */
 	public function is_refreshing(): bool { return $this->refresh_depth > 0; }
@@ -28,6 +30,7 @@ final class Confirmation implements ReturnConfirmation {
 		$settings = new Settings();
 		$this->mapper = $mapper ?? new PoomMapper( $settings, new Logger( $settings ) );
 		$this->native = $native ?? new NativeSessionGuard( $registry, $sessions );
+		$this->fence = new ConsentFence( $sessions, $registry );
 	}
 
 	/** Stable view contract, including a bounded error when authorization/preparation fails. */
@@ -366,21 +369,7 @@ final class Confirmation implements ReturnConfirmation {
 		return $notes;
 	}
 
-	private function clear_locked( Session $session ): bool {
-		try { if ( $this->sessions->invalidate_delivery( $session->id, $session->user_id, $session->wp_session_token ) ) { return true; } }
-		catch ( \Throwable $error ) {}
-		// A false clear may itself have committed. Fence the exact active login before any continuation; never expire a replacement login or a completed winner.
-		try {
-			$fresh = $this->sessions->find( $session->id );
-			if ( ! $fresh || Session::ACTIVE !== $fresh->status || $fresh->partner_id !== $session->partner_id || $fresh->user_id !== $session->user_id || $fresh->wp_session_token !== $session->wp_session_token ) { return false; }
-			if ( $this->sessions->expire_active_login_locked( $fresh ) ) { return false; }
-			// A paid winner or replacement login can beat recovery even while this mutex is held. A failed CAS/readback never authorizes a company fence without another exact ACTIVE read.
-			$fresh = $this->sessions->find( $session->id );
-			if ( ! $fresh || Session::ACTIVE !== $fresh->status || $fresh->partner_id !== $session->partner_id || $fresh->user_id !== $session->user_id || $fresh->wp_session_token !== $session->wp_session_token ) { return false; }
-			$this->registry->transition_status( $fresh->partner_id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
-		} catch ( \Throwable $error ) { /* Unreadable state cannot authorize disabling a potentially completed winner. */ }
-		return false;
-	}
+	private function clear_locked( Session $session ): bool { return $this->fence->clear_locked( $session ); }
 
 	private function failed( Session $session, Partner $partner ): \WP_Error {
 		try {

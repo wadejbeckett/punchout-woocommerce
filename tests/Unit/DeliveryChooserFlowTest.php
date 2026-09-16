@@ -79,8 +79,8 @@ DEFAULTS
 
 	$source = file_get_contents( dirname( __DIR__, 2 ) . '/includes/Addresses/Chooser.php' );
 	$source = replace_once( $source, 'namespace POW\\Addresses;', 'namespace ' . __NAMESPACE__ . ';' );
-	foreach ( [ 'use POW\\Http\\ReturnEndpoint;', 'use POW\\Plugin;', 'use POW\\Support\\Templates;' ] as $import ) { $source = replace_once( $source, $import, '' ); }
-	$source = replace_once( $source, 'use POW\\Partners\\{Partner, Registry};', 'use POW\\Partners\\Partner;' );
+	foreach ( [ 'use POW\\Http\\ReturnEndpoint;', 'use POW\\Plugin;', 'use POW\\Support\\Templates;', 'use POW\\Sessions\\ConsentFence;' ] as $import ) { $source = replace_once( $source, $import, '' ); }
+	$source = replace_once( $source, 'use POW\\Partners\\Registry;', '' );
 	$source = replace_once( $source, 'use POW\\Sessions\\{Session, Store};', 'use POW\\Sessions\\Session;' );
 	eval( substr( $source, 5 ) );
 }
