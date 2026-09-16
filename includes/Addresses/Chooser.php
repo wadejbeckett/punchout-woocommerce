@@ -6,9 +6,10 @@ namespace POW\Addresses;
 use POW\Support\Transport;
 
 use POW\Http\ReturnEndpoint;
-use POW\Partners\{Partner, Registry};
+use POW\Partners\Registry;
 use POW\Plugin;
 use POW\Sessions\{Session, Store};
+use POW\Sessions\ConsentFence;
 use POW\Support\Templates;
 use POW\Cart\NativeSessionGuard;
 
@@ -128,14 +129,7 @@ final class Chooser {
 			$fresh = $this->sessions->find( $session->id );
 			if ( ! $fresh || Session::ACTIVE !== $fresh->status || $fresh->user_id !== get_current_user_id() || $fresh->partner_id !== $session->partner_id || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) ) { return false; }
 			if ( null !== $native && ! $this->native->check_locked( $fresh, $native ) ) { return false; }
-			if ( $this->sessions->invalidate_delivery( $fresh->id, $fresh->user_id, $fresh->wp_session_token ) ) { return true; }
-			// An unacknowledged clear must never leave a usable stale confirmation.
-			if ( ! $this->sessions->expire_active_login_locked( $fresh ) ) {
-				// A payment/return or replacement login may have won since the clear. Failed recovery grants no authority over that winner.
-				$still_active = $this->sessions->find( $fresh->id );
-				if ( $still_active && Session::ACTIVE === $still_active->status && $still_active->partner_id === $fresh->partner_id && $still_active->user_id === $fresh->user_id && $still_active->wp_session_token === $fresh->wp_session_token ) { $this->registry->transition_status( $fresh->partner_id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] ); }
-			}
-			return false;
+			return ( new ConsentFence( $this->sessions, $this->registry ) )->clear_locked( $fresh );
 		} );
 	}
 

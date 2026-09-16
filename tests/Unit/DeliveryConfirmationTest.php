@@ -148,14 +148,23 @@ function wp_get_session_token():string{return state()->token;}
 function get_woocommerce_currency():string{return state()->currency;}
 function get_option(string $key,mixed $default=null):mixed{if('woocommerce_currency'===$key&&state()->currency_callback){$f=state()->currency_callback;state()->currency_callback=null;$f();}return 'woocommerce_currency'===$key?state()->currency:$default;}
 function sanitize_textarea_field(string $notes):string{return trim(strip_tags($notes));}
+/** The real consent fence runs against this suite's Store/Registry doubles, so their invalidation/expiry/fence counters stay meaningful. */
+function load_fence_source():void{
+	if(class_exists(__NAMESPACE__.'\\ConsentFence',false)){return;}
+	$source=file_get_contents(dirname(__DIR__,2).'/includes/Sessions/ConsentFence.php');
+	$source=str_replace('namespace POW\\Sessions;','namespace '.__NAMESPACE__.'; use POW\\Sessions\\Session;',$source);
+	$source=str_replace('use POW\\Partners\\{Partner, Registry};','use POW\\Partners\\Partner;',$source);
+	eval(substr($source,5));
+}
 function load_source():void{
 	if(class_exists(__NAMESPACE__.'\\Confirmation',false)){return;}
 	$path=dirname(__DIR__,2).'/includes/Addresses/Confirmation.php';
 	\PHPUnit\Framework\TestCase::assertTrue(is_file($path),'Confirmation model must exist');
 	$source=file_get_contents($path);
 	$source=str_replace('namespace POW\\Addresses;','namespace POW\\Tests\\DeliveryConfirmation; use POW\\Addresses\\DeliveryData; use POW\\Addresses\\ReturnConfirmation;', $source);
-	foreach(['POW\\Partners\\Registry','POW\\Sessions\\Store','POW\\Checkout\\ExitPolicy','POW\\Cart\\PoomMapper','POW\\Cart\\NativeSessionGuard'] as $import){$source=str_replace('use '.$import.';','',$source);}
+	foreach(['POW\\Partners\\Registry','POW\\Sessions\\Store','POW\\Checkout\\ExitPolicy','POW\\Cart\\PoomMapper','POW\\Cart\\NativeSessionGuard','POW\\Sessions\\ConsentFence'] as $import){$source=str_replace('use '.$import.';','',$source);}
 	eval(substr($source,5));
+	load_fence_source();
 }
 }
 

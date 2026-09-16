@@ -19,3 +19,7 @@ Cross-request preservation of unconfirmed address-choice and notes drafts is def
 These are plugin compatibility boundaries, not a claim that every WooCommerce extension or native request flow has been certified. Native acceptance must verify actual selected handlers and direct stored rows across independent requests, in addition to the isolated source tests.
 
 A handler that was refused during initialization never loads a buyer row, so its shutdown save is skipped silently: there is nothing to commit and nothing to log. This is the normal state of the StartPage redeem request, whose new login cookie is not visible to the request that set it; the next request binds the session normally.
+
+## Consent recovery fence
+
+When buyer delivery consent cannot be verifiably removed after a cart change or an unacknowledged save, one module decides what happens next: `POW\Sessions\ConsentFence::clear_locked()`. It removes consent, or expires the exact active login, or if that lost too, disables the company. It never touches a paid winner or a replacement login. Both the delivery review (`Addresses\Confirmation`) and the cart-change hooks (`Addresses\Chooser`) call it under the partner mutex; neither carries its own copy any more. Tests: `tests/Unit/ConsentFenceTest.php`.
