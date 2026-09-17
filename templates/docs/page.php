@@ -92,7 +92,7 @@ defined( 'ABSPATH' ) || exit;
 		</table>
 		<?php foreach ( $connections as $pow_connection ) : ?>
 			<h4><?php echo esc_html( (string) $pow_connection['name'] ); ?></h4>
-			<p><?php esc_html_e( 'Copy this company-specific Dynamics configuration into the buyer system. Replace the SharedSecret placeholder privately. The blank payloadID, timestamp, BuyerCookie and BrowserFormPost fields must be supplied at runtime; configure UserEmail separately in the buyer system’s extrinsics mapping.', 'punchout-woocommerce' ); ?></p>
+			<p><?php esc_html_e( 'Copy this company-specific Dynamics configuration over the buyer system’s cXML setup request message. Replace the SharedSecret placeholder inside the pasted text privately; there is no separate credential field. Leave payloadID, timestamp, BuyerCookie and BrowserFormPost blank, the buyer system fills them when a user punches out; configure UserEmail separately in its extrinsics mapping.', 'punchout-woocommerce' ); ?></p>
 			<?php if ( '' !== (string) ( $pow_connection['template_error'] ?? '' ) ) : ?>
 				<p class="pow-docs-warning"><?php echo esc_html( (string) $pow_connection['template_error'] ); ?></p>
 			<?php else : ?>

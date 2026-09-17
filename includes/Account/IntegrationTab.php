@@ -109,15 +109,10 @@ final class IntegrationTab {
 		if ( 'download_setup_template' === ( $_POST['pow_account_action'] ?? null ) ) {
 			$download = $this->template_download_result();
 			if ( null === $download ) { return; }
-			status_header( $download['status'] );
-			if ( 200 === $download['status'] ) {
-				header( 'Content-Type: application/xml; charset=UTF-8', true );
-				header( 'Content-Disposition: attachment; filename="' . $download['filename'] . '"', true );
-				header( 'X-Content-Type-Options: nosniff', true );
-				echo $download['xml']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- generated XML attachment.
-				exit;
-			}
-			echo Templates::render( 'account/integration', $this->result_vars( $download ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped template.
+			$emission = $this->download_emission( $download );
+			status_header( $emission['status'] );
+			foreach ( $emission['headers'] as $header ) { header( $header, true ); }
+			echo $emission['body']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- generated XML attachment or escaped template.
 			exit;
 		}
 		$result = $this->post_result();
@@ -141,9 +136,28 @@ final class IntegrationTab {
 				return $this->download_result( 403, __( 'This connection cannot be managed from this account.', 'punchout-woocommerce' ) );
 			}
 			return $this->download_result( 200, '', Samples::setup_template( $partner, Router::setup_url() ), 'punchout-setup-' . $partner->id . '.xml' );
+		} catch ( \DomainException $e ) {
+			// A configuration gap on the connection, not a passing fault: reloading cannot change it.
+			return $this->download_result( 409, self::template_not_ready_text() );
 		} catch ( \Throwable $e ) {
 			return $this->download_result( 503, __( 'The setup template is unavailable. Reload the integration page and try again.', 'punchout-woocommerce' ) );
 		}
+	}
+
+	/** What the download actually sends: the XML as an attachment on success, the page with the notice otherwise. */
+	private function download_emission( array $download ): array {
+		if ( 200 === $download['status'] ) {
+			return [
+				'status'  => 200,
+				'headers' => [ 'Content-Type: application/xml; charset=UTF-8', 'Content-Disposition: attachment; filename="' . $download['filename'] . '"', 'X-Content-Type-Options: nosniff' ],
+				'body'    => $download['xml'],
+			];
+		}
+		return [ 'status' => $download['status'], 'headers' => [], 'body' => Templates::render( 'account/integration', $this->result_vars( $download ) ) ];
+	}
+
+	public static function template_not_ready_text(): string {
+		return __( 'No setup template yet: the store still has to complete the From, To and Sender identities, the cXML version and the deployment mode on this connection.', 'punchout-woocommerce' );
 	}
 
 	/** @return array{status:int,notice:array{text:string,type:string},secret:string,filename:string,xml:string} */
@@ -280,9 +294,17 @@ final class IntegrationTab {
 			$vars['connection']['exit_policy'] = \POW\Checkout\ExitPolicy::labels()[ $p->exit_policy ];
 			$vars['connection']['effective_exit_policy'] = \POW\Checkout\ExitPolicy::labels()[ \POW\Checkout\ExitPolicy::resolve( $this->plugin->settings()->exit_policy(), $p->exit_policy, 'inherit' ) ];
 			$vars['rotation_open'] = '' !== $p->secret_previous;
+			$vars['template_ready'] = $p->is_active() && $this->template_ready( $p );
 			try { $vars['last_setup'] = $this->audit->last_success( $p->id ); } catch ( \Throwable $e ) { $vars['last_setup'] = __( 'Unavailable', 'punchout-woocommerce' ); }
 		}
 		return $vars;
+	}
+
+	/** Only a DomainException means "not configured"; any other failure leaves the button so the download can report it. */
+	private function template_ready( \POW\Partners\Partner $p ): bool {
+		try { Samples::setup_template( $p, Router::setup_url() ); return true; }
+		catch ( \DomainException $e ) { return false; }
+		catch ( \Throwable $e ) { return true; }
 	}
 
 	private function base_vars(): array {
@@ -300,7 +322,7 @@ final class IntegrationTab {
 
 	private function empty_vars(): array {
 		return [
-			'state' => 'unavailable', 'connection' => [], 'rotation_open' => false, 'notice' => null, 'secret' => '',
+			'state' => 'unavailable', 'connection' => [], 'rotation_open' => false, 'template_ready' => false, 'notice' => null, 'secret' => '',
 			'delivery_addresses' => '',
 			'setup_url' => '', 'last_setup' => null, 'docs_url' => '', 'action_url' => '', 'nonce' => '',
 		];
