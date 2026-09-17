@@ -14,7 +14,17 @@ use POW\Partners\Partner;
 
 defined( 'ABSPATH' ) || exit;
 
-/** Builds a Dynamics external-catalog configuration without accepting secret material. */
+/**
+ * Builds a Dynamics external-catalog configuration without accepting secret material.
+ *
+ * The child order inside PunchOutSetupRequest (SupplierSetup, BuyerCookie,
+ * BrowserFormPost) mirrors what Dynamics 365 for Operations sends, not the
+ * DTD's content model (BuyerCookie first, SupplierSetup after BrowserFormPost).
+ * Every live request from the certified buyer arrives in the Dynamics order,
+ * the parser accepts it, and the working production configuration was pasted
+ * in it; tests/Unit/SetupTemplateTest.php pins the order and proves the filled
+ * template parses.
+ */
 final class SetupTemplate {
 
 	public const SHARED_SECRET = 'REPLACE-WITH-ISSUED-SHARED-SECRET';

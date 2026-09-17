@@ -298,7 +298,7 @@ final class Page {
 	 * configured to send and receive. Never assembled for a public view.
 	 *
 	 * @param list<Partner> $partners Registry rows.
-	 * @return list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string, setup_template: string}>
+	 * @return list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string, setup_template: string, template_error: string}>
 	 */
 	private static function connection_rows( array $partners, string $setup_url ): array {
 		$rows = [];
@@ -308,13 +308,24 @@ final class Page {
 				continue;
 			}
 
+			// A connection saved with only its name and Sender credential has no
+			// template yet. Say so on its row; never let one row take the page down.
+			$template = '';
+			$error    = '';
+			try {
+				$template = Samples::setup_template( $partner, $setup_url );
+			} catch ( \DomainException $e ) {
+				$error = __( 'No setup template yet: complete the From, To and Sender identities, the cXML version and the deployment mode on this connection.', 'punchout-woocommerce' );
+			}
+
 			$rows[] = [
 				'name'            => $partner->name,
 				'sender'          => $partner->sender_domain . ' / ' . $partner->sender_identity,
 				'cxml_version'    => $partner->cxml_version,
 				'deployment_mode' => $partner->deployment_mode,
 				'return_encoding' => 'urlencoded' === $partner->return_encoding ? 'cxml-urlencoded' : 'cxml-base64',
-				'setup_template'  => Samples::setup_template( $partner, $setup_url ),
+				'setup_template'  => $template,
+				'template_error'  => $error,
 			];
 		}
 

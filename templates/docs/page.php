@@ -23,7 +23,7 @@
  * @var list<array{version:string,xml:string,total:string,freight_total:string}> $delivery_samples Full enabled examples from the live Builder.
  * @var string                $cxml_version   cXML version of the samples.
  * @var int                   $rate_limit     Configured setup requests per minute (nonpositive = default 30).
- * @var list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string, setup_template: string}> $connections Per-connection block; empty unless privileged.
+ * @var list<array{name: string, sender: string, cxml_version: string, deployment_mode: string, return_encoding: string, setup_template: string, template_error?: string}> $connections Per-connection block; empty unless privileged.
  * @var string                $self_test      Pre-rendered self-test box.
  * @var bool                  $privileged     Whether the viewer is a store administrator.
  *
@@ -93,7 +93,11 @@ defined( 'ABSPATH' ) || exit;
 		<?php foreach ( $connections as $pow_connection ) : ?>
 			<h4><?php echo esc_html( (string) $pow_connection['name'] ); ?></h4>
 			<p><?php esc_html_e( 'Copy this company-specific Dynamics configuration into the buyer system. Replace the SharedSecret placeholder privately. The blank payloadID, timestamp, BuyerCookie and BrowserFormPost fields must be supplied at runtime; configure UserEmail separately in the buyer system’s extrinsics mapping.', 'punchout-woocommerce' ); ?></p>
-			<pre class="pow-docs-sample"><?php echo esc_html( (string) $pow_connection['setup_template'] ); ?></pre>
+			<?php if ( '' !== (string) ( $pow_connection['template_error'] ?? '' ) ) : ?>
+				<p class="pow-docs-warning"><?php echo esc_html( (string) $pow_connection['template_error'] ); ?></p>
+			<?php else : ?>
+				<pre class="pow-docs-sample"><?php echo esc_html( (string) $pow_connection['setup_template'] ); ?></pre>
+			<?php endif; ?>
 		<?php endforeach; ?>
 	<?php endif; ?>
 

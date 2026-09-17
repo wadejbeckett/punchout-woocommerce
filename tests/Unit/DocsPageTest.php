@@ -422,6 +422,44 @@ final class DocsPageTest extends TestCase {
 		self::assertStringContainsString( '&lt;Identity&gt;SENDER-ONE&lt;/Identity&gt;', Templates::render( 'docs/page', $vars ) );
 	}
 
+	/**
+	 * An active connection saved with only a name and Sender credential (the
+	 * admin form's minimum) has no From/To identities yet. That row must
+	 * explain why its template is missing; it must not take the whole
+	 * Integration docs page down with an uncaught exception.
+	 */
+	public function test_connection_row_without_a_complete_identity_reports_instead_of_throwing(): void {
+		$incomplete = Partner::from_row( [
+			'id' => 21, 'owner_user_id' => 0, 'name' => 'Half Configured', 'status' => 'active',
+			'from_domain' => '', 'from_identity' => '', 'sender_domain' => 'NetworkID', 'sender_identity' => 'PENDING',
+			'to_domain' => 'NetworkID', 'to_identity' => 'shop.example.com', 'secret_current' => 'SEALED', 'secret_previous' => '',
+			'cxml_version' => '1.2.008', 'deployment_mode' => 'production',
+		] );
+		$complete = Partner::from_row( [
+			'id' => 22, 'owner_user_id' => 0, 'name' => 'Fully Configured', 'status' => 'active',
+			'from_domain' => 'NetworkID', 'from_identity' => 'BUYER-TWO', 'sender_domain' => 'NetworkID', 'sender_identity' => 'SENDER-TWO',
+			'to_domain' => 'NetworkID', 'to_identity' => 'shop.example.com', 'secret_current' => 'SEALED', 'secret_previous' => '',
+			'cxml_version' => '1.2.008', 'deployment_mode' => 'test',
+		] );
+		$method = new ReflectionMethod( Page::class, 'connection_rows' );
+		$method->setAccessible( true );
+		$rows = $method->invoke( null, [ $incomplete, $complete ], 'https://shop.example.com/punchout/setup' );
+
+		self::assertCount( 2, $rows );
+		self::assertSame( '', $rows[0]['setup_template'] );
+		self::assertNotSame( '', $rows[0]['template_error'] );
+		self::assertStringContainsString( '<Identity>SENDER-TWO</Identity>', $rows[1]['setup_template'] );
+		self::assertSame( '', $rows[1]['template_error'] );
+
+		$vars = $this->page_vars();
+		$vars['privileged'] = true;
+		$vars['connections'] = $rows;
+		$html = Templates::render( 'docs/page', $vars );
+		self::assertStringContainsString( 'Half Configured', $html );
+		self::assertStringContainsString( esc_html( $rows[0]['template_error'] ), $html );
+		self::assertStringContainsString( '&lt;Identity&gt;SENDER-TWO&lt;/Identity&gt;', $html );
+	}
+
 	public function test_public_reference_never_receives_a_configured_company_identity(): void {
 		$partner = Partner::from_row( [
 			'id' => 20, 'owner_user_id' => 7, 'name' => 'Private Buyer', 'status' => 'active',
