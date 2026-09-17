@@ -166,9 +166,56 @@ namespace {
 				$html = Templates::render('account/integration',$this->view(['state'=>$state]));
 				self::assertStringNotContainsString('value="rotate"',$html); self::assertStringNotContainsString('value="submit"',$html);
 			}
-			$html = Templates::render('account/integration',$this->view(['state'=>'active','rotation_open'=>true]));
+			$html = Templates::render('account/integration',$this->view(['state'=>'active','rotation_open'=>true,'template_ready'=>true]));
 			self::assertStringContainsString('value="finish_rotation"',$html); self::assertStringNotContainsString('value="rotate"',$html);
 			self::assertStringContainsString('value="download_setup_template"',$html);
+		}
+		public function test_download_button_appears_only_for_an_active_connection_whose_template_can_be_built(): void {
+			foreach (['none','pending','disabled','unavailable'] as $state) {
+				$html = Templates::render('account/integration',$this->view(['state'=>$state,'template_ready'=>true]));
+				self::assertStringNotContainsString('value="download_setup_template"',$html,$state);
+			}
+			$html = Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>false]));
+			self::assertStringNotContainsString('value="download_setup_template"',$html);
+			self::assertStringContainsString('No setup template yet',$html);
+			foreach ([true,false] as $rotation) {
+				$html = Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'rotation_open'=>$rotation]));
+				self::assertStringContainsString('value="download_setup_template"',$html);
+				self::assertStringNotContainsString('No setup template yet',$html);
+			}
+		}
+		public function test_view_reports_whether_the_template_can_be_built(): void {
+			$this->seed(); self::assertTrue($this->invoke('view_vars')['template_ready']);
+			$this->seed(['from_domain'=>'','from_identity'=>'','to_domain'=>'','to_identity'=>'']); self::assertFalse($this->invoke('view_vars')['template_ready']);
+			$this->seed(['status'=>'pending']); self::assertFalse($this->invoke('view_vars')['template_ready']);
+		}
+		public function test_download_of_a_half_configured_connection_names_the_missing_fields_instead_of_asking_for_a_reload(): void {
+			$this->seed(['from_domain'=>'','from_identity'=>'']);
+			$_POST=['pow_account_action'=>'download_setup_template','_wpnonce'=>'account-nonce'];
+			$result=$this->invoke('template_download_result');
+			self::assertSame(409,$result['status']);
+			self::assertStringContainsString('From, To and Sender identities',$result['notice']['text']);
+			self::assertStringNotContainsString('try again',$result['notice']['text']);
+			self::assertSame('',$result['xml']);
+		}
+		public function test_download_emission_sends_an_xml_attachment_on_success_and_the_page_with_a_notice_otherwise(): void {
+			$this->seed();
+			$_POST=['pow_account_action'=>'download_setup_template','_wpnonce'=>'account-nonce'];
+			$ok=$this->invoke('download_emission',$this->invoke('template_download_result'));
+			self::assertSame(200,$ok['status']);
+			self::assertContains('Content-Type: application/xml; charset=UTF-8',$ok['headers']);
+			self::assertContains('Content-Disposition: attachment; filename="punchout-setup-20.xml"',$ok['headers']);
+			self::assertContains('X-Content-Type-Options: nosniff',$ok['headers']);
+			self::assertStringStartsWith('<?xml version="1.0" encoding="UTF-8"?>',$ok['body']);
+			self::assertStringContainsString('<Identity>EXAMPLE</Identity>',$ok['body']);
+			self::assertStringNotContainsString('<html',$ok['body']);
+
+			$this->seed(['owner_user_id'=>8]);
+			$refused=$this->invoke('download_emission',$this->invoke('template_download_result'));
+			self::assertSame(403,$refused['status']);
+			self::assertSame([],$refused['headers']);
+			self::assertStringContainsString('cannot be managed from this account',$refused['body']);
+			self::assertStringNotContainsString('<?xml',$refused['body']);
 		}
 		public function test_active_owner_download_uses_company_fields_without_revealing_secret_material(): void {
 			$this->seed(['from_domain'=>'Buyer&"<','from_identity'=>'FROM<&','sender_domain'=>'Sender&"<','sender_identity'=>'SENDER<&','to_domain'=>'Supplier&"<','to_identity'=>'TO<&','deployment_mode'=>'production','cxml_version'=>'1.2.008','secret_current'=>'SEALED-CURRENT','secret_previous'=>'SEALED-PREVIOUS']);

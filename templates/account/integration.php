@@ -4,6 +4,7 @@
  *
  * @var string $state none|pending|active|disabled|unavailable
  * @var array<string,string> $connection Public connection details.
+ * @var bool $template_ready Whether the connection's identities are complete enough to build the setup XML.
  * @var bool $rotation_open Existing credential overlap.
  * @var array|null $notice Escaped direct response notice.
  * @var string $secret Plaintext only on the successful no-store rotation POST.
@@ -55,11 +56,15 @@ defined( 'ABSPATH' ) || exit;
 			<?php endforeach; ?>
 		</tbody></table>
 		<p><?php esc_html_e( 'Connection identities and purchasing permissions are managed by the store. Contact the store if your purchasing system changes.', 'punchout-woocommerce' ); ?></p>
-		<p><?php esc_html_e( 'Download the company Dynamics setup XML and replace its SharedSecret placeholder in your purchasing system. The blank payloadID, timestamp, BuyerCookie and BrowserFormPost fields must be supplied at runtime; configure UserEmail separately in the extrinsics mapping. The download never contains your stored secret.', 'punchout-woocommerce' ); ?></p>
-		<form method="post" action="<?php echo esc_url( $action_url ); ?>">
-			<input type="hidden" name="_wpnonce" value="<?php echo esc_attr( $nonce ); ?>" />
-			<button type="submit" name="pow_account_action" value="download_setup_template" class="woocommerce-Button button"><?php esc_html_e( 'Download setup XML', 'punchout-woocommerce' ); ?></button>
-		</form>
+		<?php if ( ! empty( $template_ready ) ) : ?>
+			<p><?php esc_html_e( 'Download the company Dynamics setup XML and paste it into your purchasing system, replacing the SharedSecret placeholder inside the pasted text with the credential we issued privately. Leave payloadID, timestamp, BuyerCookie and BrowserFormPost blank; the purchasing system fills them when a user punches out. Configure UserEmail separately in its extrinsics mapping. The download never contains your stored secret.', 'punchout-woocommerce' ); ?></p>
+			<form method="post" action="<?php echo esc_url( $action_url ); ?>">
+				<input type="hidden" name="_wpnonce" value="<?php echo esc_attr( $nonce ); ?>" />
+				<button type="submit" name="pow_account_action" value="download_setup_template" class="woocommerce-Button button"><?php esc_html_e( 'Download setup XML', 'punchout-woocommerce' ); ?></button>
+			</form>
+		<?php else : ?>
+			<p><?php echo esc_html( \POW\Account\IntegrationTab::template_not_ready_text() ); ?></p>
+		<?php endif; ?>
 		<form method="post" action="<?php echo esc_url( $action_url ); ?>">
 			<input type="hidden" name="_wpnonce" value="<?php echo esc_attr( $nonce ); ?>" />
 			<?php if ( $rotation_open ) : ?>
