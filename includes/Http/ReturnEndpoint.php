@@ -17,9 +17,9 @@ use POW\Addresses\DeliveryEstimate;
 use POW\Addresses\QuoteAddress;
 use POW\Addresses\ReturnConfirmation;
 use POW\Cart\PoomMapper;
+use POW\Cart\SessionKey;
 use POW\Cxml\Builder;
 use POW\Cxml\FormPack;
-use POW\Installer;
 use POW\Orders\QuoteOrder;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
@@ -35,15 +35,21 @@ defined( 'ABSPATH' ) || exit;
  * - mode=cart: build the POOM from WC()->cart, render the auto-submitting
  *   handoff form targeting the stored BrowserFormPost URL, transition the
  *   session active -> returned.
- * - mode=empty: empty POOM (the cXML cancel semantic). Accepted for the
- *   buyer's own session in `active` ("return without ordering") and in
- *   `ordered` (the pay-path close-out, carrying SupplierOrderInfo with the
- *   Woo order reference).
+ * - mode=empty: empty POOM (the cXML cancel semantic), for the buyer's own
+ *   `active` visit — "return without ordering", the abandon control. There
+ *   is no paid close-out and no SupplierOrderInfo: checkout is blocked
+ *   inside a visit, so no visit ever reaches a paid order to reference.
  *
- * Both paths then tear the session down: the recorded WP session token is
+ * Both paths then tear the visit down: the recorded WP session token is
  * destroyed (this login only), auth cookies cleared, cart emptied — the
  * cXML guide's destroy-cookies-after-POOM rule, because the commercial
  * risk is negotiated pricing leaking from an abandoned login (gotcha 8).
+ *
+ * "This login only" is load-bearing, not a nicety. The account is shared:
+ * every buyer of the connection punches in as it, so the account holds one
+ * WP_Session_Tokens entry per live visit and teardown destroys exactly the
+ * one this row recorded. A colleague shopping in the next room keeps her
+ * login, her cookie and her own basket.
  *
  * Also reachable as wc-ajax action `pow_return`.
  */
@@ -87,18 +93,16 @@ final class ReturnEndpoint {
 
 		$user = wp_get_current_user();
 
-		if ( ! in_array( Installer::ROLE, (array) $user->roles, true ) ) {
-			$this->error_page( __( 'This action is only available inside a punchout session.', 'punchout-woocommerce' ) );
-			return;
-		}
-
 		$mode = ( isset( $_POST['pow_mode'] ) && 'empty' === $_POST['pow_mode'] ) ? 'empty' : 'cart';
 
-		// The session must belong to THIS login (user id + exact WP session
-		// token). mode=empty additionally accepts the buyer's own `ordered`
-		// session — the pay-path close-out (scope §3/§9.7).
-		$statuses = 'empty' === $mode ? [ Session::ACTIVE, Session::ORDERED ] : [ Session::ACTIVE ];
-		$session  = $this->sessions->find_for_login( $user->ID, wp_get_session_token(), $statuses );
+		// The visit must be THIS login's: the account is shared, so the user
+		// id names nobody and the exact WP session token is what selects one
+		// of its open visits. An ordinary password login of the same account
+		// has no matching token and therefore no visit, which is the whole
+		// authorisation — there is no role or capability to consult. Both
+		// modes admit only `active`: the abandon control acts on a live visit
+		// and no paid close-out exists.
+		$session = $this->sessions->find_for_login( $user->ID, wp_get_session_token(), [ Session::ACTIVE ] );
 
 		if ( null === $session ) {
 			$this->expired_page();
@@ -166,20 +170,6 @@ final class ReturnEndpoint {
 			} catch ( \Throwable $error ) { $this->review_page(); return; }
 		}
 
-		$supplier_order_info = null;
-
-		if ( 'empty' === $mode && $session->order_id > 0 && function_exists( 'wc_get_order' ) ) {
-			$order = wc_get_order( $session->order_id );
-
-			if ( $order ) {
-				$date                = $order->get_date_created();
-				$supplier_order_info = [
-					'order_id'   => (string) $order->get_order_number(),
-					'order_date' => $date ? $date->format( 'Y-m-d\TH:i:sP' ) : '',
-				];
-			}
-		}
-
 		$poom_xml = $this->builder->poom(
 			[
 				'version'             => $partner->cxml_version,
@@ -197,7 +187,10 @@ final class ReturnEndpoint {
 				'operation_allowed'   => 'create',
 				'currency'            => $mapped['currency'],
 				'total_cents'         => $mapped['total_cents'],
-				'supplier_order_info' => $supplier_order_info,
+				// Never a reference: a visit cannot pay here, so no order of
+				// ours exists for a POOM to name. The Builder keeps the
+				// ability to carry one for the 1.2.071 dialect.
+				'supplier_order_info' => null,
 				'items'               => $wire_items,
 			] + $delivery_args
 		);
@@ -219,10 +212,22 @@ final class ReturnEndpoint {
 			$this->registry->with_partner_lock( $partner->id, function () use ( $partner, $session, $mode, $user, $mapped, &$transitioned, &$delivery_error ) {
 				$fresh_partner = $this->registry->find( $partner->id );
 				$fresh = $this->sessions->find( $session->id );
+				// Every predicate stays, but read the identity ones correctly:
+				// $fresh->user_id === $user->ID proves only that the row still
+				// names the shared account, which every colleague's row does
+				// too. What proves the visit is hash_equals on the WP session
+				// token, and what proves the basket is the per-visit key —
+				// re-read here so a row re-keyed between the snapshot and the
+				// mutex cannot be handed off under the old basket.
 				if ( ! $fresh_partner || ! $fresh_partner->is_active() || ! $fresh || ! Transport::receiver_allowed( $fresh->browser_form_post_url )
 				|| $fresh->browser_form_post_url !== $session->browser_form_post_url
-				|| $fresh->partner_id !== $partner->id || $fresh->user_id !== (int) $user->ID || ! $fresh->expires || $fresh->expires <= gmdate( 'Y-m-d H:i:s' ) || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) || ! $this->sessions->login_valid_checked( $fresh ) ) { return; }
-				$expected = 'cart' === $mode ? Session::ACTIVE : $session->status;
+				|| $fresh->partner_id !== $partner->id || $fresh->user_id !== (int) $user->ID || ! $fresh->expires || $fresh->expires <= gmdate( 'Y-m-d H:i:s' ) || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() )
+				|| ! SessionKey::is_visit_key( (string) $fresh->wc_session_key ) || ! hash_equals( (string) $fresh->wc_session_key, (string) $session->wc_session_key )
+				|| ! $this->sessions->login_valid_checked( $fresh ) ) { return; }
+				// Both modes start from the snapshot's own status, which the
+				// lookup admitted only as `active`; the re-read still has to
+				// find it there.
+				$expected = $session->status;
 				if ( $fresh->status !== $expected ) { return; }
 				$expected_guard = null;
 				if ( 'cart' === $mode ) {
@@ -340,7 +345,15 @@ final class ReturnEndpoint {
 	}
 
 	/**
-	 * Destroy exactly this login, clear cookies, empty the cart.
+	 * Destroy exactly this visit: its login, its cookies, its basket.
+	 *
+	 * Each of the three is per-visit and none may reach a colleague.
+	 * destroy_login_checked() (called under the mutex above, before this)
+	 * destroys only the WP_Session_Tokens entry this row recorded;
+	 * wp_clear_auth_cookie() clears only this browser's cookie; and
+	 * empty_cart( true ) acts on the WooCommerce session this request is
+	 * bound to, which is this visit's own wc_session_key row — not the shared
+	 * account's numeric shopper row and not another visit's.
 	 */
 	private function teardown( int $user_id, Session $session ): void {
 		wp_clear_auth_cookie();
