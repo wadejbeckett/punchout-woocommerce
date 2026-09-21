@@ -4,7 +4,7 @@ For store administrators. This workflow is present in the local 0.4.0 build; ins
 
 ## Prepare the supplier
 
-1. Install alongside WordPress and WooCommerce. The manifest declares PHP 8.2+, WordPress 6.4+ and WooCommerce 8.0+; these are minimum declarations, not a fresh compatibility certification. Enable sodium and DOM/libxml.
+1. Install alongside WordPress and WooCommerce. The manifest declares PHP 8.2+, WordPress 6.4+ and WooCommerce 11.1+. The WooCommerce minimum is hard: a punchout visit stands on session-handler internals verified against 11.1 and is refused with a 409 on an older store. Enable sodium and DOM/libxml.
 2. Configure a canonical HTTPS origin. For illustration only: `https://supplier.example.com/punchout/setup`. Verify that the server, cache and firewall pass requests to WordPress without login redirects or browser challenges.
 3. Configure the secret-sealing key before storing credentials. In **WooCommerce → PunchOut**, create/configure the company connection, supplier identity, dialect, return encoding, access policy and lifetimes. Enable the master switch when ready.
 4. Create, or choose, the one ordinary WooCommerce customer account this customer's buyers will shop as, and put it in whatever pricing or visibility group should apply to them. Bind that account to the connection. Every employee of that customer punches in as this one account and sees exactly what it sees, so its group, prices and catalogue visibility are the whole of what they get. An unbound connection refuses setup with cXML Status 500 plus an audit row (`setup_no_login`), and raises a persistent admin notice until it is bound.
