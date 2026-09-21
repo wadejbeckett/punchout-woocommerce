@@ -52,6 +52,8 @@ final class RollbackDatabase {
 		if(str_contains($sql,'RELEASE_LOCK')){unset($this->locks[(string)$a[0]]);return '1';}
 		throw new LogicException('Unexpected scalar query: '.$sql);}
 	public function suppress_errors(bool $suppress=true):bool{$previous=$this->suppressed;$this->suppressed=$suppress;return $previous;}
+	/** The indexed column is compared directly; the byte-exact test on it happens in PHP, so the UNIQUE index stays usable. */
+	private function indexed(string $sql):void{if(str_contains($sql,'BINARY session_key')){throw new LogicException('BINARY on the indexed column costs the UNIQUE index: '.$sql);}if(!str_contains($sql,'session_key = %s')){throw new LogicException('Missing the native key predicate: '.$sql);}}
 	public function get_row(string $key,mixed $format):?array{[$sql,$a]=$this->queries[$key];if(!str_contains($sql,'wp_pow_sessions')){throw new LogicException('Unexpected row query: '.$sql);}
 		if(str_contains($sql,'WHERE id = %d')){return (int)$a[0]===(int)$this->session['id']?$this->session:null;}
 		if(str_contains($sql,'wc_session_key = %s AND status IN')){$wanted=(string)$a[0];$statuses=array_slice($a,1);return $wanted===(string)($this->session['wc_session_key']??'')&&in_array($this->session['status'],$statuses,true)?$this->session:null;}
@@ -59,7 +61,7 @@ final class RollbackDatabase {
 		throw new LogicException('Unexpected session query: '.$sql);}
 	public function get_results(string $key,mixed $format):?array{[$sql,$a]=$this->queries[$key];
 		if(str_contains($sql,'FROM wp_usermeta')){if(!str_contains($sql,'meta_key IN')){throw new LogicException('The login fingerprint must name the authorising keys');}$wanted=array_slice($a,1);return array_values(array_filter($this->metadata,static fn(array $row):bool=>in_array($row['meta_key'],$wanted,true)));}
-		if(!str_contains($sql,'BINARY session_key = BINARY %s')){throw new LogicException('Missing exact native key');}return isset($this->rows[$a[0]])?[$this->rows[$a[0]]]:[];}
+		$this->indexed($sql);if(!str_contains($sql,'SELECT session_key,')){throw new LogicException('The stored key must come back: '.$sql);}return isset($this->rows[$a[0]])?[['session_key'=>$a[0]]+$this->rows[$a[0]]]:[];}
 	public function query(string $key):int|false{[$sql,$a]=$this->queries[$key];$this->log[]=$sql;
 		if(str_contains($sql,'wp_pow_sessions')){
 			if(!str_starts_with($sql,'UPDATE')||!str_contains($sql,'SET delivery_confirmation = NULL')){throw new LogicException('Unexpected session write: '.$sql);}
@@ -67,7 +69,7 @@ final class RollbackDatabase {
 			$matches=(int)$s['id']===(int)$id&&(int)$s['partner_id']===(int)$partner&&(int)$s['user_id']===(int)$user&&$s['wp_session_token']===$token&&$s['status']===$status&&($s['delivery_confirmation']??null)===$confirmation;
 			if(null!==$this->invalidate_affected){return $this->invalidate_affected;}
 			if(!$matches){return 0;}$this->session['delivery_confirmation']=null;if($this->after_invalidate){$f=$this->after_invalidate;$this->after_invalidate=null;$f();}return 1;}
-		if(!str_contains($sql,'BINARY session_value = BINARY %s')||!str_contains($sql,'BINARY session_key = BINARY %s')){throw new LogicException('Missing exact CAS');}
+		$this->indexed($sql);if(!str_contains($sql,'BINARY session_value = BINARY %s')){throw new LogicException('Missing exact CAS on the value: '.$sql);}
 		if($this->before_cas){$f=$this->before_cas;$this->before_cas=null;$f();}[$value,$expiry,$key,$expected]=$a;if(!isset($this->rows[$key])||$this->rows[$key]['session_value']!==$expected){return 0;}$changed=$this->rows[$key]!==['session_value'=>$value,'session_expiry'=>(string)$expiry];$this->rows[$key]=['session_value'=>$value,'session_expiry'=>(string)$expiry];return (int)$changed;}
 }
 final class RollbackLogger extends \POW\Logger {public array $warnings=[];public function __construct(){}public function warning(string $message,array $context=[]):void{$this->warnings[]=[$message,$context];}}
