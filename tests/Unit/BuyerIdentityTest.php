@@ -93,7 +93,7 @@ final class BuyerIdentityTest extends TestCase {
 		self::assertSame( '', $anonymous->name );
 	}
 
-	public function test_name_chain_prefers_printable_then_full_then_unique_username_then_user(): void {
+	public function test_name_chain_prefers_printable_then_full_then_user(): void {
 		self::assertSame(
 			'Zoë Buyer',
 			Identity::from_message( $this->message( [ 'UserPrintableName' => ' Zoë Buyer ', 'UserFullName' => 'Zoe B', 'UniqueUsername' => 'jdoe', 'User' => 'jd' ] ) )->name
@@ -102,11 +102,28 @@ final class BuyerIdentityTest extends TestCase {
 			'Zoe B',
 			Identity::from_message( $this->message( [ 'UserPrintableName' => '', 'UserFullName' => 'Zoe B', 'UniqueUsername' => 'jdoe' ] ) )->name
 		);
-		self::assertSame(
-			'jdoe',
-			Identity::from_message( $this->message( [ 'UniqueUsername' => 'jdoe', 'User' => 'jd' ] ) )->name
-		);
-		self::assertSame( 'jd', Identity::from_message( $this->message( [ 'User' => 'jd' ] ) )->name );
+		self::assertSame( 'jd', Identity::from_message( $this->message( [ 'UniqueUsername' => 'jdoe', 'User' => 'jd' ] ) )->name );
+	}
+
+	/**
+	 * UniqueUsername is an identity, not a display name, and a purchasing
+	 * system is free to put a raw e-mail address in it. If it were also a
+	 * name candidate the same string would be resolved twice: the raw
+	 * address would reach the audit detail as `buyer_name`, which the model
+	 * forbids, and the attribution sentence would print it twice instead of
+	 * falling back to the e-mail alone.
+	 */
+	public function test_unique_username_is_an_identity_and_never_a_display_name(): void {
+		$only_username = Identity::from_message( $this->message( [ 'UniqueUsername' => 'jdoe' ] ) );
+		self::assertSame( 'jdoe', $only_username->identity );
+		self::assertSame( '', $only_username->name, 'UniqueUsername is not part of the documented name chain' );
+
+		$address_as_username = Identity::from_message( $this->message( [ 'UniqueUsername' => 'Jane.Doe@acme.test' ] ) );
+		self::assertSame( 'jane.doe@acme.test', $address_as_username->identity );
+		self::assertSame( '', $address_as_username->name, 'a raw e-mail address must never become the buyer name' );
+
+		// The rest of the chain still answers when a real name is sent alongside it.
+		self::assertSame( 'Jane Doe', Identity::from_message( $this->message( [ 'UniqueUsername' => 'Jane.Doe@acme.test', 'UserFullName' => 'Jane Doe' ] ) )->name );
 	}
 
 	public function test_name_keeps_its_case_and_is_never_taken_from_the_contact_email(): void {

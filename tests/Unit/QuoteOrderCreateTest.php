@@ -757,7 +757,9 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertCount( 1, $order->notes );
 		self::assertStringContainsString( '42', $order->notes[0] );
 		self::assertStringContainsString( 'Example Buyer Company', $order->notes[0] );
-		self::assertStringContainsString( 'Bought by Zoë Buyer <zoe@buyer.example.test> via PunchOut (Example Buyer Company)', $order->notes[0] );
+		self::assertStringContainsString( 'Bought by Zoë Buyer (zoe@buyer.example.test) via PunchOut (Example Buyer Company)', $order->notes[0] );
+		// An order note is rendered through kses, so the stored sentence must carry nothing shaped like a tag.
+		self::assertStringNotContainsString( '<', $order->notes[0] );
 		// The buyer is evidence on the order, never in the log.
 		self::assertStringNotContainsString( 'zoe@buyer.example.test', (string) json_encode( QuoteOrderTestLog::$written ) );
 	}
@@ -798,7 +800,7 @@ final class QuoteOrderCreateTest extends TestCase {
 		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_name' => null ] ), $this->partner(), $this->lines() ) );
 
 		self::assertStringContainsString( 'Bought by zoe@buyer.example.test via PunchOut (Example Buyer Company)', $order->notes[0] );
-		self::assertStringNotContainsString( '<>', $order->notes[0] );
+		self::assertStringNotContainsString( '()', $order->notes[0] );
 	}
 
 	/** A note failure must not cost the quote its attribution meta. */
@@ -840,11 +842,13 @@ final class QuoteOrderCreateTest extends TestCase {
 	public function test_the_bought_by_admin_line_names_the_buyer_and_escapes_both_values(): void {
 		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_name' => 'Zoë <b>Buyer</b>', 'buyer_identity' => 'zoe+"one"@buyer.example.test' ] ), $this->partner(), $this->lines() ) );
 
-		self::assertSame( 'Bought by Zoë <b>Buyer</b> <zoe+"one"@buyer.example.test> via PunchOut (Example Buyer Company)', $this->quotes->bought_by_for( $order ) );
+		self::assertSame( 'Bought by Zoë <b>Buyer</b> (zoe+"one"@buyer.example.test) via PunchOut (Example Buyer Company)', $this->quotes->bought_by_for( $order ) );
 
 		$markup = $this->rendered( $order );
 		self::assertStringContainsString( 'Zoë &lt;b&gt;Buyer&lt;/b&gt;', $markup );
 		self::assertStringContainsString( '&quot;one&quot;@buyer.example.test', $markup );
+		// Whatever a buyer's own name contains is the buyer's; the wording the plugin supplies adds no markup of its own.
+		self::assertStringContainsString( '(zoe+&quot;one&quot;@buyer.example.test) via PunchOut', $markup );
 		self::assertStringNotContainsString( '<b>Buyer</b>', $markup );
 	}
 
@@ -858,6 +862,26 @@ final class QuoteOrderCreateTest extends TestCase {
 	public function test_the_bought_by_admin_line_is_silent_on_an_ordinary_order(): void {
 		self::assertSame( '', $this->rendered( new WC_Order( 4242 ) ) );
 		self::assertSame( '', $this->rendered( null ) );
+	}
+
+	/**
+	 * A quote taken before this release carries `_pow_session_id` and no
+	 * buyer meta at all, because the buyer was then the order's own
+	 * customer. "Absent" and "present but empty" are different facts: the
+	 * anonymous sentence asserts that the purchasing system named nobody,
+	 * which is false for a historical quote and contradicts the evidence
+	 * still on it. Such an order gets no line rather than a false one.
+	 */
+	public function test_the_bought_by_admin_line_says_nothing_about_a_quote_taken_before_the_attribution_existed(): void {
+		$historical = new WC_Order( 4343 );
+		$historical->update_meta_data( QuoteOrder::META_SESSION_ID, '17' );
+		$historical->update_meta_data( QuoteOrder::META_PARTNER_ID, '7' );
+
+		self::assertSame( '', $this->rendered( $historical ), 'a pre-0.4.0 quote must not be told it named nobody' );
+
+		// A genuinely anonymous visit of this release writes both keys as empty strings, and still gets the sentence.
+		$anonymous = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_identity' => '', 'buyer_name' => '' ] ), $this->partner(), $this->lines() ) );
+		self::assertStringContainsString( 'the purchasing system sent no name or e-mail', $this->rendered( $anonymous ) );
 	}
 
 	public function test_the_admin_order_screen_registers_the_bought_by_line_outside_the_master_switch(): void {
