@@ -157,6 +157,23 @@ final class Registry {
 		return 'pow_partner_' . substr( hash( 'sha256', ( defined( 'DB_NAME' ) ? DB_NAME : '' ) . '|' . $this->table() . '|' . $id ), 0, 52 );
 	}
 
+	/**
+	 * The one authorisation left on the retired `exit_policy` column.
+	 *
+	 * It replaces the exit-entitlement service's own administrator test,
+	 * which went with the paid exit. The column is no longer written by any
+	 * path (sanitise() drops it, and every connection reads as
+	 * punchout-only), but a caller naming it is still refused unless it is a
+	 * real shop administrator: silently dropping the guard would leave a
+	 * retired entitlement writable from anywhere reaching insert() or
+	 * update().
+	 */
+	private static function shop_administrator(): bool {
+		$actor = get_current_user_id();
+		$user  = $actor > 0 ? get_userdata( $actor ) : false;
+		return (bool) $user && user_can( $user, \POW\Admin\Page::CAP );
+	}
+
 	/** Explicit admin association only; owner serialization precedes the partner lock. */
 	public function associate_owner( int $partner_id, int $owner_user_id ): bool {
 		global $wpdb;
@@ -183,7 +200,7 @@ final class Registry {
 	public function transition_status( int $id, string $expected, array $fields, string $secret = '' ): bool {
 		global $wpdb;
 		if ( ! isset( self::$partner_locks[ $this->partner_lock_key( $id ) ] ) ) { return false; }
-		if ( array_key_exists( 'exit_policy', $fields ) && ! \POW\Checkout\ExitPolicy::administrator( get_current_user_id() ) ) { return false; }
+		if ( array_key_exists( 'exit_policy', $fields ) && ! self::shop_administrator() ) { return false; }
 		$data = $this->sanitise( $fields );
 		foreach ( [ 'secret_previous', 'secret_rotated_at' ] as $key ) {
 			if ( array_key_exists( $key, $fields ) ) { $data[ $key ] = $fields[ $key ]; }
@@ -276,9 +293,9 @@ final class Registry {
 	public function insert( array $data, string $secret = '' ): int {
 		global $wpdb;
 
-		if ( array_key_exists( 'exit_policy', $data ) && ! \POW\Checkout\ExitPolicy::administrator( get_current_user_id() ) ) { return 0; }
-		// Every new connection carries its own explicit cap; approval never depends on a storefront-wide switch.
-		$data['exit_policy'] = $data['exit_policy'] ?? \POW\Checkout\ExitPolicy::CHECKOUT;
+		if ( array_key_exists( 'exit_policy', $data ) && ! self::shop_administrator() ) { return 0; }
+		// Nothing chooses an entitlement: every connection is punchout-only,
+		// which is the retired column's database default.
 		$data = $this->sanitise( $data );
 
 		$data['secret_current'] = '' !== $secret ? $this->secrets->seal( $secret ) : '';
@@ -303,11 +320,7 @@ final class Registry {
 			return $this->with_partner_lock( $id, function () use ( $id, $data, $secret, $wpdb ) {
 				$partner = $this->find( $id );
 				if ( null === $partner ) { return false; }
-				// Existing callers may still set mode explicitly. No runtime consumer uses it as entitlement.
-				if ( array_key_exists( 'mode', $data ) && ! array_key_exists( 'exit_policy', $data ) ) {
-					$data['exit_policy'] = Partner::MODE_DUAL_EXIT === $data['mode'] ? 'punchout_and_checkout' : 'punchout_only';
-				}
-				if ( array_key_exists( 'exit_policy', $data ) && ! \POW\Checkout\ExitPolicy::administrator( get_current_user_id() ) ) { return false; }
+				if ( array_key_exists( 'exit_policy', $data ) && ! self::shop_administrator() ) { return false; }
 				$data = $this->sanitise( $data );
 				// Ordinary saves cannot approve pending or revive a fenced connection.
 				if ( ! $partner->is_active() ) { $data['status'] = $partner->status; $secret = ''; }
@@ -400,6 +413,13 @@ final class Registry {
 	/**
 	 * Restrict writes to real columns and normalise enum-ish values.
 	 *
+	 * `mode` and `exit_policy` are deliberately absent from the allowlist.
+	 * Both columns survive for historical rows, but nothing chooses a value
+	 * any more: punchout is the only exit, so the database default
+	 * (punchout_only) is the only value in effect and Partner reads it as a
+	 * literal. Leaving them writable without a normaliser would let an
+	 * arbitrary string into a retired column.
+	 *
 	 * @param array<string, mixed> $data Raw column values.
 	 * @return array<string, mixed>
 	 */
@@ -418,8 +438,6 @@ final class Registry {
 			'cxml_version',
 			'deployment_mode',
 			'return_encoding',
-			'mode',
-			'exit_policy',
 			'allow_reentry',
 			'allcaps_transform',
 			'gateway_allowlist',
@@ -438,16 +456,6 @@ final class Registry {
 
 		if ( isset( $data['owner_user_id'] ) ) {
 			$data['owner_user_id'] = max( 0, (int) $data['owner_user_id'] );
-		}
-
-		if ( isset( $data['mode'] ) ) {
-			$data['mode'] = in_array( $data['mode'], [ Partner::MODE_REQUISITION_ONLY, Partner::MODE_DUAL_EXIT ], true )
-				? $data['mode']
-				: Partner::MODE_REQUISITION_ONLY;
-		}
-
-		if ( array_key_exists( 'exit_policy', $data ) ) {
-			$data['exit_policy'] = \POW\Checkout\ExitPolicy::normalise_company( $data['exit_policy'] );
 		}
 
 		if ( isset( $data['return_encoding'] ) ) {

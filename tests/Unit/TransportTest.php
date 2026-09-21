@@ -156,7 +156,7 @@ final class TransportTest extends TestCase {
 	public function test_secret_pages_actions_and_docs_refuse_before_dependencies(): void {
 		$this->denied(fn()=> $this->unconstructed(\POW\Account\IntegrationTab::class)->render());
 		$this->denied(fn()=> $this->unconstructed(\POW\Admin\Page::class)->render());
-		foreach(['save_buyer_exit','save_partner','approve_partner','reset_partner','associate_partner','delete_partner','rotate_partner','close_rotation'] as $method){
+		foreach(['save_partner','approve_partner','reset_partner','associate_partner','delete_partner','rotate_partner','close_rotation'] as $method){
 			$this->denied(fn()=> $this->unconstructed(\POW\Admin\Actions::class)->$method());
 		}
 		self::assertStringContainsString('HTTPS',$this->unconstructed(\POW\Docs\Page::class)->render(true));

@@ -6,12 +6,14 @@ use POW\Partners\{Partner, Registration, Registry, Secrets};
 use POW\Sessions\Store;
 
 final class RegistrationLifecycleTest extends TestCase {
-	public function test_approval_requires_complete_identity_and_valid_entitlements(): void {
+	public function test_approval_requires_complete_identity_and_valid_configuration(): void {
 		self::assertTrue( method_exists( Registration::class, 'valid_approval' ), 'Approval policy is missing' );
-		$row = [ 'name' => 'Example', 'status' => 'pending', 'from_domain' => 'NetworkID', 'from_identity' => 'BUYER', 'sender_domain' => 'NetworkID', 'sender_identity' => 'BUYER', 'to_domain' => 'NetworkID', 'to_identity' => 'SUPPLIER', 'exit_policy' => POW\Checkout\ExitPolicy::CHECKOUT ];
+		$row = [ 'name' => 'Example', 'status' => 'pending', 'from_domain' => 'NetworkID', 'from_identity' => 'BUYER', 'sender_domain' => 'NetworkID', 'sender_identity' => 'BUYER', 'to_domain' => 'NetworkID', 'to_identity' => 'SUPPLIER' ];
 		self::assertTrue( Registration::valid_approval( Partner::from_row( $row ) ) );
-		self::assertSame( POW\Checkout\ExitPolicy::CHECKOUT, Partner::from_row( $row )->exit_policy );
-		foreach ( [ 'to_domain' => '', 'to_identity' => str_repeat( 'x', 191 ), 'mode' => 'invalid', 'exit_policy' => 'inherit', 'return_encoding' => 'invalid', 'deployment_mode' => 'invalid', 'cxml_version' => 'invalid', 'secret_current' => 'unexpected', 'secret_previous' => 'unexpected' ] as $key => $value ) {
+		// Retired columns: whatever the row stores, a connection is punchout-only on its requisition mode.
+		self::assertSame( 'punchout_only', Partner::from_row( array_replace( $row, [ 'exit_policy' => 'punchout_and_checkout' ] ) )->exit_policy );
+		self::assertSame( Partner::MODE_REQUISITION_ONLY, Partner::from_row( array_replace( $row, [ 'mode' => 'anything' ] ) )->mode );
+		foreach ( [ 'to_domain' => '', 'to_identity' => str_repeat( 'x', 191 ), 'return_encoding' => 'invalid', 'deployment_mode' => 'invalid', 'cxml_version' => 'invalid', 'secret_current' => 'unexpected', 'secret_previous' => 'unexpected' ] as $key => $value ) {
 			self::assertFalse( Registration::valid_approval( Partner::from_row( array_replace( $row, [ $key => $value ] ) ) ), $key );
 		}
 	}
