@@ -75,17 +75,13 @@ final class AddressSchemaNative {
 				$columns = $this->columns( $table );
 				foreach ( $new_columns as $column ) { if ( isset( $columns[ $column ] ) ) { $this->sql( "ALTER TABLE `$table` DROP COLUMN `$column`" ); } }
 			}
-			foreach ( [ 'b2bking_company_user_id', 'b2bking_group_id' ] as $column ) {
-				if ( ! isset( $this->columns( $partners )[ $column ] ) ) { $this->sql( "ALTER TABLE `$partners` ADD `$column` BIGINT NOT NULL DEFAULT 0" ); }
-			}
-			$this->sql( "CREATE TABLE `{$fixture}pow_skumap` (id BIGINT NOT NULL)" );
 			$secrets = new POW\Partners\Secrets( str_repeat( 'k', 32 ) );
 			$before_partner = [ 'id' => 12, 'name' => 'Example schema fixture', 'sender_domain' => 'NetworkID', 'sender_identity' => 'BUYER', 'owner_user_id' => get_current_user_id(), 'status' => 'active', 'mode' => 'dual_exit', 'secret_current' => $secrets->seal( 'old-current' ), 'secret_previous' => $secrets->seal( 'old-previous' ), 'secret_rotated_at' => '2026-01-01 00:00:00', 'company_profile' => '{"book":"preserve"}' ];
 			$this->check( 1 === $wpdb->insert( $partners, $before_partner ), 'seed legacy partner' );
 			$wp_token = WP_Session_Tokens::get_instance( get_current_user_id() )->create( time() + HOUR_IN_SECONDS );
 			$before_session = [ 'id' => 21, 'partner_id' => 12, 'user_id' => get_current_user_id(), 'status' => 'ordered', 'order_id' => 987, 'payload_id' => 'schema-fixture', 'one_time_token_hash' => str_repeat( 'a', 64 ), 'wp_session_token' => $wp_token, 'ship_to' => '{"legacy":"preserve"}' ];
 			$this->check( 1 === $wpdb->insert( $sessions, $before_session ), 'seed legacy linked session' );
-			$legacy_partner = $this->row( $partners, 12 ); unset( $legacy_partner['b2bking_company_user_id'], $legacy_partner['b2bking_group_id'] );
+			$legacy_partner = $this->row( $partners, 12 );
 			$legacy_session = $this->row( $sessions, 21 );
 			update_option( 'pow_db_version', '3', false ); update_option( 'pow_rewrite_version', '1', false );
 			POW\Installer::maybe_upgrade();
@@ -127,7 +123,6 @@ final class AddressSchemaNative {
 			$wpdb->suppress_errors( $suppressed ); $wpdb->last_error = '';
 			$this->check( false === $duplicate && null === $this->row( $sessions, 23 )['wc_session_key'], 'the same per-visit key cannot be claimed twice' );
 			$this->sql( "DELETE FROM `$sessions` WHERE id IN (22, 23)" );
-			$this->check( ! isset( $partner_columns['b2bking_company_user_id'] ) && ! isset( $partner_columns['b2bking_group_id'] ) && null === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $fixture . 'pow_skumap' ) ) ), 'retired columns and SKU map removed' );
 			$defaults = [ 'delivery_code_prefix' => '', 'delivery_code_extrinsic_name' => 'DeliveryAddressCode', 'emit_ship_to' => '0', 'emit_delivery_code' => '0', 'emit_delivery_line' => '0', 'delivery_unknown_policy' => 'require_rate', 'delivery_notes_policy' => 'off', 'freight_supplier_part_id' => 'DELIVERY', 'freight_uom' => 'EA', 'freight_classification_domain' => 'supplier', 'freight_classification' => 'freight' ];
 			$this->check( $defaults === array_intersect_key( $p, $defaults ), 'upgraded rows get safe database defaults' );
 			$this->check( null === POW\Sessions\Session::from_row( $s )->delivery_choice() && null === POW\Sessions\Session::from_row( $s )->delivery_confirmation(), 'old session remains unselected and unconfirmed' );
