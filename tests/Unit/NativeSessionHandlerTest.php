@@ -16,7 +16,7 @@ use POW\Partners\Partner;
 /** This visit's WooCommerce session key: 'pow_' + 28 hex = char(32). */
 const VISIT_KEY='pow_1a2b3c4d5e6f708192a3b4c5d6e7';
 final class Registry {public Partner $partner;public function find(int $id):?Partner{return $this->partner;}public function with_partner_lock(int $id,callable $fn):mixed{return $fn();}}
-final class Store {public Session $session;public bool $valid=true;public function find_for_login(int $user,string $token,array $statuses):?Session{return $user===$this->session->user_id&&$token===$this->session->wp_session_token&&in_array($this->session->status,$statuses,true)?$this->session:null;}public function find(int $id):?Session{return $this->session;}public function login_valid_checked(Session $s):bool{return $this->valid;}public function invalidate_delivery(int $id,int $user,string $token):bool{return true;}public function open_for_user(int $id):array{return [$this->session];}}
+final class Store {public Session $session;public bool $valid=true;public function find_for_login(int $user,string $token,array $statuses):?Session{return $user===$this->session->user_id&&$token===$this->session->wp_session_token&&in_array($this->session->status,$statuses,true)?$this->session:null;}public function find_by_wc_session_key(string $key,array $statuses=[Session::ACTIVE,Session::ORDERED]):?Session{return $key===(string)$this->session->wc_session_key&&in_array($this->session->status,$statuses,true)?$this->session:null;}public function find(int $id):?Session{return $this->session;}public function login_valid_checked(Session $s):bool{return $this->valid;}public function invalidate_delivery(int $id,int $user,string $token):bool{return true;}}
 /** Core's handler reduced to the surface the subclass overrides or calls; set_session_expiration() reproduces core's own filter read so the plugin's filter is observable. */
 class NativeBase {
 	protected $_customer_id='99';protected $_data=[];protected $_dirty=false;protected $_session_expiration=0;protected $_session_expiring=0;protected $_has_cookie=false;
@@ -55,8 +55,14 @@ namespace {
 /** Interprets the visit-basket statements only; anything else is a test fault, not a fixture gap. */
 final class VisitExpiryDatabase {
 	public string $prefix='wp_';public string $usermeta='wp_usermeta';public string $last_error='';public array $rows=[];public array $queries=[];
-	public array $metadata=[['umeta_id'=>'1','meta_key'=>'wp_capabilities','meta_value'=>'customer']];
+	public array $metadata=[['meta_key'=>'wp_capabilities','meta_value'=>'customer'],['meta_key'=>'wp_user_level','meta_value'=>'0']];
+	public array $locks=[];public bool $suppressed=false;
 	public function prepare(string $sql,mixed ...$args):string{$key='q'.count($this->queries);$this->queries[$key]=[$sql,$args];return $key;}
+	public function get_var(string $key):?string{[$sql,$a]=$this->queries[$key];
+		if(str_contains($sql,'GET_LOCK')){$name=(string)$a[0];if(isset($this->locks[$name])){return '0';}$this->locks[$name]=1;return '1';}
+		if(str_contains($sql,'RELEASE_LOCK')){unset($this->locks[(string)$a[0]]);return '1';}
+		throw new LogicException('Unexpected scalar query: '.$sql);}
+	public function suppress_errors(bool $suppress=true):bool{$previous=$this->suppressed;$this->suppressed=$suppress;return $previous;}
 	public function get_results(string $key,mixed $format):?array{[$sql,$a]=$this->queries[$key];if(str_contains($sql,'FROM wp_usermeta')){return $this->metadata;}
 		if(!str_contains($sql,'BINARY session_key = BINARY %s')){throw new LogicException('Missing exact native key');}return isset($this->rows[$a[0]])?[$this->rows[$a[0]]]:[];}
 	public function query(string $key):int|false{[$sql,$a]=$this->queries[$key];

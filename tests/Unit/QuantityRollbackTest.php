@@ -42,16 +42,23 @@ namespace {
 /** Interprets the exact SQL the code emits: pow_sessions lookups/consent clear, usermeta snapshot, woocommerce_sessions compare-and-set. */
 final class RollbackDatabase {
 	public string $prefix='wp_';public string $usermeta='wp_usermeta';public string $last_error='';public array $queries=[];
-	public array $rows=[];public array $session=[];public array $metadata=[['umeta_id'=>'1','meta_key'=>'session_tokens','meta_value'=>'native-login']];
+	public array $rows=[];public array $session=[];
+	public array $metadata=[['meta_key'=>'wp_capabilities','meta_value'=>'a:1:{s:8:"customer";b:1;}'],['meta_key'=>'wp_user_level','meta_value'=>'0'],['meta_key'=>'session_tokens','meta_value'=>'native-login'],['meta_key'=>'wc_last_active','meta_value'=>'1758400000']];
 	public ?int $invalidate_affected=null;public mixed $after_invalidate=null;public mixed $before_cas=null;public int $consent_clears=0;public array $log=[];
+	public array $locks=[];public array $lock_log=[];public bool $suppressed=false;
 	public function prepare(string $sql,mixed ...$args):string{$key='q'.count($this->queries);$this->queries[$key]=[$sql,$args];return $key;}
+	public function get_var(string $key):?string{[$sql,$a]=$this->queries[$key];
+		if(str_contains($sql,'GET_LOCK')){$name=(string)$a[0];$this->lock_log[]=$name;if(isset($this->locks[$name])){return '0';}$this->locks[$name]=1;return '1';}
+		if(str_contains($sql,'RELEASE_LOCK')){unset($this->locks[(string)$a[0]]);return '1';}
+		throw new LogicException('Unexpected scalar query: '.$sql);}
+	public function suppress_errors(bool $suppress=true):bool{$previous=$this->suppressed;$this->suppressed=$suppress;return $previous;}
 	public function get_row(string $key,mixed $format):?array{[$sql,$a]=$this->queries[$key];if(!str_contains($sql,'wp_pow_sessions')){throw new LogicException('Unexpected row query: '.$sql);}
 		if(str_contains($sql,'WHERE id = %d')){return (int)$a[0]===(int)$this->session['id']?$this->session:null;}
+		if(str_contains($sql,'wc_session_key = %s AND status IN')){$wanted=(string)$a[0];$statuses=array_slice($a,1);return $wanted===(string)($this->session['wc_session_key']??'')&&in_array($this->session['status'],$statuses,true)?$this->session:null;}
 		if(str_contains($sql,'wp_session_token = %s AND status IN')){[$user,$token]=$a;$statuses=array_slice($a,2);return (int)$user===(int)$this->session['user_id']&&$token===$this->session['wp_session_token']&&in_array($this->session['status'],$statuses,true)?$this->session:null;}
 		throw new LogicException('Unexpected session query: '.$sql);}
 	public function get_results(string $key,mixed $format):?array{[$sql,$a]=$this->queries[$key];
-		if(str_contains($sql,'FROM wp_usermeta')){return $this->metadata;}
-		if(str_contains($sql,'wp_pow_sessions')){return (int)$a[0]===(int)$this->session['user_id']&&in_array($this->session['status'],array_slice($a,1),true)?[$this->session]:[];}
+		if(str_contains($sql,'FROM wp_usermeta')){if(!str_contains($sql,'meta_key IN')){throw new LogicException('The login fingerprint must name the authorising keys');}$wanted=array_slice($a,1);return array_values(array_filter($this->metadata,static fn(array $row):bool=>in_array($row['meta_key'],$wanted,true)));}
 		if(!str_contains($sql,'BINARY session_key = BINARY %s')){throw new LogicException('Missing exact native key');}return isset($this->rows[$a[0]])?[$this->rows[$a[0]]]:[];}
 	public function query(string $key):int|false{[$sql,$a]=$this->queries[$key];$this->log[]=$sql;
 		if(str_contains($sql,'wp_pow_sessions')){
@@ -133,8 +140,21 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 		self::assertTrue($quantity->save_checked());self::assertSame(2,$this->stored()['cart']['item']['quantity']);
 		self::assertNull($this->db->session['delivery_confirmation']);self::assertSame(1,$this->db->consent_clears);
 	}
-	public function test_h3_ordered_session_skips_invalidation_and_commits():void{
+	/**
+	 * ORDERED is inert vocabulary now that checkout is blocked inside every visit:
+	 * nothing writes it. Consent belongs to an ACTIVE visit, so Store::invalidate_delivery
+	 * answers false for any other status and the guard exempts none of them — a
+	 * changed cart is refused rather than committed past a consent gate that
+	 * could not run.
+	 */
+	public function test_h3_a_changed_cart_on_an_ordered_visit_is_refused_not_exempted():void{
 		$this->db->session['status']='ordered';$quantity=$this->request();$this->guard->mark_changed();$this->quantity($quantity,2);
+		self::assertFalse($quantity->save_checked());self::assertSame(0,$this->db->consent_clears);self::assertSame(1,$this->stored()['cart']['item']['quantity']);
+		self::assertSame('consent_invalidation',$quantity->last_refusal());$this->assertRefusalLogged('consent_invalidation');
+	}
+	/** Unchanged, an ORDERED visit still commits: identity_locked keeps ORDERED in its live-visit statuses. */
+	public function test_h3_an_unchanged_cart_on_an_ordered_visit_still_commits():void{
+		$this->db->session['status']='ordered';$quantity=$this->request();$this->quantity($quantity,2);
 		self::assertTrue($quantity->save_checked());self::assertSame(0,$this->db->consent_clears);self::assertSame(2,$this->stored()['cart']['item']['quantity']);
 	}
 	public function test_h3_session_leaving_active_after_hydration_drops_commit_before_invalidation_runs():void{
