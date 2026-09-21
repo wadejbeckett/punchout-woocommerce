@@ -21,5 +21,14 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 		self::assertSame( $result['ordinary'], $result['signed_in_no_visit'] );
 		self::assertFalse( $result['return_shortcode_registered'] );
 		self::assertFalse( $result['router_registered'] );
+		// The bound account is an ordinary customer login: nothing in boot()
+		// may stand between it and its own password, whatever the master
+		// switch says. The teardown that used to share that comment block
+		// survives on its own.
+		foreach ( [ 'allow_password_reset', 'wp_authenticate_user' ] as $filter ) {
+			self::assertFalse( in_array( $filter, $result['filters'], true ), 'boot() must not touch the password door: ' . $filter );
+		}
+		self::assertTrue( in_array( 'update_option_' . POW\Settings::OPTION_KEY, $result['actions'], true ), 'The master-switch teardown is still registered' );
+		self::assertSame( [], $result['provisioning_classes'], 'boot() must construct no provisioner and no pay exit' );
 	}
 }

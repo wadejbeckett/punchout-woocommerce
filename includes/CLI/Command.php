@@ -166,7 +166,7 @@ final class Command {
 	}
 
 	/**
-	 * Run housekeeping now (session expiry, buyer deactivation, log trim).
+	 * Run housekeeping now (visit expiry, log trim, quote retention).
 	 *
 	 * @subcommand gc
 	 */
