@@ -121,14 +121,20 @@ if ( ! function_exists( 'apply_filters' ) ) {
 	 * $GLOBALS['pow_test_filters'], which is enough to prove ordering.
 	 * Unfiltered by default. Never defined when WordPress is loaded.
 	 *
+	 * The trailing arguments are passed on, because several hooks carry the
+	 * subject rather than only the value — attach_session_information is
+	 * filtered with the account id, and without it a callback cannot tell
+	 * which visit it is decorating. Extra arguments are harmless to a
+	 * callback that declares fewer parameters.
+	 *
 	 * @param mixed $value   Value to filter.
-	 * @param mixed ...$args Further arguments; not passed on.
+	 * @param mixed ...$args Further arguments, passed on to the callback.
 	 * @return mixed
 	 */
 	function apply_filters( string $hook, $value, ...$args ) { // phpcs:ignore
 		$callback = $GLOBALS['pow_test_filters'][ $hook ] ?? null;
 
-		return null === $callback ? $value : $callback( $value );
+		return null === $callback ? $value : $callback( $value, ...$args );
 	}
 }
 
@@ -351,12 +357,92 @@ if ( ! function_exists( 'wp_get_current_user' ) ) {
 	function wp_get_current_user(): object { return (object) [ 'ID' => get_current_user_id(), 'roles' => $GLOBALS['pow_test_roles'] ?? [] ]; }
 }
 if ( ! function_exists( 'wp_get_session_token' ) ) {
-	function wp_get_session_token(): string { return $GLOBALS['pow_test_login_token'] ?? ''; }
+	/**
+	 * The WP session token of the request being simulated.
+	 *
+	 * One customer account holds one token per punchout visit, so a suite
+	 * that plays two visits needs two answers out of one global. The
+	 * per-visit list is pow_test_login_tokens and pow_test_login_token_index
+	 * is the cursor a test advances between simulated requests: the answer
+	 * is the same for every call inside one request, and different in the
+	 * next. With no list, the single pow_test_login_token is the whole
+	 * surface, exactly as before.
+	 */
+	function wp_get_session_token(): string { // phpcs:ignore
+		$tokens = $GLOBALS['pow_test_login_tokens'] ?? null;
+
+		if ( is_array( $tokens ) && [] !== $tokens ) {
+			$ordered = array_values( $tokens );
+			$index   = (int) ( $GLOBALS['pow_test_login_token_index'] ?? 0 );
+
+			return (string) ( $ordered[ $index ] ?? '' );
+		}
+
+		return (string) ( $GLOBALS['pow_test_login_token'] ?? '' );
+	}
 }
 if ( ! function_exists( 'wp_clear_auth_cookie' ) ) {
 	function wp_clear_auth_cookie(): void { $GLOBALS['pow_test_cookies_cleared'][] = true; }
 }
+if ( ! function_exists( 'wp_set_auth_cookie' ) ) {
+	/**
+	 * Recorder, not a cookie writer: a CLI run cannot see Set-Cookie, but it
+	 * can see that each visit asked for its own cookie carrying its own
+	 * session token. One appended entry per call, in order, is the evidence
+	 * that two visits on one account did not share a login.
+	 */
+	function wp_set_auth_cookie( int $user_id, bool $remember = false, mixed $secure = '', string $token = '' ): void { // phpcs:ignore
+		$GLOBALS['pow_test_auth_cookies'][] = [
+			'user_id'  => $user_id,
+			'remember' => $remember,
+			'secure'   => $secure,
+			'token'    => $token,
+		];
+	}
+}
+if ( ! function_exists( 'wp_set_current_user' ) ) {
+	/**
+	 * Switches which account the read-only user fakes answer for, and
+	 * records the switch. The redeem path sets the account and unwinds to 0
+	 * when the visit cannot be completed, so both moves must be visible;
+	 * pow_test_current_user_switches is that trail. Nothing is written to
+	 * any user — this only moves the pointer pow_test_current_user_id.
+	 */
+	function wp_set_current_user( int $id, string $name = '' ): object { // phpcs:ignore
+		$GLOBALS['pow_test_current_user_id'] = $id;
+		$GLOBALS['pow_test_current_user_switches'][] = $id;
+
+		$user = $GLOBALS['pow_test_users'][ $id ] ?? (object) [ 'ID' => $id, 'roles' => [], 'allcaps' => [] ];
+
+		$GLOBALS['pow_test_roles'] = (array) ( $user->roles ?? [] );
+
+		return $user;
+	}
+}
+/*
+ * Deliberately absent, and to stay absent: wp_insert_user, wp_update_user,
+ * wp_delete_user, wp_create_user, wp_generate_password, update_user_meta,
+ * add_user_meta, delete_user_meta, add_role and remove_role. The plugin
+ * never creates, renames or deletes users and never writes user meta on the
+ * bound account, so a suite that reaches for one of those must fail with an
+ * undefined function rather than quietly pass against a fake. A suite that
+ * genuinely needs to observe such a call owns a namespace-local seam of its
+ * own (see tests/Unit/CompanyBookTest.php and tests/Unit/ExitPolicyTest.php),
+ * which binds only inside that suite. HarnessPerVisitTest pins the absence.
+ *
+ * add_filter/remove_filter/add_action are absent for a different reason: the
+ * global hook surface belongs to tests/fixtures/plugin-boot-master-off.php,
+ * whose own function_exists guards would go dark if this file claimed them.
+ */
 if ( ! class_exists( 'WP_Session_Tokens' ) ) {
+	/**
+	 * Keyed per user AND per token, because one bound account now holds one
+	 * token per punchout visit: update() records the session information the
+	 * caller attached (the attach_session_information result plus expiry,
+	 * login time, IP and user agent) under that visit's token, and destroy()
+	 * removes exactly one visit's entry. Ending one visit must therefore
+	 * leave every other visit of the same account verifiable.
+	 */
 	class WP_Session_Tokens {
 		public function __construct( private int $user_id = 0 ) {}
 		public static function get_instance( int $user_id ): self { return new self( $user_id ); }
