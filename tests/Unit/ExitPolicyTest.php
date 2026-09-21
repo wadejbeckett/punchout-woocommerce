@@ -33,15 +33,10 @@ final class ExitPolicyDatabase {
 	public function update( string $table, array $data, array $where ): int|false { if (!$this->held) throw new LogicException('Unlocked partner mutation'); if ('false' === $this->write_mode) return false; if ('lie' !== $this->write_mode) $this->row = array_replace($this->row,$data); return 1; }
 	public function query( string $key ): int|false { [, $args] = $this->queries[$key]; if ('false' === $this->migration_write_mode) return false; $changed=0; if ('lie' !== $this->migration_write_mode) foreach($this->migration_rows as &$row) if(($row['exit_policy']??null)===($args[1]??null)){ $row['exit_policy']=$args[0]; ++$changed; } unset($row); return $changed; }
 }
-final class ExitPolicyStore extends POW\Sessions\Store {
- public ?POW\Sessions\Session $session = null;
- public function find_for_login(int $user_id,string $wp_session_token,array $statuses=[POW\Sessions\Session::ACTIVE]): ?POW\Sessions\Session { return $this->session && in_array($this->session->status,$statuses,true) && $user_id === $this->session->user_id ? $this->session : null; }
-}
-final class ExitPolicyOrder extends WC_Order {
- public int $customer = 30;
- public function get_customer_id(): int { return $this->customer; }
- public function is_paid(): bool { return false; }
-}
+// The RouteGuard cases that used to live here — the server-side checkout
+// and order/payment boundaries — moved to tests/Unit/RouteGuardTest.php
+// with the guard itself: a visit is the only thing that blocks checkout
+// now, so they no longer belong to an exit-policy suite.
 final class ExitPolicyTest extends PHPUnit\Framework\TestCase {
 	private array $saved = [];
 	private ExitPolicyDatabase $db;
@@ -58,49 +53,6 @@ final class ExitPolicyTest extends PHPUnit\Framework\TestCase {
 	}
 	protected function tearDown(): void { foreach($this->saved as $key=>[$exists,$value]) { if($exists)$GLOBALS[$key]=$value; else unset($GLOBALS[$key]); } }
 
-	private function guard(?string $status='active'): POW\RouteGuard {
-		$plugin=(new ReflectionClass(POW\Plugin::class))->newInstanceWithoutConstructor();
-		$store=new ExitPolicyStore(); $store->session=null === $status ? null : POW\Sessions\Session::from_row(['id'=>44,'partner_id'=>12,'user_id'=>30,'status'=>$status,'expires'=>gmdate('Y-m-d H:i:s',time()+3600)]);
-		foreach (['registry'=>$this->registry,'sessions'=>$store,'settings'=>new POW\Settings(),'current_session'=>$store->session,'session_resolved'=>true] as $key=>$v) { $property=new ReflectionProperty($plugin,$key); $property->setValue($plugin,$v); }
-		$GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY]['enabled']='yes';
-		return new POW\RouteGuard($plugin,$this->registry,new POW\Settings());
-	}
-	public function test_server_enforcement_refuses_unpaid_order_after_tightening(): void {
-		$this->policy(); $g=$this->guard(); $GLOBALS['pow_test_current_user_id']=30; $o=new ExitPolicyOrder();
-		self::assertTrue($g->checkout_allowed($o)); $this->db->row['exit_policy']='punchout_only'; self::assertFalse($g->checkout_allowed($o));
-		$this->expectException(Exception::class); $g->enforce_order($o);
-	}
-	public function test_server_enforcement_refuses_other_buyer_and_forged_order_tags(): void {
-		$this->policy(); $g=$this->guard(); $GLOBALS['pow_test_current_user_id']=30; $o=new ExitPolicyOrder(); $o->customer=31; self::assertFalse($g->checkout_allowed($o)); $o->customer=30; $o->update_meta_data('_pow_session','99'); self::assertFalse($g->checkout_allowed($o));
-	}
-	public function test_server_enforcement_keeps_ordinary_shoppers_native_and_orphan_buyers_closed(): void {
-		$this->policy(); $g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=21; self::assertTrue($g->checkout_allowed()); $GLOBALS['pow_test_current_user_id']=30; self::assertFalse($g->checkout_allowed()); $g=$this->guard('ordered'); self::assertFalse($g->checkout_allowed());
-	}
-	public function test_active_company_only_denies_its_direct_owner_without_a_punchout_session(): void {
-		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20; $this->db->row['exit_policy']='punchout_only';
-		self::assertFalse($g->checkout_allowed());
-		$o=new ExitPolicyOrder(); $o->customer=20; self::assertFalse($g->checkout_allowed($o));
-	}
-	public function test_active_company_both_permits_its_direct_owner_without_creating_return_context(): void {
-		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20; $this->db->row['exit_policy']='punchout_and_checkout';
-		self::assertTrue($g->checkout_allowed());
-		$o=new ExitPolicyOrder(); $o->customer=20; self::assertTrue($g->checkout_allowed($o));
-	}
-	public function test_inactive_company_owner_and_unrelated_ordinary_b2b_remain_independent(): void {
-		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20;
-		foreach (['pending','disabled'] as $status) { $this->db->row['status']=$status; $this->db->row['exit_policy']='punchout_only'; self::assertTrue($g->checkout_allowed()); }
-		$this->db->row['status']='active'; $GLOBALS['pow_test_current_user_id']=21; self::assertTrue($g->checkout_allowed());
-	}
-	public function test_active_owner_malformed_company_policy_fails_closed_with_direct_login_guidance(): void {
-		$g=$this->guard(null); $GLOBALS['pow_test_current_user_id']=20; $this->db->row['exit_policy']='unknown';
-		self::assertFalse($g->checkout_allowed());
-		try { $g->enforce_order(null); self::fail('Missing direct owner checkout veto'); }
-		catch (Exception $error) { self::assertStringContainsString('My Account',$error->getMessage()); self::assertStringNotContainsString('Please use',$error->getMessage()); }
-	}
-	public function test_order_boundary_blocks_store_api_and_zero_total_checkout(): void {
-		$this->policy(); $g=$this->guard(); $GLOBALS['pow_test_current_user_id']=30; $this->db->row['exit_policy']='punchout_only';
-		$this->expectException(Exception::class); $g->enforce_order(new ExitPolicyOrder());
-	}
 
 	public function test_company_policy_and_buyer_restriction_are_the_entitlement_matrix(): void {
 		$this->policy();

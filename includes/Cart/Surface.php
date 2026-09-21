@@ -198,7 +198,7 @@ final class Surface {
 	 */
 	public function cart_exits_shortcode(): string {
 		if ( null === $this->plugin->current_session() ) {
-			$ordinary_checkout = ( new RouteGuard( $this->plugin, $this->registry, $this->plugin->settings() ) )->checkout_allowed();
+			$ordinary_checkout = ! ( new RouteGuard( $this->plugin, $this->registry, $this->plugin->settings() ) )->checkout_blocked_for_visit();
 			return $ordinary_checkout ? '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>' : '';
 		}
 
