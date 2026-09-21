@@ -18,8 +18,12 @@ final class RegistrationLifecycleTest extends TestCase {
 		}
 	}
 
+	/** Both surviving entry points are administrator actions: no owner-initiated lifecycle is left. */
 	public function test_lifecycle_refuses_anonymous_and_mismatched_actor_before_mutation(): void {
 		self::assertTrue( method_exists( Registration::class, 'approve' ), 'Approval service is missing' );
+		foreach ( [ 'submit', 'request_deactivation', 'normalise', 'validate', 'neutral_message' ] as $gone ) {
+			self::assertFalse( method_exists( Registration::class, $gone ), $gone );
+		}
 		$before = $GLOBALS['pow_test_current_user_id'] ?? null;
 		$GLOBALS['pow_test_current_user_id'] = 0;
 		$audit = new class extends POW\Audit\Log { public function __construct() {} public function write_checked( string $event, array $context = [] ): bool { return true; } };
@@ -27,7 +31,6 @@ final class RegistrationLifecycleTest extends TestCase {
 		try {
 			self::assertSame( '', $service->approve( 7, 8 ) );
 			self::assertSame( '', $service->reset( 7, [], 8 ) );
-			self::assertFalse( $service->request_deactivation( 7, 8 ) );
 		} finally {
 			if ( null === $before ) { unset( $GLOBALS['pow_test_current_user_id'] ); } else { $GLOBALS['pow_test_current_user_id'] = $before; }
 		}

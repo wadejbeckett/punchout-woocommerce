@@ -20,10 +20,11 @@ final class TransportTestDatabase {
 	public bool $unreachable = false;
 	public array $queries = [];
 	public function prepare( string $sql, ...$args ): string { return vsprintf( str_replace( [ '%d', '%s' ], '%s', $sql ), $args ); }
-	public function get_row( string $sql, string $output = 'OBJECT' ): ?array {
+	/** One partners lookup by owner, which the registry reads as a two-row set. */
+	public function get_results( string $sql, string $output = 'OBJECT' ): array {
 		$this->queries[] = $sql;
-		if ( $this->unreachable ) { $this->last_error = 'MySQL server has gone away'; return null; }
-		return $this->owner > 0 && str_contains( $sql, 'owner_user_id = ' . $this->owner ) ? [ 'id' => 7, 'name' => 'Example Buyer Company', 'status' => 'active' ] : null;
+		if ( $this->unreachable ) { $this->last_error = 'MySQL server has gone away'; return []; }
+		return $this->owner > 0 && str_contains( $sql, 'owner_user_id = ' . $this->owner ) ? [ [ 'id' => 7, 'name' => 'Example Buyer Company', 'status' => 'active' ] ] : [];
 	}
 }
 

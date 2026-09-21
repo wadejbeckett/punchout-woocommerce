@@ -73,16 +73,6 @@ final class SetupEndpoint {
 	private const REPLAY_WAIT_MICROSECONDS = 3_000_000;
 	private const REPLAY_POLL_MICROSECONDS = 25_000;
 
-	/**
-	 * Capabilities the connection's customer account may not hold.
-	 *
-	 * Buyers are signed in as that account, so punching into an account that
-	 * can manage the shop, the store or other users would hand the buyer's
-	 * purchasing system the shop itself. An account failing this test is an
-	 * unbound connection: refused, never downgraded.
-	 */
-	private const PRIVILEGED_CAPABILITIES = [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ];
-
 	/** @var array<string, mixed> Safe request identifiers for terminal failure audit. */
 	private array $failure_context = [];
 
@@ -610,11 +600,12 @@ final class SetupEndpoint {
 	 *
 	 * A read and a capability test, never a write: the plugin creates,
 	 * renames and deletes no users. `read` is what makes an account a
-	 * customer that can be signed in at all, and PRIVILEGED_CAPABILITIES is
-	 * what stops a buyer's purchasing system punching into the shop's own
-	 * management. 0 is the single answer for every unusable state — unset,
-	 * deleted, or too powerful — because the refusal and the admin notice are
-	 * the same either way.
+	 * customer that can be signed in at all, and
+	 * Registry::PRIVILEGED_CAPABILITIES — the same list the bind screen
+	 * refuses on — is what stops a buyer's purchasing system punching into
+	 * the shop's own management. 0 is the single answer for every unusable
+	 * state — unset, deleted, or too powerful — because the refusal and the
+	 * admin notice are the same either way.
 	 */
 	private function bound_account( Partner $partner ): int {
 		$user_id = $partner->owner_user_id;
@@ -629,10 +620,8 @@ final class SetupEndpoint {
 			return 0;
 		}
 
-		foreach ( self::PRIVILEGED_CAPABILITIES as $capability ) {
-			if ( user_can( $user, $capability ) ) {
-				return 0;
-			}
+		if ( Registry::privileged( $user ) ) {
+			return 0;
 		}
 
 		return $user_id;

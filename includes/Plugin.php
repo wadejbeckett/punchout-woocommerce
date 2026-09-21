@@ -122,15 +122,14 @@ final class Plugin {
 
 		// Admin, schema upgrade, CLI and housekeeping run regardless of the
 		// master switch.
-		// One editor instance retains same-request validation feedback across account and admin rendering.
-		if ( $this->enabled() ) {
-			$address_fields->register();
-		} else {
-			add_action( 'admin_init', [ $address_fields, 'handle' ] );
-		}
+		// One editor instance retains same-request validation feedback across
+		// the admin screen's POST handling and its rendering. It registers the
+		// same way whatever the switch says: the delivery book is an
+		// administrator surface with no front-end route to gate.
+		$address_fields->register();
 		( new AdminPage( $this->settings, $this->registry, $this->audit, $address_fields ) )->register();
 		( new AdminActions( $this->registry, $this->audit, $registration ) )->register();
-		( new \POW\Account\IntegrationTab( $this, $this->registry, $registration, $this->audit, new RateLimiter( RateLimiter::public_limit( \POW\Partners\Registration::RATE_LIMIT_PER_HOUR, 5 ), null, null, HOUR_IN_SECONDS ), $address_fields ) )->register();
+		( new \POW\Account\IntegrationTab( $this, $this->registry, $this->audit ) )->register();
 		( new AdminDetails() )->register();
 		( new Cron( $this->sessions, $this->audit, $this->settings, $quotes ) )->register();
 
