@@ -5,11 +5,22 @@ declare( strict_types = 1 );
 namespace POW\Tests\QuoteAddress {
 
 use POW\Partners\Partner;
+use POW\Sessions\Session;
 
+/** The visit this request is inside, and a sibling visit of the very same account. */
+const VISIT_KEY = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
+const SIBLING_KEY = 'pow_00112233445566778899aabbccdd';
+
+/** Sessions\Current's whole surface: which visit, if any, this request is inside. */
+final class Current {
+	public ?Session $live = null;
+	public bool $unreachable = false;
+	public function visit( array $statuses = [] ): ?Session { if ( $this->unreachable ) { throw new \RuntimeException( 'PRIVATE session lookup error' ); } return $this->live; }
+}
 final class Registry {
 	public array $rows = [ 7 => [ 'id' => 7, 'owner_user_id' => 20, 'status' => 'active' ] ];
 	public function find( int $id ): ?Partner { return isset( $this->rows[$id] ) ? Partner::from_row( $this->rows[$id] ) : null; }
-	public function find_by_owner( int $id ): ?Partner { return $id === 20 ? $this->find( 7 ) : null; }
+	public function find_by_owner( int $id ): ?Partner { foreach ( $this->rows as $row ) { if ( $row['owner_user_id'] === $id ) { return Partner::from_row( $row ); } } return null; }
 }
 final class CompanyBook {}
 final class Countries {
@@ -40,8 +51,8 @@ function load_source(): void {
 		$path = dirname( __DIR__, 2 ) . '/includes/Addresses/' . $name . '.php';
 		\PHPUnit\Framework\TestCase::assertTrue( is_file( $path ), 'Destination producer implementation must exist.' );
 		$source = str_replace(
-			[ 'namespace POW\\Addresses;', 'use POW\\Partners\\Registry;', 'use WC_Validation;' ],
-			[ 'namespace POW\\Tests\\QuoteAddress; use POW\\Addresses\\DeliveryData; use POW\\Addresses\\Codes;', '', 'use POW\\Tests\\QuoteAddress\\Validation as WC_Validation;' ],
+			[ 'namespace POW\\Addresses;', 'use POW\\Partners\\Registry;', 'use POW\\Sessions\\Current;', 'use WC_Validation;' ],
+			[ 'namespace POW\\Tests\\QuoteAddress; use POW\\Addresses\\DeliveryData; use POW\\Addresses\\Codes;', '', '', 'use POW\\Tests\\QuoteAddress\\Validation as WC_Validation;' ],
 			file_get_contents( $path )
 		);
 		eval( substr( $source, 5 ) ); // Native/service bindings only; production method bodies remain unchanged.
@@ -51,25 +62,29 @@ function load_source(): void {
 
 namespace {
 use PHPUnit\Framework\TestCase;
-use POW\Tests\QuoteAddress\{QuoteAddress,Resolver,Registry,CompanyBook,Countries,Customer};
+use POW\Tests\QuoteAddress\{QuoteAddress,Resolver,Registry,CompanyBook,Countries,Current,Customer};
 use POW\Partners\Partner;
 use POW\Sessions\Session;
+use const POW\Tests\QuoteAddress\{VISIT_KEY,SIBLING_KEY};
 
 final class QuoteAddressTest extends TestCase {
 	private array $saved = [];
 	private Registry $registry;
+	private Current $visits;
 	private QuoteAddress $producer;
 	protected function setUp(): void {
 		\POW\Tests\QuoteAddress\load_source();
 		foreach ( ['wpdb','pow_test_users','pow_test_user_meta','pow_test_current_user_id','pow_test_filters','quote_address_wc'] as $key ) { $this->saved[$key] = [array_key_exists($key,$GLOBALS),$GLOBALS[$key]??null]; }
 		$GLOBALS['wpdb'] = (object)['last_error'=>''];
-		$GLOBALS['pow_test_users'] = [20=>(object)['ID'=>20,'roles'=>['customer'],'allcaps'=>['read'=>true]],99=>(object)['ID'=>99,'roles'=>[\POW\Installer::ROLE],'allcaps'=>['read'=>true]]];
-		$GLOBALS['pow_test_user_meta'] = [99=>['_pow_partner_id'=>'7']];
-		$GLOBALS['pow_test_current_user_id'] = 99;
+		// Connection 7's bound login is user 20, so every visit of it is signed in as 20 and the row, not the
+		// user, says which visit this request is. 21 is an unrelated customer with no connection of its own.
+		$GLOBALS['pow_test_users'] = [20=>(object)['ID'=>20,'roles'=>['customer'],'allcaps'=>['read'=>true]],21=>(object)['ID'=>21,'roles'=>['customer'],'allcaps'=>['read'=>true]]];
+		$GLOBALS['pow_test_user_meta'] = [];
+		$GLOBALS['pow_test_current_user_id'] = 20;
 		$GLOBALS['pow_test_filters'] = [];
-		$GLOBALS['quote_address_wc'] = (object)['countries'=>new Countries(),'customer'=>new Customer(99,$this->address(['city'=>'Buyer city']))];
-		$this->registry = new Registry();
-		$this->producer = new QuoteAddress(new Resolver($this->registry,new CompanyBook()));
+		$GLOBALS['quote_address_wc'] = (object)['countries'=>new Countries(),'customer'=>new Customer(20,$this->address(['city'=>'Company city']))];
+		$this->registry = new Registry(); $this->visits = new Current();
+		$this->producer = new QuoteAddress(new Resolver($this->registry,new CompanyBook(),$this->visits));
 	}
 	protected function tearDown(): void { foreach($this->saved as $key=>[$exists,$value]) { if($exists){$GLOBALS[$key]=$value;}else{unset($GLOBALS[$key]);} } }
 	private function address( array $changes = [] ): array {
@@ -79,9 +94,11 @@ final class QuoteAddressTest extends TestCase {
 		return array_replace(['schema'=>1,'partner_id'=>7,'storage_user_id'=>20,'provider'=>'native','key'=>'depot','label'=>'Depot','address'=>$this->address(),'code'=>'','source'=>'company_book','book_revision'=>3,'entry_fingerprint'=>str_repeat('a',64)],$changes);
 	}
 	private function session( ?array $choice = null, array $changes = [] ): Session {
-		return Session::from_row(array_replace(['id'=>42,'partner_id'=>7,'user_id'=>99,'status'=>Session::ACTIVE,'delivery_choice'=>null===$choice?null:json_encode($choice,JSON_THROW_ON_ERROR)],$changes));
+		return Session::from_row(array_replace(['id'=>42,'partner_id'=>7,'user_id'=>20,'status'=>Session::ACTIVE,'wc_session_key'=>VISIT_KEY,'delivery_choice'=>null===$choice?null:json_encode($choice,JSON_THROW_ON_ERROR)],$changes));
 	}
-	private function resolve( ?Session $session = null, ?Partner $partner = null ): ?array { return $this->producer->resolve_destination($session??$this->session(),$partner??$this->registry->find(7)); }
+	/** Put the request inside visit 42 and hand back the row a caller would be holding. */
+	private function enter( ?array $choice = null, array $changes = [] ): Session { $this->visits->live = $this->session($choice,$changes); return $this->session($choice,$changes); }
+	private function resolve( ?Session $session = null, ?Partner $partner = null ): ?array { $session ??= $this->enter(); $this->visits->live ??= $this->session(); return $this->producer->resolve_destination($session,$partner??$this->registry->find(7)); }
 	private function refuse( callable $call ): void { try { $call(); self::fail('Malformed destination was accepted.'); } catch (\DomainException $error) { self::assertStringNotContainsString('PRIVATE',$error->getMessage()); } }
 	public function test_payload_keeps_all_ten_local_fields_and_only_destination_metadata(): void {
 		$choice=$this->choice();
@@ -115,43 +132,61 @@ final class QuoteAddressTest extends TestCase {
 		$this->refuse(fn()=>QuoteAddress::to_cxml(['address'=>$this->address(['address_1'=>'   '])]));
 		$this->refuse(fn()=>QuoteAddress::to_cxml(['address'=>$this->address(['company'=>'','first_name'=>'','last_name'=>''])]));
 	}
-	public function test_selected_snapshot_precedes_filter_and_never_revalidates_native_configuration(): void {
-		$session=$this->session($this->choice()); $before=$session->delivery_choice_json;
+	public function test_selected_snapshot_wins_and_never_revalidates_native_configuration(): void {
+		$session=$this->enter($this->choice()); $before=$session->delivery_choice_json;
 		$GLOBALS['quote_address_wc']->countries->fail=true;
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address']=static function(){ throw new \RuntimeException('Filter must not run'); };
 		self::assertSame(['address'=>$this->address(),'code'=>'','source'=>'company_book'],$this->resolve($session)); self::assertSame($before,$session->delivery_choice_json);
+	}
+	public function test_no_extension_filter_can_supply_the_delivery_destination(): void {
+		// Letting a site file name the delivery destination is site glue, and the plugin no longer offers it.
+		$GLOBALS['pow_test_filters']['pow_quote_shipping_address']=static function(){ throw new \RuntimeException('PRIVATE filter must not run'); };
+		self::assertSame(['address'=>$this->address(['city'=>'Company city']),'code'=>'','source'=>'customer'],$this->resolve());
+		self::assertSame(['address'=>$this->address(),'code'=>'','source'=>'company_book'],$this->resolve($this->enter($this->choice())));
+		self::assertStringNotContainsString('apply_filters',file_get_contents(dirname(__DIR__,2).'/includes/Addresses/QuoteAddress.php'));
 	}
 	public function test_invalid_selected_snapshot_never_falls_back_to_valid_buyer_address(): void {
 		foreach ([$this->session(null,['delivery_choice'=>'PRIVATE malformed']),$this->session($this->choice(['storage_user_id'=>21])),$this->session($this->choice(['address'=>$this->address(['city'=>str_repeat('x',191)])]))] as $session) { $this->refuse(fn()=>$this->resolve($session)); }
 	}
 	public function test_foreign_partner_or_lost_association_refuses_even_without_choice(): void {
 		$this->refuse(fn()=>$this->resolve(null,Partner::from_row(['id'=>8,'owner_user_id'=>20])));
-		$GLOBALS['pow_test_user_meta'][99]['_pow_partner_id']='8'; $this->refuse(fn()=>$this->resolve());
+		// The connection's login moved to another account, so the visit's own user is nobody's owner any more.
+		$this->registry->rows[7]['owner_user_id']=21; $this->refuse(fn()=>$this->resolve());
 	}
-	public function test_filter_is_validated_candidate_and_never_marks_session_confirmed(): void {
-		$session=$this->session();
-		$address=$this->address(['country'=>'za','state'=>'Gauteng']);
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address']=static function($value,$actual,$partner) use($session,$address) { self::assertNull($value); self::assertSame($session,$actual); self::assertSame(7,$partner->id); return ['address'=>$address,'code'=>'','source'=>'company_book']; };
-		self::assertSame(['address'=>$this->address(),'code'=>'','source'=>'filter'],$this->resolve($session));
+	public function test_another_visits_row_cannot_produce_a_destination_in_this_request(): void {
+		$this->visits->live=$this->session();
+		// Visit 43 belongs to a second employee signed in as the same account; its key, not its user, says so.
+		foreach ( [ $this->session($this->choice(),['id'=>43,'wc_session_key'=>SIBLING_KEY]), $this->session($this->choice(),['wc_session_key'=>SIBLING_KEY]), $this->session($this->choice(),['wc_session_key'=>null]) ] as $other ) {
+			$this->refuse(fn()=>$this->producer->resolve_destination($other,$this->registry->find(7)));
+		}
+		$this->visits->live=null; $this->refuse(fn()=>$this->producer->resolve_destination($this->session(),$this->registry->find(7)));
+		$this->visits->unreachable=true; $this->refuse(fn()=>$this->producer->resolve_destination($this->session(),$this->registry->find(7)));
+	}
+	public function test_a_candidate_is_normalised_and_never_marks_the_session_confirmed(): void {
+		$session=$this->enter();
+		$GLOBALS['quote_address_wc']->customer->address=$this->address(['country'=>'za','state'=>'Gauteng']);
+		self::assertSame(['address'=>$this->address(),'code'=>'','source'=>'customer'],$this->resolve($session));
 		self::assertNull($session->delivery_choice()); self::assertNull($session->delivery_confirmation());
 	}
-	public function test_empty_or_invalid_candidates_fall_through_without_promoting_a_code(): void {
-		foreach ([null,[],['code'=>'ONLY'],['address'=>[]],['address'=>$this->address(['country'=>'XX'])],['address'=>$this->address(['city'=>['PRIVATE']])]] as $candidate) {
-			$GLOBALS['pow_test_filters']['pow_quote_shipping_address']=static fn()=>$candidate;
-			self::assertSame(['address'=>$this->address(['city'=>'Buyer city']),'code'=>'','source'=>'customer'],$this->resolve());
+	public function test_empty_or_invalid_candidates_are_absent_rather_than_repaired(): void {
+		foreach ([[],$this->address(['country'=>'XX']),$this->address(['city'=>['PRIVATE']]),$this->address(['postcode'=>str_repeat('p',33)])] as $address) {
+			$GLOBALS['quote_address_wc']->customer->address=$address;
+			self::assertNull($this->resolve());
 		}
+		$GLOBALS['quote_address_wc']->customer->address=$this->address(['city'=>'Company city']);
+		self::assertSame(['address'=>$this->address(['city'=>'Company city']),'code'=>'','source'=>'customer'],$this->resolve());
 	}
-	public function test_inbound_precedes_buyer_but_remains_unconfirmed(): void {
+	public function test_inbound_precedes_the_company_profile_but_remains_unconfirmed(): void {
 		if ( ! class_exists(\DOMDocument::class) ) { $this->markTestSkipped('ext-dom not available'); }
 		$session=$this->session(null,['ship_to'=>'<ShipTo><Address addressID="IN-1"><Name>Site</Name><PostalAddress><DeliverTo>Recipient</DeliverTo><Street>1 Inbound Road</Street><City>Pretoria</City><Country isoCountryCode="ZA"/></PostalAddress></Address></ShipTo>']);
 		$result=$this->resolve($session); self::assertSame('ship_to',$result['source']); self::assertSame('IN-1',$result['code']); self::assertSame('1 Inbound Road',$result['address']['address_1']); self::assertSame('',$result['address']['phone']); self::assertNull($session->delivery_choice());
 	}
-	public function test_customer_candidate_requires_current_buyer_identity(): void {
-		$GLOBALS['quote_address_wc']->customer->id=20; self::assertNull($this->resolve());
-		$GLOBALS['quote_address_wc']->customer->id=99; $GLOBALS['pow_test_current_user_id']=20; $this->refuse(fn()=>$this->resolve());
+	public function test_profile_candidate_requires_the_visits_own_account(): void {
+		// The company profile address is only a candidate when the loaded customer IS the connection's login.
+		$GLOBALS['quote_address_wc']->customer->id=21; self::assertNull($this->resolve());
+		$GLOBALS['quote_address_wc']->customer->id=20; self::assertSame('customer',$this->resolve()['source']);
 	}
 	public function test_no_usable_candidate_is_null_without_session_mutation(): void {
-		$GLOBALS['quote_address_wc']->customer->address=[]; $session=$this->session();
+		$GLOBALS['quote_address_wc']->customer->address=[]; $session=$this->enter();
 		self::assertNull($this->resolve($session)); self::assertNull($session->delivery_choice()); self::assertNull($session->delivery_confirmation());
 	}
 	public function test_produced_postal_shape_round_trips_through_both_exact_dtds(): void {
