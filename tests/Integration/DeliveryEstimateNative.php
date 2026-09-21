@@ -2,9 +2,9 @@
 /**
  * Prepared only: coordinator-owned disposable native shipping acceptance probe.
  *
- * Run only after source approval and exclusive fixture handoff, with actual local WordPress/Woo and no unit bootstrap. POW_NATIVE_TESTS=disposable, POW_NATIVE_DELIVERY_MODE=suite and POW_NATIVE_DELIVERY_FIXTURE must name a private absolute JSON fixture supplied by Main. The fixture must contain partner_id, buyer_ids (two distinct disposable linked buyers), physical_product_id, virtual_product_id, address (ten canonical shipping fields), default_rate_id, expensive_rate_id, pickup_rate_id and free_rate_id. Main supplies a native shipping zone with these offered rates; default must differ from cheapest and expensive must have positive cost. Both supplied buyers must have empty carts. This probe changes only those disposable buyers' Woo sessions/current request, restores the original request objects and reads back their unchanged master addresses. It creates no zone, product, user or partner. It does not prove HTTP acknowledgement, guarded return concurrency or fresh-process persistence.
+ * Run only after source approval and exclusive fixture handoff, with actual local WordPress/Woo and no unit bootstrap. POW_NATIVE_TESTS=disposable, POW_NATIVE_DELIVERY_MODE=suite and POW_NATIVE_DELIVERY_FIXTURE must name a private absolute JSON fixture supplied by Main. The fixture must contain partner_id (an active connection bound to one ordinary WooCommerce customer account), physical_product_id, virtual_product_id, address (ten canonical shipping fields), default_rate_id, expensive_rate_id, pickup_rate_id and free_rate_id. Main supplies a native shipping zone with these offered rates; default must differ from cheapest and expensive must have positive cost. This probe opens its own two disposable visits of that bound account — the model creates no buyer users, so two employees are one WordPress user with two session rows, two login tokens and two per-visit cart keys — writes only those two visits' own Woo session rows and the current request, restores the original request objects and reads back the account's unchanged master address. It creates no zone, product, user or partner. It does not prove HTTP acknowledgement, guarded return concurrency or fresh-process persistence.
  *
- * Optional Quote candidate: POW_NATIVE_DELIVERY_QUOTES=1 additionally requires fixture.quote_session_ids with four distinct genuine disposable RETURNED, unlinked session IDs for the first buyer, keyed free/multiple/unknown/disabled. Main supplies these already-claimed rows. This mode creates and leaves four native Quote orders, protected delivery metadata, notes, audit rows and session links for Main's inspection/cleanup. The synthetic read-only producer sessions are NEVER passed to QuoteOrder. Run separately in Main's chosen CPT/HPOS fixture; this file does not change storage mode or claim returns.
+ * Optional Quote candidate: POW_NATIVE_DELIVERY_QUOTES=1 additionally requires fixture.quote_session_ids with four distinct genuine disposable RETURNED, unlinked session IDs for the connection's bound account, keyed free/multiple/unknown/disabled. Main supplies these already-claimed rows. This mode creates and leaves four native Quote orders, protected delivery metadata, notes, audit rows and session links for Main's inspection/cleanup. The synthetic read-only producer sessions are NEVER passed to QuoteOrder. Run separately in Main's chosen CPT/HPOS fixture; this file does not change storage mode or claim returns.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -14,6 +14,8 @@ declare( strict_types = 1 );
 if ( ! defined( 'WP_CLI' ) || ! WP_CLI || 'disposable' !== getenv( 'POW_NATIVE_TESTS' ) || 'suite' !== getenv( 'POW_NATIVE_DELIVERY_MODE' ) || 'local' !== wp_get_environment_type() || ! current_user_can( 'manage_woocommerce' ) || ! function_exists( 'WC' ) || ! empty( $_COOKIE ) ) {
 	throw new RuntimeException( 'Requires an opted-in disposable local native fixture and its administrator.' );
 }
+
+require_once dirname( __DIR__ ) . '/Support/native-visits.php';
 
 final class DeliveryEstimateNative {
 	private POW\Addresses\DeliveryEstimate $producer;
@@ -25,6 +27,10 @@ final class DeliveryEstimateNative {
 	private array $master_before = [];
 	private int $actor;
 	private bool $quote_items;
+	/** The one customer account this connection's buyers are signed in as. */
+	private int $account;
+	/** @var list<POW\Sessions\Session> The two visits this probe opens of that account. */
+	private array $visits = [];
 
 	public function __construct( array $fixture ) {
 		$this->fixture = $fixture;
@@ -32,14 +38,25 @@ final class DeliveryEstimateNative {
 		$this->actor = get_current_user_id();
 		$this->partner = POW\Plugin::instance()->registry()->find( (int) ( $fixture['partner_id'] ?? 0 ) ) ?? throw new RuntimeException( 'Native fixture partner missing.' );
 		$this->producer = new POW\Addresses\DeliveryEstimate( new POW\Settings() );
-		$buyers = $fixture['buyer_ids'] ?? [];
-		if ( ! is_array( $buyers ) || ! array_is_list( $buyers ) || count( $buyers ) !== 2 || ! is_int( $buyers[0] ) || ! is_int( $buyers[1] ) || $buyers[0] <= 0 || $buyers[1] <= 0 || $buyers[0] === $buyers[1] || ! $this->partner->is_active() ) { throw new RuntimeException( 'Two distinct disposable linked buyers are required.' ); }
-		foreach ( $buyers as $id ) {
-			$user = get_userdata( (int) $id );
-			if ( ! $user || ! in_array( POW\Installer::ROLE, $user->roles, true ) || (int) get_user_meta( (int) $id, '_pow_partner_id', true ) !== $this->partner->id || ! empty( get_user_meta( (int) $id, '_pow_deactivated', true ) ) ) { throw new RuntimeException( 'Native fixture buyer association missing.' ); }
-			$this->master_before[ $id ] = $this->master( (int) $id );
+		// The login is the connection's bound customer account, and the probe
+		// proves nothing if that account is not one an actual buyer could be
+		// signed in as: it has to exist, be able to read the shop and hold no
+		// capability the setup path refuses.
+		$this->account = $this->partner->owner_user_id;
+		$account = $this->account > 0 ? get_userdata( $this->account ) : false;
+		if ( ! $this->partner->is_active() || ! $account || ! user_can( $account, 'read' ) || POW\Partners\Registry::privileged( $account ) ) {
+			throw new RuntimeException( 'The fixture connection must be bound to one ordinary WooCommerce customer account.' );
 		}
-		$this->master_before[ $this->partner->owner_user_id ] = $this->master( $this->partner->owner_user_id );
+		$this->master_before[ $this->account ] = $this->master( $this->account );
+		// Two visits of that one account: separate session rows, separate login
+		// tokens, separate per-visit cart keys. Nothing here creates a user.
+		foreach ( [ 'first', 'second' ] as $index => $label ) {
+			$this->visits[] = pow_native_open_visit( $this->partner->id, $this->account, [ 'buyer_identity' => $label . '-' . bin2hex( random_bytes( 6 ) ) . '@example.invalid', 'buyer_name' => 'Employee ' . $label ] );
+		}
+		$keys = array_map( static fn( POW\Sessions\Session $visit ): string => (string) $visit->wc_session_key, $this->visits );
+		if ( 2 !== count( array_unique( $keys ) ) || array_filter( $keys, static fn( string $key ): bool => ! POW\Cart\SessionKey::is_visit_key( $key ) ) ) {
+			throw new RuntimeException( 'Each fixture visit must carry its own wc_session_key.' );
+		}
 		foreach ( [ 'default_rate_id', 'expensive_rate_id', 'pickup_rate_id', 'free_rate_id' ] as $key ) { if ( ! is_string( $fixture[$key] ?? null ) || '' === $fixture[$key] ) { throw new RuntimeException( 'Native fixture rate IDs missing.' ); } }
 		foreach ( [ 'physical_product_id' => true, 'virtual_product_id' => false ] as $key => $physical ) { $product = wc_get_product( (int) ( $fixture[$key] ?? 0 ) ); if ( ! $product || $physical !== $product->needs_shipping() ) { throw new RuntimeException( 'Native fixture product type mismatch.' ); } }
 		$address = POW\Addresses\Shape::normalise( (array) ( $fixture['address'] ?? [] ) );
@@ -54,7 +71,7 @@ final class DeliveryEstimateNative {
 		$id = $this->fixture['quote_session_ids'][$case] ?? null;
 		if ( ! is_int( $id ) || $id <= 0 ) { throw new RuntimeException( 'Native Quote fixture session ID missing.' ); }
 		$session = POW\Plugin::instance()->sessions()?->find( $id );
-		if ( ! $session || POW\Sessions\Session::RETURNED !== $session->status || $session->partner_id !== $this->partner->id || $session->user_id !== $this->fixture['buyer_ids'][0] || $session->order_id !== 0 ) { throw new RuntimeException( 'Native Quote fixture must be a dedicated returned, unlinked row for the first buyer and partner.' ); }
+		if ( ! $session || POW\Sessions\Session::RETURNED !== $session->status || $session->partner_id !== $this->partner->id || $session->user_id !== $this->account || $session->order_id !== 0 ) { throw new RuntimeException( 'Native Quote fixture must be a dedicated returned, unlinked row for the bound account and this connection.' ); }
 		return $session;
 	}
 	private function quote_order( string $case, array $delivery ): void {
@@ -109,7 +126,6 @@ final class DeliveryEstimateNative {
 	private function refused( callable $operation, string $label ): void { try { $operation(); } catch ( DomainException $error ) { $this->check( strlen( $error->getMessage() ) < 256, $label ); return; } throw new RuntimeException( 'FAIL ' . $label ); }
 	private function master( int $id ): array { $customer = new WC_Customer( $id ); if ( $customer->get_id() !== $id ) { throw new RuntimeException( 'Native fixture customer missing.' ); } return [ 'shipping' => $customer->get_shipping( 'edit' ), 'billing' => $customer->get_billing( 'edit' ) ]; }
 	private function destination(): array { return [ 'address' => $this->fixture['address'], 'code' => '', 'source' => 'customer' ]; }
-	private function session( int $buyer ): POW\Sessions\Session { return POW\Sessions\Session::from_row( [ 'id' => 1, 'partner_id' => $this->partner->id, 'user_id' => $buyer, 'status' => POW\Sessions\Session::ACTIVE ] ); }
 	private function partner( array $overrides = [] ): POW\Partners\Partner { return POW\Partners\Partner::from_row( array_replace( get_object_vars( $this->partner ), [ 'emit_delivery_line' => true ], $overrides ) ); }
 	private function filter( string $hook, callable $callback, int $args = 1 ): void { add_filter( $hook, $callback, 999, $args ); $this->filters[] = [ $hook, $callback ]; }
 	private function remove_filters(): void { foreach ( $this->filters as [ $hook, $callback ] ) { remove_filter( $hook, $callback, 999 ); } $this->filters = []; }
@@ -129,28 +145,38 @@ final class DeliveryEstimateNative {
 		}
 		return $detached;
 	}
-	private function buyer( int $id ): void {
+	/**
+	 * Put the request inside one visit, holding that visit's own basket.
+	 *
+	 * The plugin's handler is the only one that may serve a visit: core's
+	 * init_session() deletes a `pow_` row and migrates what survives onto
+	 * `session_key = '<user id>'`, which is precisely the collision two
+	 * employees of one bound account would suffer. The customer is rebuilt so
+	 * WooCommerce's session data store overlays this visit's snapshot rather
+	 * than the previous visit's.
+	 */
+	private function visit( POW\Sessions\Session $visit ): void {
 		$this->detach_native_hooks();
-		wp_set_current_user( $id );
-		$handler = new WC_Session_Handler(); $handler->init();
-		// Guard before touching an existing cart: Main must supply dedicated empty fixture buyers.
-		if ( ! empty( $handler->get( 'cart', [] ) ) ) { throw new RuntimeException( 'Native fixture buyer has an existing cart.' ); }
+		$handler = pow_native_visit_handler( $visit );
+		// Guard before touching an existing cart: each visit is opened by this probe and starts empty.
+		if ( ! empty( $handler->get( 'cart', [] ) ) ) { throw new RuntimeException( 'Native fixture visit already holds a cart.' ); }
 		WC()->session = $handler;
-		WC()->customer = new WC_Customer( $id, true );
+		WC()->customer = new WC_Customer( $visit->user_id, true );
 		WC()->cart = new WC_Cart();
 		WC()->cart->cart_context = 'shortcode';
 		WC()->shipping()->reset_shipping();
 	}
 	private function add_product( string $key ): void { if ( ! WC()->cart->add_to_cart( (int) $this->fixture[ $key ], 1 ) ) { throw new RuntimeException( 'Native fixture product cannot be added.' ); } }
-	private function confirmed( int $buyer, array $delivery ): POW\Sessions\Session {
+	/** The consent record names the visit, not a person: buyer_user_id is the shared bound account for every visit. */
+	private function confirmed( POW\Sessions\Session $visit, array $delivery ): POW\Sessions\Session {
 		$choice = [ 'schema' => 1, 'partner_id' => $this->partner->id, 'storage_user_id' => $this->partner->owner_user_id, 'provider' => 'customer', 'key' => 'candidate', 'label' => 'Fixture destination', 'book_revision' => null, 'entry_fingerprint' => null ] + $this->destination();
-		$confirmation = [ 'schema' => 1, 'session_id' => 1, 'buyer_user_id' => $buyer, 'choice_hash' => POW\Addresses\DeliveryData::fingerprint( $choice ), 'cart_fingerprint' => str_repeat( 'a', 64 ), 'policy_fingerprint' => str_repeat( 'b', 64 ), 'delivery' => $delivery, 'notes' => '', 'confirmed_at' => time() ];
-		return POW\Sessions\Session::from_row( [ 'id' => 1, 'partner_id' => $this->partner->id, 'user_id' => $buyer, 'status' => POW\Sessions\Session::ACTIVE, 'delivery_choice' => wp_json_encode( $choice ), 'delivery_confirmation' => wp_json_encode( $confirmation ) ] );
+		$confirmation = [ 'schema' => 1, 'session_id' => $visit->id, 'buyer_user_id' => $visit->user_id, 'choice_hash' => POW\Addresses\DeliveryData::fingerprint( $choice ), 'cart_fingerprint' => str_repeat( 'a', 64 ), 'policy_fingerprint' => str_repeat( 'b', 64 ), 'delivery' => $delivery, 'notes' => '', 'confirmed_at' => time() ];
+		return new POW\Sessions\Session( ...array_replace( get_object_vars( $visit ), [ 'delivery_choice_json' => wp_json_encode( $choice ), 'delivery_confirmation_json' => wp_json_encode( $confirmation ) ] ) );
 	}
-	private function quote( int $buyer, ?POW\Partners\Partner $partner = null ): array { return $this->producer->quote( $this->session( $buyer ), $partner ?? $this->partner(), $this->destination() ); }
+	private function quote( POW\Sessions\Session $visit, ?POW\Partners\Partner $partner = null ): array { return $this->producer->quote( $visit, $partner ?? $this->partner(), $this->destination() ); }
 	private function run_cases(): void {
-		[ $first, $second ] = $this->fixture['buyer_ids'];
-		$this->buyer( $first ); $this->add_product( 'physical_product_id' );
+		[ $first, $second ] = $this->visits;
+		$this->visit( $first ); $this->add_product( 'physical_product_id' );
 		$result = $this->quote( $first );
 		$this->check( count( $result['packages'] ) === 1, 'fixture starts with one real native package' );
 		$package = $result['packages'][0]; $key = $package['package_key']; $offered = array_column( $package['rates'], null, 'rate_id' );
@@ -190,11 +216,21 @@ final class DeliveryEstimateNative {
 		$this->check( 'disabled' === $disabled['delivery']['status'] && null !== $disabled['delivery']['amount_cents'] && false === $disabled['delivery']['emit'], 'emission off retains native estimate' );
 		$this->quote_order( 'disabled', $disabled['delivery'] );
 		$first_address = WC()->customer->get_shipping( 'edit' ); $first_session = WC()->session;
-		$this->buyer( $second ); $this->add_product( 'virtual_product_id' );
-		$virtual = $this->producer->quote( $this->session( $second ), $this->partner(), null );
+		$first_key = POW\Cart\SessionKey::for_session( $first );
+		$this->visit( $second ); $this->add_product( 'virtual_product_id' );
+		$virtual = $this->producer->quote( $second, $this->partner(), null );
 		$this->check( 'not_required' === $virtual['delivery']['status'] && [] === $virtual['delivery']['rates'], 'native virtual-only cart needs no destination or freight' );
-		$this->check( (string) $first !== (string) WC()->session->get_customer_id() && $first_address['city'] === $first_session->get( 'customer' )['shipping_city'], 'two native buyer sessions remain isolated' );
-		foreach ( $this->master_before as $id => $before ) { $this->check( $before === $this->master( (int) $id ), 'owner or buyer master address unchanged ' . $id ); }
+		// The two visits are the same WordPress user, so only the per-visit cart
+		// key can tell their baskets apart — and the first visit's confirmed
+		// destination must still be in its own row, not in this one.
+		$this->check(
+			! hash_equals( $first_key, (string) WC()->session->get_customer_id() )
+			&& $first_address['city'] === $first_session->get( 'customer' )['shipping_city']
+			&& $first_address['city'] === ( pow_native_cart_value( $first_key, 'customer' )['shipping_city'] ?? null )
+			&& $first_address['city'] !== ( WC()->session->get( 'customer' )['shipping_city'] ?? null ),
+			'two visits of one bound account keep separate baskets and separate destinations'
+		);
+		foreach ( $this->master_before as $id => $before ) { $this->check( $before === $this->master( (int) $id ), 'bound account master address unchanged ' . $id ); }
 	}
 	public function run(): void {
 		$original = [ WC()->session, WC()->customer, WC()->cart ];
@@ -208,7 +244,7 @@ final class DeliveryEstimateNative {
 			$this->detach_native_hooks();
 			remove_filter( 'woocommerce_persistent_cart_enabled', $disable_persistent_cart, 999 );
 			[ WC()->session, WC()->customer, WC()->cart ] = $original;
-			wp_set_current_user( $this->actor );
+			pow_native_leave_visit( $this->actor );
 			foreach ( $this->original_native_hooks as [ $hook, $callback, $priority, $args ] ) { add_filter( $hook, $callback, $priority, $args ); }
 			$output = ob_get_clean();
 			if ( is_string( $output ) ) { echo $output; }
