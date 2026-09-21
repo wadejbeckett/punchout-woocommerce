@@ -28,14 +28,16 @@ $plugin->boot();
 $callback = $GLOBALS['pow_boot_hooks']['shortcode']['punchout_cart_exits'] ?? null;
 $ordinary = is_callable( $callback ) ? (string) $callback() : '';
 
+// A second signed-in account with no live visit: there are no orphaned
+// buyers under one bound login, so it is an ordinary shopper too.
 $GLOBALS['pow_test_current_user_id'] = 30;
-$GLOBALS['pow_test_users'][30] = (object) [ 'ID' => 30, 'roles' => [ POW\Installer::ROLE ], 'allcaps' => [ 'read' => true ] ];
-$orphan = is_callable( $callback ) ? (string) $callback() : '';
+$GLOBALS['pow_test_users'][30] = (object) [ 'ID' => 30, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ];
+$signed_in_no_visit = is_callable( $callback ) ? (string) $callback() : '';
 
 echo json_encode( [
 	'registered' => is_callable( $callback ),
 	'ordinary' => $ordinary,
-	'orphan' => $orphan,
+	'signed_in_no_visit' => $signed_in_no_visit,
 	'return_shortcode_registered' => isset( $GLOBALS['pow_boot_hooks']['shortcode']['punchout_return_button'] ),
 	'router_registered' => isset( $GLOBALS['pow_boot_hooks']['action']['parse_request'] ),
 ], JSON_THROW_ON_ERROR );
