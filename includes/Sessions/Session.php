@@ -13,7 +13,19 @@ namespace POW\Sessions;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * One punchout session: one row per PunchOutSetupRequest (scope §4.2).
+ * One punchout visit: one row per PunchOutSetupRequest (scope §4.2).
+ *
+ * Many rows share one `user_id` — a connection has a single bound customer
+ * account and every buyer of that customer punches in as it. The visit
+ * identity is therefore the row itself: `wc_session_key` names the visit's
+ * own WooCommerce basket, and `wp_session_token` names the visit's own
+ * WordPress login. Neither `user_id` nor the account's capabilities
+ * distinguish one visit from another, so no ownership question may be
+ * answered with them.
+ *
+ * Buyer identity (`buyer_identity`, `buyer_name`, `buyer_identity_hash`) is
+ * data the purchasing system supplied, not a user: it attributes the visit
+ * and may be entirely absent.
  *
  * State machine (scope §4.2/§5.4/§9.7):
  *
@@ -68,6 +80,14 @@ final class Session {
 		public readonly ?string $expires,
 		public readonly ?string $delivery_choice_json = null,
 		public readonly ?string $delivery_confirmation_json = null,
+		// Buyer attribution. Empty is legal: a purchasing system need send
+		// no name and no e-mail, and the visit still buys.
+		public readonly ?string $buyer_identity = null,
+		public readonly ?string $buyer_name = null,
+		public readonly ?string $buyer_identity_hash = null,
+		// This visit's WooCommerce basket. 32 characters, `pow_`-prefixed,
+		// UNIQUE across the table; minted once when the login is bound.
+		public readonly ?string $wc_session_key = null,
 	) {}
 
 	/**
@@ -99,6 +119,12 @@ final class Session {
 			expires: self::nullable( $row, 'expires' ),
 			delivery_choice_json: self::delivery_column( $row, 'delivery_choice' ),
 			delivery_confirmation_json: self::delivery_column( $row, 'delivery_confirmation' ),
+			// An absent column and an empty one both mean "no identity" and
+			// "no basket of its own yet": nothing downstream distinguishes them.
+			buyer_identity: self::nullable( $row, 'buyer_identity' ),
+			buyer_name: self::nullable( $row, 'buyer_name' ),
+			buyer_identity_hash: self::nullable( $row, 'buyer_identity_hash' ),
+			wc_session_key: self::nullable( $row, 'wc_session_key' ),
 		);
 	}
 
