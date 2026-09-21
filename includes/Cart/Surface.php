@@ -313,15 +313,29 @@ final class Surface {
 	}
 
 	/**
-	 * Hide Woo's proceed-to-checkout button for every visit: PunchOut is the
-	 * visit's only exit, and the classic cart renders the return control in
-	 * its place. Presentation only — RouteGuard owns the actual block.
+	 * Inside a visit the cart page and the mini-cart show no checkout button
+	 * at all: PunchOut is the visit's only exit and the return control takes
+	 * the button's place.
+	 *
+	 * Whatever the theme or another plugin hung on these two hooks is
+	 * presentation for a shopper who can check out. Naming Woo's own
+	 * callback and priority would only ever remove Woo's button, and the
+	 * plugin knows nothing about who else replaced it or at what priority,
+	 * so the hooks are cleared whole and only what a visit may show is put
+	 * back: the return control on the cart page, "View cart" in the
+	 * mini-cart. Presentation only — RouteGuard owns the actual block.
 	 */
 	public function maybe_unhook_checkout_button(): void {
 		if ( null === $this->plugin->current_session() ) {
 			return;
 		}
 
-		remove_action( 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 );
+		remove_all_actions( 'woocommerce_proceed_to_checkout' );
+		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
+
+		remove_all_actions( 'woocommerce_widget_shopping_cart_buttons' );
+		if ( function_exists( 'woocommerce_widget_shopping_cart_button_view_cart' ) ) {
+			add_action( 'woocommerce_widget_shopping_cart_buttons', 'woocommerce_widget_shopping_cart_button_view_cart', 10 );
+		}
 	}
 }

@@ -26,12 +26,14 @@ namespace POW\Cart {
 	function wp_create_nonce( string $action ): string { return 'fixture-' . $action; }
 	function wc_get_checkout_url(): string { return 'https://shop.example.test/checkout/'; }
 	function remove_action( string $hook, mixed $callback, int $priority = 10 ): void { $GLOBALS['pow_blocks_removed'][] = [ $hook, $callback, $priority ]; }
+	function remove_all_actions( string $hook, mixed $priority = false ): bool { $GLOBALS['pow_blocks_removed_all'][] = $hook; unset( $GLOBALS['pow_blocks_hooks']['action'][ $hook ] ); return true; }
 }
 
 namespace {
 	require_once dirname( __DIR__ ) . '/bootstrap.php';
 	if ( ! defined( 'POW_PLUGIN_URL' ) ) { define( 'POW_PLUGIN_URL', 'https://shop.example.test/wp-content/plugins/punchout-woocommerce/' ); }
 	if ( ! function_exists( 'sanitize_html_class' ) ) { function sanitize_html_class( string $class ): string { return preg_replace( '/[^A-Za-z0-9_-]/', '', $class ); } }
+	if ( ! function_exists( 'woocommerce_widget_shopping_cart_button_view_cart' ) ) { function woocommerce_widget_shopping_cart_button_view_cart(): void {} }
 
 	/**
 	 * Only the Registry database boundary is replaced; its real reader runs.
@@ -86,7 +88,7 @@ namespace {
 		private POW\Cart\Surface $surface;
 
 		protected function setUp(): void {
-			foreach ( [ 'wpdb', 'pow_test_current_user_id', 'pow_test_users', 'pow_test_options', 'pow_test_filters', 'pow_blocks_scripts', 'pow_blocks_removed', 'pow_blocks_hooks' ] as $key ) { $this->saved[$key] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[$key] ?? null ]; }
+			foreach ( [ 'wpdb', 'pow_test_current_user_id', 'pow_test_users', 'pow_test_options', 'pow_test_filters', 'pow_blocks_scripts', 'pow_blocks_removed', 'pow_blocks_removed_all', 'pow_blocks_hooks' ] as $key ) { $this->saved[$key] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[$key] ?? null ]; }
 			$GLOBALS['wpdb'] = $this->db = new CartBlocksDatabase();
 			// Every buyer of the connection is signed in as this one account.
 			$GLOBALS['pow_test_current_user_id'] = self::ACCOUNT;
@@ -94,6 +96,7 @@ namespace {
 			$GLOBALS['pow_test_options'] = [ POW\Settings::OPTION_KEY => [ 'return_button_label' => 'Send requisition' ] ];
 			$GLOBALS['pow_test_filters'] = [];
 			$GLOBALS['pow_blocks_removed'] = [];
+			$GLOBALS['pow_blocks_removed_all'] = [];
 			$GLOBALS['pow_blocks_hooks'] = [];
 			$GLOBALS['pow_blocks_scripts'] = (object) [
 				'registered' => [ 'wc-blocks-checkout' => (object) [ 'deps' => [] ], 'wc-cart-block-frontend' => (object) [ 'deps' => [ 'wc-blocks-checkout' ] ] ],
@@ -176,13 +179,19 @@ namespace {
 		public function test_classic_and_shortcode_keep_mains_confirmation_route(): void {
 			$html = $this->surface->shortcode();
 			self::assertStringContainsString( '/punchout/confirm', $html ); self::assertStringContainsString( 'fixture-pow_confirm_delivery', $html );
+			// A theme or another plugin may have replaced Woo's own button on the same hook at any priority: inside a visit every callback goes, and only the return control comes back.
+			$GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'][] = static function (): void { echo '<a class="checkout-button">Proceed to checkout</a>'; };
+			$GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'][] = static function (): void { echo '<a class="checkout">Checkout</a>'; };
 			$this->surface->maybe_unhook_checkout_button();
-			self::assertSame( [ [ 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 ] ], $GLOBALS['pow_blocks_removed'] );
+			self::assertSame( [ 'woocommerce_proceed_to_checkout', 'woocommerce_widget_shopping_cart_buttons' ], $GLOBALS['pow_blocks_removed_all'] );
+			self::assertSame( [ [ $this->surface, 'render_cart_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'], 'The cart page keeps exactly one exit: the return control' );
+			self::assertSame( [ 'woocommerce_widget_shopping_cart_button_view_cart' ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'], 'The mini-cart keeps View cart and loses every checkout button' );
 		}
 		public function test_an_ordinary_shopper_keeps_woos_own_proceed_button(): void {
 			$this->set_session( null );
 			$this->surface->maybe_unhook_checkout_button();
 			self::assertSame( [], $GLOBALS['pow_blocks_removed'] );
+			self::assertSame( [], $GLOBALS['pow_blocks_removed_all'] );
 		}
 		public function test_cart_exits_shortcode_is_registered_and_a_visit_has_no_checkout_link(): void {
 			self::assertSame( [ $this->surface, 'cart_exits_shortcode' ], $GLOBALS['pow_blocks_hooks']['shortcode']['punchout_cart_exits'] ?? null );
