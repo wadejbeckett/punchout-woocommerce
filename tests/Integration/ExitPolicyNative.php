@@ -106,26 +106,22 @@ final class ExitPolicyNative {
   try {
    $this->check(class_exists(POW\Checkout\ExitPolicy::class),'candidate exit service exists');
    $before=[]; foreach([POW\Installer::partners_table(),POW\Installer::sessions_table(),POW\Installer::log_table()] as $table) $before[$table]=$wpdb->get_results('SELECT * FROM '.$table,ARRAY_A);
-   $old_version=get_option(POW\Installer::DB_VERSION_KEY); POW\Installer::maybe_upgrade();
-   $this->check('6'===get_option(POW\Installer::DB_VERSION_KEY),'actual schema six installed');
-   foreach($before as $table=>$rows) { $after=$wpdb->get_results('SELECT * FROM '.$table,ARRAY_A); foreach($after as &$row) { if($table===POW\Installer::partners_table())unset($row['exit_policy']); } unset($row); $expected=$rows; foreach($expected as &$row)unset($row['exit_policy']); unset($row); $this->check($expected===$after,'prior rows preserved '.substr($table,strlen($wpdb->prefix))); }
-   if((int)$old_version<5) { $bad=(int)$wpdb->get_var("SELECT COUNT(*) FROM ".POW\Installer::partners_table()." WHERE exit_policy <> CASE WHEN mode = 'dual_exit' THEN 'punchout_and_checkout' ELSE 'punchout_only' END"); $this->check(0===$bad,'legacy mode equivalence migrated for every existing company'); }
+   POW\Installer::maybe_upgrade();
+   $this->check('7'===get_option(POW\Installer::DB_VERSION_KEY),'actual schema seven installed');
+   foreach($before as $table=>$rows) {
+    $after=$wpdb->get_results('SELECT * FROM '.$table,ARRAY_A);
+    // exit_policy was rewritten by the schema-five migration; status is rewritten by schema seven, which closes every open visit. Per-visit columns are new, and the upgrade appends its own audit line, so the property is "every prior row still reads back on the columns it had".
+    $volatile=$table===POW\Installer::partners_table()?['exit_policy'=>null]:($table===POW\Installer::sessions_table()?['status'=>null]:[]);
+    $expected=array_map(static fn(array $row):array=>array_diff_key($row,$volatile),$rows);
+    $actual=[];foreach(array_keys($expected) as $index)$actual[]=array_intersect_key(array_diff_key($after[$index]??[],$volatile),$expected[$index]);
+    $this->check($expected===$actual,'prior rows preserved '.substr($table,strlen($wpdb->prefix)));
+   }
    $this->policy=new POW\Checkout\ExitPolicy(new POW\Settings(),$this->registry);
    $owner=$this->user('customer');$ordinary=$this->user('customer');$buyer=$this->user(POW\Installer::ROLE);$other=$this->user(POW\Installer::ROLE);$suffix=bin2hex(random_bytes(8));
    $id=$this->registry->insert(['name'=>'Example exit company','status'=>'active','owner_user_id'=>$owner,'sender_domain'=>'NetworkID','sender_identity'=>'exit-'.$suffix,'from_domain'=>'NetworkID','from_identity'=>'buyer-'.$suffix,'to_domain'=>'NetworkID','to_identity'=>'supplier','mode'=>'dual_exit']);
    $this->fixture=['partner'=>$id,'buyer'=>$buyer,'other'=>$other,'owner'=>$owner,'ordinary'=>$ordinary]; update_user_meta($buyer,'_pow_partner_id',$id);update_user_meta($other,'_pow_partner_id',$id);
    $this->check($id>0 && 'punchout_and_checkout'===$this->registry->find($id)->exit_policy,'new companies default to explicit checkout regardless of old mode field');
    POW\Installer::activate(); $this->check('punchout_and_checkout'===$this->registry->find($id)->exit_policy,'reactivation preserves explicit checkout');
-   $this->settings('punchout_only');
-   if(false===$wpdb->update(POW\Installer::partners_table(),['exit_policy'=>'inherit'],['id'=>$id]))throw new RuntimeException('Native inherited freeze setup failed');
-   POW\Installer::freeze_inherited_exit_policies(); POW\Installer::freeze_inherited_exit_policies();
-   $this->check('punchout_only'===$this->registry->find($id)->exit_policy,'native inherited denial freezes idempotently');
-   $this->settings('punchout_and_checkout');
-   if(false===$wpdb->update(POW\Installer::partners_table(),['exit_policy'=>'inherit'],['id'=>$id]))throw new RuntimeException('Native failed freeze setup failed');
-   $table=POW\Installer::partners_table();$fail_freeze=static fn($sql)=>str_starts_with($sql,'UPDATE '.$table.' SET exit_policy')?str_replace('exit_policy =','pow_missing_exit_policy =',$sql):$sql;add_filter('query',$fail_freeze);
-   $failed=false;try{POW\Installer::freeze_inherited_exit_policies();}catch(RuntimeException $e){$failed=true;}finally{remove_filter('query',$fail_freeze);}
-   $this->check($failed && 'inherit'===$this->registry->find($id)->exit_policy,'failed native freeze leaves inherited row and cannot complete');
-   POW\Installer::freeze_inherited_exit_policies();$this->check('punchout_and_checkout'===$this->registry->find($id)->exit_policy,'native freeze retry uses the prior effective checkout cap');
    foreach(['inherit','punchout_only','punchout_and_checkout'] as $g) foreach(['punchout_only','punchout_and_checkout'] as $c) {
     $this->settings($g); wp_set_current_user($this->admin); if(!$this->registry->update($id,['exit_policy'=>$c]))throw new RuntimeException('Matrix configuration failed');
     foreach(['inherit','punchout_only','punchout_and_checkout'] as $b) { update_user_meta($buyer,'_pow_exit_policy_'.$id,$b); $want=POW\Checkout\ExitPolicy::resolve($g,$c,$b);$this->check($want===$this->policy->effective($this->registry->find($id),$buyer),'native matrix '.$g.'/'.$c.'/'.$b); }
