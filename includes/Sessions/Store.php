@@ -28,11 +28,12 @@ defined( 'ABSPATH' ) || exit;
  * `wc_session_key` names its basket. Every query that must act on one visit
  * is scoped by the row id or by one of those two, never by `user_id` alone.
  *
- * Six methods define "open" as pending|active|ordered (revocation_batch,
+ * Seven methods define "open" as pending|active|ordered (revocation_batch,
  * expire_locked's re-check, open_for_identity, open_for_partner, all_open,
- * expired_open). Nothing writes ORDERED once the paid exit is gone, but the
- * term stays in all six: rows written before that may still hold it, and an
- * ordered visit is open — the per-connection cap counts it.
+ * expired_open, expired_open_for_partner). Nothing writes ORDERED once the
+ * paid exit is gone, but the term stays in all seven: rows written before
+ * that may still hold it, and an ordered visit is open — the per-connection
+ * cap counts it.
  */
 class Store {
 
@@ -582,9 +583,11 @@ class Store {
 	 * its callers run it as an emptiness probe with a limit of 1, and
 	 * counting hydrated rows would silently stop at whatever limit was
 	 * passed. Expired-but-open rows are counted, so the caller sweeps them
-	 * (expired_open() then expire_locked()) before comparing against
-	 * MAX_OPEN_VISITS — otherwise a connection whose buyers never return
-	 * would fill its cap permanently.
+	 * (expired_open_for_partner() then expire_locked()) before comparing
+	 * against MAX_OPEN_VISITS — otherwise a connection whose buyers never
+	 * return would fill its cap permanently. The sweep is scoped to the same
+	 * connection as this count for that reason: a sweep over a global window
+	 * can miss the very rows this count blocks on.
 	 */
 	public function count_open_for_partner( int $partner_id ): int {
 		global $wpdb;
@@ -685,19 +688,41 @@ class Store {
 	}
 
 	/**
-	 * The session an order belongs to (payment_complete may arrive after
-	 * teardown — the audit trail still needs the linkage, scope §9.7).
+	 * One connection's sessions past their expiry — the cap's own sweep.
+	 *
+	 * expired_open() is not reused for this. Its window is global and finite,
+	 * so another connection's backlog can fill it and this connection's
+	 * expired rows are never reached, while count_open_for_partner() goes on
+	 * counting them: the connection stays refused although every row blocking
+	 * it is sweepable. Scoping the sweep in SQL makes the two queries look at
+	 * the same rows. Oldest first, so a window that does fill drains in a
+	 * defined order. The per-connection cap bounds the row set well below the
+	 * limit; it is a guard, not a page.
+	 *
+	 * @return list<Session>
 	 */
-	public function find_by_order( int $order_id ): ?Session {
+	public function expired_open_for_partner( int $partner_id, int $limit = 200 ): array {
 		global $wpdb;
 
+		if ( $partner_id <= 0 ) {
+			return [];
+		}
+
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
-		$row = $wpdb->get_row(
-			$wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE order_id = %d ORDER BY id DESC LIMIT 1', $order_id ),
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . $this->table() . ' WHERE partner_id = %d AND status IN (%s, %s, %s) AND expires < %s ORDER BY id ASC LIMIT %d',
+				$partner_id,
+				Session::PENDING,
+				Session::ACTIVE,
+				Session::ORDERED,
+				gmdate( 'Y-m-d H:i:s' ),
+				max( 1, min( 500, $limit ) )
+			),
 			ARRAY_A
 		);
 
 		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
-		return $row ? Session::from_row( $row ) : null;
+		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
 	}
 }
