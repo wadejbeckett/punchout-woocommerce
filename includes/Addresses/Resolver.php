@@ -3,29 +3,28 @@
 declare( strict_types = 1 );
 namespace POW\Addresses;
 
-use POW\Installer;
+use POW\Cart\SessionKey;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
+use POW\Sessions\Current;
 use POW\Sessions\Session;
 
 defined( 'ABSPATH' ) || exit;
 
 final class Resolver {
-	public function __construct( private Registry $registry, private CompanyBook $book ) {}
+	public function __construct( private Registry $registry, private CompanyBook $book, private Current $visits ) {}
 
-	public function current(): Provider { return new NativeProvider( $this->registry, $this->book ); }
+	public function current(): Provider { return new NativeProvider( $this->registry, $this->book, $this->visits ); }
 
 	/** Full server-owned choices for confirmation. This producer owns its one book-read mutex; callers never supply revision, fingerprint or owner authority. Exact native login/session checks remain Confirmation's responsibility on both sides of its callbacks. */
 	public function choices_for_session( Session $session, Partner $partner ): array|\WP_Error {
 		try {
-			if ( get_current_user_id() !== $session->user_id || Session::ACTIVE !== $session->status || $session->partner_id !== $partner->id ) { return self::error( 'address_unavailable' ); }
+			if ( ! $this->is_request_visit( $session ) || Session::ACTIVE !== $session->status || $session->partner_id !== $partner->id ) { return self::error( 'address_unavailable' ); }
 			$associated = $this->partner_for_user( $session->user_id );
-			$user = get_userdata( $session->user_id );
-			if ( ! $user || ! in_array( Installer::ROLE, (array) $user->roles, true ) || ! $associated || ! $associated->is_active() || $associated->id !== $partner->id || $associated->owner_user_id !== $partner->owner_user_id ) { return self::error( 'address_unavailable' ); }
+			if ( ! self::bound_login( $session, $partner ) || ! $associated || ! $associated->is_active() || $associated->id !== $partner->id || $associated->owner_user_id !== $partner->owner_user_id ) { return self::error( 'address_unavailable' ); }
 			return $this->registry->with_partner_lock( $partner->id, function () use ( $session, $partner ) {
 				$fresh = $this->partner_for_user( $session->user_id );
-				$user = get_userdata( $session->user_id );
-				if ( get_current_user_id() !== $session->user_id || ! $user || ! in_array( Installer::ROLE, (array) $user->roles, true ) || ! $fresh || ! $fresh->is_active() || $fresh->id !== $partner->id || $fresh->owner_user_id !== $partner->owner_user_id ) { return self::error( 'address_unavailable' ); }
+				if ( ! $this->is_request_visit( $session ) || ! self::bound_login( $session, $partner ) || ! $fresh || ! $fresh->is_active() || $fresh->id !== $partner->id || $fresh->owner_user_id !== $partner->owner_user_id ) { return self::error( 'address_unavailable' ); }
 				$book = $this->book->read_for_partner_locked( $fresh );
 				if ( $book instanceof \WP_Error ) { return self::error( 'address_state_unavailable' ); }
 				$choices = [];
@@ -38,29 +37,46 @@ final class Resolver {
 		} catch ( \Throwable $error ) { return self::error( 'address_state_unavailable' ); }
 	}
 
+	/**
+	 * Whether this row is the visit the current request is inside.
+	 *
+	 * "The signed-in user is the session's user" proves nothing once the
+	 * connection's single customer account is the login for every buyer: it
+	 * is true of every open visit of that account at once. The proof is the
+	 * row. Sessions\Current finds this request's visit by the WP session
+	 * token minted for it, and the per-visit cart key — UNIQUE on the row —
+	 * must then match byte for byte, so one employee cannot present another
+	 * employee's selection as their own.
+	 *
+	 * A store that cannot answer is not an answer: Current throws, the
+	 * callers' bounded catch turns it into a refusal.
+	 */
+	public function is_request_visit( Session $session ): bool {
+		$visit = $this->visits->visit();
+		if ( null === $visit || $visit->id !== $session->id ) { return false; }
+		$key = (string) $visit->wc_session_key;
+		return SessionKey::is_visit_key( $key ) && hash_equals( $key, (string) $session->wc_session_key );
+	}
+
 	/** Resolution alone grants neither book editing nor an active shopping session. */
 	public function storage_user_id( int $user_id ): int {
 		try { return $this->partner_for_user( $user_id )?->owner_user_id ?? 0; }
 		catch ( \Throwable $error ) { return 0; }
 	}
 
-	/** Shared server-side association for provider reads and snapshot guards; SQL failure is not an empty book. */
+	/**
+	 * Shared server-side association for provider reads and snapshot guards; SQL failure is not an empty book.
+	 *
+	 * One connection, one customer account: the account a connection belongs
+	 * to is the account it is owned by, and nothing else. There is no second
+	 * class of linked user to resolve through stored metadata.
+	 */
 	public function partner_for_user( int $user_id ): ?Partner {
-		$state = $this->user_state( $user_id );
-		if ( null === $state ) { return null; }
-		[ $user, $mapping ] = $state;
-		$buyer = in_array( Installer::ROLE, (array) $user->roles, true );
-		if ( $buyer ) {
-			if ( null === $mapping ) { return null; }
-			$partner = $this->registry->find( $mapping );
-		} else {
-			// A linked account whose role is missing must not become an ordinary owner by fallback.
-			if ( null !== $mapping ) { return null; }
-			$partner = $this->registry->find_by_owner( $user_id );
-		}
-		if ( ! $partner || $partner->owner_user_id <= 0 ) { return null; }
-		$owner = $this->user_state( $partner->owner_user_id );
-		if ( null === $owner || null !== $owner[1] || in_array( Installer::ROLE, (array) $owner[0]->roles, true ) ) { return null; }
+		if ( null === $this->user_state( $user_id ) ) { return null; }
+		$partner = $this->registry->find_by_owner( $user_id );
+		if ( ! $partner || $partner->owner_user_id <= 0 || $partner->owner_user_id !== $user_id ) { return null; }
+		// Re-read the owner past the caches the registry lookup may have warmed: the account must still exist and still be able to read the shop.
+		if ( null === $this->user_state( $partner->owner_user_id ) ) { return null; }
 		return $partner;
 	}
 
@@ -70,7 +86,8 @@ final class Resolver {
 			$choice = $session->delivery_choice();
 			if ( null === $choice ) { return null; }
 			$partner = $this->partner_for_user( $session->user_id );
-			if ( ! $partner || $partner->id !== $session->partner_id || $partner->owner_user_id !== $choice['storage_user_id'] ) { throw new \DomainException(); }
+			// storage_user_id is the connection account, which every visit of that connection shares, so it cannot tell two visits apart on its own.
+			if ( ! $this->is_request_visit( $session ) || ! $partner || $partner->id !== $session->partner_id || $partner->owner_user_id !== $choice['storage_user_id'] ) { throw new \DomainException(); }
 			return $choice;
 		} catch ( \Throwable $error ) { throw new \DomainException( 'The selected delivery address must be selected again.' ); }
 	}
@@ -82,7 +99,7 @@ final class Resolver {
 		try {
 			$fresh = $this->registry->find( $partner->id );
 			$associated = $this->partner_for_user( $session->user_id );
-			if ( ! $fresh || ! $fresh->is_active() || ! $associated || $session->partner_id !== $fresh->id || $associated->id !== $fresh->id || $partner->owner_user_id !== $fresh->owner_user_id || $associated->owner_user_id !== $fresh->owner_user_id ) { return self::error( 'address_unavailable' ); }
+			if ( ! $this->is_request_visit( $session ) || ! $fresh || ! $fresh->is_active() || ! $associated || $session->partner_id !== $fresh->id || $associated->id !== $fresh->id || $partner->owner_user_id !== $fresh->owner_user_id || $associated->owner_user_id !== $fresh->owner_user_id ) { return self::error( 'address_unavailable' ); }
 			$choice = DeliveryData::choice( json_encode( $choice, JSON_THROW_ON_ERROR ), $fresh->id );
 			if ( $choice['storage_user_id'] !== $fresh->owner_user_id ) { return self::error( 'address_unavailable' ); }
 			// Stored book decoding/fingerprints are policy-independent. Only this chosen destination is tested against today's Woo rules; history is never rewritten.
@@ -103,8 +120,13 @@ final class Resolver {
 		} catch ( \Throwable $error ) { return self::error( 'address_state_unavailable' ); }
 	}
 
-	/** Fresh native role and exact zero/one association, bypassing request-local user caches. */
-	private function user_state( int $user_id ): ?array {
+	/** The visit's row must name the connection's own bound login; a connection with none has nobody to resolve a book for. */
+	private static function bound_login( Session $session, Partner $partner ): bool {
+		return $partner->owner_user_id > 0 && $session->user_id === $partner->owner_user_id && $partner->is_active();
+	}
+
+	/** Fresh native account read, bypassing request-local user caches. */
+	private function user_state( int $user_id ): ?object {
 		global $wpdb;
 		if ( $user_id <= 0 ) { return null; }
 		$wpdb->last_error = '';
@@ -112,20 +134,11 @@ final class Resolver {
 		wp_cache_delete( $user_id, 'user_meta' );
 		$user = get_userdata( $user_id );
 		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Address association unavailable.' ); }
-		if ( ! $user || ! user_can( $user, 'read' ) ) { return null; }
-		$values = get_user_meta( $user_id, '_pow_partner_id', false );
+		if ( ! $user ) { return null; }
+		$allowed = user_can( $user, 'read' );
+		// Loading capabilities is itself a metadata read; a failed read is not a missing grant.
 		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Address association unavailable.' ); }
-		if ( in_array( Installer::ROLE, (array) $user->roles, true ) ) {
-			$deactivated = get_user_meta( $user_id, '_pow_deactivated', true );
-			if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Address association unavailable.' ); }
-			if ( ! empty( $deactivated ) ) { return null; }
-		}
-		if ( ! is_array( $values ) || count( $values ) > 1 ) { return null; }
-		$mapping = $values[0] ?? '';
-		if ( '' === $mapping ) { return [ $user, null ]; }
-		if ( is_int( $mapping ) && $mapping > 0 ) { return [ $user, $mapping ]; }
-		if ( is_string( $mapping ) && 1 === preg_match( '/\A[1-9][0-9]*\z/', $mapping ) && (string) (int) $mapping === $mapping ) { return [ $user, (int) $mapping ]; }
-		return null;
+		return $allowed ? $user : null;
 	}
 
 	private static function error( string $code ): \WP_Error {

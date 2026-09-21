@@ -11,8 +11,8 @@ declare( strict_types = 1 );
 namespace POW\Addresses;
 
 use POW\Audit\Log;
-use POW\Installer;
 use POW\Partners\{Partner, Registry};
+use POW\Sessions\Current;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -23,7 +23,7 @@ final class CompanyBook {
 	/** Reject synchronous metadata-hook reentry across instances; Registry itself is reentrant. */
 	private static array $mutating = [];
 
-	public function __construct( private Registry $registry, private Log $log ) {}
+	public function __construct( private Registry $registry, private Log $log, private Current $visits ) {}
 
 	/** Management view includes disabled entries. $actor must be the actual logged-in editor. */
 	public function read( int $partner_id, int $actor ): array|\WP_Error {
@@ -36,7 +36,7 @@ final class CompanyBook {
 	}
 
 	/**
-	 * Read-only consumer boundary for Resolver's active-choice check. Caller owns the partner mutex and buyer/session authorization; do not acquire it again here. Reread the association and raw metadata even when its revision appears unchanged. This does not grant management access to a buyer.
+	 * Read-only consumer boundary for Resolver's active-choice check. Caller owns the partner mutex and visit/session authorization; do not acquire it again here. Reread the association and raw metadata even when its revision appears unchanged. This is the selection read and works inside a visit; it grants no management access, which editor() alone decides.
 	 */
 	public function read_for_partner_locked( Partner $partner ): array|\WP_Error {
 		try {
@@ -141,16 +141,28 @@ final class CompanyBook {
 		finally { unset( self::$mutating[$partner_id] ); }
 	}
 
+	/**
+	 * The one book-editor gate: a shop-wide grant or the connection's own account, acting for itself, outside any visit.
+	 *
+	 * A visit is signed in as the account the book belongs to, so ownership
+	 * cannot separate "the customer managing their addresses" from "an
+	 * employee shopping through the punchout catalogue". The live visit can:
+	 * inside one, the master book is read-only, which is what keeps a buyer
+	 * from editing the company's addresses from a catalogue session.
+	 * read_for_partner_locked() is deliberately not gated this way — that is
+	 * the selection read, and selecting a delivery address is the whole point
+	 * of the visit.
+	 */
 	private function editor( int $partner_id, int $actor ): Partner|\WP_Error {
 		$partner = $this->registry->find( $partner_id );
-		$user = $actor > 0 && $actor === get_current_user_id() ? $this->ordinary_user( $actor ) : false;
+		$user = $actor > 0 && $actor === get_current_user_id() && null === $this->visits->visit() ? $this->ordinary_user( $actor ) : false;
 		if ( ! $partner || ! $user || ! $this->ordinary_user( $partner->owner_user_id ) || ! ( user_can( $user, 'manage_woocommerce' ) || $partner->is_owned_by( $actor ) ) ) {
 			return new \WP_Error( 'address_forbidden', __( 'You cannot manage this company delivery book.', 'punchout-woocommerce' ) );
 		}
 		return $partner;
 	}
 
-	/** Refresh actor and owner after acquiring the mutex; a stale capability or hidden second mapping cannot grant access. */
+	/** Refresh actor and owner after acquiring the mutex; a stale capability cannot grant access. A read failure is not a missing grant. */
 	private function ordinary_user( int $id ): object|false {
 		global $wpdb;
 		if ( $id <= 0 ) { return false; }
@@ -159,11 +171,11 @@ final class CompanyBook {
 		wp_cache_delete( $id, 'user_meta' );
 		$user = get_userdata( $id );
 		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Delivery actor unavailable.' ); }
-		if ( ! $user || ! user_can( $user, 'read' ) || in_array( Installer::ROLE, (array) $user->roles, true ) ) { return false; }
-		$mapping = get_user_meta( $id, '_pow_partner_id', false );
-		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Delivery owner association unavailable.' ); }
-		if ( ! is_array( $mapping ) || ( [] !== $mapping && [ '' ] !== $mapping ) ) { return false; }
-		return $user;
+		if ( ! $user ) { return false; }
+		$allowed = user_can( $user, 'read' );
+		// Loading the account's capabilities is itself a metadata read.
+		if ( '' !== $wpdb->last_error ) { throw new \RuntimeException( 'Delivery actor capabilities unavailable.' ); }
+		return $allowed ? $user : false;
 	}
 
 	/** Native raw read bypasses metadata cache and short-circuit filters; zero rows is distinct from failure or corruption. */

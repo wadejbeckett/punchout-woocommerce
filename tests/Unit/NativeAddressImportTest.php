@@ -51,12 +51,14 @@ final class Customer {
 namespace {
 use PHPUnit\Framework\TestCase;
 use POW\Tests\NativeImport\{NativeImport, Customer};
-use POW\Tests\CompanyBook\{CompanyBook, Database, Audit, Countries};
+use POW\Tests\CompanyBook\{CompanyBook, Current, Database, Audit, Countries};
 use POW\Partners\{Registry, Secrets};
+use POW\Sessions\Session;
 
 final class NativeAddressImportTest extends TestCase {
 	private Database $db;
 	private CompanyBook $book;
+	private Current $visits;
 	private NativeImport $import;
 	private array $saved = [];
 	protected function setUp(): void {
@@ -67,20 +69,23 @@ final class NativeAddressImportTest extends TestCase {
 			20 => (object) [ 'ID' => 20, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			21 => (object) [ 'ID' => 21, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			30 => (object) [ 'ID' => 30, 'roles' => [ 'shop_manager' ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
-			40 => (object) [ 'ID' => 40, 'roles' => [ \POW\Installer::ROLE ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
+			// A privileged account that can no longer read the shop: still neither an editor nor a connection's login.
+			40 => (object) [ 'ID' => 40, 'roles' => [ 'shop_manager' ], 'allcaps' => [ 'read' => false, 'manage_woocommerce' => true ] ],
 		];
 		$GLOBALS['pow_test_user_meta'] = []; $GLOBALS['pow_test_current_user_id'] = 20;
 		Countries::$unavailable = false;
 		Customer::$data = [ 20 => [ 'shipping' => $this->address(), 'billing' => array_replace( $this->address(), [ 'address_1' => '45 Billing Street', 'email' => 'private@example.test' ] ) ], 21 => [ 'shipping' => array_replace( $this->address(), [ 'city' => 'Other company' ] ) ] ];
 		Customer::$loaded = []; Customer::$fail = false; Customer::$missing = false; Customer::$on_read = null;
-		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) );
-		$this->book = new CompanyBook( $registry, new Audit() );
+		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->visits = new Current();
+		$this->book = new CompanyBook( $registry, new Audit(), $this->visits );
 		$this->import = new NativeImport( $registry, $this->book );
 	}
 	protected function tearDown(): void {
 		foreach ( $this->saved as $key => $value ) { if ( null === $value ) { unset( $GLOBALS[$key] ); } else { $GLOBALS[$key] = $value; } }
 		Countries::$unavailable = false; Customer::$data = []; Customer::$loaded = []; Customer::$on_read = null;
 	}
+	/** A live visit of the connection's own bound account, which is the only account it ever signs in as. */
+	private function visit(): Session { return Session::from_row( [ 'id' => 81, 'partner_id' => 12, 'user_id' => 20, 'status' => Session::ACTIVE, 'wc_session_key' => 'pow_1a2b3c4d5e6f708192a3b4c5d6e7' ] ); }
 	private function address(): array { return [ 'first_name' => 'Zoë', 'last_name' => "O'Neil", 'company' => 'Example Company', 'address_1' => '12 Main Street', 'address_2' => '', 'city' => 'Oakland', 'state' => 'CA', 'postcode' => '94612', 'country' => 'US', 'phone' => '+1 555 123 4567' ]; }
 	private function ok( mixed $result ): array { self::assertTrue( is_array( $result ), $result instanceof WP_Error ? $result->get_error_message() : 'Expected result array' ); return $result; }
 	private function error( mixed $result, ?string $code = null ): void {
@@ -157,16 +162,18 @@ final class NativeAddressImportTest extends TestCase {
 		$preview = $this->ok( $this->import->preview( 12, 30, 'shipping' ) ); self::assertSame( $this->address(), $preview['address'] );
 		$this->ok( $this->import->copy( 12, 30, 0, 'billing', [] ) ); self::assertSame( [ 20, 20 ], Customer::$loaded );
 	}
-	public function test_meta_provisioned_buyer_and_cross_company_owner_refuse_before_customer_read(): void {
-		$GLOBALS['pow_test_user_meta'][20]['_pow_partner_id'] = 12;
+	public function test_a_live_visit_and_a_cross_company_owner_refuse_before_the_customer_read(): void {
+		// The visit is signed in as user 20, the very account whose profile address this would copy.
+		$this->visits->live = $this->visit();
 		$this->error( $this->import->preview( 12, 20, 'shipping' ), 'address_forbidden' );
-		$GLOBALS['pow_test_user_meta'] = []; $this->db->row['owner_user_id'] = 21;
+		$this->error( $this->import->copy( 12, 20, 0, 'shipping', [] ), 'address_forbidden' );
+		$this->visits->live = null; $this->db->row['owner_user_id'] = 21;
 		$this->error( $this->import->preview( 12, 20, 'shipping' ), 'address_forbidden' );
 		$this->error( $this->import->copy( 12, 20, 0, 'billing', [] ), 'address_forbidden' );
 		$this->error( $this->import->copy( 99, 20, 0, 'shipping', [] ), 'address_forbidden' );
 		self::assertSame( [], Customer::$loaded ); self::assertSame( [], $this->db->writes );
 	}
-	public function test_missing_or_provisioned_owner_refuses_for_admin_too(): void {
+	public function test_missing_or_unreadable_owner_refuses_for_admin_too(): void {
 		$GLOBALS['pow_test_current_user_id'] = 30;
 		foreach ( [ 0, 999, 40 ] as $owner ) {
 			$this->db->row['owner_user_id'] = $owner;
