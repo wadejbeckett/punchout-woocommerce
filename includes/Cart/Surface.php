@@ -77,6 +77,7 @@ final class Surface {
 		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
 		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
+		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_visit_styles' ] );
 	}
 
 	/**
@@ -337,5 +338,35 @@ final class Surface {
 		if ( function_exists( 'woocommerce_widget_shopping_cart_button_view_cart' ) ) {
 			add_action( 'woocommerce_widget_shopping_cart_buttons', 'woocommerce_widget_shopping_cart_button_view_cart', 10 );
 		}
+	}
+
+	/**
+	 * Hide every link to the checkout page inside a visit, wherever it came
+	 * from: a page-builder button in the site's own cart layout, a theme
+	 * mini-cart, a widget. None of those pass through a hook this plugin
+	 * can clear, and the plugin is not allowed to know which theme or
+	 * builder drew them, so the one thing they all share — the checkout
+	 * URL — is what the stylesheet keys on. Presentation only; RouteGuard
+	 * still refuses the page itself.
+	 */
+	public function enqueue_visit_styles(): void {
+		$session = $this->plugin->current_session();
+		if ( null === $session || ! $this->visit_is_live( $session ) ) {
+			return;
+		}
+
+		$checkout = rtrim( (string) wc_get_checkout_url(), '/' );
+		$checkout = str_replace( [ '\\', '"' ], [ '\\\\', '\\"' ], $checkout );
+		$selectors = [
+			'a[href^="' . $checkout . '"]',
+			'.checkout-button',
+			'.wc-proceed-to-checkout',
+			'.widget_shopping_cart .buttons .checkout',
+			'.wc-block-mini-cart__footer-checkout',
+		];
+
+		wp_register_style( 'pow-visit', false, [], defined( 'POW\\VERSION' ) ? \POW\VERSION : false );
+		wp_enqueue_style( 'pow-visit' );
+		wp_add_inline_style( 'pow-visit', implode( ',', $selectors ) . '{display:none !important;}' );
 	}
 }
