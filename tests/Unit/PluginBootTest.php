@@ -12,7 +12,10 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 		self::assertTrue( $result['registered'] );
 		self::assertSame( 1, substr_count( $result['ordinary'], 'href="https://shop.example.test/checkout/"' ) );
 		self::assertStringNotContainsString( 'pow-return-form', $result['ordinary'] );
-		self::assertSame( '', $result['orphan'] );
+		// Behaviour change (single-login mode): a signed-in account with no
+		// live visit is an ordinary shopper and keeps the native checkout link.
+		self::assertSame( 1, substr_count( $result['signed_in_no_visit'], 'href="https://shop.example.test/checkout/"' ) );
+		self::assertStringNotContainsString( 'pow-return-form', $result['signed_in_no_visit'] );
 		self::assertFalse( $result['return_shortcode_registered'] );
 		self::assertFalse( $result['router_registered'] );
 	}

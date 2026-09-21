@@ -1,6 +1,6 @@
 <?php
 /**
- * The additive cart-exit surface.
+ * The cart-exit surface.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -12,37 +12,43 @@ namespace POW\Cart;
 
 use POW\Support\Transport;
 
-use POW\Checkout\ExitPolicy;
 use POW\Partners\Registry;
 use POW\Plugin;
-use POW\RouteGuard;
 use POW\Sessions\Session;
 use POW\Support\Templates;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Renders the "send to your purchasing system" button — an ADDITIVE
- * element beside WooCommerce's own checkout button, shown only to active
- * punchout sessions. The stock checkout flow is never overridden,
- * replaced or filtered for dual_exit partners.
+ * Renders the "send to your purchasing system" button — the one exit a
+ * punchout visit has. Checkout is blocked inside every visit (RouteGuard
+ * owns the block and the confirmation endpoint owns the return), so inside
+ * a visit this surface shows the return control and nothing else.
  *
- * For requisition_only partners the checkout button is unhooked for that
- * partner's punchout sessions only (their sanctioned single exit); the
- * hard block behind it lives in RouteGuard.
+ * Outside a visit nothing here applies. Ordinary shoppers — including the
+ * connection's own bound account on a password login — keep WooCommerce's
+ * cart exactly as WooCommerce renders it.
+ *
+ * The two cart templates need opposite treatment:
+ *
+ * - Classic cart: Woo's proceed-to-checkout button is unhooked for the
+ *   visit and the return control renders in its place.
+ * - Block cart: the native wrapper is left untouched, because Cart's React
+ *   render recreates its button whatever PHP does to the markup. Woo's
+ *   public label/link filters (assets/js/cart-blocks.js, configured by
+ *   enqueue_cart_blocks_filters()) turn that one native button into the
+ *   return control instead.
  *
  * Two controls, one endpoint: the cart return (mode=cart) and the
  * mid-session abandon (mode=empty, the cXML cancel semantic — "return
  * without a cart"). Both are presentation only; ReturnEndpoint owns
  * every authorisation check.
  *
- * Five placement paths for the return button, most flexible first:
- * - [punchout_cart_exits] complete policy-aware cart control;
+ * Four placement paths for the return button, most flexible first:
+ * - [punchout_cart_exits] complete cart control;
  * - [punchout_return_button] shortcode (builders, widgets);
  * - pow_return_button() PHP helper (theme code);
- * - automatic injection on the classic cart page (woocommerce_proceed_to_checkout);
- * - automatic injection on the blocks cart (render_block on the
- *   proceed-to-checkout block).
+ * - automatic injection on the classic cart page (woocommerce_proceed_to_checkout).
  *
  * The abandon control has one placement path — [punchout_abandon_button]
  * — because there is no core hook that means "the session chrome".
@@ -69,7 +75,6 @@ final class Surface {
 		add_shortcode( 'punchout_return_button', [ $this, 'shortcode' ] );
 		add_shortcode( 'punchout_abandon_button', [ $this, 'abandon_shortcode' ] );
 		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
-		add_filter( 'render_block_woocommerce/proceed-to-checkout-block', [ $this, 'filter_blocks_proceed' ] );
 		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
 	}
@@ -193,29 +198,27 @@ final class Surface {
 	 * A complete classic-cart exit control independent of theme callbacks.
 	 *
 	 * Sites using this shortcode can hide their theme's native cart button.
-	 * The plugin then owns both authorized choices without identifying or
-	 * removing callbacks installed by WooCommerce, a theme, or another plugin.
+	 * The plugin then owns the authorized exit without identifying or
+	 * removing callbacks installed by WooCommerce or a theme.
+	 *
+	 * Inside a visit that is the return control alone. Outside one it is the
+	 * native checkout link, for every shopper: a connection's bound account
+	 * shopping on its own password login is an ordinary customer here.
 	 */
 	public function cart_exits_shortcode(): string {
-		if ( null === $this->plugin->current_session() ) {
-			$ordinary_checkout = ( new RouteGuard( $this->plugin, $this->registry, $this->plugin->settings() ) )->checkout_allowed();
-			return $ordinary_checkout ? '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>' : '';
+		$session = $this->plugin->current_session();
+
+		if ( null === $session ) {
+			return '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>';
 		}
 
-		$policy = $this->current_cart_policy();
-
-		if ( null === $policy ) {
+		if ( ! $this->visit_is_live( $session ) ) {
 			return '';
 		}
 
 		$return = $this->markup();
-		if ( '' === $return ) {
-			return '';
-		}
 
-		$checkout = ExitPolicy::CHECKOUT === $policy ? $this->checkout_button_markup() : '';
-
-		return '<div class="pow-cart-exits">' . $checkout . $return . '</div>';
+		return '' === $return ? '' : '<div class="pow-cart-exits">' . $return . '</div>';
 	}
 
 	/** Native WooCommerce checkout link used by the complete cart control. */
@@ -237,61 +240,41 @@ final class Surface {
 	}
 
 	/**
-	 * Preserve the native wrapper: Cart's React render recreates its button
-	 * even if PHP replaces the wrapper. Restricted sessions use Woo's public
-	 * button label/link filters; dual exit retains the additive control.
-	 * RouteGuard and the confirmation endpoint remain the authorities.
+	 * Configure the Cart block's own button for every visit.
+	 *
+	 * Cart registers its frontend assets after its inner blocks have
+	 * rendered, so this is where the restricted configuration can still be
+	 * added. Every visit is restricted — there is no second exit to choose
+	 * between — so the only question is whether a visit is present.
 	 */
-	public function filter_blocks_proceed( string $block_content ): string {
-		$session = $this->plugin->current_session();
-
-		if ( null === $session ) {
-			return $block_content;
-		}
-
-		if ( ! $this->checkout_allowed( $session->partner_id ) ) {
-			return $block_content;
-		}
-
-		return $block_content . $this->markup();
-	}
-
-	/** Cart registers its frontend assets after its inner blocks have rendered. */
 	public function enqueue_cart_blocks_filters(): void {
-		$session = $this->plugin->current_session();
-		if ( null !== $session && ! $this->checkout_allowed( $session->partner_id ) ) {
+		if ( null !== $this->plugin->current_session() ) {
 			$this->enqueue_blocks_filters();
 		}
 	}
 
-	/** Resolve current policy; an unavailable initial Registry read is also restricted. */
-	private function checkout_allowed( int $partner_id ): bool {
-		try {
-			$partner = $this->registry->find( $partner_id );
-			return null !== $partner && ExitPolicy::CHECKOUT === ( new ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() );
-		} catch ( \Throwable $error ) {
+	/**
+	 * Whether the resolved visit may still render an exit.
+	 *
+	 * Which visit this is, is not in question: Sessions\Current resolved the
+	 * row from this request's own login token, so it is this visit's row and
+	 * no colleague's — the account id would answer nothing, since every
+	 * buyer of the connection shares it. What is in question is whether the
+	 * visit is still live at render time: a row that has left `active`, a
+	 * connection that has been switched off or a registry read that cannot
+	 * be trusted renders no exit at all, not a checkout link.
+	 */
+	private function visit_is_live( Session $session ): bool {
+		if ( Session::ACTIVE !== $session->status ) {
 			return false;
 		}
-	}
-
-	/** Return the current valid cart session's effective policy, or null. */
-	private function current_cart_policy(): ?string {
-		$session = $this->plugin->current_session();
-
-		if ( null === $session || Session::ACTIVE !== $session->status || $session->user_id !== get_current_user_id() ) {
-			return null;
-		}
 
 		try {
-			$policy  = new ExitPolicy( $this->plugin->settings(), $this->registry );
 			$partner = $this->registry->find( $session->partner_id );
-			if ( null === $partner || ! $partner->is_active() || ! $policy->member( $partner->id, $session->user_id ) ) {
-				return null;
-			}
 
-			return $policy->effective( $partner, $session->user_id );
+			return null !== $partner && $partner->is_active();
 		} catch ( \Throwable $error ) {
-			return null;
+			return false;
 		}
 	}
 
@@ -327,19 +310,15 @@ final class Surface {
 	}
 
 	/**
-	 * requisition_only partners: hide Woo's proceed-to-checkout button for
-	 * that partner's punchout sessions. Presentation only — RouteGuard
-	 * owns the actual block.
+	 * Hide Woo's proceed-to-checkout button for every visit: PunchOut is the
+	 * visit's only exit, and the classic cart renders the return control in
+	 * its place. Presentation only — RouteGuard owns the actual block.
 	 */
 	public function maybe_unhook_checkout_button(): void {
-		$session = $this->plugin->current_session();
-
-		if ( null === $session ) {
+		if ( null === $this->plugin->current_session() ) {
 			return;
 		}
 
-		if ( ! $this->checkout_allowed( $session->partner_id ) ) {
-			remove_action( 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 );
-		}
+		remove_action( 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 );
 	}
 }
