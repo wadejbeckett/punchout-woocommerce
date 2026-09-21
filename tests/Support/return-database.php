@@ -63,8 +63,10 @@ final class ReturnDatabase {
 	 * key: `pow_` plus 28 hex, 32 characters in total, because the core
 	 * column it has to fit is char(32). `buyer_identity` is stored in
 	 * cleartext (an administrator must be able to see who bought) and
-	 * `buyer_identity_hash` is the indexed form; the fixture only carries a
-	 * plausible value, it does not define the hashing recipe.
+	 * `buyer_identity_hash` is the indexed form the supersede query matches
+	 * on: the full sha256 of `partner_id|identity`, 64 hex in a CHAR(64)
+	 * column, exactly as `Buyers\Identity::hash()` writes it. The truncated
+	 * 12-hex form is the audit detail and belongs nowhere near this row.
 	 *
 	 * @return array<string, mixed>
 	 */
@@ -80,7 +82,7 @@ final class ReturnDatabase {
 			'buyer_cookie'          => 'basket-reference',
 			'buyer_identity'        => 'buyer@example.test',
 			'buyer_name'            => 'Zoë Buyer',
-			'buyer_identity_hash'   => substr( hash( 'sha256', '7|buyer@example.test' ), 0, 12 ),
+			'buyer_identity_hash'   => hash( 'sha256', '7|buyer@example.test' ),
 			'browser_form_post_url' => 'https://buyer.example.test/return',
 		];
 	}
