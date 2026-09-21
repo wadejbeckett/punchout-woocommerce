@@ -29,7 +29,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '6';
+	public const DB_VERSION     = '7';
 	public const DB_VERSION_KEY = 'pow_db_version';
 	// Routing changes independently of the table schema.
 	public const REWRITE_VERSION = '1';
@@ -110,11 +110,12 @@ final class Installer {
 	}
 
 	/**
-	 * v2 retired two features into extension points: partner group mapping
-	 * became the pow_buyer_provisioned hook, and the SKU map (buyer-side
-	 * part numbers are the buyer's own concern) became the pow_poom_lines
-	 * filter. dbDelta never drops anything, so the leftovers are removed
-	 * explicitly (guarded — MySQL has no DROP COLUMN IF EXISTS).
+	 * v2 retired two features: partner group mapping (a site owner assigns
+	 * the customer account's own pricing and visibility, once, outside this
+	 * plugin) and the SKU map (buyer-side part numbers are the buyer's own
+	 * concern), which became the pow_poom_lines filter. dbDelta never drops
+	 * anything, so the leftovers are removed explicitly (guarded — MySQL has
+	 * no DROP COLUMN IF EXISTS).
 	 */
 	private static function drop_retired_columns(): void {
 		global $wpdb;
@@ -161,18 +162,14 @@ final class Installer {
 		$partners        = self::partners_table();
 		$sessions        = self::sessions_table();
 		$log             = self::log_table();
-		$previous_errors = $wpdb->suppress_errors( true );
-		$prior_column    = $wpdb->get_results( "SHOW COLUMNS FROM {$partners} LIKE 'exit_policy'", ARRAY_A );
-		$wpdb->suppress_errors( $previous_errors );
-		$had_exit_policy = is_array( $prior_column ) && 1 === count( $prior_column );
-		$wpdb->last_error = '';
 
 		// Trading-partner registry (scope §4.1). One row per buyer-side
 		// tenant; the (sender_domain, sender_identity) pair is the auth
-		// lookup key for inbound PunchOutSetupRequests. `mode` retains the
-		// client-required per-partner flag: requisition_only (RFQ exit only,
-		// checkout blocked for that partner's punchout sessions) or
-		// dual_exit (RFQ button plus the untouched stock checkout).
+		// lookup key for inbound PunchOutSetupRequests. owner_user_id is the
+		// customer account every buyer of that tenant punches in as; a row
+		// without one cannot start a visit. `mode` and `exit_policy` no
+		// longer select behaviour — checkout is blocked inside every visit,
+		// so only requisition_only / punchout_only are ever written.
 		$sql_partners = "CREATE TABLE {$partners} (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			name VARCHAR(190) NOT NULL,
@@ -191,7 +188,7 @@ final class Installer {
 			deployment_mode VARCHAR(16) NOT NULL DEFAULT 'test',
 			return_encoding VARCHAR(16) NOT NULL DEFAULT 'base64',
 			mode VARCHAR(32) NOT NULL DEFAULT 'requisition_only',
-			exit_policy VARCHAR(32) NOT NULL DEFAULT 'punchout_and_checkout',
+			exit_policy VARCHAR(32) NOT NULL DEFAULT 'punchout_only',
 			allow_reentry TINYINT NOT NULL DEFAULT 0,
 			allcaps_transform TINYINT NOT NULL DEFAULT 0,
 			gateway_allowlist TEXT NULL,
@@ -218,15 +215,25 @@ final class Installer {
 			KEY owner_user_id (owner_user_id)
 		) {$charset_collate};";
 
-		// Punchout session store (scope §4.2). One row per
-		// PunchOutSetupRequest; the state machine is
-		// pending -> active -> returned|ordered|closed, plus expired via
-		// cron. response_xml holds the exact SetupResponse for the
-		// pending-state replay rule (§7): a duplicate payloadID with an
-		// identical body while pending replays the stored response
-		// byte-identically. cart_ready defers the create-login empty_cart()
-		// to the first authenticated request, where WC()->cart is the
-		// buyer's own session.
+		// Punchout session store (scope §4.2). One row per visit, and many
+		// rows per user_id: a connection has one bound customer account and
+		// every buyer of that customer punches in as it. What separates two
+		// visits of the same account is wc_session_key (that visit's own
+		// WooCommerce basket, 32 characters, `pow_`-prefixed and UNIQUE) and
+		// wp_session_token (that visit's own WordPress login) — never
+		// user_id. buyer_identity/buyer_name attribute the visit and may be
+		// empty; buyer_identity_hash is the indexed form used to supersede a
+		// buyer's own earlier visit. wc_session_key is nullable with no
+		// default because a claim row is inserted before its key is minted:
+		// MySQL allows many NULLs under one UNIQUE key, where a
+		// NOT NULL DEFAULT '' column would reject the second claim.
+		//
+		// The state machine is pending -> active -> returned|ordered|closed,
+		// plus expired via cron. response_xml holds the exact SetupResponse
+		// for the pending-state replay rule (§7): a duplicate payloadID with
+		// an identical body while pending replays the stored response
+		// byte-identically. cart_ready defers the empty_cart() to the first
+		// authenticated request, where WC()->cart is this visit's basket.
 		$sql_sessions = "CREATE TABLE {$sessions} (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			partner_id BIGINT UNSIGNED NOT NULL,
@@ -237,6 +244,10 @@ final class Installer {
 			ship_to TEXT NULL,
 			user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
 			wp_session_token VARCHAR(64) NOT NULL DEFAULT '',
+			wc_session_key VARCHAR(32) NULL DEFAULT NULL,
+			buyer_identity VARCHAR(190) NULL,
+			buyer_name VARCHAR(190) NULL,
+			buyer_identity_hash CHAR(64) NULL,
 			one_time_token_hash CHAR(64) NOT NULL,
 			status VARCHAR(16) NOT NULL DEFAULT 'pending',
 			order_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -255,7 +266,10 @@ final class Installer {
 			PRIMARY KEY  (id),
 			UNIQUE KEY token_hash (one_time_token_hash),
 			UNIQUE KEY partner_payload (partner_id, payload_id),
+			UNIQUE KEY wc_session_key (wc_session_key),
 			KEY partner_status (partner_id, status),
+			KEY partner_buyer (partner_id, buyer_identity_hash),
+			KEY login (user_id, wp_session_token),
 			KEY user_id (user_id),
 			KEY expires (expires)
 		) {$charset_collate};";
@@ -286,30 +300,78 @@ final class Installer {
 		) {$charset_collate};";
 
 		dbDelta( $sql_partners );
-		$exit_column = $wpdb->get_results( "SHOW COLUMNS FROM {$partners} LIKE 'exit_policy'", ARRAY_A );
-		if ( '' !== $wpdb->last_error || count( $exit_column ?? [] ) !== 1 ) { throw new \RuntimeException( 'Exit policy schema upgrade failed.' ); }
-		// Schema four had no explicit policy. A partial schema-five run may have the column and explicit rows already, so only its inherited rows are retryable.
-		if ( $from_version < 5 ) {
-			$where = $had_exit_policy ? " WHERE exit_policy = 'inherit'" : '';
-			if ( false === $wpdb->query( "UPDATE {$partners} SET exit_policy = CASE WHEN mode = 'dual_exit' THEN 'punchout_and_checkout' ELSE 'punchout_only' END{$where}" ) ) {
-				throw new \RuntimeException( 'Exit policy migration failed.' );
-			}
-		}
-		if ( $from_version < 6 ) { self::freeze_inherited_exit_policies(); }
 		dbDelta( $sql_sessions );
+		if ( $from_version < 7 ) { self::close_visits_without_a_key(); }
 		dbDelta( $sql_log );
 	}
 
-	/** Freeze schema-five inheritance to its prior effective cap before the schema-six marker advances. */
-	public static function freeze_inherited_exit_policies(): void {
+	/**
+	 * Schema seven: close every visit an earlier schema left open.
+	 *
+	 * Before seven a punchout login was one WordPress user per buyer. From
+	 * seven it is the connection's own customer account, one basket per
+	 * visit, separated by a per-visit wc_session_key that no older row
+	 * carries. Resuming such a row would put a live auth cookie on the
+	 * shared account with no basket of its own, so the rows are expired and
+	 * the logins they recorded are destroyed.
+	 *
+	 * Tokens go first, and an unverifiable destroy throws before any row
+	 * changes status: install_schema() then fails, the version marker never
+	 * advances, and the retry still finds the same open rows to work on.
+	 */
+	private static function close_visits_without_a_key(): void {
 		global $wpdb;
-		$legacy = ( new Settings() )->exit_policy();
-		if ( ! Checkout\ExitPolicy::valid( $legacy ) ) { throw new \RuntimeException( 'Legacy exit policy unavailable.' ); }
-		$frozen = Checkout\ExitPolicy::CHECKOUT === $legacy ? Checkout\ExitPolicy::CHECKOUT : Checkout\ExitPolicy::ONLY;
+
+		$sessions = self::sessions_table();
+		$open     = [ Sessions\Session::PENDING, Sessions\Session::ACTIVE, Sessions\Session::ORDERED ];
+
 		$wpdb->last_error = '';
-		$result = $wpdb->query( $wpdb->prepare( 'UPDATE ' . self::partners_table() . ' SET exit_policy = %s WHERE exit_policy = %s', $frozen, Checkout\ExitPolicy::INHERIT ) );
-		if ( false === $result || '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Exit policy migration failed.' ); }
-		$remaining = $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . self::partners_table() . ' WHERE exit_policy = %s', Checkout\ExitPolicy::INHERIT ) );
-		if ( '' !== ( $wpdb->last_error ?? '' ) || 0 !== (int) $remaining ) { throw new \RuntimeException( 'Exit policy migration could not be verified.' ); }
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id, user_id, wp_session_token FROM {$sessions} WHERE status IN (%s, %s, %s)", ...$open ), ARRAY_A );
+		if ( '' !== (string) ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Open punchout visits could not be read.' ); }
+		if ( ! $rows ) { return; }
+
+		foreach ( $rows as $row ) {
+			self::destroy_recorded_login( (int) ( $row['user_id'] ?? 0 ), (string) ( $row['wp_session_token'] ?? '' ) );
+		}
+
+		$wpdb->last_error = '';
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery
+		$updated = $wpdb->query( $wpdb->prepare( "UPDATE {$sessions} SET status = %s WHERE status IN (%s, %s, %s)", Sessions\Session::EXPIRED, ...$open ) );
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery
+		$remaining = $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$sessions} WHERE status IN (%s, %s, %s)", ...$open ) );
+		if ( false === $updated || '' !== (string) ( $wpdb->last_error ?? '' ) || 0 !== (int) $remaining ) {
+			throw new \RuntimeException( 'Open punchout visits could not be verified as expired.' );
+		}
+
+		// One line, after the fact: the count is the evidence an operator
+		// needs for baskets that vanished mid-flow. No identities are named.
+		( new Audit\Log( new Logger( new Settings() ) ) )->write(
+			'schema_visits_closed',
+			[ 'detail' => [ 'schema' => self::DB_VERSION, 'visits' => count( $rows ) ] ]
+		);
+	}
+
+	/**
+	 * Destroy one recorded WordPress login, or refuse to continue.
+	 *
+	 * Native destroy() is void and the token map is cached in user meta, so a
+	 * fresh verification after the write — not destroy()'s return — is what
+	 * confirms the login is gone.
+	 */
+	private static function destroy_recorded_login( int $user_id, string $token ): void {
+		global $wpdb;
+
+		if ( $user_id <= 0 || '' === $token ) { return; }
+
+		wp_cache_delete( $user_id, 'user_meta' );
+		if ( ! \WP_Session_Tokens::get_instance( $user_id )->verify( $token ) ) { return; }
+
+		$wpdb->last_error = '';
+		\WP_Session_Tokens::get_instance( $user_id )->destroy( $token );
+		wp_cache_delete( $user_id, 'user_meta' );
+		if ( '' !== (string) ( $wpdb->last_error ?? '' ) || \WP_Session_Tokens::get_instance( $user_id )->verify( $token ) ) {
+			throw new \RuntimeException( 'A punchout login could not be verifiably destroyed.' );
+		}
 	}
 }

@@ -188,14 +188,14 @@ final class ExitPolicyTest extends PHPUnit\Framework\TestCase {
 		self::assertFalse($this->registry->with_partner_lock(12,fn()=>$this->registry->transition_status(12,'active',['exit_policy'=>'punchout_and_checkout'])));
 	}
 
-	public function test_new_constructor_insert_and_settings_defaults_are_both_on_schema_six(): void {
+	public function test_new_constructor_insert_and_settings_defaults_are_both_on_the_current_schema(): void {
 		$this->policy();
 		$parameters = ( new ReflectionMethod( POW\Partners\Partner::class, '__construct' ) )->getParameters();
 		$exit_policy = array_values( array_filter( $parameters, static fn( ReflectionParameter $parameter ): bool => 'exit_policy' === $parameter->getName() ) )[0];
 		self::assertSame( 'punchout_and_checkout', $exit_policy->getDefaultValue() );
 		unset( $GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY] );
 		self::assertSame( 'punchout_and_checkout', ( new POW\Settings() )->all()['exit_policy'] );
-		self::assertSame( '6', POW\Installer::DB_VERSION );
+		self::assertSame( '7', POW\Installer::DB_VERSION );
 	}
 
 	public function test_persisted_missing_null_and_malformed_policies_fail_closed(): void {
@@ -209,30 +209,6 @@ final class ExitPolicyTest extends PHPUnit\Framework\TestCase {
 		$id=$this->registry->insert(['name'=>'New company','status'=>'pending','owner_user_id'=>20,'from_domain'=>'NetworkID','from_identity'=>'BUYER','sender_domain'=>'NetworkID','sender_identity'=>'BUYER','to_domain'=>'NetworkID','to_identity'=>'STORE']);
 		self::assertSame('punchout_and_checkout',$this->db->row['exit_policy']);
 		self::assertTrue(POW\Partners\Registration::valid_approval($this->registry->find($id)));
-	}
-	public function test_legacy_inheritance_is_frozen_to_its_old_effective_cap_idempotently(): void {
-		foreach ( [ 'inherit' => 'punchout_only', 'punchout_only' => 'punchout_only', 'punchout_and_checkout' => 'punchout_and_checkout' ] as $legacy => $frozen ) {
-			$GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY] = [ 'exit_policy' => $legacy ];
-			$this->db->migration_rows = [ [ 'id' => 1, 'exit_policy' => 'inherit' ], [ 'id' => 2, 'exit_policy' => 'punchout_only' ], [ 'id' => 3, 'exit_policy' => 'punchout_and_checkout' ], [ 'id' => 4, 'exit_policy' => 'unknown' ] ];
-			POW\Installer::freeze_inherited_exit_policies();
-			POW\Installer::freeze_inherited_exit_policies();
-			self::assertSame( [ $frozen, 'punchout_only', 'punchout_and_checkout', 'unknown' ], array_column( $this->db->migration_rows, 'exit_policy' ) );
-		}
-	}
-	public function test_failed_or_unconfirmed_freeze_never_counts_as_migrated(): void {
-		$GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY] = [ 'exit_policy' => 'punchout_and_checkout' ];
-		foreach ( [ 'false', 'lie' ] as $mode ) {
-			$this->db->migration_rows = [ [ 'id' => 1, 'exit_policy' => 'inherit' ] ];
-			$this->db->migration_write_mode = $mode;
-			try { POW\Installer::freeze_inherited_exit_policies(); self::fail( 'Unconfirmed migration accepted: ' . $mode ); }
-			catch ( RuntimeException $e ) { self::assertSame( 'inherit', $this->db->migration_rows[0]['exit_policy'] ); }
-		}
-	}
-	public function test_malformed_legacy_global_refuses_freeze_without_writing(): void {
-		$GLOBALS['pow_test_options'][POW\Settings::OPTION_KEY] = [ 'exit_policy' => 'unknown' ];
-		$this->db->migration_rows = [ [ 'id' => 1, 'exit_policy' => 'inherit' ] ];
-		$this->expectException( RuntimeException::class );
-		POW\Installer::freeze_inherited_exit_policies();
 	}
 }
 }
