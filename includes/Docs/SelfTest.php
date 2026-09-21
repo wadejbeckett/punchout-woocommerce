@@ -201,6 +201,7 @@ final class SelfTest {
 
 		$checks[] = $this->check( __( 'Identity extrinsics seen', 'punchout-woocommerce' ), self::RESULT_INFO, implode( ', ', array_keys( $message->extrinsics ) ) );
 		$checks[] = $this->check( __( 'ShipTo', 'punchout-woocommerce' ), self::RESULT_INFO, null !== $message->ship_to_xml ? __( 'present', 'punchout-woocommerce' ) : __( 'absent', 'punchout-woocommerce' ) );
+		$checks[] = $this->cart_handler_check();
 
 		return $this->report( $checks, $this->verdict( $auth_verdict, $operation_ok, $url_ok ) );
 	}
@@ -416,6 +417,135 @@ final class SelfTest {
 	 */
 	private static function dummy_partner(): Partner {
 		return Partner::from_row( [ 'secret_current' => self::DUMMY_SEALED ] );
+	}
+
+	/**
+	 * Core session-handler methods Cart\NativeSessionHandler stands on, and the
+	 * visibility each one must still have.
+	 *
+	 * The subclass bypasses WooCommerce's private init_session() because that
+	 * sequence deletes a visit's basket row and then migrates what is left onto
+	 * the shared user id (see the handler's class docblock). A bypass is only
+	 * safe while the thing being bypassed is still shaped the way it was read:
+	 * if `init_hooks()` stops being protected the visit's basket is never
+	 * persisted at all, and if one of the private methods becomes overridable
+	 * the bypass is no longer the only lever and should be revisited rather
+	 * than kept.
+	 *
+	 * @var array<string, string>
+	 */
+	private const CART_HANDLER_SHAPE = [
+		'init_hooks'                          => 'protected',
+		'init_session'                        => 'private',
+		'init_session_from_request'           => 'private',
+		'is_session_cookie_valid'             => 'private',
+		'is_customer_guest'                   => 'private',
+		'migrate_guest_session_to_user_session' => 'private',
+		'generate_customer_id'                => 'public',
+		'init_session_cookie'                 => 'public',
+		'get_session_cookie'                  => 'public',
+		'set_customer_session_cookie'         => 'public',
+		'maybe_set_customer_session_cookie'   => 'public',
+		'has_session'                         => 'public',
+		'get_session_data'                    => 'public',
+		'get_customer_unique_id'              => 'public',
+		'get_session'                         => 'public',
+		'delete_session'                      => 'public',
+		'destroy_session'                     => 'public',
+		'forget_session'                      => 'public',
+		'save_data'                           => 'public',
+		'update_session_timestamp'            => 'public',
+		'set_session_expiration'              => 'public',
+	];
+
+	/**
+	 * What is wrong with WooCommerce's session handler for our purposes, as a
+	 * list of one-line faults. Empty means the shape the per-visit cart
+	 * handler was written against is still there.
+	 *
+	 * Pure: it reflects and returns, and makes no decision about what to do
+	 * with the answer. The cart handler refuses a visit with a 409 when this
+	 * is not empty, and the documentation page reports it as a check, because
+	 * a shape change is a WooCommerce upgrade fault an administrator
+	 * has to see rather than a fault in the pasted document.
+	 *
+	 * An absent \WC_Session_Handler is not a fault: WooCommerce may simply not
+	 * be loaded (the documentation page and the test suite both run without
+	 * it), and the handler is never constructed in that case.
+	 *
+	 * @param string $handler Class to inspect; the parameter exists so the shape
+	 *                        rule can be tested against a fixture without
+	 *                        WooCommerce being loaded.
+	 * @return list<string>
+	 */
+	public static function cart_handler_faults( string $handler = '\\WC_Session_Handler' ): array {
+		if ( ! class_exists( $handler ) ) {
+			return [];
+		}
+
+		$faults = [];
+
+		foreach ( self::CART_HANDLER_SHAPE as $name => $visibility ) {
+			// Reflection rather than method_exists(): the latter answers false for
+			// an inherited private method, and the private methods this bypass
+			// exists because of are exactly the ones that must still be there.
+			try {
+				$method = new \ReflectionMethod( $handler, $name );
+			} catch ( \ReflectionException $e ) {
+				$faults[] = sprintf(
+					/* translators: %s: name of a WooCommerce session handler method. */
+					__( '%s is gone', 'punchout-woocommerce' ),
+					$name
+				);
+
+				continue;
+			}
+
+			$actual = $method->isPrivate() ? 'private' : ( $method->isProtected() ? 'protected' : 'public' );
+
+			if ( $actual !== $visibility || $method->isStatic() ) {
+				$faults[] = sprintf(
+					/* translators: 1: method name, 2: expected visibility, 3: visibility found. */
+					__( '%1$s is %3$s, expected %2$s', 'punchout-woocommerce' ),
+					$name,
+					$visibility,
+					$method->isStatic() ? 'static' : $actual
+				);
+			}
+		}
+
+		return $faults;
+	}
+
+	/**
+	 * The handler-shape row. A fault here has nothing to do with the pasted
+	 * document, so it never changes the verdict — it is the one row on the
+	 * page that reports the shop rather than the request.
+	 *
+	 * @return array{label: string, result: string, detail: string}
+	 */
+	private function cart_handler_check(): array {
+		$label = __( 'Cart session handler', 'punchout-woocommerce' );
+
+		if ( ! class_exists( '\\WC_Session_Handler' ) ) {
+			return $this->check( $label, self::RESULT_INFO, __( 'Not evaluated here: WooCommerce is not loaded.', 'punchout-woocommerce' ) );
+		}
+
+		$faults = self::cart_handler_faults();
+
+		if ( [] === $faults ) {
+			return $this->check( $label, self::RESULT_PASS, __( 'WooCommerce still provides every session method a per-visit basket depends on.', 'punchout-woocommerce' ) );
+		}
+
+		return $this->check(
+			$label,
+			self::RESULT_FAIL,
+			sprintf(
+				/* translators: %s: comma-separated list of session handler faults. */
+				__( 'This WooCommerce version changed its session handler, so catalog sessions are refused until the plugin is updated: %s', 'punchout-woocommerce' ),
+				implode( ', ', $faults )
+			)
+		);
 	}
 
 	/**
