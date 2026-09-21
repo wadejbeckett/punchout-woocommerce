@@ -97,7 +97,6 @@ final class Page {
 			'rate_limit_per_min'   => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 uses the default (30); the public self-test uses 10 when this is 0.', 'punchout-woocommerce' ) ],
 			'edge_rate_limit_per_min' => [ __( 'Setup edge limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per IP on /punchout/setup, counted before the sender is resolved. 0 uses the default (120).', 'punchout-woocommerce' ) ],
 			'log_retention_days'   => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
-			'buyer_inactive_days'  => [ __( 'Buyer inactivity (days)', 'punchout-woocommerce' ), 'number', __( 'Buyers unseen this long are flagged inactive (never deleted).', 'punchout-woocommerce' ) ],
 			'default_unspsc'       => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'UNSPSC commodity classification stamped on every returned cart line; procurement systems use it to route requisition lines to a purchasing category. Agree the value with the buyer.', 'punchout-woocommerce' ) ],
 			'quote_convert_status' => [
 				__( 'Convert quotes to', 'punchout-woocommerce' ),
@@ -220,7 +219,6 @@ final class Page {
 			'rate_limit_per_min'   => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
 			'edge_rate_limit_per_min' => max( 0, (int) ( $input['edge_rate_limit_per_min'] ?? 120 ) ),
 			'log_retention_days'   => max( 1, (int) ( $input['log_retention_days'] ?? 400 ) ),
-			'buyer_inactive_days'  => max( 0, (int) ( $input['buyer_inactive_days'] ?? 90 ) ),
 			'default_unspsc'       => sanitize_text_field( (string) ( $input['default_unspsc'] ?? '' ) ),
 			// A quote converts into a status an operator can still act on;
 			// anything else (completed, refunded, another custom status)

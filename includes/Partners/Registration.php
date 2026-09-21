@@ -11,7 +11,6 @@ declare( strict_types = 1 );
 namespace POW\Partners;
 
 use POW\Audit\Log;
-use POW\Installer;
 use POW\Sessions\Store;
 
 defined( 'ABSPATH' ) || exit;
@@ -127,7 +126,7 @@ final class Registration {
 		$reason = 'authorization';
 		try {
 			$user = $user_id > 0 && get_current_user_id() === $user_id ? get_userdata( $user_id ) : false;
-			if ( ! $user || ! user_can( $user, 'read' ) || in_array( Installer::ROLE, (array) $user->roles, true ) || get_user_meta( $user_id, '_pow_partner_id', true ) ) { return false; }
+			if ( ! $user || ! user_can( $user, 'read' ) || get_user_meta( $user_id, '_pow_partner_id', true ) ) { return false; }
 			$reason = 'lock';
 			$this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $user_id, &$partner, &$fenced, &$done, &$reason ) {
 				$partner = $this->registry->find( $partner_id );
@@ -193,7 +192,7 @@ final class Registration {
 		$actor = get_current_user_id();
 		try {
 			$user = $actor > 0 && $actor === $user_id ? get_userdata( $actor ) : false;
-			if ( ! $user || ! user_can( $user, 'read' ) || in_array( Installer::ROLE, (array) $user->roles, true ) || ! empty( get_user_meta( $actor, '_pow_partner_id', true ) ) ) {
+			if ( ! $user || ! user_can( $user, 'read' ) || ! empty( get_user_meta( $actor, '_pow_partner_id', true ) ) ) {
 				$this->record( 'registration_rejected', $actor, 0, 'actor' );
 				return self::refusal();
 			}

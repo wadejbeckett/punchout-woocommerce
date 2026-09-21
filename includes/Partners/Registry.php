@@ -185,7 +185,10 @@ final class Registry {
 				$this->with_partner_lock( $partner_id, function () use ( $partner_id, $owner_user_id, $wpdb, &$confirmed ) {
 					$owner = get_userdata( $owner_user_id );
 					$partner = $this->find( $partner_id );
-					if ( ! $owner || ! user_can( $owner, 'read' ) || in_array( Installer::ROLE, (array) $owner->roles, true ) || get_user_meta( $owner_user_id, '_pow_partner_id', true ) ) { return; }
+					// No role is tested: the account being bound is an ordinary
+					// customer. The meta read is an absence test for a legacy
+					// company association, not an ownership test.
+					if ( ! $owner || ! user_can( $owner, 'read' ) || get_user_meta( $owner_user_id, '_pow_partner_id', true ) ) { return; }
 					// A nonzero association owns the company's book; no transfer semantics exist.
 					if ( ! $partner || 0 !== $partner->owner_user_id || null !== $this->find_by_owner( $owner_user_id ) ) { return; }
 					$data = [ 'owner_user_id' => $owner_user_id, 'updated' => gmdate( 'Y-m-d H:i:s' ) ];
@@ -251,7 +254,7 @@ final class Registry {
 	private function rotation_actor( Partner $partner ): bool {
 		$actor = get_current_user_id();
 		$user = $actor > 0 ? get_userdata( $actor ) : false;
-		return $user && ( user_can( $user, 'manage_woocommerce' ) || ( $partner->is_owned_by( $actor ) && user_can( $user, 'read' ) && ! in_array( Installer::ROLE, (array) $user->roles, true ) && ! get_user_meta( $actor, '_pow_partner_id', true ) ) );
+		return $user && ( user_can( $user, 'manage_woocommerce' ) || ( $partner->is_owned_by( $actor ) && user_can( $user, 'read' ) && ! get_user_meta( $actor, '_pow_partner_id', true ) ) );
 	}
 
 	/**

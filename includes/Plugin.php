@@ -158,14 +158,17 @@ final class Plugin {
 			Command::register( $this );
 		}
 
-		// Always-on hardening — deliberately registered BEFORE the master
-		// switch gate so it holds even while punchout is disabled:
-		// punchout_buyer accounts must never gain a standing password login
-		// (their only door is the one-time StartPage token), and flipping
-		// the switch off must tear down live sessions, not strand them
-		// logged in with every guard unhooked.
-		add_filter( 'allow_password_reset', [ $this, 'deny_buyer_password_reset' ], 10, 2 );
-		add_filter( 'wp_authenticate_user', [ $this, 'deny_buyer_password_login' ] );
+		// Always-on teardown — deliberately registered BEFORE the master
+		// switch gate so it holds even while punchout is disabled: flipping
+		// the switch off must end live visits, not strand them logged in
+		// with every guard unhooked.
+		//
+		// Nothing here touches the password door. A connection's buyers
+		// shop as an ordinary WooCommerce customer account, and that same
+		// account signs in with its own password to read its My Account
+		// screens, so it must be able to authenticate and to reset its
+		// password like any other customer. What a visit may reach is
+		// decided per request by the visit row, not by the account.
 		add_action( 'update_option_' . Settings::OPTION_KEY, [ $this, 'on_settings_updated' ], 10, 2 );
 
 		( new RouteGuard( $this, $this->registry, $this->settings ) )->register();
@@ -273,32 +276,6 @@ final class Plugin {
 
 	public function woocommerce_active(): bool {
 		return class_exists( \WooCommerce::class ) && function_exists( 'wc_get_product' );
-	}
-
-	/**
-	 * @param bool $allow   Whether the reset may proceed.
-	 * @param int  $user_id User requesting the reset.
-	 * @return bool
-	 */
-	public function deny_buyer_password_reset( $allow, $user_id ) {
-		$user = get_userdata( (int) $user_id );
-
-		return $user && in_array( Installer::ROLE, (array) $user->roles, true ) ? false : $allow;
-	}
-
-	/**
-	 * @param \WP_User|\WP_Error $user Authentication candidate.
-	 * @return \WP_User|\WP_Error
-	 */
-	public function deny_buyer_password_login( $user ) {
-		if ( $user instanceof \WP_User && in_array( Installer::ROLE, (array) $user->roles, true ) ) {
-			return new \WP_Error(
-				'pow_no_password_login',
-				__( 'This account can only sign in through its procurement system.', 'punchout-woocommerce' )
-			);
-		}
-
-		return $user;
 	}
 
 	/**

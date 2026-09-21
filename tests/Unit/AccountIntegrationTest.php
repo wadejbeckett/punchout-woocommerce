@@ -243,7 +243,7 @@ namespace {
 			self::assertSame([],$this->db->writes);
 		}
 		public function test_request_boundaries_refuse_before_lookup_or_mutation(): void {
-			foreach (['method','endpoint','account','nonce','nonce_missing','nonce_array','action_array','unknown','anonymous','role','metadata','capability','disabled'] as $case) {
+			foreach (['method','endpoint','account','nonce','nonce_missing','nonce_array','action_array','unknown','anonymous','metadata','capability','disabled'] as $case) {
 				$_SERVER['REQUEST_METHOD']='POST'; $_POST=['pow_account_action'=>'rotate','_wpnonce'=>'account-nonce'];
 				$GLOBALS['pow_account_test']['account']=true; $GLOBALS['pow_account_test']['endpoint']='punchout-integration';
 				$GLOBALS['pow_test_current_user_id']=7; $GLOBALS['pow_test_users'][7]->roles=['customer']; $GLOBALS['pow_test_users'][7]->allcaps=['read'=>true];
@@ -251,7 +251,7 @@ namespace {
 				match($case) {
 					'method'=>$_SERVER['REQUEST_METHOD']='GET', 'endpoint'=>$GLOBALS['pow_account_test']['endpoint']='orders','account'=>$GLOBALS['pow_account_test']['account']=false,
 					'nonce'=>$_POST['_wpnonce']='bad','nonce_missing'=>$_POST['_wpnonce']=null,'nonce_array'=>$_POST['_wpnonce']=[], 'action_array'=>$_POST['pow_account_action']=[], 'unknown'=>$_POST['pow_account_action']='approve',
-					'anonymous'=>$GLOBALS['pow_test_current_user_id']=0,'role'=>$GLOBALS['pow_test_users'][7]->roles=['punchout_buyer'],'metadata'=>$GLOBALS['pow_test_user_meta'][7]['_pow_partner_id']=20,
+					'anonymous'=>$GLOBALS['pow_test_current_user_id']=0,'metadata'=>$GLOBALS['pow_test_user_meta'][7]['_pow_partner_id']=20,
 					'capability'=>$GLOBALS['pow_test_users'][7]->allcaps=[], 'disabled'=>$GLOBALS['pow_test_options']['pow_settings']['enabled']='no'
 				};
 				$result=$this->invoke('post_result'); self::assertTrue(null===$result || $result['status']>=400,$case);
@@ -309,9 +309,10 @@ namespace {
 			self::assertStringContainsString('name="pow_name"',$html);
 			self::assertStringNotContainsString('name="name"',$html);
 		}
-		public function test_menu_excludes_provisioned_and_disabled_accounts(): void {
+		/** An account carrying a legacy company association is not the ordinary management account this tab is for; no role is consulted. */
+		public function test_menu_excludes_legacy_associated_and_disabled_accounts(): void {
 			$items=['orders'=>'Orders','customer-logout'=>'Log out']; self::assertSame(['orders','punchout-integration','customer-logout'],array_keys($this->tab->add_menu_item($items)));
-			$GLOBALS['pow_test_users'][7]->roles=['punchout_buyer']; self::assertSame($items,$this->tab->add_menu_item($items)); ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean());
+			$GLOBALS['pow_test_user_meta'][7]['_pow_partner_id']=20; self::assertSame($items,$this->tab->add_menu_item($items)); ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean());
 		}
 		public function test_credentials_are_projected_without_sealed_slots(): void {
 			$this->seed(); $view=$this->invoke('view_vars'); self::assertSame('active',$view['state']); self::assertSame('',$view['secret']); self::assertFalse(isset($view['partner'])); self::assertStringNotContainsString($this->db->rows[0]['secret_current'],json_encode($view));
@@ -349,7 +350,7 @@ namespace {
 		}
 		public function test_disabled_connection_and_changed_actor_cannot_rotate(): void {
 			$this->seed(['status'=>'disabled']); self::assertSame(403,$this->invoke('post_result')['status']);
-			$this->seed(); $this->db->on_lock=function() {$GLOBALS['pow_test_users'][7]->roles=['punchout_buyer'];};
+			$this->seed(); $this->db->on_lock=function() {$GLOBALS['pow_test_user_meta'][7]['_pow_partner_id']=20;};
 			self::assertSame(403,$this->invoke('post_result')['status']); self::assertSame([],$this->db->writes);
 		}
 		public function test_another_owners_connection_is_not_in_view(): void {
