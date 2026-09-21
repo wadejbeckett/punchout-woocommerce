@@ -1,9 +1,6 @@
 <?php
 /** Exit policy admin presentation and HTTP gates, using the existing admin I/O owner. @package POW */
 declare(strict_types=1);
-namespace POW\Admin {
- function get_users(array $args): array { return []; }
-}
 namespace {
 require_once dirname(__DIR__).'/Admin/doubles.php';
 final class ExitPolicyAdminTest extends PHPUnit\Framework\TestCase {

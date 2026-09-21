@@ -6,7 +6,7 @@ namespace {
 if ( realpath( $_SERVER['SCRIPT_FILENAME'] ?? '' ) === __FILE__ ) { require_once dirname( __DIR__ ) . '/bootstrap.php'; }
 require_once __DIR__ . '/NativeAddressImportTest.php';
 require_once __DIR__ . '/AccountIntegrationTest.php';
-require_once __DIR__ . '/ExitPolicyAdminTest.php';
+require_once dirname( __DIR__ ) . '/Admin/doubles.php';
 }
 
 namespace POW\Tests\Fields {
