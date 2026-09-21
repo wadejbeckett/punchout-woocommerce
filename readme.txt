@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.2
-Stable tag: 0.3.0
+Stable tag: 0.4.0
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -14,14 +14,17 @@ Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dy
 
 PunchOut for WooCommerce lets enterprise buyers "punch out" from their procurement system (Microsoft Dynamics 365 Finance & Operations / Supply Chain Management first; any cXML direct-punchout buyer by configuration) into your WooCommerce store, shop the catalogue at their own prices, and send the cart back into their purchasing workflow as requisition/RFQ lines.
 
-**Multi-tenant by design.** Any number of customers, each connection configured independently: shared secret (sealed at rest), cXML identities, cXML version, cart-return encoding, optional IP allowlist, and a per-customer exit mode:
+**Multi-tenant by design.** Any number of customers, each connection configured independently: shared secret (sealed at rest), cXML identities, cXML version, cart-return encoding and an optional IP allowlist.
 
-* **Requisition only** (default) — buyers can only send the cart back for approval; checkout is blocked inside their punchout sessions.
-* **Dual exit** — the "send for approval" button renders *alongside* the completely untouched standard WooCommerce checkout, so buyers can also pay directly.
+**One store account per customer.** Each connection is bound to one WooCommerce customer account, which you create and group yourself, once; buyers punch in as that account and see exactly what it sees, at whatever prices and visibility you gave it. Every punchout visit still gets its own basket, delivery selection and quote order, and the buyer name and e-mail their purchasing system sends are recorded on the visit and stamped on the quote.
 
-**Additive, never invasive.** The plugin adds endpoints, a role, and a cart button. It does not override, replace or filter the WooCommerce checkout or any payment gateway.
+**PunchOut only.** Buyers send the cart back for approval; checkout is blocked inside a punchout visit and nowhere else. Ordinary shoppers, including anyone who signs into the bound account with a password, are never affected.
+
+**Additive, never invasive.** The plugin adds endpoints and a cart button. It never creates, renames or deletes users, and it does not override, replace or filter the WooCommerce checkout or any payment gateway.
 
 **Security first.** Constant-time secret comparison, sodium-sealed secrets (wp-config key), single-use hashed StartPage tokens, per-customer rate limiting and IP allowlists, XXE-hardened XML parsing with no runtime DTD fetches, no-store/noindex on every punchout response, a full audit trail with secrets redacted, and session teardown at every exit.
+
+**One visit, one basket.** Every punchout visit gets its own WordPress auth cookie, its own session token and its own WooCommerce session row, so two employees of one customer shopping at the same moment never see each other's basket or delivery selection. Inside a visit the request is also refused at wp-admin, the users REST routes, application passwords, the account-details and password screens, another visit's basket and another visit's quote order.
 
 **Placement flexibility.** The RFQ exit button is available as the `[punchout_return_button]` shortcode, the `pow_return_button()` PHP helper, and automatic cart-page injection — with theme-overridable templates and filters for every string.
 
@@ -30,8 +33,10 @@ PunchOut for WooCommerce lets enterprise buyers "punch out" from their procureme
 1. Upload the `punchout-woocommerce` folder to `/wp-content/plugins/`, or install the zip via Plugins > Add New > Upload.
 2. Activate the plugin. WooCommerce 8.0+ must be active.
 3. (Recommended) Add a sealing key to `wp-config.php` before storing any customer secrets: run `wp punchout generate-key` and paste the line it prints.
-4. Configure at **WooCommerce > PunchOut**: add a customer, then flip the master switch on the Settings tab.
-5. Give the buyer's admin your setup URL (`https://your-store.example/punchout/setup`), your To/From identities and the generated shared secret.
+4. Configure at **WooCommerce > PunchOut**: add a customer.
+5. Create (or pick) the one WooCommerce customer account that customer's buyers will shop as, put it in whatever pricing or visibility group it should have, and bind it to the connection. A connection with no bound account refuses `PunchOutSetupRequest` with cXML Status 500.
+6. Flip the master switch on the Settings tab.
+7. Give the buyer's admin your setup URL (`https://your-store.example/punchout/setup`), your To/From identities and the generated shared secret.
 
 == Frequently Asked Questions ==
 
@@ -41,17 +46,31 @@ Any buyer that speaks direct cXML PunchOut over HTTPS with shared-secret authent
 
 = Does it change my checkout? =
 
-No. For dual-exit customers the standard checkout is untouched; the plugin only listens (order meta tagging, session lifecycle). For requisition-only customers, checkout is blocked *inside that customer's punchout sessions only* — ordinary shoppers are never affected.
+No. Checkout is blocked inside a punchout visit only — ordinary shoppers, including the bound account when someone signs into it with a password, are never affected. The plugin does not override, replace or filter the checkout or any payment gateway.
 
 = Where does the returned cart go? =
 
 To the URL the buyer's system supplies in each setup request (`BrowserFormPost`), as an auto-submitting browser form POST carrying the cXML PunchOutOrderMessage in a `cxml-base64` (or `cxml-urlencoded`) hidden field.
 
-= Do buyers need accounts on my store? =
+= How many store accounts do I need per customer? =
 
-No setup on your side. Each buyer is provisioned automatically as an ordinary WordPress user the first time their procurement system punches out, and logged in through a single-use StartPage link — no passwords, no registration forms.
+One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.0 =
+* Breaking: a connection is now bound to one WooCommerce customer account that you create and group yourself. Buyers punch in as that account and see exactly what it sees. The plugin no longer creates, renames or deletes any user. A connection with no bound account refuses PunchOutSetupRequest with cXML Status 500, writes an audit row and raises a persistent admin notice.
+* Breaking: automatic buyer provisioning, the punchout_buyer role, ephemeral buyer identities, the identity mutex, latest-punchout-wins per account and the dormant-buyer cron with its "Buyer inactivity" setting are removed. Uninstall no longer removes the role, so a site upgraded from an earlier line keeps a stray role definition and any account still holding it keeps its capabilities.
+* Breaking: the pow_buyer_provisioned and pow_buyer_deactivated hooks are removed. Assign the bound account's group and pricing by hand, once, in whatever B2B or pricing plugin you use; no site glue is needed or supported.
+* Breaking: the site-glue filters pow_buyer_identity, pow_route_guard, pow_product_in_range, pow_quote_shipping_address, pow_poom_unit_price_cents, pow_poom_lines, pow_closeout_copy and pow_template_closeout-button are removed. A theme override of templates/docs/page.php or templates/account/integration.php copied from an earlier release must be re-copied: the delivery-exit accessor and the secret and delivery-address view variables they used are gone.
+* Breaking: the "PunchOut and checkout" (dual exit) mode, the pay-exit path, the per-buyer exit policy and the global/company/buyer exit hierarchy are removed. PunchOut is the only exit; checkout is blocked inside a punchout visit.
+* Breaking: the front-end connection application and every My Account action are removed. Connections, credentials and the delivery book are managed at WooCommerce > PunchOut. My Account > Punchout integration is now a read-only setup-XML download for the account holder, unreachable during a punchout visit.
+* New: one WooCommerce session row per punchout visit, keyed per visit, so two employees of one customer shopping at the same moment keep separate baskets and separate delivery selections on the one account. A new visit by the same buyer identity supersedes that buyer's own earlier visit and nobody else's, and open visits per connection are capped.
+* New: the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the Punchout Quote as _pow_buyer_identity and _pow_buyer_name, as an order note and as a "Bought by" line on the order screen. Orders stay owned by the bound account. No e-mail is ever sent to a buyer.
+* Security: inside a punchout visit the request cannot reach wp-admin, /wp/v2/users, application passwords, account details or password change, another visit's basket, or another visit's quote order. Every "is this mine" check compares the per-visit key, never the account.
+* Change: the bound account is an ordinary customer account, so it keeps its own password login and password reset. A stolen password for it is a full store login for that account outside any visit, and changing or resetting its password invalidates every outstanding cookie and therefore ends every live punchout visit of that customer mid-basket. Treat the account as a shared credential and keep it out of the hands of people who should not shop as the customer.
+* Change: that account may now check out normally when no punchout visit is live. Earlier releases blocked ordinary checkout for a requisition-only company's own account; only visits are blocked now.
+* Upgrade: no migration tooling ships. Upgrading expires every open punchout session and destroys its login; existing punchout buyer users are left alone and are no longer used. Bind each connection to its customer account by hand afterwards, and expect the first punch-in to refuse with cXML Status 500 until you do.
 
 = 0.3.0 =
 * Note: lema.co.za runs commit 3196586 of this line, deployed 2026-09-15 with the header still labelled 0.2.4; the header now matches the changelog.
