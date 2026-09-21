@@ -157,10 +157,11 @@ class Store {
 			$table = $wpdb->prefix . 'woocommerce_sessions';
 			$wpdb->last_error = '';
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
-			$wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $table . ' WHERE BINARY session_key = BINARY %s', $key ) );
+			// Indexed equality; the key is lowercase hex of a fixed shape, so a collation-insensitive match cannot name another visit, and absence is confirmed below.
+			$wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $table . ' WHERE session_key = %s', $key ) );
 			if ( '' !== ( $wpdb->last_error ?? '' ) ) { return false; }
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
-			$remaining = $wpdb->get_var( $wpdb->prepare( 'SELECT session_id FROM ' . $table . ' WHERE BINARY session_key = BINARY %s LIMIT 1', $key ) );
+			$remaining = $wpdb->get_var( $wpdb->prepare( 'SELECT session_id FROM ' . $table . ' WHERE session_key = %s LIMIT 1', $key ) );
 			return null === $remaining && '' === ( $wpdb->last_error ?? '' );
 		} catch ( \Throwable $error ) { return false; }
 	}

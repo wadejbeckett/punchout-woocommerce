@@ -299,7 +299,8 @@ final class SessionKeyTest extends PHPUnit\Framework\TestCase {
 
 		$deletes = array_values( array_filter( $this->db->queries, static fn( string $sql ): bool => str_starts_with( $sql, 'DELETE' ) ) );
 		self::assertCount( 1, $deletes );
-		self::assertStringContainsString( 'BINARY session_key = BINARY ', $deletes[0] );
+		self::assertStringContainsString( 'WHERE session_key = ', $deletes[0] );
+		self::assertStringNotContainsString( 'BINARY', $deletes[0], 'the delete must use the indexed equality, not a full scan' );
 	}
 
 	public function test_expire_locked_never_deletes_a_row_that_is_not_a_visits_own(): void {
