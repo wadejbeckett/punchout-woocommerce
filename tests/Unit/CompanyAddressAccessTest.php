@@ -319,10 +319,17 @@ final class CompanyAddressAccessTest extends TestCase {
 		$this->seed(); [ , $page ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 30;
 		$_GET = [ 'page' => 'punchout-woocommerce', 'tab' => 'partners', 'action' => 'edit', 'partner' => '12' ];
 		ob_start(); try { $page->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
-		foreach ( [ 'PRIVATE-DEPOT', 'value="pow_save_partner"', 'name="pow_address_partner" value="12"' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		// The bound store account, its book and the identity form are three siblings.
+		foreach ( [ 'PRIVATE-DEPOT', 'value="pow_save_partner"', 'name="pow_address_partner" value="12"', 'Store account buyers shop as', 'Store account: #20', 'delivery book' ] as $text ) { self::assertStringContainsString( $text, $html ); }
 		// The per-buyer restriction screen and the checkout switch went with the dual exit.
 		foreach ( [ 'name="exit_policy"', 'Buyer restrictions', 'Checkout access', 'value="pow_save_buyer_exit"' ] as $text ) { self::assertStringNotContainsString( $text, $html ); }
 		$this->assert_no_nested_forms( $html );
+		// Unbound: the binding POST is a sibling of the identity form, and there is no book yet.
+		$this->db->row['owner_user_id'] = 0;
+		ob_start(); try { $page->render(); $unbound = ob_get_contents(); } finally { ob_end_clean(); }
+		foreach ( [ 'value="pow_associate_partner"', 'name="owner_user_id"', 'Bind store account' ] as $text ) { self::assertStringContainsString( $text, $unbound ); }
+		self::assertStringNotContainsString( 'PRIVATE-DEPOT', $unbound, 'The book belongs to the bound account' );
+		$this->assert_no_nested_forms( $unbound );
 	}
 	public function test_admin_credential_actions_refuse_mixed_address_form_even_with_valid_admin_nonce(): void {
 		[ , , $actions ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 30; $GLOBALS['pow_test_valid_nonce'] = 'valid';
