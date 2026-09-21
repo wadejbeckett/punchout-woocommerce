@@ -377,6 +377,40 @@ final class DocsPageTest extends TestCase {
 	}
 
 	/**
+	 * The page is read by the buyer's own developers, so it is the last
+	 * place a removed feature may survive as a promise. Nothing on it may
+	 * offer a checkout exit, an account the plugin makes for an employee,
+	 * or a login per person: one bound store account per connection, one
+	 * basket per visit.
+	 */
+	public function test_the_public_page_promises_no_buyer_accounts_and_no_checkout_exit(): void {
+		$html = Templates::render( 'docs/page', $this->page_vars() );
+
+		foreach ( [ 'punchout_and_checkout', 'provisioned', 'provisions', 'temporary buyer account', 'Checkout is a separate exit' ] as $text ) {
+			self::assertStringNotContainsString( $text, $html );
+		}
+
+		foreach ( [ 'the one store account we bound to your connection', 'two independent baskets', 'UserPrintableName', 'UniqueUsername' ] as $text ) {
+			self::assertStringContainsString( $text, $html );
+		}
+	}
+
+	/**
+	 * Reference::exit_policy() is gone. A theme override copy of this
+	 * template that still loops over it fatals, so the shipped template
+	 * must not call it and the page must render with the method absent.
+	 */
+	public function test_the_page_renders_with_the_deleted_exit_policy_accessor_absent(): void {
+		self::assertFalse( method_exists( Reference::class, 'exit_policy' ) );
+		self::assertStringNotContainsString( 'exit_policy', file_get_contents( POW_PLUGIN_DIR . 'templates/docs/page.php' ) );
+
+		$html = Templates::render( 'docs/page', $this->page_vars() );
+
+		self::assertStringContainsString( 'Punchout integration', $html );
+		self::assertStringContainsString( 'Checkout is not available inside a punchout visit.', $html );
+	}
+
+	/**
 	 * The connection block is admin-only: a public visitor never learns
 	 * which buyers are connected.
 	 */
