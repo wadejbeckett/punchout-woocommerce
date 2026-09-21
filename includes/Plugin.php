@@ -177,6 +177,18 @@ final class Plugin {
 		add_action( 'update_option_' . Settings::OPTION_KEY, [ $this, 'on_settings_updated' ], 10, 2 );
 
 		( new RouteGuard( $this, $this->registry, $this->settings ) )->register();
+		// Basket isolation has the same lifetime as visit resolution, and for
+		// the same reason. NativeSessionGuard above keeps resolving visits and
+		// keeps binding each one its own `pow_` session row whatever the switch
+		// says; Cart\Guard is what turns WooCommerce's persistent cart off for
+		// a visit and what hides and keeps the saved-cart merge flag. A visit
+		// that outlived on_settings_updated()'s sweep — one contended
+		// connection lock is enough — would otherwise run with that one shared
+		// user-meta basket fully live: every cart mutation would overwrite the
+		// bound account's own saved basket, and an emptied visit would merge a
+		// colleague's lines into its own on the next hydration. The resolver
+		// and the filters that consume it are registered together or not at all.
+		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
 		$this->surface = new Surface( $this, $this->registry );
 		$this->surface->register_cart_exits_shortcode();
 
@@ -198,8 +210,6 @@ final class Plugin {
 		$return_endpoint->register();
 
 		$this->surface->register_runtime();
-
-		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
 	}
 
 	/**
@@ -302,18 +312,27 @@ final class Plugin {
 		$ok = null !== $this->registry;
 		try {
 			foreach ( $this->registry?->all() ?? [] as $partner ) {
-				$clean = $this->registry->with_partner_lock( $partner->id, function () use ( $partner ) {
-					$after = 0;
-					$clean = true;
-					while ( $rows = $this->sessions->revocation_batch( $partner->id, $after ) ) {
-						foreach ( $rows as $row ) {
-							if ( $row->id <= $after ) { return false; }
-							$after = $row->id;
-							$clean = $this->sessions->expire_locked( $row ) && $clean;
+				// One try per connection, because the lock is per connection: a
+				// setup request already holding X's lock makes
+				// with_partner_lock() throw for X, and a single try around the
+				// whole loop would let that throw abandon every connection
+				// after it — leaving those visits active and logged in for the
+				// rest of their TTL, none of them swept and none of them even
+				// counted. The incomplete sweep is still recorded below.
+				try {
+					$clean = $this->registry->with_partner_lock( $partner->id, function () use ( $partner ) {
+						$after = 0;
+						$clean = true;
+						while ( $rows = $this->sessions->revocation_batch( $partner->id, $after ) ) {
+							foreach ( $rows as $row ) {
+								if ( $row->id <= $after ) { return false; }
+								$after = $row->id;
+								$clean = $this->sessions->expire_locked( $row ) && $clean;
+							}
 						}
-					}
-					return $clean;
-				} );
+						return $clean;
+					} );
+				} catch ( \Throwable $e ) { $clean = false; }
 				$ok = $clean && $ok;
 			}
 			$ok = [] === $this->sessions->all_open( 1 ) && $ok;
