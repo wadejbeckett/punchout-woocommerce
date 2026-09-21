@@ -25,8 +25,9 @@ final class AddressProviderNative {
 		$plugin = POW\Plugin::instance();
 		$this->registry = $plugin->registry();
 		$this->sessions = $plugin->sessions();
-		$this->book = new POW\Addresses\CompanyBook( $this->registry, $plugin->audit() );
-		$this->resolver = new POW\Addresses\Resolver( $this->registry, $this->book );
+		$visits = new POW\Sessions\Current( $this->sessions );
+		$this->book = new POW\Addresses\CompanyBook( $this->registry, $plugin->audit(), $visits );
+		$this->resolver = new POW\Addresses\Resolver( $this->registry, $this->book, $visits );
 		$this->provider = $this->resolver->current();
 		$this->admin = get_current_user_id();
 	}

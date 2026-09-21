@@ -19,6 +19,7 @@ final class QuoteAddress {
 
 	/** Snapshot bounds match Shape, without calling mutable Woo validation on accepted values. */
 	private const ADDRESS_LIMITS = [ 'first_name' => 190, 'last_name' => 190, 'company' => 190, 'address_1' => 190, 'address_2' => 190, 'city' => 190, 'state' => 190, 'postcode' => 32, 'country' => 2, 'phone' => 100 ];
+	/** 'filter' stays decodable for snapshots taken while the removed extension filter still produced candidates; nothing produces it now. */
 	private const SOURCES = [ 'company_book', 'filter', 'ship_to', 'customer' ];
 
 	public function __construct( private Resolver $resolver ) {}
@@ -55,11 +56,12 @@ final class QuoteAddress {
 	}
 
 	/**
-	 * Accepted snapshot first, otherwise filter/inbound/acting-buyer candidates for explicit confirmation. This method never persists or confirms a choice, reads the company master, or grants current eligibility. Confirmation must call Resolver's active guard under the partner mutex immediately before the return claim. The winning Quote consumes payload() directly, never this resolver again.
+	 * Accepted snapshot first, otherwise inbound or company-profile candidates for explicit confirmation. This method never persists or confirms a choice, reads the company master, or grants current eligibility. Confirmation must call Resolver's active guard under the partner mutex immediately before the return claim. The winning Quote consumes payload() directly, never this resolver again.
 	 */
 	public function resolve_destination( Session $session, Partner $partner ): ?array {
 		try {
-			if ( $session->partner_id !== $partner->id || $session->user_id <= 0 || get_current_user_id() !== $session->user_id ) { throw self::invalid(); }
+			// Under one shared login every open visit of this connection has the same user_id, so the row — not the signed-in user — has to be this request's visit.
+			if ( $session->partner_id !== $partner->id || $session->user_id <= 0 || ! $this->resolver->is_request_visit( $session ) ) { throw self::invalid(); }
 			$selected = $this->resolver->selected_snapshot( $session );
 			if ( null !== $selected ) {
 				if ( $selected['storage_user_id'] !== $partner->owner_user_id ) { throw self::invalid(); }
@@ -68,12 +70,10 @@ final class QuoteAddress {
 			$associated = $this->resolver->partner_for_user( $session->user_id );
 			if ( ! $associated || $associated->id !== $partner->id || $associated->owner_user_id !== $partner->owner_user_id ) { throw self::invalid(); }
 
-			/** Existing extension contract: {address,code}|null is a candidate, never confirmation. */
-			$candidate = self::candidate( apply_filters( 'pow_quote_shipping_address', null, $session, $partner ), 'filter' );
-			if ( null !== $candidate ) { return $candidate; }
 			$candidate = self::candidate( null !== $session->ship_to ? QuoteOrder::address_from_ship_to( $session->ship_to ) : null, 'ship_to' );
 			if ( null !== $candidate ) { return $candidate; }
 
+			// The last candidate is the connection account's own profile address overlaid by this visit's session snapshot, so on a fresh visit it is the company's default destination, not one employee's. It is a suggestion the delivery review still has to accept.
 			$customer = WC()->customer;
 			if ( null === $customer || (int) $customer->get_id() !== $session->user_id ) { return null; }
 			return self::candidate( [ 'address' => $customer->get_shipping(), 'code' => '' ], 'customer' );
