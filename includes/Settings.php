@@ -48,10 +48,6 @@ class Settings {
 		// evidence, so the default keeps a year-plus before cron trims.
 		'log_retention_days'   => 400,
 
-		// Days without a punchout login before a buyer user is flagged
-		// inactive by cron (flagged, never deleted — order attribution).
-		'buyer_inactive_days'  => 90,
-
 		// Page the buyer lands on after auto-login, and is 302'd back to by
 		// the route guard. 0 = the shop page.
 		'landing_page_id'      => 0,

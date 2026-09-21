@@ -34,10 +34,21 @@ $GLOBALS['pow_test_current_user_id'] = 30;
 $GLOBALS['pow_test_users'][30] = (object) [ 'ID' => 30, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ];
 $signed_in_no_visit = is_callable( $callback ) ? (string) $callback() : '';
 
+// Provisioning is gone: nothing in boot() may load a user-creating class,
+// and the class list is the only honest way to see it from outside — the
+// autoloader loads a POW class exactly when boot() first names one.
+$provisioning = array_values( array_filter(
+	get_declared_classes(),
+	static fn( string $class ): bool => str_starts_with( $class, 'POW\\' ) && ( str_contains( $class, 'Provisioner' ) || str_contains( $class, 'PayExit' ) )
+) );
+
 echo json_encode( [
 	'registered' => is_callable( $callback ),
 	'ordinary' => $ordinary,
 	'signed_in_no_visit' => $signed_in_no_visit,
 	'return_shortcode_registered' => isset( $GLOBALS['pow_boot_hooks']['shortcode']['punchout_return_button'] ),
 	'router_registered' => isset( $GLOBALS['pow_boot_hooks']['action']['parse_request'] ),
+	'filters' => array_keys( $GLOBALS['pow_boot_hooks']['filter'] ?? [] ),
+	'actions' => array_keys( $GLOBALS['pow_boot_hooks']['action'] ?? [] ),
+	'provisioning_classes' => $provisioning,
 ], JSON_THROW_ON_ERROR );

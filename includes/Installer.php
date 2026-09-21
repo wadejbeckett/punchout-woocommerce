@@ -13,7 +13,8 @@ namespace POW;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Creates the three custom tables (scope §4) and the punchout_buyer role.
+ * Creates the three custom tables (scope §4). No user, role or capability
+ * is ever created: buyers shop as a customer account the site already had.
  *
  * Custom indexed tables rather than options/postmeta, per the connector's
  * reasoning: sessions and audit rows are queried on every punchout request
@@ -35,8 +36,6 @@ final class Installer {
 	public const REWRITE_VERSION = '1';
 	public const REWRITE_VERSION_KEY = 'pow_rewrite_version';
 
-	public const ROLE = 'punchout_buyer';
-
 	public static function partners_table(): string {
 		global $wpdb;
 
@@ -57,7 +56,6 @@ final class Installer {
 
 	public static function activate(): void {
 		self::install_schema();
-		self::register_role();
 		update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
 		self::install_rewrites();
 
@@ -82,8 +80,8 @@ final class Installer {
 		flush_rewrite_rules( false );
 		delete_option( self::REWRITE_VERSION_KEY );
 
-		// Tables, settings and the role stay: deactivation is not
-		// uninstallation, and live punchout sessions reference all three.
+		// Tables and settings stay: deactivation is not uninstallation,
+		// and live punchout visits reference both.
 	}
 
 	/**
@@ -93,7 +91,6 @@ final class Installer {
 	public static function maybe_upgrade(): void {
 		if ( (string) get_option( self::DB_VERSION_KEY, '0' ) !== self::DB_VERSION ) {
 			self::install_schema();
-			self::register_role();
 			self::drop_retired_columns();
 			update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
 		}
@@ -111,11 +108,13 @@ final class Installer {
 
 	/**
 	 * v2 retired two features: partner group mapping (a site owner assigns
-	 * the customer account's own pricing and visibility, once, outside this
-	 * plugin) and the SKU map (buyer-side part numbers are the buyer's own
-	 * concern, handled in the buyer's own system). dbDelta never drops
-	 * anything, so the leftovers are removed explicitly (guarded — MySQL has
-	 * no DROP COLUMN IF EXISTS).
+	 * the connection's own customer account its pricing and visibility,
+	 * once, outside this plugin) and the SKU map (buyer-side part numbers
+	 * are the buyer's own concern, handled in the buyer's own system). The
+	 * dropped columns are named after the plugin that once held that
+	 * mapping; the names survive only so an upgraded table can be cleaned.
+	 * dbDelta never drops anything, so the leftovers are removed explicitly
+	 * (guarded — MySQL has no DROP COLUMN IF EXISTS).
 	 */
 	private static function drop_retired_columns(): void {
 		global $wpdb;
@@ -132,24 +131,6 @@ final class Installer {
 
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'pow_skumap' );
-	}
-
-	/**
-	 * Register the punchout_buyer role.
-	 *
-	 * The role name is public API: site audience rules can gate on it, so treat a rename as a
-	 * breaking change. Capabilities mirror the Woo customer role:
-	 * read-only, no admin access.
-	 */
-	public static function register_role(): void {
-		if ( get_role( self::ROLE ) ) {
-			return;
-		}
-
-		$customer = get_role( 'customer' );
-		$caps     = $customer ? $customer->capabilities : [ 'read' => true ];
-
-		add_role( self::ROLE, __( 'Punchout Buyer', 'punchout-woocommerce' ), $caps );
 	}
 
 	private static function install_schema(): void {
