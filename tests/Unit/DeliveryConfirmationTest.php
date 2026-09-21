@@ -237,6 +237,20 @@ final class DeliveryConfirmationTest extends TestCase {
 	public function test_tax_changes_and_independent_policy_flags_invalidate():void{$this->confirm($this->input());$this->s->estimate->taxes=[1=>'2.00'];self::assertInstanceOf(WP_Error::class,$this->returned());$this->confirm($this->input());$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_ship_to'=>true]));self::assertInstanceOf(WP_Error::class,$this->returned());}
 	public function test_preview_after_confirmation_clears_consent():void{$this->confirm($this->input());$this->preview(['notes'=>'Changed instructions']);self::assertNull($this->s->store->session->delivery_confirmation_json);self::assertInstanceOf(WP_Error::class,$this->returned());}
 	public function test_posted_null_notes_are_not_an_absent_field():void{self::assertInstanceOf(WP_Error::class,$this->preview(['notes'=>null]));}
+	/** Decision 10: the fallback candidate is the bound account's own profile address, shared by every employee of the connection, so it is labelled as the company's and never as this buyer's own. */
+	public function test_bound_account_profile_candidate_is_labelled_as_the_company_address():void{
+		$this->s->resolver->choices=[];
+		$address=['first_name'=>'Ada','last_name'=>'Buyer','company'=>'Company','address_1'=>'1 Main St','address_2'=>'','city'=>'Pretoria','state'=>'GP','postcode'=>'0001','country'=>'ZA','phone'=>''];
+		foreach(['customer'=>'Company address','ship_to'=>'Purchasing system destination','filter'=>'Suggested delivery address'] as $source=>$label){
+			$this->s->address->candidate=['address'=>$address,'code'=>'','source'=>$source];
+			$v=$this->preview();
+			self::assertTrue(is_array($v),$source);
+			self::assertCount(1,$v['choices'],$source);
+			self::assertSame('candidate',$v['choices'][0]['key'],$source);
+			self::assertSame($source,$v['choices'][0]['source'],$source);
+			self::assertSame($label,$v['choices'][0]['label'],$source);
+		}
+	}
 	public function test_readonly_guard_avoids_metadata_loading_product_get_data():void{$this->confirm($this->input());$r=$this->returned();$this->s->cart->cart_contents['line']['data']->forbid_data=true;self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
 	public function test_final_guard_rejects_in_memory_native_rate_mutation():void{$this->confirm($this->input());$r=$this->returned();$this->s->shipping->packages[0]['rates']['flat:1']->data['amount_cents']=999;self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
 	public function test_native_packages_cannot_quote_a_different_physical_destination():void{$this->s->estimate->split_destination=true;self::assertInstanceOf(WP_Error::class,$this->preview());}

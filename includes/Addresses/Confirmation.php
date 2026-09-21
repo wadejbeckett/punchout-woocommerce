@@ -190,7 +190,7 @@ final class Confirmation implements ReturnConfirmation {
 			if ( $state instanceof \WP_Error ) { return $state; }
 			if ( null !== $candidate ) {
 				$provider = match ( $candidate['source'] ) { 'ship_to' => 'inbound', 'customer' => 'customer', 'filter' => 'filter', default => throw new \DomainException() };
-				$choices[] = [ 'schema' => 1, 'partner_id' => $company->id, 'storage_user_id' => $company->owner_user_id, 'provider' => $provider, 'key' => 'candidate', 'code' => $candidate['code'], 'address' => $candidate['address'], 'label' => match ( $provider ) { 'inbound' => __( 'Purchasing system destination', 'punchout-woocommerce' ), 'customer' => __( 'Your current delivery address', 'punchout-woocommerce' ), default => __( 'Suggested delivery address', 'punchout-woocommerce' ) }, 'source' => $candidate['source'], 'book_revision' => null, 'entry_fingerprint' => null ];
+				$choices[] = [ 'schema' => 1, 'partner_id' => $company->id, 'storage_user_id' => $company->owner_user_id, 'provider' => $provider, 'key' => 'candidate', 'code' => $candidate['code'], 'address' => $candidate['address'], 'label' => match ( $provider ) { 'inbound' => __( 'Purchasing system destination', 'punchout-woocommerce' ), 'customer' => __( 'Company address', 'punchout-woocommerce' ), default => __( 'Suggested delivery address', 'punchout-woocommerce' ) }, 'source' => $candidate['source'], 'book_revision' => null, 'entry_fingerprint' => null ];
 			}
 			$physical = false;
 			foreach ( WC()->cart->get_cart() as $line ) { if ( ! isset( $line['data'] ) || ! is_callable( [ $line['data'], 'needs_shipping' ] ) ) { throw new \DomainException(); } if ( $line['data']->needs_shipping() ) { $physical = true; } }
