@@ -11,20 +11,30 @@ declare(strict_types=1);
 namespace POW\Tests\Rollback {
 use POW\Sessions\Session;
 use POW\Partners\Partner;
+/** This visit's WooCommerce session key: 'pow_' + 28 hex = char(32). */
+const VISIT_KEY='pow_1a2b3c4d5e6f708192a3b4c5d6e7';
+const SIBLING_KEY='pow_00112233445566778899aabbccdd';
 final class Registry {public Partner $partner;public bool $locked=false;public function find(int $id):?Partner{return $this->partner;}public function with_partner_lock(int $id,callable $fn):mixed{if($this->locked){throw new \LogicException('Nested lock');}$this->locked=true;try{return $fn();}finally{$this->locked=false;}}}
 class NativeBase {
-	protected $_customer_id='99';protected $_data=[];protected $_dirty=false;protected $_session_expiration=9999999999;public int $parent_saves=0;
-	public function __construct(){}public function init(){$this->_data=$this->get_session($this->_customer_id,[]);}
+	protected $_customer_id='99';protected $_data=[];protected $_dirty=false;protected $_session_expiration=9999999999;protected $_has_cookie=false;public int $parent_saves=0;public bool $hooked=false;public array $cookies=[];
+	public function __construct(){}public function init(){$this->init_hooks();$this->_data=$this->get_session($this->_customer_id,[]);}
+	protected function init_hooks():void{$this->hooked=true;}
 	public function get_customer_id(){return $this->_customer_id;}public function get_session($key,$default=false){return ['cart'=>'STALE CACHE'];}
 	public function get($key,$default=null){return $this->_data[$key]??$default;}public function set($key,$value){$this->_data[$key]=$value;$this->_dirty=true;}
 	public function set_expiration(int $expiry):void{$this->_session_expiration=$expiry;}
+	public function set_session_expiration(){}public function has_session(){return true;}public function get_session_data(){return $this->_data;}
+	public function generate_customer_id(){return (string)state()->actor;}public function get_session_cookie(){return false;}
+	public function set_customer_session_cookie($set){if($set){$this->cookies[]=$this->_customer_id;}}public function maybe_set_customer_session_cookie(){$this->set_customer_session_cookie(true);}
+	public function init_session_cookie(){}public function get_customer_unique_id(){return (string)$this->_customer_id;}
+	public function forget_session(){$this->_data=[];$this->_dirty=false;$this->_customer_id=$this->generate_customer_id();}
+	public function destroy_session(){$this->delete_session($this->_customer_id);$this->forget_session();}
 	public function save_data($old=''){++$this->parent_saves;}public function delete_session($id){}public function update_session_timestamp($id,$time){}
 }
 final class State {public Registry $registry;public mixed $session=null;public int $actor=99;public string $token='exact';public function __construct(){$this->registry=new Registry();}}
 function add_filter(string $hook,mixed $callback,int $priority=10,int $args=1):void{}
 function add_action(string $hook,mixed $callback,int $priority=10,int $args=1):void{}
 function wp_die(mixed ...$args):never{throw new \RuntimeException('Bounded refusal');}
-function state():State{return $GLOBALS['rollback_test'];}function WC():State{return state();}function get_current_user_id():int{return state()->actor;}function wp_get_session_token():string{return state()->token;}function get_userdata(int $id):object|false{return $id===99?(object)['roles'=>['punchout_buyer']]:false;}function get_user_meta(int $id,string $key,bool $single):mixed{return $id===99&&$key==='_pow_partner_id'?7:'';}function wp_cache_delete(mixed $key,string $group=''):bool{return true;}
+function state():State{return $GLOBALS['rollback_test'];}function WC():State{return state();}function get_current_user_id():int{return state()->actor;}function wp_get_session_token():string{return state()->token;}function wp_cache_delete(mixed $key,string $group=''):bool{return true;}
 /** Test-only: re-namespaces the production source so the fakes above stand in for WordPress/WooCommerce, the same technique NativeSessionGuardTest uses. */
 function load_source():void{if(class_exists(__NAMESPACE__.'\\NativeSessionGuard',false)){return;}foreach(['NativeSessionGuard','NativeSessionHandler'] as $name){$path=dirname(__DIR__,2).'/includes/Cart/'.$name.'.php';\PHPUnit\Framework\TestCase::assertTrue(is_file($path));$src=file_get_contents($path);$src=str_replace('namespace POW\\Cart;','namespace POW\\Tests\\Rollback; use POW\\Cart\\NativeSessionRow;',$src);$src=str_replace(['use POW\\Partners\\Registry;','\\WC_Session_Handler','use Automattic\\WooCommerce\\StoreApi\\Utilities\\CartTokenUtils;'],['','NativeBase',''],$src);eval(substr($src,5));}}
 }
@@ -62,18 +72,18 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 		$GLOBALS['wpdb']=$this->db=new RollbackDatabase();$GLOBALS['rollback_test']=$this->s=new \POW\Tests\Rollback\State();
 		$GLOBALS['pow_test_session_tokens']=[99=>['exact'=>['login'=>1]]];
 		$this->s->registry->partner=POW\Partners\Partner::from_row(['id'=>7,'status'=>'active','owner_user_id'=>20]);
-		$this->db->session=['id'=>42,'partner_id'=>7,'user_id'=>99,'wp_session_token'=>'exact','status'=>'active','expires'=>gmdate('Y-m-d H:i:s',time()+3600),'delivery_choice'=>'{"provider":"book","key":"hq"}','delivery_confirmation'=>'{"confirmed":true}'];
-		$this->db->rows['99']=['session_value'=>serialize(['cart'=>['item'=>['quantity'=>1]]]),'session_expiry'=>'9999999999'];
+		$this->db->session=['id'=>42,'partner_id'=>7,'user_id'=>99,'wp_session_token'=>'exact','status'=>'active','expires'=>gmdate('Y-m-d H:i:s',time()+3600),'wc_session_key'=>\POW\Tests\Rollback\VISIT_KEY,'delivery_choice'=>'{"provider":"book","key":"hq"}','delivery_confirmation'=>'{"confirmed":true}'];
+		$this->db->rows[\POW\Tests\Rollback\VISIT_KEY]=['session_value'=>serialize(['cart'=>['item'=>['quantity'=>1]]]),'session_expiry'=>'9999999999'];
 		$this->logger=new RollbackLogger();$this->guard=new \POW\Tests\Rollback\NativeSessionGuard($this->s->registry,new POW\Sessions\Store(),$this->logger);$this->guard->register();
 		$this->logged=[];set_error_handler(function(int $no,string $msg):bool{$this->logged[]=$msg;return true;});
 	}
 	protected function tearDown():void{restore_error_handler();$GLOBALS['wpdb']=$this->previous;$GLOBALS['pow_test_session_tokens']=$this->previous_tokens;unset($GLOBALS['rollback_test']);}
 	/** A request hydrates the buyer row exactly as WooCommerce would at init. */
 	private function request():object{$handler=new \POW\Tests\Rollback\NativeSessionHandler();$this->s->session=$handler;$handler->init();return $handler;}
-	private function stored():array{return unserialize($this->db->rows['99']['session_value']);}
+	private function stored():array{return unserialize($this->db->rows[\POW\Tests\Rollback\VISIT_KEY]['session_value']);}
 	private function quantity(object $handler,int $qty):void{$this->s->session=$handler;$handler->set('cart',['item'=>['quantity'=>$qty]]);}
 	/** One warning with the hashed key and reason; never the raw key, session data or secrets. */
-	private function assertRefusalLogged(string $reason):void{self::assertCount(1,$this->logger->warnings);[$message,$context]=$this->logger->warnings[0];self::assertSame('Native cart commit refused',$message);self::assertSame(['session_key_hash'=>substr(hash('sha256','99'),0,16),'reason'=>$reason],$context);self::assertStringNotContainsString('"99"',json_encode($context));}
+	private function assertRefusalLogged(string $reason):void{self::assertCount(1,$this->logger->warnings);[$message,$context]=$this->logger->warnings[0];self::assertSame('Native cart commit refused',$message);self::assertSame(['session_key_hash'=>substr(hash('sha256',\POW\Tests\Rollback\VISIT_KEY),0,16),'reason'=>$reason],$context);self::assertStringNotContainsString(\POW\Tests\Rollback\VISIT_KEY,json_encode($context),'The key is a bearer credential: only its hash may be logged');}
 
 	// ---- H1: optimistic compare-and-set loses to an overlapping request ----
 
@@ -94,7 +104,7 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 		$quantity=$this->request();$fragments=$this->request();
 		$this->s->session=$fragments;$fragments->set('cart_totals',['total'=>'10.00']);self::assertTrue($fragments->save_checked());
 		// Another writer lands between the retry's rehydration and its compare-and-set.
-		$this->db->before_cas=function(){$this->db->rows['99']['session_value']=serialize(['cart'=>['item'=>['quantity'=>1]],'cart_totals'=>['total'=>'12.00']]);};
+		$this->db->before_cas=function(){$this->db->rows[\POW\Tests\Rollback\VISIT_KEY]['session_value']=serialize(['cart'=>['item'=>['quantity'=>1]],'cart_totals'=>['total'=>'12.00']]);};
 		$this->quantity($quantity,2);
 		self::assertFalse($quantity->save_checked(),'Only one retry');
 		self::assertSame(1,$this->stored()['cart']['item']['quantity']);self::assertSame(['total'=>'12.00'],$this->stored()['cart_totals'],'Latest concurrent value untouched');
@@ -105,7 +115,7 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 	public function test_h1_overlapping_request_that_only_refreshes_expiry_does_not_lose_the_quantity_change():void{
 		$quantity=$this->request();$fragments=$this->request();
 		$this->s->session=$fragments;$fragments->set_expiration(9999999998);self::assertTrue($fragments->save_checked());
-		self::assertSame('9999999998',$this->db->rows['99']['session_expiry']);
+		self::assertSame('9999999998',$this->db->rows[\POW\Tests\Rollback\VISIT_KEY]['session_expiry']);
 		$this->quantity($quantity,2);self::assertTrue($quantity->save_checked(),'Same session_value baseline still matches after an expiry-only rewrite');
 		self::assertSame(2,$this->stored()['cart']['item']['quantity']);
 	}
@@ -140,12 +150,23 @@ final class QuantityRollbackTest extends PHPUnit\Framework\TestCase {
 		// An 'exception' refusal names the throwable so a benign login-window refusal can be told from a storage fault. Still no raw key or session data.
 		foreach($this->logger->warnings as [$message,$context]){self::assertSame('RuntimeException: Native cart login unavailable.',$context['detail']);self::assertStringNotContainsString('"99"',json_encode($context));self::assertStringNotContainsString('quantity',json_encode($context));}
 	}
-	/** A handler whose native login failed during init never loaded a row; its shutdown save has nothing to commit and must not log a refusal (the redeem request's cookie is not yet visible to itself). */
-	public function test_handler_blocked_at_init_skips_shutdown_save_without_logging():void{
+	/** An expired visit is not a visit: the request is an ordinary shopper of the bound account, core owns its numeric row and the visit's basket is left for cron or a return to remove. Nothing is refused, so nothing is logged. */
+	public function test_an_expired_visit_becomes_an_ordinary_shopper_and_keeps_the_visit_basket():void{
 		$this->db->session['status']='expired';$handler=$this->request();
+		self::assertFalse($handler->is_protected());self::assertSame('99',(string)$handler->get_customer_id());
 		$handler->save_data();
-		self::assertSame([],$this->logger->warnings,'Nothing to save, nothing to log');self::assertNull($handler->last_refusal());self::assertSame(0,$handler->parent_saves,'No native fallback save');
-		self::assertSame(1,$this->stored()['cart']['item']['quantity'],'Buyer row untouched');
+		self::assertSame([],$this->logger->warnings,'Nothing refused, nothing to log');self::assertNull($handler->last_refusal());
+		self::assertSame(1,$this->stored()['cart']['item']['quantity'],'Visit basket untouched');
+		self::assertSame([],$this->db->log,'No statement may touch wp_woocommerce_sessions for a key that is not a visit key');
+	}
+	/** Two visits of one shared login are two baskets: each compare-and-set sees only its own row. */
+	public function test_two_visits_of_one_login_commit_independently():void{
+		$mine=$this->request();
+		$this->db->rows[\POW\Tests\Rollback\SIBLING_KEY]=['session_value'=>serialize(['cart'=>['item'=>['quantity'=>5]]]),'session_expiry'=>'9999999999'];
+		$this->quantity($mine,2);self::assertTrue($mine->save_checked());
+		self::assertSame(2,$this->stored()['cart']['item']['quantity']);
+		self::assertSame(5,unserialize($this->db->rows[\POW\Tests\Rollback\SIBLING_KEY]['session_value'])['cart']['item']['quantity'],'A sibling visit basket is never a candidate');
+		self::assertSame([],$this->logger->warnings);
 	}
 	public function test_h3_consent_clear_affecting_zero_rows_drops_the_cart_commit_and_logs_it():void{
 		$quantity=$this->request();$this->guard->mark_changed();$this->quantity($quantity,2);

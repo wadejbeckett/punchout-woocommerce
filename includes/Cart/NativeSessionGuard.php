@@ -2,10 +2,10 @@
 /** Coordinate native Woo persistence with the existing Punchout winner mutex. @package POW @license AGPL-3.0-or-later */
 declare( strict_types = 1 );
 namespace POW\Cart;
+use POW\Cart\SessionKey;
 use POW\Partners\Registry;
 use POW\Sessions\Store;
 use POW\Sessions\Session;
-use POW\Installer;
 use POW\Logger;
 use Automattic\WooCommerce\StoreApi\Utilities\CartTokenUtils;
 defined( 'ABSPATH' ) || exit;
@@ -41,25 +41,51 @@ final class NativeSessionGuard {
 		// Refuse before constructing the final token handler, including its route-level reselection.
 		if ( $this->protected_token() ) { $this->deny(); }
 		if ( in_array( $handler, [ 'WC_Session_Handler', '\\WC_Session_Handler', NativeSessionHandler::class ], true ) ) { return NativeSessionHandler::class; }
-		if ( $this->protected_key( (string) get_current_user_id() ) ) { $this->deny(); }
+		// A third-party handler cannot carry a visit's basket, and the question is
+		// "is this request inside a visit" — asking what the USER is would refuse the
+		// bound account's own ordinary shopping. An unanswerable lookup fails closed.
+		$visit = null;
+		try { $visit = $this->visit(); } catch ( \Throwable $error ) { $this->deny(); }
+		if ( $visit ) { $this->deny(); }
 		return $handler;
 	}
+	/**
+	 * Whether a WooCommerce session key is a punchout visit's.
+	 *
+	 * Shape alone decides. The login is the connection's own customer account,
+	 * so no question about the USER can tell a visit from the account holder's
+	 * ordinary shopping, and a numeric or `t_` key must answer false so an
+	 * ordinary shopper keeps core's behaviour untouched.
+	 */
 	public function protected_key( string $key ): bool {
-		if ( '' === $key || ! ctype_digit( $key ) || (int) $key <= 0 ) { return false; }
-		$user = get_userdata( (int) $key );
-		return ( $user && in_array( Installer::ROLE, (array) $user->roles, true ) ) || (int) get_user_meta( (int) $key, '_pow_partner_id', true ) > 0;
+		return SessionKey::is_visit_key( $key );
 	}
-	/** Called before native data is hydrated, not at confirmation entry. */
+	/**
+	 * The visit this request is inside, still valid, or null.
+	 *
+	 * Proven by the row matching (current user, current WP session token): the
+	 * token is minted per visit at auto-login, so two employees signed in as
+	 * one account resolve to two different visits.
+	 *
+	 * @throws \RuntimeException When the session row cannot be looked up.
+	 */
+	public function visit(): ?Session {
+		$user = (int) get_current_user_id();
+		if ( $user <= 0 ) { return null; }
+		$login = $this->sessions->find_for_login( $user, wp_get_session_token(), [ Session::ACTIVE, Session::ORDERED ] );
+		if ( ! $login || ! $this->sessions->login_valid_checked( $login ) || ! $login->expires || $login->expires <= gmdate( 'Y-m-d H:i:s' ) ) { return null; }
+		return $login;
+	}
+	/** Called before native data is hydrated, not at confirmation entry. The key, not the user id, is what binds a basket to a visit. */
 	public function login( string $key ): Session {
-		if ( (string) get_current_user_id() !== $key ) { throw new \RuntimeException( 'Native cart identity unavailable.' ); }
-		$login = $this->sessions->find_for_login( (int) $key, wp_get_session_token(), [ Session::ACTIVE, Session::ORDERED ] );
-		if ( ! $login || ! $this->sessions->login_valid_checked( $login ) || ! $login->expires || $login->expires <= gmdate( 'Y-m-d H:i:s' ) ) { throw new \RuntimeException( 'Native cart login unavailable.' ); }
+		$login = $this->visit();
+		if ( ! $login || ! hash_equals( SessionKey::for_session( $login ), $key ) ) { throw new \RuntimeException( 'Native cart login unavailable.' ); }
 		return $login;
 	}
 	/** Staging/authentication can invoke native code and therefore happens outside the mutex. */
 	public function stage_identity( Session $bound ): array {
 		$auth = $this->raw_auth( $bound->user_id );
-		$fresh = $this->login( (string) $bound->user_id );
+		$fresh = $this->login( SessionKey::for_session( $bound ) );
 		$partner = $this->registry->find( $bound->partner_id );
 		if ( $fresh->id !== $bound->id || $fresh->partner_id !== $bound->partner_id || $fresh->wp_session_token !== $bound->wp_session_token || ! $partner || ! $partner->is_active() || get_current_user_id() !== $bound->user_id || wp_get_session_token() !== $bound->wp_session_token || $auth !== $this->raw_auth( $fresh->user_id ) ) { throw new \RuntimeException( 'Native cart login changed.' ); }
 		return [ 'session' => $fresh->id, 'user' => $fresh->user_id, 'token' => $fresh->wp_session_token, 'partner' => $fresh->partner_id, 'owner' => $partner->owner_user_id, 'auth' => $auth ];
@@ -114,7 +140,7 @@ final class NativeSessionGuard {
 	}
 	public function prepare( Session $session ): array {
 		$handler = WC()->session ?? null;
-		if ( ! $handler instanceof NativeSessionHandler || (string) $session->user_id !== (string) $handler->get_customer_id() ) { throw new \RuntimeException( 'Native cart handler unsupported.' ); }
+		if ( ! $handler instanceof NativeSessionHandler || ! hash_equals( SessionKey::for_session( $session ), (string) $handler->get_customer_id() ) ) { throw new \RuntimeException( 'Native cart handler unsupported.' ); }
 		$prepared = $handler->stage();
 		if ( $prepared['identity']['session'] !== $session->id ) { throw new \RuntimeException( 'Native cart login changed.' ); }
 		return $prepared;
