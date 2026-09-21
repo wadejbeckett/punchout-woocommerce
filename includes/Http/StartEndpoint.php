@@ -41,18 +41,6 @@ defined( 'ABSPATH' ) || exit;
  */
 final class StartEndpoint {
 
-	/**
-	 * Capabilities a bound login may not hold.
-	 *
-	 * A visit elevates the whole request to this account (see the
-	 * wp_set_current_user() below), and the token that reaches it came from a
-	 * purchasing system, not from a password. An administrator or shop
-	 * manager behind a connection would therefore hand every buyer of that
-	 * connection the administrator's reach, so such an account is refused at
-	 * redemption even though an operator was able to bind it.
-	 */
-	private const PRIVILEGED_CAPABILITIES = [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ];
-
 	public function __construct(
 		private Store $sessions,
 		private Registry $registry,
@@ -211,9 +199,9 @@ final class StartEndpoint {
 	private function is_bound_login( mixed $user, int $owner_user_id, int $claim_user_id ): bool {
 		if ( $owner_user_id <= 0 || $claim_user_id !== $owner_user_id || ! $user || ! user_can( $user, 'read' ) ) { return false; }
 
-		foreach ( self::PRIVILEGED_CAPABILITIES as $capability ) {
-			if ( user_can( $user, $capability ) ) { return false; }
-		}
+		// Registry owns the list: it is what the bind screen refuses on, so a
+		// visit and a binding cannot disagree about which accounts are safe.
+		if ( Registry::privileged( $user ) ) { return false; }
 
 		return ! get_user_meta( (int) $user->ID, '_pow_partner_id', true );
 	}
