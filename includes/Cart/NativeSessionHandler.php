@@ -78,6 +78,8 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 	private bool $cache_dirty = false;
 	private ?string $cache_key = null;
 	private bool $initializing = false;
+	/** True once this visit's row was deliberately removed by cleanup(): the teardown is not a refused commit. */
+	private bool $terminated = false;
 	/** Decoded native data at hydration; the retry merge applies only keys this request changed. */
 	private array $baseline = [];
 	private ?string $refusal = null;
@@ -273,6 +275,16 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 	/** Protected saves never fall back to the unguarded native save. A compare-and-set loss to an overlapping request is retried once on the fresh row; every final refusal is logged. */
 	public function save_checked(): bool {
 		if ( ! $this->is_protected() ) { parent::save_data(); return true; }
+		// This visit's row was deliberately removed and the handler refused with
+		// it, so there is nothing to commit and nothing was refused. Core's own
+		// save_data() still runs at shutdown priority 20, and the Store API
+		// response filter still calls this method, so without this both would
+		// stage a row that no longer exists, throw, and record reason
+		// 'exception' — a warning on EVERY successful return, abandon and
+		// in-visit logout, which is what buries the genuine refusals it shares a
+		// message with. A removal that could not be confirmed is reported by
+		// delete_locked()'s own return value, not by a commit refusal here.
+		if ( $this->terminated ) { return true; }
 		$guard = NativeSessionGuard::registered();
 		$this->refusal = null;
 		$this->refusal_detail = null;
@@ -336,6 +348,10 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 		if ( $this->blocked || ! $this->row || ( WC()->session ?? null ) !== $this ) { $this->refuse(); return false; }
 		$removed = $this->row->delete_locked();
 		$this->cache_dirty = $removed;
+		// Both callers are deliberate teardowns — the terminal cleanup behind
+		// woocommerce_cart_emptied and delete_session()'s own visit branch — so
+		// from here on this handler has nothing left to persist.
+		$this->terminated = true;
 		$this->refuse();
 		return $removed;
 	}

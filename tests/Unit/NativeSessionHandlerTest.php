@@ -63,10 +63,15 @@ final class VisitExpiryDatabase {
 		if(str_contains($sql,'RELEASE_LOCK')){unset($this->locks[(string)$a[0]]);return '1';}
 		throw new LogicException('Unexpected scalar query: '.$sql);}
 	public function suppress_errors(bool $suppress=true):bool{$previous=$this->suppressed;$this->suppressed=$suppress;return $previous;}
+	/** The indexed column is compared directly and the stored key comes back, so the byte-exact test happens in PHP. */
+	private function indexed(string $sql):void{if(str_contains($sql,'BINARY session_key')){throw new LogicException('BINARY on the indexed column costs the UNIQUE index: '.$sql);}if(!str_contains($sql,'session_key = %s')){throw new LogicException('Missing the native key predicate: '.$sql);}}
 	public function get_results(string $key,mixed $format):?array{[$sql,$a]=$this->queries[$key];if(str_contains($sql,'FROM wp_usermeta')){return $this->metadata;}
-		if(!str_contains($sql,'BINARY session_key = BINARY %s')){throw new LogicException('Missing exact native key');}return isset($this->rows[$a[0]])?[$this->rows[$a[0]]]:[];}
+		$this->indexed($sql);if(!str_contains($sql,'SELECT session_key,')){throw new LogicException('The stored key must come back: '.$sql);}
+		return isset($this->rows[$a[0]])?[['session_key'=>$a[0]]+$this->rows[$a[0]]]:[];}
 	public function query(string $key):int|false{[$sql,$a]=$this->queries[$key];
 		if(str_starts_with($sql,'INSERT')){if(str_contains($sql,'ON DUPLICATE')){throw new LogicException('No overwrite on insert');}[$k,$value,$expiry]=$a;if(isset($this->rows[$k])){return 0;}$this->rows[$k]=['session_value'=>$value,'session_expiry'=>(string)$expiry];return 1;}
+		$this->indexed($sql);if(!str_contains($sql,'BINARY session_value = BINARY %s')){throw new LogicException('Missing exact CAS on the value: '.$sql);}
+		if(str_starts_with($sql,'DELETE')){[$k,$expected]=$a;if(!isset($this->rows[$k])||$this->rows[$k]['session_value']!==$expected){return 0;}unset($this->rows[$k]);return 1;}
 		[$value,$expiry,$k,$expected]=$a;if(!isset($this->rows[$k])||$this->rows[$k]['session_value']!==$expected){return 0;}$changed=$this->rows[$k]!==['session_value'=>$value,'session_expiry'=>(string)$expiry];$this->rows[$k]=['session_value'=>$value,'session_expiry'=>(string)$expiry];return (int)$changed;}
 }
 /** A correctly shaped stand-in for WooCommerce's session handler: every method the per-visit subclass depends on, with the visibility it depends on. */
@@ -121,8 +126,14 @@ class HooklessCoreSessionHandler {
 	public function set_session_expiration(){}
 }
 
+/** Records the operational log the guard writes, which is the whole point of a refusal. */
+final class VisitRefusalLogger extends POW\Logger {
+	public array $warnings=[];
+	public function __construct(){}
+	public function warning(string $message,array $context=[]):void{$this->warnings[]=[$message,$context];}
+}
 final class NativeSessionHandlerTest extends PHPUnit\Framework\TestCase {
-	private mixed $previous;private mixed $s;private VisitExpiryDatabase $db;private mixed $guard;
+	private mixed $previous;private mixed $s;private VisitExpiryDatabase $db;private mixed $guard;private VisitRefusalLogger $logger;
 	/** Seconds the fixture visit still has when the request starts. */
 	private const VISIT_SECONDS=3600;
 	protected function setUp():void{
@@ -133,7 +144,8 @@ final class NativeSessionHandlerTest extends PHPUnit\Framework\TestCase {
 		$this->s->registry->partner=POW\Partners\Partner::from_row(['id'=>7,'status'=>'active','owner_user_id'=>20]);
 		$this->s->store->session=POW\Sessions\Session::from_row(['id'=>42,'partner_id'=>7,'user_id'=>99,'wp_session_token'=>'exact','status'=>'active','expires'=>gmdate('Y-m-d H:i:s',time()+self::VISIT_SECONDS),'wc_session_key'=>\POW\Tests\NativeHandler\VISIT_KEY]);
 		$this->db->rows[\POW\Tests\NativeHandler\VISIT_KEY]=['session_value'=>serialize(['cart'=>'A']),'session_expiry'=>(string)(time()+self::VISIT_SECONDS)];
-		$this->guard=new \POW\Tests\NativeHandler\NativeSessionGuard($this->s->registry,$this->s->store);
+		$this->logger=new VisitRefusalLogger();
+		$this->guard=new \POW\Tests\NativeHandler\NativeSessionGuard($this->s->registry,$this->s->store,$this->logger);
 		$this->guard->register();
 	}
 	protected function tearDown():void{$GLOBALS['wpdb']=$this->previous;unset($GLOBALS['native_handler_test']);}
@@ -185,6 +197,57 @@ final class NativeSessionHandlerTest extends PHPUnit\Framework\TestCase {
 		$handler->set('cart','B');
 		self::assertTrue($handler->save_checked());
 		self::assertSame((string)(time()+self::VISIT_SECONDS),$this->db->rows[\POW\Tests\NativeHandler\VISIT_KEY]['session_expiry']);
+	}
+
+	// -------------------------------------------- the deliberate terminal removal
+
+	/**
+	 * A completed return is not a refused basket commit.
+	 *
+	 * ReturnEndpoint wins the transition and then empties the cart, which fires
+	 * woocommerce_cart_emptied -> cleanup_terminal_cart() -> cleanup(), and that
+	 * removes this visit's own wp_woocommerce_sessions row and refuses the
+	 * handler on purpose. Core's init_hooks() registered its own save_data() on
+	 * shutdown at priority 20 and it still runs, so the handler must recognise
+	 * its own teardown: staging a row that was just deleted throws, and the
+	 * throw used to be recorded as reason 'exception' and logged at warning
+	 * level on every successful return, abandon and in-visit logout — making the
+	 * only operational signal for a real basket-protection failure
+	 * indistinguishable from success.
+	 */
+	public function test_a_completed_return_stages_nothing_and_logs_no_refusal():void{
+		$handler=$this->request();
+		self::assertSame('A',$handler->get('cart'));
+		$this->s->store->session=new POW\Sessions\Session(...array_replace(get_object_vars($this->s->store->session),['status'=>POW\Sessions\Session::RETURNED]));
+		$this->guard->cleanup_terminal_cart();
+		self::assertSame([],$this->db->rows,'The terminal cleanup removes this visit\'s basket row');
+		// Core's shutdown save, which runs whatever the return endpoint did.
+		$handler->save_data('');
+		self::assertSame([],$this->db->rows,'A deliberately removed row is never re-staged');
+		self::assertNull($handler->last_refusal(),'A completed return is not a refusal');
+		self::assertSame([],$this->logger->warnings,'No refusal warning may be logged for a successful return');
+		self::assertTrue($handler->is_protected(),'The handler stays protected: no unguarded parent save may run');
+		self::assertSame(0,$handler->parent_saves);
+	}
+	/** A Store API response arriving after the same teardown answers success rather than a 500 from a commit that had nothing to commit. */
+	public function test_a_rest_save_after_the_terminal_removal_is_not_a_failure():void{
+		$handler=$this->request();
+		$this->s->store->session=new POW\Sessions\Session(...array_replace(get_object_vars($this->s->store->session),['status'=>POW\Sessions\Session::CLOSED]));
+		$this->guard->cleanup_terminal_cart();
+		self::assertTrue($handler->save_checked());
+		self::assertNull($handler->last_refusal());
+		self::assertSame([],$this->logger->warnings);
+		self::assertSame([],$this->db->rows);
+	}
+	/** The silence is specific to that teardown: a commit refused for any other reason still warns. */
+	public function test_a_refusal_that_is_not_a_deliberate_removal_still_warns():void{
+		$handler=$this->request();
+		// A later handler took over WC()->session mid-request.
+		$this->s->session=null;
+		$handler->save_data('');
+		self::assertSame('exception',$handler->last_refusal());
+		self::assertSame(['Native cart commit refused'],array_column($this->logger->warnings,0));
+		self::assertSame(serialize(['cart'=>'A']),$this->db->rows[\POW\Tests\NativeHandler\VISIT_KEY]['session_value'],'A refused commit changes nothing');
 	}
 
 	// ------------------------------------------------------ handler-shape check

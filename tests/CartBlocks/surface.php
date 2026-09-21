@@ -33,21 +33,38 @@ namespace {
 	if ( ! defined( 'POW_PLUGIN_URL' ) ) { define( 'POW_PLUGIN_URL', 'https://shop.example.test/wp-content/plugins/punchout-woocommerce/' ); }
 	if ( ! function_exists( 'sanitize_html_class' ) ) { function sanitize_html_class( string $class ): string { return preg_replace( '/[^A-Za-z0-9_-]/', '', $class ); } }
 
-	/** Only the Registry database boundary is replaced; its real reader runs. */
+	/**
+	 * Only the Registry database boundary is replaced; its real reader runs.
+	 *
+	 * The statement decides the answer. Two connections are bound to the same
+	 * customer account, so answering every lookup with one row would let the
+	 * surface ask about the account, or about the wrong connection, and still
+	 * pass — which is exactly the mistake a visit-scoped surface can make when
+	 * one account holds every buyer's login.
+	 */
 	final class CartBlocksDatabase {
 		public string $prefix = 'blocks_fixture_';
 		public string $usermeta = 'blocks_fixture_usermeta';
 		public string $last_error = '';
-		/** One connection bound to customer account 20. */
-		public ?array $partner = [ 'id' => 7, 'status' => 'active', 'owner_user_id' => 20, 'exit_policy' => 'punchout_only' ];
+		/** Two connections, both bound to customer account 20; one visit of each. */
+		public array $partners = [
+			7 => [ 'id' => 7, 'status' => 'active', 'owner_user_id' => 20, 'exit_policy' => 'punchout_only' ],
+			9 => [ 'id' => 9, 'status' => 'active', 'owner_user_id' => 20, 'exit_policy' => 'punchout_only' ],
+		];
 		public bool $partner_error = false;
 		public int $partner_reads = 0;
+		/** The connection ids the surface actually asked about, in order. */
+		public array $partner_lookups = [];
 		private array $queries = [];
 		public function prepare( string $sql, mixed ...$args ): string { $key = 'query-' . count( $this->queries ); $this->queries[$key] = [ $sql, $args ]; return $key; }
 		public function get_row( string $key, mixed $format ): ?array {
 			++$this->partner_reads;
 			$this->last_error = $this->partner_error ? 'Invented partner read failure' : '';
-			return $this->partner;
+			[ $sql, $args ] = $this->queries[$key];
+			if ( ! str_contains( $sql, 'pow_partners' ) || ! str_contains( $sql, 'WHERE id = %d' ) ) { throw new LogicException( 'Unexpected row query: ' . $sql ); }
+			$id = (int) $args[0];
+			$this->partner_lookups[] = $id;
+			return $this->partners[ $id ] ?? null;
 		}
 		/** Nothing in the cart surface reads user meta: one bound account answers no question. */
 		public function get_results( string $key, mixed $format ): ?array { return []; }
@@ -55,8 +72,10 @@ namespace {
 
 	final class CartBlocksSurfaceTest extends PHPUnit\Framework\TestCase {
 		private const BLOCK = '<div data-block-name="woocommerce/proceed-to-checkout-block" class="wp-block-woocommerce-proceed-to-checkout-block"><a href="/checkout/">Proceed to Checkout</a></div>';
-		/** The connection's one bound customer account, and two visits of it. */
+		/** One bound customer account, two connections that name it, one visit of each. */
 		private const ACCOUNT = 20;
+		private const PARTNER_A = 7;
+		private const PARTNER_B = 9;
 		private const VISIT_A = 42;
 		private const VISIT_B = 77;
 		private const KEY_A = 'pow_aaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -86,9 +105,9 @@ namespace {
 			$this->surface->register();
 		}
 		protected function tearDown(): void { foreach ( $this->saved as $key => [ $exists, $value ] ) { if ( $exists ) { $GLOBALS[$key] = $value; } else { unset( $GLOBALS[$key] ); } } }
-		/** One visit of the bound account: its own row, its own per-visit basket key. */
-		private function visit( int $id = self::VISIT_A, string $key = self::KEY_A, string $status = 'active' ): POW\Sessions\Session {
-			return POW\Sessions\Session::from_row( [ 'id' => $id, 'partner_id' => 7, 'user_id' => self::ACCOUNT, 'wc_session_key' => $key, 'status' => $status, 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] );
+		/** One visit of the bound account: its own row, its own per-visit basket key, its own connection. */
+		private function visit( int $id = self::VISIT_A, string $key = self::KEY_A, string $status = 'active', int $partner_id = self::PARTNER_A ): POW\Sessions\Session {
+			return POW\Sessions\Session::from_row( [ 'id' => $id, 'partner_id' => $partner_id, 'user_id' => self::ACCOUNT, 'wc_session_key' => $key, 'status' => $status, 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] );
 		}
 		private function render(): string {
 			$html = self::BLOCK;
@@ -139,7 +158,7 @@ namespace {
 			self::assertSame( $before, serialize( $GLOBALS['pow_blocks_scripts'] ) );
 			self::assertSame( 0, $this->db->partner_reads, 'An ordinary cart render asks the registry nothing' );
 		}
-		public function test_missing_partner_is_restricted(): void { $this->db->partner = null; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
+		public function test_missing_partner_is_restricted(): void { $this->db->partners = []; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
 		public function test_failed_initial_partner_read_is_restricted_without_fatal(): void { $this->db->partner_error = true; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
 		public function test_label_filter_is_encoded_as_data_and_no_nonce_or_token_is_exported(): void {
 			$label = '</script><script>example & "label"</script>';
@@ -173,9 +192,10 @@ namespace {
 		}
 		public function test_connection_switched_off_mid_visit_renders_no_exit(): void {
 			self::assertSame( 1, substr_count( $this->surface->cart_exits_shortcode(), 'class="pow-return-form"' ) );
-			$this->db->partner['status'] = 'inactive';
+			$this->db->partners[ self::PARTNER_A ]['status'] = 'inactive';
 			self::assertSame( '', $this->surface->cart_exits_shortcode(), 'A connection switched off mid-visit renders neither exit' );
 			self::assertSame( 2, $this->db->partner_reads, 'Every render re-reads the connection' );
+			self::assertSame( [ self::PARTNER_A, self::PARTNER_A ], $this->db->partner_lookups, 'Both renders asked about this visit\'s own connection' );
 		}
 		public function test_cart_exits_shortcode_gives_checkout_only_to_an_ordinary_shopper_with_no_session(): void {
 			$this->set_session( null );
@@ -190,20 +210,40 @@ namespace {
 			// bound to is an ordinary customer whenever no visit is live, so it
 			// keeps the native checkout link. There are no orphaned buyers, and
 			// nothing about the account — role included — blocks checkout: only
-			// a live visit does.
+			// a live visit does. What separates this from the ordinary-shopper
+			// case is the actor: the bound account itself is signed in, and the
+			// surface still asks the registry nothing at all.
 			$this->set_session( null );
+			self::assertSame( self::ACCOUNT, $GLOBALS['pow_test_current_user_id'], 'The bound account is the one browsing' );
 			$html = $this->surface->cart_exits_shortcode();
 			self::assertSame( 1, substr_count( $html, 'href="https://shop.example.test/checkout/"' ) );
 			self::assertStringNotContainsString( 'pow-return-form', $html );
+			self::assertSame( [], $this->db->partner_lookups, 'No visit, no connection question — not even for the account that owns one' );
 		}
 		public function test_another_visit_of_the_same_account_renders_its_own_exit(): void {
-			// Two visits share one account and differ only by their per-visit key
-			// and login token. The resolver hands each request its own row, so the
-			// surface renders that row's exit and asks nothing about the account.
-			$this->set_session( $this->visit( self::VISIT_B, self::KEY_B ) );
+			// Two visits share one account, so the account id discriminates
+			// nothing and the rendered markup carries nothing of the visit in it.
+			// What the surface must get right is which row it consults: this
+			// visit's own connection, not the account and not the other visit's
+			// connection. That is the assertion, because it is the only thing
+			// here that can be wrong.
+			$this->set_session( $this->visit( self::VISIT_B, self::KEY_B, 'active', self::PARTNER_B ) );
 			$html = $this->surface->cart_exits_shortcode();
 			self::assertSame( 1, substr_count( $html, 'class="pow-return-form"' ) );
 			self::assertStringNotContainsString( 'https://shop.example.test/checkout/', $html );
+			self::assertSame( [ self::PARTNER_B ], $this->db->partner_lookups, 'The surface resolved this visit\'s own connection' );
+		}
+		public function test_a_visit_of_a_switched_off_connection_is_fenced_while_its_siblings_visit_stays_live(): void {
+			// One account, two connections, one visit each: switching one
+			// connection off must fence its own visit and only its own. A
+			// surface that looked the account up, or the first row it could
+			// find, would fence both or neither.
+			$this->db->partners[ self::PARTNER_B ]['status'] = 'inactive';
+			$this->set_session( $this->visit( self::VISIT_B, self::KEY_B, 'active', self::PARTNER_B ) );
+			self::assertSame( '', $this->surface->cart_exits_shortcode(), 'A visit of a disabled connection renders neither exit' );
+			$this->set_session( $this->visit() );
+			self::assertSame( 1, substr_count( $this->surface->cart_exits_shortcode(), 'class="pow-return-form"' ), 'The still-active connection keeps its own visit\'s return control' );
+			self::assertSame( [ self::PARTNER_B, self::PARTNER_A ], $this->db->partner_lookups );
 		}
 		public function test_a_visit_that_has_left_active_renders_no_exit(): void {
 			foreach ( [ 'returned', 'closed', 'expired', 'pending' ] as $status ) {
