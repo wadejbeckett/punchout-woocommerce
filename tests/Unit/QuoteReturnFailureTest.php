@@ -81,14 +81,14 @@ final class QuoteReturnFailureTest extends TestCase {
 		self::assertStringNotContainsString( 'private-secret', $reported ); self::assertStringNotContainsString( 'private-document', $reported );
 	}
 	public function test_cancellation_failure_is_not_reported_as_confirmed_cancelled(): void {
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function() { throw new RuntimeException( 'creation failed' ); };
+		WC()->customer = new QuoteOrderExplodingCustomer();
 		$GLOBALS['pow_test_order_save'] = static fn() => 0;
 		self::assertSame( 0, $this->create() );
 		self::assertStringNotContainsString( 'has been cancelled', $GLOBALS['pow_test_mail'][0]['message'] );
 		self::assertStringContainsString( 'not confirmed', $GLOBALS['pow_test_mail'][0]['message'] );
 	}
 	public function test_throwing_note_does_not_prevent_cancelling_incomplete_order(): void {
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function() { throw new RuntimeException( 'creation failed' ); };
+		WC()->customer = new QuoteOrderExplodingCustomer();
 		$GLOBALS['pow_test_order_note'] = static function() { throw new RuntimeException( 'note failed' ); };
 		self::assertSame( 0, $this->create() ); self::assertSame( 'cancelled', array_values( $GLOBALS['pow_test_orders'] )[0]->get_status() );
 	}
@@ -118,7 +118,7 @@ final class QuoteReturnFailureTest extends TestCase {
 			$GLOBALS['pow_test_products'] = [];
 			if ( 'product' === $boundary ) { $GLOBALS['pow_test_products'][412] = new WC_Product(412, 'Example', 'SKU'); $GLOBALS['pow_test_add_product_result'] = 0; }
 			if ( 'bare' === $boundary ) { $GLOBALS['pow_test_add_item_result'] = false; }
-			if ( 'shipping' === $boundary ) { $GLOBALS['pow_test_props_error'] = new WP_Error('bad', 'private detail'); $GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static fn() => [ 'address' => [ 'city' => 'Example' ], 'code' => '' ]; }
+			if ( 'shipping' === $boundary ) { $GLOBALS['pow_test_props_error'] = new WP_Error('bad', 'private detail'); WC()->customer = new WC_Customer( [ 'city' => 'Example' ] ); }
 			$id = $this->quotes->create_for_session( Session::from_row( $this->db->session ), Partner::from_row( [ 'id' => 7 ] ), [ 'currency' => 'ZAR', 'items' => [ [ 'quantity' => 1, 'supplier_part_id' => 'SKU', 'aux_id' => '412|0', 'unit_price_cents' => 100, 'description' => 'Example' ] ] ] );
 			self::assertSame( 0, $id, $boundary );
 		}
@@ -129,9 +129,13 @@ final class QuoteReturnFailureTest extends TestCase {
 		$GLOBALS['pow_test_after_create_order'] = static function( $order ) use ( &$statuses ): void {
 			$statuses[] = $order->get_status();
 		};
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function( $address ) use ( &$statuses ) {
-			$statuses[] = array_values( $GLOBALS['pow_test_orders'] )[0]->get_status();
-			return $address;
+		// The saved-address candidate is read after the order row exists and before its meta is written.
+		WC()->customer = new class( $statuses ) extends WC_Customer {
+			public function __construct( private array &$statuses ) { parent::__construct( [] ); }
+			public function get_shipping(): array {
+				$this->statuses[] = array_values( $GLOBALS['pow_test_orders'] )[0]->get_status();
+				return [];
+			}
 		};
 		$id = $this->create();
 		self::assertGreaterThan( 0, $id );

@@ -97,3 +97,25 @@ final class QuoteOrderTestLogger extends \POW\Logger {
 		if ( isset( $GLOBALS['pow_test_logger_error'] ) ) { throw $GLOBALS['pow_test_logger_error']; }
 	}
 }
+
+/**
+ * A saved shipping address that cannot be read.
+ *
+ * The saved-customer address is the last mutable step a legacy Quote takes
+ * between its order row existing and its meta being written, which makes it
+ * the seam for "the construction threw part-way through a saved order".
+ * It replaces the removed pow_quote_shipping_address filter in that role.
+ */
+final class QuoteOrderExplodingCustomer extends \WC_Customer {
+
+	public function __construct() {
+		parent::__construct( [] );
+	}
+
+	/**
+	 * @return array<string, string>
+	 */
+	public function get_shipping(): array {
+		throw new \RuntimeException( 'address lookup exploded' );
+	}
+}
