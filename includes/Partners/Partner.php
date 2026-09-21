@@ -15,7 +15,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * One configured customer connection (buyer-side tenant).
  *
- * Immutable snapshot of a registry row; all persistence goes through Registry. `exit_policy` is the explicit company entitlement, narrowed by a checked buyer restriction in Checkout\ExitPolicy. Persisted inherited values remain closed until migration freezes them. `mode`, its constants and is_requisition_only() remain legacy compatibility APIs; runtime authorization never uses that snapshot flag.
+ * Immutable snapshot of a registry row; all persistence goes through Registry. `exit_policy` and `mode` are retired columns: punchout is the only exit a visit has, so `exit_policy` always reads `punchout_only` whatever the row holds, `mode` always reads the requisition default, neither is written any more, and no runtime authorization consults either.
  *
  * `status` is the lifecycle: STATUS_PENDING (self-service registration
  * submitted, awaiting an administrator — never authenticates), then
@@ -29,7 +29,6 @@ final class Partner {
 	public const STATUS_DISABLED = 'disabled';
 
 	public const MODE_REQUISITION_ONLY = 'requisition_only';
-	public const MODE_DUAL_EXIT        = 'dual_exit';
 
 	public function __construct(
 		public readonly int $id,
@@ -67,7 +66,7 @@ final class Partner {
 		public readonly string $freight_uom = 'EA',
 		public readonly string $freight_classification_domain = 'supplier',
 		public readonly string $freight_classification = 'freight',
-		public readonly string $exit_policy = 'punchout_and_checkout',
+		public readonly string $exit_policy = 'punchout_only',
 	) {}
 
 	/**
@@ -91,7 +90,8 @@ final class Partner {
 			cxml_version: (string) ( $row['cxml_version'] ?? '1.2.008' ),
 			deployment_mode: (string) ( $row['deployment_mode'] ?? 'test' ),
 			return_encoding: (string) ( $row['return_encoding'] ?? 'base64' ),
-			mode: (string) ( $row['mode'] ?? self::MODE_REQUISITION_ONLY ),
+			// Retired column: the stored value is history, never configuration.
+			mode: self::MODE_REQUISITION_ONLY,
 			allow_reentry: ! empty( $row['allow_reentry'] ),
 			allcaps_transform: ! empty( $row['allcaps_transform'] ),
 			gateway_allowlist: isset( $row['gateway_allowlist'] ) && '' !== (string) $row['gateway_allowlist'] ? (string) $row['gateway_allowlist'] : null,
@@ -111,7 +111,8 @@ final class Partner {
 			freight_uom: $delivery['freight_uom'] ?? 'EA',
 			freight_classification_domain: $delivery['freight_classification_domain'] ?? 'supplier',
 			freight_classification: $delivery['freight_classification'] ?? 'freight',
-			exit_policy: \POW\Checkout\ExitPolicy::normalise( $row['exit_policy'] ?? \POW\Checkout\ExitPolicy::ONLY ),
+			// Retired column: punchout is the only exit, whatever the row holds.
+			exit_policy: 'punchout_only',
 		);
 	}
 
@@ -160,10 +161,6 @@ final class Partner {
 	 */
 	public function is_owned_by( int $user_id ): bool {
 		return $user_id > 0 && $user_id === $this->owner_user_id;
-	}
-
-	public function is_requisition_only(): bool {
-		return self::MODE_DUAL_EXIT !== $this->mode;
 	}
 
 	/**

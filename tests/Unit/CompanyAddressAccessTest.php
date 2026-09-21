@@ -24,7 +24,7 @@ function load_wiring(): void {
 	$root = dirname( __DIR__, 2 ) . '/includes/';
 	foreach ( [
 		[ 'Account/IntegrationTab.php', 'POW\\Account', 'POW\\Tests\\FieldsAccount', [ 'is_account_page', 'is_wc_endpoint_url', 'wp_create_nonce', 'wc_get_page_permalink', 'wc_get_endpoint_url', 'get_posts', 'has_shortcode', 'get_permalink', 'header' ] ],
-		[ 'Admin/Page.php', 'POW\\Admin', 'POW\\Tests\\FieldsAdmin', [ 'current_user_can', 'absint', 'sanitize_key', 'delete_transient', 'add_query_arg', 'selected', 'checked', 'submit_button', 'get_users' ] ],
+		[ 'Admin/Page.php', 'POW\\Admin', 'POW\\Tests\\FieldsAdmin', [ 'current_user_can', 'absint', 'sanitize_key', 'delete_transient', 'add_query_arg', 'selected', 'checked', 'submit_button' ] ],
 	] as [ $file, $original, $target, $functions ] ) {
 		$bindings = ''; foreach ( $functions as $function ) { $bindings .= ' use function ' . $original . '\\' . $function . ';'; }
 		$source = str_replace( 'namespace ' . $original . ';', 'namespace ' . $target . ';' . $bindings, file_get_contents( $root . $file ) );
@@ -282,10 +282,13 @@ final class CompanyAddressAccessTest extends TestCase {
 		foreach ( $tokens[0] as $token ) { $depth += str_starts_with( strtolower( $token ), '</' ) ? -1 : 1; self::assertTrue( $depth >= 0 && $depth <= 1, 'Address forms must be outside connection and policy forms.' ); }
 		self::assertSame( 0, $depth );
 	}
-	public function test_account_wiring_renders_server_owned_book_and_preserves_policy_outside_forms(): void {
+	public function test_account_wiring_renders_server_owned_book_without_any_exit_policy(): void {
 		$this->seed(); [ $tab ] = $this->wiring(); $_POST = [ 'pow_address_partner' => '99', 'owner_user_id' => '21' ];
 		ob_start(); try { $tab->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
-		self::assertStringContainsString( 'PRIVATE-DEPOT', $html ); self::assertStringContainsString( 'Company exit policy', $html ); self::assertStringContainsString( 'Rotate secret', $html ); self::assertStringContainsString( 'name="pow_address_partner" value="12"', $html ); $this->assert_no_nested_forms( $html );
+		self::assertStringContainsString( 'PRIVATE-DEPOT', $html ); self::assertStringContainsString( 'Rotate secret', $html ); self::assertStringContainsString( 'name="pow_address_partner" value="12"', $html );
+		// The connection has no entitlement to display: punchout is its only exit.
+		foreach ( [ 'Company exit policy', 'Company permission', 'punchout_and_checkout' ] as $text ) { self::assertStringNotContainsString( $text, $html ); }
+		$this->assert_no_nested_forms( $html );
 	}
 	public function test_account_credential_handler_ignores_address_post_and_same_fields_instance_retains_failure(): void {
 		[ $tab ] = $this->wiring(); $this->post( 'save', 0, '', '', [ 'shipping_postcode' => 'BAD', 'pow_address_label' => 'Wired failed draft' ] );
@@ -293,11 +296,13 @@ final class CompanyAddressAccessTest extends TestCase {
 		$this->fields->handle(); ob_start(); try { $tab->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
 		self::assertStringContainsString( 'Wired failed draft', $html ); self::assertStringContainsString( 'woocommerce-error', $html ); self::assertSame( [], $this->db->writes );
 	}
-	public function test_admin_wiring_renders_editor_and_exit_policy_forms_without_nesting(): void {
+	public function test_admin_wiring_renders_editor_and_connection_forms_without_nesting(): void {
 		$this->seed(); [ , $page ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 30;
 		$_GET = [ 'page' => 'punchout-woocommerce', 'tab' => 'partners', 'action' => 'edit', 'partner' => '12' ];
 		ob_start(); try { $page->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
-		foreach ( [ 'PRIVATE-DEPOT', 'name="exit_policy"', 'Buyer restrictions', 'value="pow_save_partner"', 'name="pow_address_partner" value="12"' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		foreach ( [ 'PRIVATE-DEPOT', 'value="pow_save_partner"', 'name="pow_address_partner" value="12"' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		// The per-buyer restriction screen and the checkout switch went with the dual exit.
+		foreach ( [ 'name="exit_policy"', 'Buyer restrictions', 'Checkout access', 'value="pow_save_buyer_exit"' ] as $text ) { self::assertStringNotContainsString( $text, $html ); }
 		$this->assert_no_nested_forms( $html );
 	}
 	public function test_admin_credential_actions_refuse_mixed_address_form_even_with_valid_admin_nonce(): void {

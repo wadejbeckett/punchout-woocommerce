@@ -291,8 +291,6 @@ final class IntegrationTab {
 		if ( null !== $p ) {
 			$vars['delivery_addresses'] = $this->addresses?->markup( $p->id ) ?? '';
 			$vars['connection'] = [ 'name' => $p->name, 'from' => $p->from_domain . ' / ' . $p->from_identity, 'sender' => $p->sender_domain . ' / ' . $p->sender_identity, 'to' => $p->to_domain . ' / ' . $p->to_identity, 'deployment_mode' => $p->deployment_mode, 'cxml_version' => $p->cxml_version, 'return_encoding' => $p->return_encoding ];
-			$vars['connection']['exit_policy'] = \POW\Checkout\ExitPolicy::labels()[ $p->exit_policy ];
-			$vars['connection']['effective_exit_policy'] = \POW\Checkout\ExitPolicy::labels()[ \POW\Checkout\ExitPolicy::resolve( $this->plugin->settings()->exit_policy(), $p->exit_policy, 'inherit' ) ];
 			$vars['rotation_open'] = '' !== $p->secret_previous;
 			$vars['template_ready'] = $p->is_active() && $this->template_ready( $p );
 			try { $vars['last_setup'] = $this->audit->last_success( $p->id ); } catch ( \Throwable $e ) { $vars['last_setup'] = __( 'Unavailable', 'punchout-woocommerce' ); }
