@@ -186,8 +186,8 @@ defined( 'ABSPATH' ) || exit;
 	</table>
 
 	<h3><?php esc_html_e( 'Identity extrinsics', 'punchout-woocommerce' ); ?></h3>
-	<p><?php esc_html_e( 'Send the user\'s identity as Extrinsic elements on the PunchOutSetupRequest: UserEmail, and UniqueName where your system has one. This recognises the same person within the company and provisions a separate buyer login and cart, without a second employee approval queue. Contact/Email is read as a fallback. Persistent carts are disabled in punchout sessions; a new punchout for the same buyer replaces the previous session.', 'punchout-woocommerce' ); ?></p>
-	<p><?php esc_html_e( 'Without any identity we still serve the session, but every punchout looks like a new person. Extrinsic names we do not recognise are ignored, never rejected.', 'punchout-woocommerce' ); ?></p>
+	<p><?php esc_html_e( 'Send the user\'s identity as Extrinsic elements on the PunchOutSetupRequest: UserEmail, and UniqueName or UniqueUsername where your system has one; Contact/Email is read as a fallback, and UserPrintableName, UserFullName or User supplies the display name. Everyone at your company shops as the one store account we bound to your connection, so the identity is not a login: we record it against the visit and stamp it on the quote. A fresh punchout by the same identity replaces that person\'s previous visit, and two colleagues punching out at the same time get two independent baskets. Persistent carts are disabled inside a punchout visit.', 'punchout-woocommerce' ); ?></p>
+	<p><?php esc_html_e( 'Without an identity we still serve the visit, but the quote carries no buyer name and that person\'s next punchout cannot replace it. Extrinsic names we do not recognise are ignored, never rejected.', 'punchout-woocommerce' ); ?></p>
 
 	<h3><?php esc_html_e( 'Company addresses and delivery confirmation', 'punchout-woocommerce' ); ?></h3>
 	<?php foreach ( $reference->delivery_workflow() as $pow_paragraph ) : ?>

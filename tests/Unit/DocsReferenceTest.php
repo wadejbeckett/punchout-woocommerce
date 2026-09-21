@@ -95,4 +95,52 @@ final class DocsReferenceTest extends TestCase {
 		self::assertStringContainsString( 'separate', $text );
 		self::assertStringContainsString( 'not the supplier setup URL', $text );
 	}
+
+	/**
+	 * The supported list names every extrinsic the parser actually reads,
+	 * for both the identity and the name, and says what they are for: the
+	 * plugin records them, it does not turn them into store accounts.
+	 */
+	public function test_supported_list_names_every_identity_source_as_attribution(): void {
+		$text = implode( ' ', $this->reference()->supported() );
+
+		foreach ( [ 'UserEmail', 'UniqueUsername', 'UniqueName', 'Contact/Email', 'UserPrintableName', 'UserFullName' ] as $term ) {
+			self::assertStringContainsString( $term, $text );
+		}
+
+		self::assertStringContainsString( 'attribution', $text );
+		self::assertStringContainsString( 'one store account per connection', $text );
+		self::assertStringContainsString( 'per punchout visit', $text );
+		self::assertFalse( str_contains( strtolower( $text ), 'provision' ) );
+		self::assertFalse( str_contains( strtolower( $text ), 'separate buyer account' ) );
+	}
+
+	/**
+	 * The delivery workflow is admin-managed and visit-scoped. Nothing in
+	 * it may describe an owner-facing screen, a provisioned buyer or a
+	 * per-person login.
+	 */
+	public function test_delivery_workflow_is_admin_managed_and_visit_scoped(): void {
+		$text = implode( ' ', $this->reference()->delivery_workflow() );
+
+		self::assertStringContainsString( 'customer administration screen', $text );
+		self::assertStringContainsString( 'punchout visit', $text );
+		self::assertFalse( str_contains( strtolower( $text ), 'provision' ) );
+		self::assertFalse( str_contains( $text, 'account integration' ) );
+		self::assertFalse( str_contains( $text, 'signed-in buyer' ) );
+		self::assertFalse( str_contains( $text, 'their own login and cart' ) );
+	}
+
+	/**
+	 * The unbound connection and the open-visit cap both answer cXML 500.
+	 * Neither clears on a retry, so the 500 copy may not tell a buyer to
+	 * retry and stop there.
+	 */
+	public function test_the_internal_status_copy_admits_a_configuration_fault(): void {
+		$row = $this->reference()->status_rows()[ SetupEndpoint::STATUS_INTERNAL ];
+
+		self::assertStringContainsString( 'configur', $row['meaning'] );
+		self::assertStringContainsString( 'store account', $row['meaning'] );
+		self::assertStringContainsString( 'contact', strtolower( $row['action'] ) );
+	}
 }
