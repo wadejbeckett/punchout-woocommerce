@@ -11,11 +11,23 @@
  * capabilities, the same profile, the same persistent-cart meta row. Every
  * separation the model promises therefore has to come from the visit — its own
  * `WP_Session_Tokens` entry, its own auth cookie and its own per-visit
- * `wc_session_key` — and none of it can be proved by comparing user ids. The
- * script drives the real wire path for each of them: an authenticated
+ * `wc_session_key` — and none of it can be proved by comparing user ids.
+ *
+ * What the script actually does is play each visit's whole sequence against
+ * real rows, in one CLI process, one request after another: an authenticated
  * `PunchOutSetupRequest`, the StartPage redeem, the basket, the delivery
  * review, the cart return and the Punchout Quote it leaves behind, then reads
- * the rows back byte-exactly.
+ * the rows back byte-exactly. It is not a wire run and it is not concurrent.
+ * Every setup is handed to a `Http\SetupEndpoint` this file constructs, with
+ * the request body fed through the `pow_test_setup_io` seam and BOTH rate
+ * limiters constructed disabled, so nothing here can fail on the setup route
+ * being unregistered, on inbound transport policy, on a per-IP or
+ * per-connection rate limit, on the response headers, or on a 302 or handoff
+ * POST reaching a browser. And the two visits are sequential: that is why the
+ * script needs `pow_native_forget_visit_memo()` and `detach_native_hooks()` at
+ * all, artefacts no concurrent run has. Two employees really punching in at
+ * the same moment are `ConcurrencyNative.php`, which starts independent
+ * WP-CLI workers; the only HTTP in the native set is `tests/Account/native.py`.
  *
  * It also carries the three regressions that were the confirmed blockers of
  * the shared login, because each of them is invisible until two requests share

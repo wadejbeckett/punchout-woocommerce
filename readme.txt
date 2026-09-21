@@ -31,7 +31,7 @@ PunchOut for WooCommerce lets enterprise buyers "punch out" from their procureme
 == Installation ==
 
 1. Upload the `punchout-woocommerce` folder to `/wp-content/plugins/`, or install the zip via Plugins > Add New > Upload.
-2. Activate the plugin. WooCommerce 8.0+ must be active.
+2. Activate the plugin. WooCommerce 11.1+ must be active: a punchout visit gets its own WooCommerce session row by standing on session-handler internals this release was verified against on 11.1, and it refuses the visit rather than guess on an older one.
 3. (Recommended) Add a sealing key to `wp-config.php` before storing any customer secrets: run `wp punchout generate-key` and paste the line it prints.
 4. Configure at **WooCommerce > PunchOut**: add a customer.
 5. Create (or pick) the one WooCommerce customer account that customer's buyers will shop as, put it in whatever pricing or visibility group it should have, and bind it to the connection. A connection with no bound account refuses `PunchOutSetupRequest` with cXML Status 500.
@@ -70,7 +70,9 @@ One. You create one ordinary WooCommerce customer account per connection, group 
 * Security: inside a punchout visit the request cannot reach wp-admin, /wp/v2/users, application passwords, account details or password change, another visit's basket, or another visit's quote order. Every "is this mine" check compares the per-visit key, never the account.
 * Change: the bound account is an ordinary customer account, so it keeps its own password login and password reset. A stolen password for it is a full store login for that account outside any visit, and changing or resetting its password invalidates every outstanding cookie and therefore ends every live punchout visit of that customer mid-basket. Treat the account as a shared credential and keep it out of the hands of people who should not shop as the customer.
 * Change: that account may now check out normally when no punchout visit is live. Earlier releases blocked ordinary checkout for a requisition-only company's own account; only visits are blocked now.
-* Upgrade: no migration tooling ships. Upgrading expires every open punchout session and destroys its login; existing punchout buyer users are left alone and are no longer used. Bind each connection to its customer account by hand afterwards, and expect the first punch-in to refuse with cXML Status 500 until you do.
+* Breaking: WooCommerce 11.1 or newer is required. One basket per punchout visit is built on WooCommerce's own session handler internals, and this release was verified against 11.1; on a store whose handler is shaped differently every punchout visit is refused with HTTP 409 instead of quietly sharing a basket. Ordinary shopping is untouched either way.
+* Upgrade: no migration tooling ships. Upgrading expires every open punchout session and destroys its login; existing punchout buyer users are left alone and are no longer used. Bind each connection to its customer account by hand afterwards, and expect the first punch-in to refuse with cXML Status 500 until you do: an unbound connection refuses every setup request until its account is chosen.
+* Upgrade: the buyer accounts earlier releases created are now ordinary WordPress users. The password-login and password-reset denials that used to cover them are gone with the provisioning they belonged to, so each of those accounts can sign in and reset its own password like any customer. Delete the ones you do not want — this plugin never deletes a user — and sweep the _pow_identity, _pow_ephemeral, _pow_deactivated and _pow_last_seen user meta they leave behind.
 
 = 0.3.0 =
 * Note: lema.co.za runs commit 3196586 of this line, deployed 2026-09-15 with the header still labelled 0.2.4; the header now matches the changelog.
