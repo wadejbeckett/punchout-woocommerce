@@ -189,7 +189,8 @@ namespace {
 			$GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'][] = static function (): void { echo '<a class="checkout">Checkout</a>'; };
 			$this->surface->maybe_unhook_checkout_button();
 			self::assertSame( [ 'woocommerce_proceed_to_checkout', 'woocommerce_widget_shopping_cart_buttons' ], $GLOBALS['pow_blocks_removed_all'] );
-			self::assertSame( [ [ $this->surface, 'render_cart_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'], 'The cart page keeps exactly one exit: the return control' );
+			self::assertSame( [], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'] ?? [], 'Nothing is put back inside the proceed-to-checkout container: themes hide or replace it wholesale' );
+			self::assertSame( [ [ $this->surface, 'render_cart_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_after_cart_totals'] ?? [], 'The return control renders after the cart totals, outside that container, so it survives a theme that hides it' );
 			self::assertSame( [ 'woocommerce_widget_shopping_cart_button_view_cart' ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'], 'The mini-cart keeps View cart and loses every checkout button' );
 		}
 		public function test_a_visit_hides_every_link_to_the_checkout_page_whoever_rendered_it(): void {

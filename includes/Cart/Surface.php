@@ -48,7 +48,9 @@ defined( 'ABSPATH' ) || exit;
  * - [punchout_cart_exits] complete cart control;
  * - [punchout_return_button] shortcode (builders, widgets);
  * - pow_return_button() PHP helper (theme code);
- * - automatic injection on the classic cart page (woocommerce_proceed_to_checkout).
+ * - automatic injection on the classic cart page (woocommerce_after_cart_totals,
+ *   deliberately outside the proceed-to-checkout container, which themes and
+ *   page-builder cart elements hide or replace wholesale).
  *
  * The abandon control has one placement path — [punchout_abandon_button]
  * — because there is no core hook that means "the session chrome".
@@ -74,7 +76,7 @@ final class Surface {
 	public function register_runtime(): void {
 		add_shortcode( 'punchout_return_button', [ $this, 'shortcode' ] );
 		add_shortcode( 'punchout_abandon_button', [ $this, 'abandon_shortcode' ] );
-		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
+		add_action( 'woocommerce_after_cart_totals', [ $this, 'render_cart_button' ], 5 );
 		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
 		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_visit_styles' ] );
@@ -323,8 +325,12 @@ final class Surface {
 	 * callback and priority would only ever remove Woo's button, and the
 	 * plugin knows nothing about who else replaced it or at what priority,
 	 * so the hooks are cleared whole and only what a visit may show is put
-	 * back: the return control on the cart page, "View cart" in the
-	 * mini-cart. Presentation only — RouteGuard owns the actual block.
+	 * back: "View cart" in the mini-cart. The return control is not put
+	 * back here: it renders at woocommerce_after_cart_totals, outside the
+	 * proceed-to-checkout container, because a theme or page-builder cart
+	 * element that hides that container (to draw its own button) would
+	 * otherwise hide the visit's only exit with it. Presentation only —
+	 * RouteGuard owns the actual block.
 	 */
 	public function maybe_unhook_checkout_button(): void {
 		if ( null === $this->plugin->current_session() ) {
@@ -332,7 +338,6 @@ final class Surface {
 		}
 
 		remove_all_actions( 'woocommerce_proceed_to_checkout' );
-		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
 
 		remove_all_actions( 'woocommerce_widget_shopping_cart_buttons' );
 		if ( function_exists( 'woocommerce_widget_shopping_cart_button_view_cart' ) ) {
