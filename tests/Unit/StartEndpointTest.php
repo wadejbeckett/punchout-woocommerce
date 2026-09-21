@@ -280,14 +280,25 @@ final class StartEndpointTest extends TestCase {
 
 		[ $one, $two ] = [ $this->db->sessions[42], $this->db->sessions[43] ];
 		self::assertNotSame( $one['wp_session_token'], $two['wp_session_token'] );
-		self::assertNotSame( $one['wc_session_key'], $two['wc_session_key'] );
+		self::assertNotSame( $one['wc_session_key'], $two['wc_session_key'], 'Two baskets, never one.' );
+		self::assertTrue( SessionKey::is_visit_key( (string) $one['wc_session_key'] ), 'The first visit owns a per-visit basket key.' );
+		self::assertTrue( SessionKey::is_visit_key( (string) $two['wc_session_key'] ), 'And so does the second.' );
 		self::assertSame( self::ACCOUNT, (int) $two['user_id'], 'Two employees of one customer are one account.' );
 
 		// Both logins live at once on that one account.
 		$tokens = new WP_Session_Tokens( self::ACCOUNT );
 		self::assertTrue( $tokens->verify( (string) $one['wp_session_token'] ) );
 		self::assertTrue( $tokens->verify( (string) $two['wp_session_token'] ) );
-		self::assertCount( 2, $GLOBALS['pow_test_auth_cookies'] );
+		// Which token each browser was handed is the whole of "two auth cookies
+		// on one account": a cookie carrying the colleague's token — or none —
+		// resolves the colleague's visit and basket while every row on the
+		// account still reads correctly. A count cannot see that.
+		self::assertSame(
+			[ $one['wp_session_token'], $two['wp_session_token'] ],
+			array_column( $GLOBALS['pow_test_auth_cookies'], 'token' ),
+			'Each visit sets its own login cookie, in order.'
+		);
+		self::assertSame( [ self::ACCOUNT, self::ACCOUNT ], array_column( $GLOBALS['pow_test_auth_cookies'], 'user_id' ) );
 
 		// And each token owns exactly its own visit.
 		$store = new Store();

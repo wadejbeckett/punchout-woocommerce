@@ -144,7 +144,12 @@ final class HarnessPerVisitTest extends TestCase {
 
 		self::assertSame( 32, strlen( $db->session['wc_session_key'] ), 'The per-visit key must fit char(32).' );
 		self::assertMatchesRegularExpression( '/^pow_[0-9a-f]{28}$/', $db->session['wc_session_key'] );
-		self::assertMatchesRegularExpression( '/^[0-9a-f]{12}$/', $db->session['buyer_identity_hash'] );
+		// The column is CHAR(64) and production writes Identity::hash()'s full
+		// sha256 into it. A truncated fixture value would make every supersede
+		// query miss the row it is meant to find, and read as "nothing to
+		// supersede"; the 12-hex form is the audit detail, not the column.
+		self::assertMatchesRegularExpression( '/^[0-9a-f]{64}$/', $db->session['buyer_identity_hash'] );
+		self::assertSame( hash( 'sha256', '7|' . $db->session['buyer_identity'] ), $db->session['buyer_identity_hash'], 'The fixture row must carry the hash the connection would really store.' );
 	}
 
 	/** Writing through the $session accessor must land in the row set the lookups read. */
