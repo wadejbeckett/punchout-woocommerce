@@ -619,6 +619,8 @@ $redeem_results = pow_native_finish( $redeem_processes );
 $redeem_tokens = array_column( $redeem_results, 'token' );
 $redeem_keys = array_column( $redeem_results, 'key' );
 $check( 2 === count( array_unique( $redeem_tokens ) ) && 2 === count( array_unique( $redeem_keys ) ), 'two simultaneous redeems mint two login tokens and two cart keys' );
+// The workers wrote the account's session_tokens row in their own processes; this process cached that meta earlier, so read it afresh.
+clean_user_cache( $account );
 $check(
 	2 === count( array_filter( $redeem_tokens, static fn( string $token ): bool => '' !== $token && WP_Session_Tokens::get_instance( $account )->verify( $token ) ) ),
 	'a read-modify-write of one shared session_tokens row under the connection lock loses no login'
