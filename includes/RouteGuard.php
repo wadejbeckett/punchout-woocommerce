@@ -33,13 +33,16 @@ defined( 'ABSPATH' ) || exit;
  */
 final class RouteGuard {
 
+	/** Whether this request's visit has already been torn down, once and for all. */
+	private bool $visit_ended = false;
+
 	/**
 	 * @param Plugin   $plugin   Container, asked for the request's visit.
-	 * @param Registry $registry Connection registry. Nothing here reads it
-	 *                           any longer — the visit row is the whole
-	 *                           proof — but it stays in the signature so
-	 *                           the container and the cart surface keep
-	 *                           constructing the guard the same way.
+	 * @param Registry $registry Connection registry. No decision here reads
+	 *                           it — the visit row is the whole proof — but
+	 *                           it holds the connection lock every writer of
+	 *                           the account's shared session_tokens row runs
+	 *                           under, which is what ends a visit on logout.
 	 * @param Settings $settings Operator settings: landing page and labels.
 	 */
 	public function __construct(
@@ -67,6 +70,7 @@ final class RouteGuard {
 		add_action( 'woocommerce_rest_checkout_process_payment_with_context', [ $this, 'enforce_payment_context' ], -9999 );
 		add_action( 'woocommerce_before_pay_action', [ $this, 'enforce_pay_action' ], -9999 );
 		add_action( 'login_init', [ $this, 'guard_login_screen' ] );
+		add_action( 'wp_logout', [ $this, 'end_visit_on_logout' ], 0 );
 	}
 
 	public function guard(): void {
@@ -113,14 +117,17 @@ final class RouteGuard {
 
 	/**
 	 * wp-admin during a visit: the shared login is an ordinary customer
-	 * account, so WordPress would happily serve it the profile screen.
+	 * account, so WordPress would happily serve it the profile screen — and
+	 * profile.php asks only for `edit_user` on one's own id, i.e. the account
+	 * password and e-mail address every colleague shares.
 	 *
 	 * admin_init also fires for admin-ajax.php, which a front-end cart can
 	 * legitimately call inside a visit; redirecting that would break the
-	 * basket, so AJAX is left to the guards that do apply to it.
+	 * basket, so that one entry point is exempt and left to the guards that
+	 * do apply to it.
 	 */
 	public function guard_admin(): void {
-		if ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) {
+		if ( self::is_admin_ajax() ) {
 			return;
 		}
 
@@ -129,6 +136,27 @@ final class RouteGuard {
 		}
 
 		$this->redirect_to_landing();
+	}
+
+	/**
+	 * Whether this request really is admin-ajax.php, proved by the script
+	 * WordPress is running.
+	 *
+	 * wp_doing_ajax() cannot answer this. It reports the DOING_AJAX constant,
+	 * and WooCommerce defines that constant from a query parameter — its
+	 * `wc-ajax` endpoint is picked up at `init` priority 0 on every request,
+	 * wp-admin page loads included, long before `admin_init` runs. Trusting
+	 * it therefore let a buyer switch this refusal off with a query string of
+	 * her own (`/wp-admin/profile.php?wc-ajax=1`) and take over the shared
+	 * account's password. The script name is not hers to set.
+	 *
+	 * A request whose script cannot be read is not provably admin-ajax.php,
+	 * so it keeps the refusal: this door fails closed like every other.
+	 */
+	private static function is_admin_ajax(): bool {
+		$script = (string) ( $_SERVER['SCRIPT_FILENAME'] ?? '' ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- compared as a basename, never used as a path.
+
+		return 'admin-ajax.php' === basename( $script );
 	}
 
 	/**
@@ -237,9 +265,10 @@ final class RouteGuard {
 	 * wp-login.php inside a punchout session: logout is allowed, anything
 	 * else goes back to the landing page.
 	 *
-	 * Logout destroys this request's WP session token only, so it ends the
-	 * one visit that asked for it and leaves a colleague signed in to the
-	 * same account with her own visit and her own basket.
+	 * Logout ends the one visit that asked for it and leaves a colleague
+	 * signed in to the same account with her own visit and her own basket —
+	 * but only because this guard ends it here, under the connection lock,
+	 * before core's own unlocked teardown can run. See end_visit().
 	 */
 	public function guard_login_screen(): void {
 		if ( ! $this->inside_visit() ) {
@@ -254,6 +283,92 @@ final class RouteGuard {
 		if ( 'logout' !== $action ) {
 			wp_safe_redirect( $this->settings->landing_url(), 302 );
 			exit;
+		}
+
+		// A logout wp-login.php will actually perform. Its own gate is
+		// check_admin_referer( 'log-out' ), which runs after this hook, and
+		// without a valid nonce core only offers its confirmation screen — a
+		// visit that is not being ended must not be torn down, or any page
+		// able to make this browser request a URL could empty a buyer's
+		// basket. The nonce is minted against the request's own session
+		// token, so it is this visit's and no colleague's.
+		$nonce = $_REQUEST['_wpnonce'] ?? ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- verified on the next line, and core verifies it again.
+
+		if ( is_string( $nonce ) && wp_verify_nonce( wp_unslash( $nonce ), 'log-out' ) ) {
+			$this->end_visit();
+		}
+	}
+
+	/**
+	 * Any other way out of a visit: WooCommerce's account logout, an admin-bar
+	 * logout, wp_logout() called by something else.
+	 *
+	 * wp_logout() destroys the request's token before it fires this action and
+	 * offers no earlier hook, so this cannot serialize that one write. What it
+	 * does do is end the visit row and delete its basket, which nothing else
+	 * does until the row's own expiry — and the open-visit cap is counted from
+	 * those rows. It can only act on a visit this request already resolved:
+	 * by now the cookie is cleared and the current user is 0, so there is
+	 * nothing left to resolve from. The wp-login.php door above, which is the
+	 * only logout a visit can actually reach, never depends on it.
+	 */
+	public function end_visit_on_logout(): void {
+		$this->end_visit();
+	}
+
+	/**
+	 * End this request's visit under the connection lock.
+	 *
+	 * `session_tokens` is ONE user-meta row that holds every concurrent
+	 * visit's login token for the shared account, so every writer of it must
+	 * be serialized on the connection lock or a colleague's token is lost:
+	 * Http\StartEndpoint states the same invariant on the redeem side, and
+	 * Store::expire_and_destroy() is the writer that obeys it here — it
+	 * expires this row, destroys this login and deletes this visit's own
+	 * basket row inside Registry::with_partner_lock().
+	 *
+	 * Core's wp_destroy_current_session() is the unlocked read-modify-write
+	 * of that same row this exists to get in front of. It is skipped entirely
+	 * when the request carries no token, because wp_get_session_token() reads
+	 * the logged-in cookie and nothing else — so once the teardown above has
+	 * confirmed this login is gone, forgetting that cookie costs this request
+	 * nothing it still has and keeps core's write off a colleague's token. An
+	 * unconfirmed teardown deliberately keeps the cookie: a logout must still
+	 * reach core's best effort rather than leave a live token behind.
+	 *
+	 * A confirmed teardown is remembered, because wp_logout() fires its action
+	 * after this has already run on the wp-login.php door and there is nothing
+	 * left to do; an unconfirmed one is retried, in case the second attempt can
+	 * reach the lock the first could not.
+	 */
+	private function end_visit(): bool {
+		if ( $this->visit_ended ) {
+			return true;
+		}
+
+		try {
+			$visit = $this->plugin->current_session();
+			$store = $this->plugin->sessions();
+
+			if ( null === $visit || null === $store ) {
+				return false;
+			}
+
+			if ( ! $store->expire_and_destroy( $visit, $this->registry ) ) {
+				return false;
+			}
+
+			if ( defined( 'LOGGED_IN_COOKIE' ) ) {
+				unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+			}
+
+			$this->visit_ended = true;
+
+			return true;
+		} catch ( \Throwable $e ) {
+			// A visit that could not be resolved or torn down is core's to
+			// finish; nothing here may stop a logout.
+			return false;
 		}
 	}
 
