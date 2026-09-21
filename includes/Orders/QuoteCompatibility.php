@@ -141,6 +141,12 @@ final class QuoteCompatibility {
 		}
 		$session_id = $this->identity( $values[ QuoteOrder::META_SESSION_ID ] );
 		$partner_id = $this->identity( $values[ QuoteOrder::META_PARTNER_ID ] );
+		// The consenting buyer as the stored confirmation records it. It is
+		// the connection's own customer account, which is exactly why this
+		// still matches on a historical quote: quote orders keep
+		// customer_id = that account on every visit. Anything that ever
+		// stamps a per-buyer customer id breaks every historical quote here,
+		// silently, at read time.
 		$user_id = $order->get_customer_id( 'edit' );
 		$choice = 'null' === $values[ QuoteOrder::META_DELIVERY_CHOICE ] ? null : DeliveryData::choice( $values[ QuoteOrder::META_DELIVERY_CHOICE ], $partner_id );
 		$confirmation = DeliveryData::confirmation( $values[ QuoteOrder::META_DELIVERY_CONFIRMATION ], $session_id, $user_id, $choice );

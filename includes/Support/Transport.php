@@ -13,12 +13,41 @@ final class Transport {
 		add_filter( 'rest_pre_dispatch', [ self::class, 'guard_rest' ], -100 );
 	}
 
-	/** Same native role/association semantics as the existing cart guard, without consulting or mutating a session. */
+	/**
+	 * Whether this request belongs to punchout rather than to an ordinary
+	 * shopper. Two signals, and deliberately no role and no user meta:
+	 * buyers are signed in as the customer's own plain WooCommerce account,
+	 * so anything asked about the USER answers "ordinary shopper" and the
+	 * policy would stop covering punchout traffic altogether.
+	 *
+	 * 1. A live visit — the session row matching this request's user and WP
+	 *    session token. That is buyer catalog, cart and Store API traffic.
+	 * 2. The account a connection is bound to, visit or no visit: it is the
+	 *    login every buyer of that connection arrives on, and its cookie
+	 *    must never cross the wire in cleartext.
+	 *
+	 * Unlike the version this replaces it does consult a session — it never
+	 * mutates one. Safe at init:-100 and rest_pre_dispatch:-100: both
+	 * signals need only the auth cookie and $wpdb, neither needs
+	 * WooCommerce, and the visit lookup is the one Plugin memoises for the
+	 * whole request. Reached only once the request is already cleartext, so
+	 * an HTTPS request pays nothing for it.
+	 *
+	 * A lookup that cannot run answers "punchout": refusing cleartext is
+	 * the conservative half of that mistake, and Sessions\Current's own
+	 * contract is that a throw is not "no visit".
+	 */
 	private static function protected_actor(): bool {
 		$id = get_current_user_id();
 		if ( $id <= 0 ) { return false; }
-		$user = get_userdata( $id );
-		return ( $user && in_array( \POW\Installer::ROLE, (array) $user->roles, true ) ) || (int) get_user_meta( $id, '_pow_partner_id', true ) > 0;
+		$plugin = \POW\Plugin::instance();
+		try {
+			if ( null !== $plugin->current_session() ) { return true; }
+			$partners = $plugin->registry();
+			return null !== $partners && null !== $partners->find_by_owner( $id );
+		} catch ( \Throwable $e ) {
+			return true;
+		}
 	}
 
 	public static function guard_shopping(): void {
