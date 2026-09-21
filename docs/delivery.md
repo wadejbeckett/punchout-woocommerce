@@ -1,12 +1,12 @@
 # Delivery and confirmation
 
-## Current release-candidate behavior
+## Current behavior
 
-The local 0.3 release candidate keeps ordinary shopping and an editable cart, then requires review of products, destination, available shipping and notes before every physical cart return. The final button is **Submit for approval**, with **Back to cart** before final submission. For Punchout-only connections there is no payment step. That label means returning the basket for the purchasing workflow; it does not approve a requisition itself.
+The local 0.4.0 build keeps ordinary shopping and an editable cart, then requires review of products, destination, available shipping and notes before every physical cart return. The final button is **Submit for approval**, with **Back to cart** before final submission. There is no payment step: checkout is not available inside a punchout visit. That label means returning the basket for the purchasing workflow; it does not approve a requisition itself.
 
-Company owners and supplier administrators maintain shared enabled addresses; employees select from their company's entries. Core storage and shipping use WordPress/WooCommerce, without an address-book plugin. Preserve a valid selected shipping method, otherwise use Woo's configured default. Distinguish free delivery, pickup and unavailable rates. No available rate must not silently become free shipping.
+Store administrators maintain each connection's enabled addresses at **WooCommerce → PunchOut**. Every punchout visit selects from that connection's entries and cannot edit them; there is no owner-facing address screen and no editing from inside a visit. Two visits on the same store account choose independently: a selection made in one visit is not the other's. Core storage and shipping use WordPress/WooCommerce, without an address-book plugin. Preserve a valid selected shipping method, otherwise use Woo's configured default. Distinguish free delivery, pickup and unavailable rates. No available rate must not silently become free shipping.
 
-Confirmation preserves an immutable address, code, method, charges and notes snapshot. Changing the cart, destination or accepted rates requires renewed confirmation. When optional freight export is enabled and a rate is available, freight appears once with matching Quote and cXML totals.
+Confirmation preserves an immutable address, code, method, charges and notes snapshot, bound to the visit that made it. Changing the cart, destination or accepted rates requires renewed confirmation, and a confirmation from one visit can never be spent by another. When optional freight export is enabled and a rate is available, freight appears once with matching Quote and cXML totals.
 
 ## Three address authorities
 
