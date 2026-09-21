@@ -369,9 +369,11 @@ final class DocsPageTest extends TestCase {
 		$vars = $this->page_vars();
 		$vars['delivery_samples'] = [ [ 'version' => '1.2.071', 'xml' => '<cXML>delivery-example</cXML>', 'total' => '123.45', 'freight_total' => '6.78' ] ];
 		$html = Templates::render( 'docs/page', $vars );
-		foreach ( [ '/punchout/confirm', '[punchout_delivery_confirmation]', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'quote_separately', 'punchout_and_checkout', '123.45', '6.78', '&lt;cXML&gt;delivery-example&lt;/cXML&gt;' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		foreach ( [ '/punchout/confirm', '[punchout_delivery_confirmation]', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'quote_separately', '123.45', '6.78', '&lt;cXML&gt;delivery-example&lt;/cXML&gt;' ] as $text ) { self::assertStringContainsString( $text, $html ); }
 		self::assertStringNotContainsString( '<cXML>', $html );
 		self::assertStringNotContainsString( 'Available when delivery codes are enabled', $html );
+		// The dual exit is gone: the public page may not describe a checkout exit or a per-buyer entitlement.
+		foreach ( [ 'punchout_and_checkout', 'Checkout is a separate exit', 'Company and buyer exit permissions', 'punchout_only' ] as $text ) { self::assertStringNotContainsString( $text, $html ); }
 	}
 
 	/**

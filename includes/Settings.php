@@ -16,8 +16,9 @@ defined( 'ABSPATH' ) || exit;
  * Typed accessor over the plugin's single option row.
  *
  * Per-partner configuration lives in the partners table (Partners\Registry);
- * this option holds operational knobs and the retired exit-policy value
- * while schema migration freezes old inherited company rows.
+ * this option holds operational knobs only. There is no storefront-wide
+ * entitlement: punchout is the only exit a visit has, so nothing here
+ * decides what a visit may reach.
  *
  * The sodium key that seals partner secrets is NOT a setting: it must live
  * in wp-config.php as POW_SECRET_KEY so a database dump alone cannot
@@ -32,7 +33,6 @@ class Settings {
 		// pre-auth XML endpoint until an operator has configured at least
 		// one customer connection and flipped it on.
 		'enabled'              => 'no',
-		'exit_policy'          => 'punchout_and_checkout',
 
 		// Default TTLs; each partner row can override its own.
 		'token_ttl'            => 300,     // StartPage token, seconds (~5 min).
@@ -104,28 +104,6 @@ class Settings {
 		$all = $this->all();
 
 		return $all[ $key ] ?? $default ?? ( self::DEFAULTS[ $key ] ?? null );
-	}
-
-	/** Entitlement reads bypass this object's cache. Empty string preserves invalid/unavailable state for the strict resolver. */
-	public function exit_policy(): string {
-		global $wpdb;
-		$previous_error = $wpdb->last_error ?? '';
-		if ( is_object( $wpdb ) ) { $wpdb->last_error = ''; }
-		try {
-			$values = get_option( self::OPTION_KEY, [] );
-			if ( '' !== ( $wpdb->last_error ?? '' ) ) {
-				// get_option can cache a failed SQL lookup as missing. Do not let that become valid inheritance on a later read.
-				wp_cache_delete( 'notoptions', 'options' );
-				return '';
-			}
-			if ( ! is_array( $values ) ) { return ''; }
-			if ( ! array_key_exists( 'exit_policy', $values ) ) { return 'inherit'; }
-			return \POW\Checkout\ExitPolicy::valid( $values['exit_policy'] ) ? $values['exit_policy'] : '';
-		} catch ( \Throwable $e ) { return ''; }
-		finally {
-			// Preserve an earlier diagnostic if this read did not produce its own database error.
-			if ( is_object( $wpdb ) && '' === ( $wpdb->last_error ?? '' ) ) { $wpdb->last_error = $previous_error; }
-		}
 	}
 
 	public function int( string $key ): int {

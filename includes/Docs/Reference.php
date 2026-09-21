@@ -178,7 +178,7 @@ final class Reference {
 			__( 'A valid existing native shipping choice is preserved. Otherwise WooCommerce chooses its configured native default in the current cart context; the plugin adds no cheapest-rate or pickup preference. When emit_delivery_line is enabled, require_rate refuses unavailable rates. quote_separately permits return only after the buyer acknowledges the missing estimate; neither a freight line nor a Quote shipping charge is added. With charge export off, the available estimate or unavailable state is still reviewed and stored locally. A quoted zero is a real rate; unavailable is null, never zero.', 'punchout-woocommerce' ),
 			__( 'Confirmation binds the current cart, destination, rates, configuration and notes to that buyer’s session. Changing those facts requires a fresh review. A selected company entry must still exist and be enabled at confirmation and final return: removal or disablement requires reselection, and changes to its address, label or code require reconfirmation. An unrelated book revision does not invalidate an unchanged selected entry. Completed return and Quote snapshots remain unchanged by later master edits.', 'punchout-woocommerce' ),
 			__( 'Notes are sanitised plain text, limited to 2,000 characters and 8,000 bytes. They default to local confirmation storage. delivery_notes_policy=item_detail_extrinsic additionally copies the basket note to DeliveryInstructions on every merchandise ItemDetail, excluding freight, for the exact supported DTDs. Agree this repetition with the receiver before enabling it.', 'punchout-woocommerce' ),
-			__( 'If enabled and available, delivery is one quantity-one freight ItemIn equal to the sum of the selected native package rates. The optional winner Quote uses native shipping items per package with the same sum, once. Prices and totals use ex-tax integer cents; merchandise stays separate. With export off or an acknowledged unavailable estimate, the Quote retains delivery metadata and an estimate note without a shipping charge. Empty and paid-order closeouts add no freight.', 'punchout-woocommerce' ),
+			__( 'If enabled and available, delivery is one quantity-one freight ItemIn equal to the sum of the selected native package rates. The optional winner Quote uses native shipping items per package with the same sum, once. Prices and totals use ex-tax integer cents; merchandise stays separate. With export off or an acknowledged unavailable estimate, the Quote retains delivery metadata and an estimate note without a shipping charge. An empty close-out adds no freight.', 'punchout-woocommerce' ),
 			__( 'Codes are company-scoped references, not URLs, registered receiver records or an address-list API. Codes allow A–Z, 0–9, underscore and hyphen, up to 32 characters; an optional prefix is limited to 24, and labels to 190 characters. Changed or removed issued codes retain their claims permanently. No external address-book plugin, additional credential store or directory integration is required.', 'punchout-woocommerce' ),
 		];
 	}
@@ -197,14 +197,6 @@ final class Reference {
 			'freight_uom' => [ 'default' => 'EA', 'note' => __( 'UnitOfMeasure of the quantity-one freight line.', 'punchout-woocommerce' ) ],
 			'freight_classification_domain' => [ 'default' => 'supplier', 'note' => __( 'Classification domain for freight, independent of merchandise classification.', 'punchout-woocommerce' ) ],
 			'freight_classification' => [ 'default' => 'freight', 'note' => __( 'Classification value for freight.', 'punchout-woocommerce' ) ],
-		];
-	}
-
-	/** @return list<string> */
-	public function exit_policy(): array {
-		return [
-			__( 'Shop administrators set exit_policy globally and per company, then may restrict an existing company buyer. The values are inherit, punchout_only and punchout_and_checkout. A company inherits the global default unless explicitly configured; global inherit resolves to punchout_only. The resulting company entitlement is the buyer’s upper bound: a buyer restriction can remove checkout, but cannot grant it when the company does not allow it.', 'punchout-woocommerce' ),
-			__( 'Company owners and buyers cannot grant themselves checkout entitlement. Punchout only blocks classic, Blocks and direct payment entry points within the punchout session. Punchout and checkout permits the native WooCommerce checkout alongside the reviewed cart return. Ordinary shoppers are unaffected. A changed or unavailable entitlement is checked again before return or payment.', 'punchout-woocommerce' ),
 		];
 	}
 
