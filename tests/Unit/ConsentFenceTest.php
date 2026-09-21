@@ -52,7 +52,7 @@ final class ConsentFenceTest extends TestCase {
 		$this->store->session = $this->session;
 	}
 	private function login( array $over = [] ): Session {
-		return new Session( ...array_replace( [ 'id' => 7, 'partner_id' => 3, 'buyer_cookie' => 'c', 'operation' => 'create', 'browser_form_post_url' => 'https://buyer.example/return', 'selected_item' => null, 'ship_to' => null, 'user_id' => 42, 'wp_session_token' => 'tok', 'one_time_token_hash' => 'h', 'status' => Session::ACTIVE, 'order_id' => 0, 'payload_id' => 'p', 'body_hash' => 'b', 'response_xml' => null, 'cxml_version' => '1.2.014', 'deployment_mode' => 'test', 'extrinsics' => null, 'itemout_lines' => null, 'cart_ready' => false, 'created' => null, 'expires' => null ], $over ) );
+		return new Session( ...array_replace( [ 'id' => 7, 'partner_id' => 3, 'buyer_cookie' => 'c', 'operation' => 'create', 'browser_form_post_url' => 'https://buyer.example/return', 'selected_item' => null, 'ship_to' => null, 'user_id' => 42, 'wp_session_token' => 'tok', 'one_time_token_hash' => 'h', 'status' => Session::ACTIVE, 'order_id' => 0, 'payload_id' => 'p', 'body_hash' => 'b', 'response_xml' => null, 'cxml_version' => '1.2.014', 'deployment_mode' => 'test', 'extrinsics' => null, 'itemout_lines' => null, 'cart_ready' => false, 'created' => null, 'expires' => null, 'buyer_identity' => null, 'buyer_name' => null, 'buyer_identity_hash' => null, 'wc_session_key' => null ], $over ) );
 	}
 	private function fence(): \POW\Tests\ConsentFence\ConsentFence { return new \POW\Tests\ConsentFence\ConsentFence( $this->store, $this->registry ); }
 
