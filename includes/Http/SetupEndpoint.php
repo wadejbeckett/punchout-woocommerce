@@ -13,7 +13,7 @@ namespace POW\Http;
 use POW\Support\Transport;
 
 use POW\Audit\Log;
-use POW\Buyers\Provisioner;
+use POW\Buyers\Identity;
 use POW\Cxml\Builder;
 use POW\Cxml\ParseException;
 use POW\Cxml\Parser;
@@ -36,6 +36,16 @@ defined( 'ABSPATH' ) || exit;
  * broke a real integration, gotcha 6). The codes and what each one means
  * are STATUS_REASONS below, which is also what the buyer-facing table is
  * built from; prose here could only go stale against it.
+ *
+ * A setup request produces a VISIT, not a person. The login is the
+ * connection's own customer account (partners.owner_user_id) and no user is
+ * ever created, found by identity or renamed here; the buyer's name and
+ * e-mail are data on the visit row (Buyers\Identity). Consequences that hold
+ * everywhere below: every open visit of one connection carries the same
+ * user_id, so the StartPage token is the only thing separating them and the
+ * buyer identity hash is the only thing a supersede may key on; a connection
+ * with no usable account is refused outright; and the number of visits one
+ * connection may hold open at once is capped.
  */
 final class SetupEndpoint {
 
@@ -63,6 +73,16 @@ final class SetupEndpoint {
 	private const REPLAY_WAIT_MICROSECONDS = 3_000_000;
 	private const REPLAY_POLL_MICROSECONDS = 25_000;
 
+	/**
+	 * Capabilities the connection's customer account may not hold.
+	 *
+	 * Buyers are signed in as that account, so punching into an account that
+	 * can manage the shop, the store or other users would hand the buyer's
+	 * purchasing system the shop itself. An account failing this test is an
+	 * unbound connection: refused, never downgraded.
+	 */
+	private const PRIVILEGED_CAPABILITIES = [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ];
+
 	/** @var array<string, mixed> Safe request identifiers for terminal failure audit. */
 	private array $failure_context = [];
 
@@ -80,7 +100,6 @@ final class SetupEndpoint {
 	public function __construct(
 		private Registry $registry,
 		private Store $sessions,
-		private Provisioner $provisioner,
 		private Parser $parser,
 		private Builder $builder,
 		private RateLimiter $rate_limiter,
@@ -252,6 +271,33 @@ final class SetupEndpoint {
 			return;
 		}
 
+		// The connection's own customer account is the login every buyer of
+		// this connection is signed in as. Resolved here — after the sender
+		// is authenticated, before the operation and punchback checks and
+		// long before any claim row — so an unbound or unusable account
+		// never leaves a pending row behind to compensate for. A
+		// ProfileRequest is deliberately above this line: it answers the
+		// buyer's connectivity test and needs no login at all.
+		$user_id = $this->bound_account( $partner );
+
+		if ( $user_id <= 0 ) {
+			$this->audit_event(
+				'setup_no_login',
+				[
+					'partner_id' => $partner->id,
+					'direction'  => 'in',
+					'payload_id' => $message->payload_id,
+					'result'     => 'no_login',
+					'detail'     => [ 'error' => 'no customer account bound to this connection' ],
+					'ip'         => $ip,
+				]
+			);
+			$this->respond( $this->status_doc( self::STATUS_INTERNAL, self::STATUS_REASONS[ self::STATUS_INTERNAL ], $partner->cxml_version ) );
+			return;
+		}
+
+		$identity = Identity::from_message( $message );
+
 		// Re-entry (edit/inspect/source) is a protocol capability the
 		// registry parameterises but this build does not service (scope
 		// §2.5, option O1): D365 F&O sends operation="create" only.
@@ -284,11 +330,15 @@ final class SetupEndpoint {
 		$replay = null;
 		$response = '';
 		for ( $attempt = 0; $attempt < 2 && ! $claim && ! $replay; ++$attempt ) {
+			// A fresh token per attempt is load-bearing, not hygiene: every
+			// visit of this connection is the same account, so the StartPage
+			// token is the only thing that tells one visit from another. It
+			// may never be reused across visits or attempts.
 			$issued = Tokens::issue();
 			$expires = gmdate( 'Y-m-d H:i:s', time() + $partner->token_ttl );
 			$start_url = Transport::supplier_url( home_url( '/punchout/start/' . $issued['token'] ) );
 			$candidate_response = $this->builder->setup_response( $partner->cxml_version, Builder::payload_id( $this->host() ), Builder::timestamp(), $start_url );
-			$outcome = $this->claim_setup( $partner, $message, $ip, $payload_id, $body_hash, $issued['hash'], $expires );
+			$outcome = $this->claim_setup( $partner, $message, $identity, $ip, $payload_id, $body_hash, $issued['hash'], $expires );
 			if ( 'conflict' === $outcome['state'] ) {
 				$this->audit_event( 'setup_fail', [ 'partner_id' => $partner->id, 'session_id' => $outcome['session']?->id ?? 0, 'direction' => 'out', 'payload_id' => $payload_id, 'result' => '409', 'detail' => [ 'replay' => false ], 'ip' => $ip ] );
 				$this->respond( $this->status_doc( self::STATUS_DUPLICATE, 'Duplicate payloadID', $partner->cxml_version ) );
@@ -315,22 +365,14 @@ final class SetupEndpoint {
 			throw new ParseException( 'Setup still processing', self::STATUS_INTERNAL );
 		}
 		$this->failure_context['session_id'] = $claim->id;
-
-		try {
-			$user_id = $this->provisioner->provision( $partner, $message );
-			if ( $user_id <= 0 ) {
-				throw new ParseException( 'Provisioning failed', self::STATUS_INTERNAL );
-			}
-		} catch ( \Throwable $error ) {
-			$this->abandon_setup_claim( $claim );
-			throw $error;
-		}
+		// The visit is committed against the account resolved above; no user
+		// is created, looked up by identity or renamed anywhere in this path.
 		$this->failure_context['user_id'] = $user_id;
 
 		$committed = null;
 		try {
-			$committed = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $claim, $user_id, $response ) {
-				$this->fresh_authorized( $partner, $message, $ip );
+			$committed = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $identity, $ip, $claim, $user_id, $response ) {
+				$this->fresh_authorized( $partner, $message, $ip, $user_id );
 				if ( ! $this->sessions->complete_setup_claim( $claim, $user_id, $response ) ) {
 					$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
 					throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
@@ -340,14 +382,24 @@ final class SetupEndpoint {
 					$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
 					throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
 				}
-				foreach ( $this->sessions->open_for_user( $user_id ) as $older ) {
+				// Latest-wins is per buyer, not per account: every buyer of
+				// this connection shares $user_id, so superseding by user id
+				// would end a colleague's live visit on every punchin — and,
+				// when an expiry could not be confirmed, disable the whole
+				// connection. The identity hash is the only discriminator,
+				// it is scoped to this connection in SQL, and an empty one
+				// matches nothing: a purchasing system that names nobody
+				// gets independent visits, held only by the cap above.
+				$identity_hash = $identity->hash( $partner->id );
+
+				foreach ( $this->sessions->open_for_identity( $partner->id, $identity_hash ) as $older ) {
 					if ( $older->id === $claim->id ) { continue; }
 					if ( $older->partner_id !== $partner->id || ! $this->sessions->expire_locked( $older ) ) {
 						$this->sessions->expire_locked( $created );
 						$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
 						throw new ParseException( 'Session cleanup failed', self::STATUS_INTERNAL );
 					}
-					$this->audit_event( 'session_expired', [ 'partner_id' => $partner->id, 'session_id' => $older->id, 'user_id' => $user_id, 'result' => 'superseded' ] );
+					$this->audit_event( 'session_expired', [ 'partner_id' => $partner->id, 'session_id' => $older->id, 'user_id' => $user_id, 'result' => 'superseded', 'detail' => [ 'buyer_hash' => substr( $identity_hash, 0, 12 ) ] ] );
 				}
 				return $created;
 			} );
@@ -374,11 +426,20 @@ final class SetupEndpoint {
 				'direction'  => 'out',
 				'payload_id' => $payload_id,
 				'result'     => 'ok',
-				'detail'     => [
-					'slot'            => $slot,
-					'operation'       => $message->operation,
-					'deployment_mode' => $message->deployment_mode,
-				],
+				// Who punched in, without the raw e-mail: the log is read by
+				// more people than the orders screen is, and the identity is
+				// already on the visit row and the quote order for the
+				// operator who legitimately needs it.
+				'detail'     => array_merge(
+					[
+						'slot'            => $slot,
+						'operation'       => $message->operation,
+						'deployment_mode' => $message->deployment_mode,
+					],
+					'' !== $identity->identity
+						? [ 'buyer_hash' => substr( $identity->hash( $partner->id ), 0, 12 ), 'buyer_name' => $identity->name ]
+						: [ 'buyer' => 'none' ]
+				),
 				'ip'         => $ip,
 			]
 		);
@@ -391,10 +452,10 @@ final class SetupEndpoint {
 	 * ------------------------------------------------------------------ */
 
 	/** @return array{state: 'winner'|'waiting'|'replay'|'conflict', session: ?Session} */
-	private function claim_setup( Partner $partner, SetupMessage $message, string $ip, string $payload_id, string $body_hash, string $token_hash, string $expires ): array {
+	private function claim_setup( Partner $partner, SetupMessage $message, Identity $identity, string $ip, string $payload_id, string $body_hash, string $token_hash, string $expires ): array {
 		$inserted_claim = null;
 		try {
-			return $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $ip, $payload_id, $body_hash, $token_hash, $expires, &$inserted_claim ) {
+			return $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $identity, $ip, $payload_id, $body_hash, $token_hash, $expires, &$inserted_claim ) {
 				$this->fresh_authorized( $partner, $message, $ip );
 				$current = $this->sessions->find_by_payload( $partner->id, $payload_id );
 				if ( $this->is_uncommitted_setup( $current, $partner->id, $payload_id, $body_hash ) && ( ! $current->expires || $current->expires <= gmdate( 'Y-m-d H:i:s' ) ) ) {
@@ -406,6 +467,8 @@ final class SetupEndpoint {
 				if ( $current ) {
 					return $this->setup_outcome( $current, $partner->id, $payload_id, $body_hash );
 				}
+
+				$this->refuse_over_cap( $partner, $payload_id, $ip );
 
 				$session_id = $this->sessions->create(
 					[
@@ -427,6 +490,14 @@ final class SetupEndpoint {
 						'cart_ready'            => 0,
 						'expires'               => $expires,
 						'response_xml'          => null,
+						// Who punched in, as data on the visit. The raw value
+						// is stored in clear because an administrator has to
+						// be able to see who bought; the indexed column is
+						// the hash. An unidentified buyer stores NULL rather
+						// than a hash every anonymous visit would share.
+						'buyer_identity'        => $identity->identity,
+						'buyer_name'            => $identity->name,
+						'buyer_identity_hash'   => '' !== $identity->identity ? $identity->hash( $partner->id ) : null,
 					]
 				);
 				if ( $session_id <= 0 ) {
@@ -517,12 +588,93 @@ final class SetupEndpoint {
 		return $session && $session->partner_id === $partner_id && $session->payload_id === $payload_id && $session->body_hash === $body_hash && Session::PENDING === $session->status && $session->user_id === $user_id && $session->response_xml === $response_xml && $session->expires && $session->expires > gmdate( 'Y-m-d H:i:s' );
 	}
 
-	/** Must run inside the partner lock immediately before a setup result is committed. */
-	private function fresh_authorized( Partner $snapshot, SetupMessage $message, string $ip ): void {
+	/**
+	 * Must run inside the partner lock immediately before a setup result is
+	 * committed. With $expected_account non-zero it also re-proves the login:
+	 * a connection unbound, re-pointed at another account or pointed at one
+	 * that has since gained a privileged capability between the claim and the
+	 * commit must not commit a visit against the account it was claimed for.
+	 */
+	private function fresh_authorized( Partner $snapshot, SetupMessage $message, string $ip, int $expected_account = 0 ): void {
 		$current = $this->registry->find_by_sender( $message->sender_domain, $message->sender_identity );
 		if ( ! $current || $current->id !== $snapshot->id || ! $current->is_active() || ! $this->registry->ip_allowed( $current, $ip ) || null === $this->registry->verify_secret( $current, (string) $message->shared_secret ) ) {
 			throw new ParseException( 'Authentication failed', self::STATUS_AUTH_FAILED );
 		}
+		if ( $expected_account > 0 && $this->bound_account( $current ) !== $expected_account ) {
+			throw new ParseException( 'Bound login changed', self::STATUS_INTERNAL );
+		}
+	}
+
+	/**
+	 * The connection's customer account, proved usable, or 0.
+	 *
+	 * A read and a capability test, never a write: the plugin creates,
+	 * renames and deletes no users. `read` is what makes an account a
+	 * customer that can be signed in at all, and PRIVILEGED_CAPABILITIES is
+	 * what stops a buyer's purchasing system punching into the shop's own
+	 * management. 0 is the single answer for every unusable state — unset,
+	 * deleted, or too powerful — because the refusal and the admin notice are
+	 * the same either way.
+	 */
+	private function bound_account( Partner $partner ): int {
+		$user_id = $partner->owner_user_id;
+
+		if ( $user_id <= 0 ) {
+			return 0;
+		}
+
+		$user = get_userdata( $user_id );
+
+		if ( ! $user || (int) $user->ID !== $user_id || ! user_can( $user, 'read' ) ) {
+			return 0;
+		}
+
+		foreach ( self::PRIVILEGED_CAPABILITIES as $capability ) {
+			if ( user_can( $user, $capability ) ) {
+				return 0;
+			}
+		}
+
+		return $user_id;
+	}
+
+	/**
+	 * Refuse a connection that already holds its maximum open visits.
+	 *
+	 * Runs inside the partner lock and before the insert, so the count cannot
+	 * be raced and there is one refusal point rather than one per caller.
+	 * Expired-but-open rows of this connection are swept first: they count
+	 * toward the cap, so a connection whose buyers never punch back would
+	 * otherwise fill it permanently. Only this connection's rows are swept —
+	 * another connection's row belongs to another lock. The limit is
+	 * Store::MAX_OPEN_VISITS and is deliberately not filterable.
+	 */
+	private function refuse_over_cap( Partner $partner, string $payload_id, string $ip ): void {
+		foreach ( $this->sessions->expired_open() as $stale ) {
+			if ( $stale->partner_id === $partner->id ) {
+				$this->sessions->expire_locked( $stale );
+			}
+		}
+
+		$open = $this->sessions->count_open_for_partner( $partner->id );
+
+		if ( $open < Store::MAX_OPEN_VISITS ) {
+			return;
+		}
+
+		$this->audit_event(
+			'setup_visit_cap',
+			[
+				'partner_id' => $partner->id,
+				'direction'  => 'in',
+				'payload_id' => $payload_id,
+				'result'     => 'cap',
+				'detail'     => [ 'error' => 'open visit limit reached', 'open' => $open, 'limit' => Store::MAX_OPEN_VISITS ],
+				'ip'         => $ip,
+			]
+		);
+
+		throw new ParseException( 'Open visit limit reached', self::STATUS_INTERNAL );
 	}
 
 	private function audit_event( string $event, array $context ): void {

@@ -90,6 +90,40 @@ XML;
 		self::assertSame( '2026-08-31T08:00:00+00:00', $this->parser->parse( $this->d365_setup_request( '2026-08-31T08:00:00+00:00' ) )->timestamp );
 	}
 
+	/**
+	 * Extrinsic collection is flat and last-wins, and it reaches every
+	 * descendant of PunchOutSetupRequest — including a ShipTo address.
+	 *
+	 * Both halves are pinned here because the buyer identity is now read off
+	 * this array and stamped on the quote order as permanent evidence
+	 * (Buyers\Identity). The second half is a DEFECT, not a feature: a
+	 * purchasing system that repeats a UserEmail inside ShipTo/Address
+	 * silently replaces the header's buyer identity, because ShipTo comes
+	 * later in document order. Scoping collection away from ShipTo belongs
+	 * to whoever owns Cxml\Parser; until then this test says out loud what
+	 * the parser really does, so nobody reads the identity chain as safer
+	 * than it is.
+	 */
+	public function test_duplicate_extrinsic_names_are_last_wins_across_every_descendant(): void {
+		$xml = str_replace(
+			'<Extrinsic name="UserEmail">jdoe@example.com</Extrinsic>',
+			'<Extrinsic name="UserEmail">jdoe@example.com</Extrinsic><Extrinsic name="UserEmail">second@example.com</Extrinsic>',
+			$this->d365_setup_request()
+		);
+
+		self::assertSame( 'second@example.com', $this->parser->parse( $xml )->extrinsic( 'UserEmail' ) );
+
+		$nested = str_replace(
+			'<SupplierSetup><URL>https://shop.example.com/punchout/setup</URL></SupplierSetup>',
+			'<ShipTo><Address addressID="1"><Name xml:lang="en">Depot</Name><PostalAddress><Street>1 Test Road</Street><City>Cape Town</City><Country isoCountryCode="ZA">South Africa</Country></PostalAddress><Extrinsic name="UserEmail">shipto@example.com</Extrinsic></Address></ShipTo>',
+			$this->d365_setup_request()
+		);
+		$message = $this->parser->parse( $nested );
+
+		self::assertSame( 'shipto@example.com', $message->extrinsic( 'UserEmail' ) );
+		self::assertCount( 2, $message->extrinsics, 'Collection is flat: a nested Extrinsic shares the header namespace' );
+	}
+
 	public function test_empty_buyer_cookie_element_is_accepted(): void {
 		$xml = str_replace( '<BuyerCookie>Buyercookie admin 610</BuyerCookie>', '<BuyerCookie/>', $this->d365_setup_request() );
 
