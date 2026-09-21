@@ -459,6 +459,16 @@ final class QuoteOrder {
 			return;
 		}
 
+		// Absent attribution and empty attribution are different facts. A
+		// quote taken before the buyer became data carries neither key, and
+		// its buyer was the order's own customer; saying the purchasing
+		// system named nobody would contradict the evidence still on it. A
+		// visit of this release writes both keys, empty when the request
+		// named nobody, and that case is the worded one below.
+		if ( ! $order->meta_exists( self::META_BUYER_IDENTITY ) && ! $order->meta_exists( self::META_BUYER_NAME ) ) {
+			return;
+		}
+
 		echo '<p class="pow-bought-by"><strong>' . esc_html__( 'PunchOut', 'punchout-woocommerce' ) . '</strong><br />' . esc_html( $this->bought_by_for( $order ) ) . '</p>';
 	}
 
@@ -477,8 +487,15 @@ final class QuoteOrder {
 	 *
 	 * Pure, and it escapes nothing: each caller escapes for its own output.
 	 * The anonymous case is worded rather than left blank, because
-	 * "Bought by  <>" reads as a fault in the shop instead of as a
+	 * "Bought by  ()" reads as a fault in the shop instead of as a
 	 * purchasing system that sent no identity.
+	 *
+	 * The e-mail address is bracketed with parentheses, never with angle
+	 * brackets: an order note is stored verbatim and rendered through kses,
+	 * where `<jane@buyer.test>` parses as an element named `jane` and is
+	 * deleted along with the address. That failure hits the ordinary
+	 * fully-identified case and is silent, so the wording carries no
+	 * tag-shaped span at all rather than relying on every caller to escape.
 	 */
 	public static function bought_by( string $name, string $identity, string $connection ): string {
 		if ( '' === $name && '' === $identity ) {
@@ -492,7 +509,7 @@ final class QuoteOrder {
 		}
 
 		/* translators: 1: buyer name, 2: buyer e-mail address, 3: customer connection name */
-		return sprintf( __( 'Bought by %1$s <%2$s> via PunchOut (%3$s)', 'punchout-woocommerce' ), $name, $identity, $connection );
+		return sprintf( __( 'Bought by %1$s (%2$s) via PunchOut (%3$s)', 'punchout-woocommerce' ), $name, $identity, $connection );
 	}
 
 	/** Name the connection by the name it carried at the time, or by its id when it carried none. */
