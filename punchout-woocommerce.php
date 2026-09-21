@@ -12,7 +12,7 @@
  * Text Domain:       punchout-woocommerce
  * Domain Path:       /languages
  * WC requires at least: 8.0
- * WC tested up to:   9.9
+ * WC tested up to:   11.1
  *
  * PunchOut for WooCommerce — cXML PunchOut supplier plugin.
  * Copyright (C) 2026 Noiz.
