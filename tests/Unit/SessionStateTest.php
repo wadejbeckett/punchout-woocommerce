@@ -11,6 +11,13 @@ declare( strict_types = 1 );
 use PHPUnit\Framework\TestCase;
 use POW\Sessions\Session;
 
+/**
+ * The ORDERED terms below are deliberate. No production path writes that
+ * status since the paid exit was removed, but the constant and its two
+ * transition rows stay as vocabulary so rows and audit entries written
+ * before the removal still parse — and this suite is where that decision is
+ * pinned. See DualExitRemovalTest for the assertion that nothing writes it.
+ */
 final class SessionStateTest extends TestCase {
 
 	public function test_allowed_transitions(): void {
@@ -41,8 +48,8 @@ final class SessionStateTest extends TestCase {
 		$row['status'] = Session::ACTIVE;
 		self::assertFalse( Session::from_row( $row )->is_terminal() );
 
-		// `ordered` is not terminal: the close-out (-> closed) or cron
-		// (-> expired) still owns the last word.
+		// A historical `ordered` row is not terminal: cron (-> expired) still
+		// owns the last word.
 		$row['status'] = Session::ORDERED;
 		self::assertFalse( Session::from_row( $row )->is_terminal() );
 	}

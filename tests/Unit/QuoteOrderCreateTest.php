@@ -1046,10 +1046,11 @@ final class QuoteOrderCreateTest extends TestCase {
 	}
 
 	/**
-	 * PayExit owns sessions.order_id for a paid checkout and leaves the
-	 * session active until payment confirms; a quote must not overwrite
-	 * that link. The order it does not recognise is not one of ours
-	 * either, so a quote is still created — just not written back.
+	 * link_quote_if_empty() is now the only writer of sessions.order_id, and
+	 * it never overwrites one: a row that already names an order was linked
+	 * by an earlier return, or carries a historical paid-exit link. The
+	 * order it does not recognise is not one of ours either, so a quote is
+	 * still created — just not written back.
 	 */
 	public function test_an_existing_order_link_is_not_overwritten(): void {
 		$order_id = $this->quotes->create_for_session( $this->session( [ 'order_id' => 777 ] ), $this->partner(), $this->lines() );

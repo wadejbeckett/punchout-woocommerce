@@ -31,10 +31,15 @@ defined( 'ABSPATH' ) || exit;
  *
  *   pending  --token redeemed-->  active
  *   active   --RFQ exit-------->  returned
- *   active   --payment_complete-> ordered
  *   active   --empty POOM------->  closed   ("return without ordering")
- *   ordered  --close-out POOM--->  closed
- *   pending|active|ordered --cron/latest-wins--> expired
+ *   pending|active|ordered --cron/supersede--> expired
+ *
+ * ORDERED is inert vocabulary. Checkout is blocked inside every visit, so
+ * no code path writes it any more; the constant and its two transition rows
+ * stay so rows and audit entries written before the paid exit was removed
+ * still parse, and so an ordered row still counts as open (Store defines
+ * "open" as pending|active|ordered in six places, including the
+ * per-connection visit cap).
  *
  * The transition table is pure and unit-tested; Store enforces it in SQL
  * (UPDATE ... WHERE status IN (...)) so concurrent requests cannot race a
@@ -45,12 +50,14 @@ final class Session {
 	public const PENDING  = 'pending';
 	public const ACTIVE   = 'active';
 	public const RETURNED = 'returned';
+	/** Historical only: nothing writes this status since the paid exit was removed. */
 	public const ORDERED  = 'ordered';
 	public const CLOSED   = 'closed';
 	public const EXPIRED  = 'expired';
 
 	private const TRANSITIONS = [
 		self::PENDING => [ self::ACTIVE, self::EXPIRED ],
+		// The two ORDERED terms are unreachable by design; see the class docblock.
 		self::ACTIVE  => [ self::RETURNED, self::ORDERED, self::CLOSED, self::EXPIRED ],
 		self::ORDERED => [ self::CLOSED, self::EXPIRED ],
 	];

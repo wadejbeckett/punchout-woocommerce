@@ -427,8 +427,8 @@ if ( ! function_exists( 'wp_set_current_user' ) ) {
  * bound account, so a suite that reaches for one of those must fail with an
  * undefined function rather than quietly pass against a fake. A suite that
  * genuinely needs to observe such a call owns a namespace-local seam of its
- * own (see tests/Unit/CompanyBookTest.php and tests/Unit/ExitPolicyTest.php),
- * which binds only inside that suite. HarnessPerVisitTest pins the absence.
+ * own (see tests/Unit/CompanyBookTest.php), which binds only inside that
+ * suite. HarnessPerVisitTest pins the absence.
  *
  * add_filter/remove_filter/add_action are absent for a different reason: the
  * global hook surface belongs to tests/fixtures/plugin-boot-master-off.php,

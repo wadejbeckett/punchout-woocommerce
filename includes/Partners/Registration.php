@@ -27,9 +27,9 @@ final class Registration {
 		foreach ( [ $p->name, $p->from_domain, $p->from_identity, $p->sender_domain, $p->sender_identity, $p->to_domain, $p->to_identity ] as $value ) {
 			if ( ! self::identity_value( $value ) ) { return false; }
 		}
+		// The legacy mode and the exit entitlement are retired columns with a
+		// single value each, so neither is an approval condition any more.
 		return $p->is_pending() && '' === $p->secret_current && '' === $p->secret_previous
-			&& in_array( $p->mode, [ Partner::MODE_REQUISITION_ONLY, Partner::MODE_DUAL_EXIT ], true )
-			&& in_array( $p->exit_policy, [ \POW\Checkout\ExitPolicy::ONLY, \POW\Checkout\ExitPolicy::CHECKOUT ], true )
 			&& in_array( $p->deployment_mode, [ 'test', 'production' ], true )
 			&& in_array( $p->return_encoding, [ 'base64', 'urlencoded' ], true )
 			&& 1 === preg_match( '/^\d+\.\d+\.\d+$/D', $p->cxml_version );

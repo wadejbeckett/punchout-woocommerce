@@ -17,7 +17,6 @@ use POW\Audit\Log;
 use POW\Cart\Guard;
 use POW\Cart\PoomMapper;
 use POW\Cart\Surface;
-use POW\Checkout\PayExit;
 use POW\CLI\Command;
 use POW\Cxml\Builder;
 use POW\Cxml\Parser;
@@ -193,8 +192,6 @@ final class Plugin {
 		$this->surface->register_runtime();
 
 		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
-		( new PayExit( $this, $this->sessions, $this->audit ) )->register();
-
 	}
 
 	/**

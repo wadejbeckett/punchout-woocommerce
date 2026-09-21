@@ -13,7 +13,6 @@ namespace POW\Admin;
 use POW\Support\Transport;
 
 use POW\Addresses\Fields;
-use POW\Checkout\ExitPolicy;
 use POW\Audit\Log;
 use POW\Http\RateLimiter;
 use POW\Partners\Partner;
@@ -358,14 +357,16 @@ final class Page {
 			return;
 		}
 		echo '<table class="widefat striped"><thead><tr>';
-		foreach ( [ __( 'Name', 'punchout-woocommerce' ), __( 'Status', 'punchout-woocommerce' ), __( 'Sender identity', 'punchout-woocommerce' ), __( 'Mode', 'punchout-woocommerce' ), __( 'cXML', 'punchout-woocommerce' ), __( 'Secret', 'punchout-woocommerce' ), __( 'Actions', 'punchout-woocommerce' ) ] as $head ) {
+		foreach ( [ __( 'Name', 'punchout-woocommerce' ), __( 'Status', 'punchout-woocommerce' ), __( 'Sender identity', 'punchout-woocommerce' ), __( 'Store account', 'punchout-woocommerce' ), __( 'cXML', 'punchout-woocommerce' ), __( 'Secret', 'punchout-woocommerce' ), __( 'Actions', 'punchout-woocommerce' ) ] as $head ) {
 			echo '<th>' . esc_html( $head ) . '</th>';
 		}
 		echo '</tr></thead><tbody>';
 		foreach ( $partners as $partner ) {
 			$secret_state = '' === $partner->secret_current ? __( 'not set', 'punchout-woocommerce' ) : ( '' !== $partner->secret_previous ? __( 'set (rotation window open)', 'punchout-woocommerce' ) : __( 'set', 'punchout-woocommerce' ) );
 			echo '<tr><td>' . esc_html( $partner->name ) . '</td><td>' . esc_html( $partner->status ) . '</td><td><code>' . esc_html( $partner->sender_domain . ' / ' . $partner->sender_identity ) . '</code></td>';
-			echo '<td>' . esc_html( ExitPolicy::labels()[ $partner->exit_policy ] ) . '</td><td>' . esc_html( $partner->cxml_version ) . '</td><td>' . esc_html( $secret_state ) . '</td><td>';
+			// The bound customer account, not an entitlement: an unbound connection refuses every setup request.
+			$account = 0 === $partner->owner_user_id ? __( 'not bound', 'punchout-woocommerce' ) : '#' . $partner->owner_user_id;
+			echo '<td>' . esc_html( $account ) . '</td><td>' . esc_html( $partner->cxml_version ) . '</td><td>' . esc_html( $secret_state ) . '</td><td>';
 			printf( '<p><a href="%s">%s</a></p>', esc_url( $this->tab_url( 'partners', [ 'action' => 'edit', 'partner' => $partner->id ] ) ), esc_html__( 'Edit', 'punchout-woocommerce' ) );
 			if ( $partner->is_pending() ) {
 				$this->action_form( $partner->id, 'approve_partner', 'approve', __( 'Approve company', 'punchout-woocommerce' ) );
@@ -380,28 +381,6 @@ final class Page {
 			echo '</td></tr>';
 		}
 		echo '</tbody></table>';
-	}
-
-	/** Only existing provisioned members appear; this screen cannot create employees. */
-	private function render_buyer_restrictions( Partner $partner ): void {
-		echo '<h3>' . esc_html__( 'Buyer restrictions', 'punchout-woocommerce' ) . '</h3><p>' . esc_html__( 'Existing company buyers are recognised automatically. Restrictions are managed by shop administrators and cannot exceed the company permission.', 'punchout-woocommerce' ) . '</p>';
-		if ( ! $partner->is_active() ) { return; }
-		$policy = new ExitPolicy( $this->settings, $this->registry );
-		$cap = ExitPolicy::resolve( $this->settings->exit_policy(), $partner->exit_policy, ExitPolicy::INHERIT );
-		try {
-			foreach ( get_users( [ 'role' => \POW\Installer::ROLE, 'meta_key' => '_pow_partner_id', 'meta_value' => (string) $partner->id, 'orderby' => 'ID' ] ) as $buyer ) {
-				if ( ! $policy->member( $partner->id, (int) $buyer->ID ) ) { continue; }
-				$value = $policy->buyer_value( $partner->id, (int) $buyer->ID );
-				echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="pow_save_buyer_exit" /><input type="hidden" name="partner" value="' . esc_attr( (string) $partner->id ) . '" /><input type="hidden" name="buyer" value="' . esc_attr( (string) $buyer->ID ) . '" />';
-				wp_nonce_field( 'pow_buyer_exit_' . $partner->id );
-				echo '<p><label>' . esc_html( $buyer->display_name . ' (#' . $buyer->ID . ')' ) . ' <select name="exit_policy">';
-				foreach ( ExitPolicy::labels() as $option => $label ) {
-					$disabled = ExitPolicy::CHECKOUT === $option && ExitPolicy::CHECKOUT !== $cap ? ' disabled' : '';
-					echo '<option value="' . esc_attr( $option ) . '"' . selected( $value, $option, false ) . $disabled . '>' . esc_html( $label ) . '</option>';
-				}
-				echo '</select></label> <button class="button" type="submit">' . esc_html__( 'Save buyer restriction', 'punchout-woocommerce' ) . '</button></p></form>';
-			}
-		} catch ( \Throwable $e ) { echo '<p>' . esc_html__( 'Buyer restrictions could not be loaded. Reload before making changes.', 'punchout-woocommerce' ) . '</p>'; }
 	}
 
 	private function action_form( int $partner_id, string $action, string $nonce, string $label, string $confirm = '' ): void {
@@ -433,11 +412,6 @@ final class Page {
 		$this->form_row(
 			__( 'Status', 'punchout-woocommerce' ),
 			$is_pending ? esc_html__( 'Pending — save configuration, then approve explicitly.', 'punchout-woocommerce' ) : ( null !== $partner && ! $partner->is_active() ? esc_html__( 'Disabled — use Reset connection to recover after checking its configuration.', 'punchout-woocommerce' ) : $this->select( 'status', [ 'active' => __( 'Active', 'punchout-woocommerce' ), 'disabled' => __( 'Disabled', 'punchout-woocommerce' ) ], $partner->status ?? 'active' ) )
-		);
-
-		$this->form_row(
-			__( 'Checkout access', 'punchout-woocommerce' ),
-			'<input type="hidden" name="exit_policy" value="' . esc_attr( ExitPolicy::CHECKOUT ) . '" /><label><input type="checkbox" name="exit_policy" value="' . esc_attr( ExitPolicy::ONLY ) . '" ' . checked( ExitPolicy::ONLY, $partner->exit_policy ?? ExitPolicy::CHECKOUT, false ) . ' /> ' . esc_html__( 'PunchOut only', 'punchout-woocommerce' ) . '</label><p class="description">' . esc_html__( 'Normal checkout is available during a valid PunchOut session when this setting is off. Buyer restrictions may narrow this company permission.', 'punchout-woocommerce' ) . '</p>'
 		);
 
 		$identity_help = '<p class="description">' . esc_html__( 'The Sender credential is the authentication key: it must match what the buyer\'s system sends. From = the buyer; To = this store, as they address it.', 'punchout-woocommerce' ) . '</p>';
@@ -530,7 +504,6 @@ final class Page {
 		echo '</form>';
 
 		if ( null !== $partner ) {
-			$this->render_buyer_restrictions( $partner );
 			if ( $is_pending ) {
 				$this->action_form( $partner->id, 'approve_partner', 'approve', __( 'Approve company', 'punchout-woocommerce' ) );
 			} else {
