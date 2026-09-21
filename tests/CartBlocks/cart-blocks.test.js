@@ -31,7 +31,7 @@ test('restricted first render and later cart refreshes use one native confirmati
 	assert.equal(client.apply('placeOrderButtonLabel', 'Place order'), 'Place order');
 });
 
-test('ordinary, dual exit and missing configuration preserve native filters', () => {
+test('ordinary shoppers and absent or unrestricted configuration preserve native filters', () => {
 	for (const config of [undefined, null, {}, { ...restricted, restricted: false }, { ...restricted, restricted: 'true' }]) {
 		const client = load(config);
 		assert.equal(client.apply('proceedToCheckoutButtonLabel', 'Proceed to Checkout'), 'Proceed to Checkout');
