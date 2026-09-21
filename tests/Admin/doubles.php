@@ -20,6 +20,8 @@ namespace POW\Admin {
  function checked(mixed $a,mixed $b,bool $echo=false): string { return $a===$b?' checked="checked"':''; }
  function submit_button(string $text='Save',string $type='primary',string $name='submit',bool $wrap=true): void { echo '<button>'.\esc_html($text).'</button>'; }
  function add_action(string $hook,callable $fn): void { $GLOBALS['pow_admin_test']['hooks'][$hook]=$fn; }
+ /** No user directory in this suite: the admin screens list nobody unless a suite seeds its own. Lives here, not in one test file, because every suite that eval()s Admin\Page binds it. */
+ function get_users(array $args): array { return []; }
 }
 namespace {
  final class AdminResponse extends RuntimeException {
