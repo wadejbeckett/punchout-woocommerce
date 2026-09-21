@@ -357,10 +357,11 @@ final class Surface {
 
 		$checkout = rtrim( (string) wc_get_checkout_url(), '/' );
 		$checkout = str_replace( [ '\\', '"' ], [ '\\\\', '\\"' ], $checkout );
+		// Never the wc-proceed-to-checkout wrapper itself: with its hooks
+		// cleared it holds exactly one thing, this plugin's return control.
 		$selectors = [
 			'a[href^="' . $checkout . '"]',
 			'.checkout-button',
-			'.wc-proceed-to-checkout',
 			'.widget_shopping_cart .buttons .checkout',
 			'.wc-block-mini-cart__footer-checkout',
 		];

@@ -202,6 +202,8 @@ namespace {
 			self::assertStringContainsString( '.checkout-button', $css );
 			self::assertStringContainsString( 'display:none!important', str_replace( ' ', '', $css ) );
 			self::assertStringNotContainsString( 'punchout/confirm', $css, 'The return control is never hidden' );
+			self::assertStringNotContainsString( 'wc-proceed-to-checkout', $css, 'Woo wraps the return control in that container; hiding it hides the visit\'s only exit' );
+			self::assertStringNotContainsString( 'pow-return', $css );
 		}
 		public function test_an_ordinary_shopper_gets_no_visit_stylesheet(): void {
 			$this->set_session( null );
