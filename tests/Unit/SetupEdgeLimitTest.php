@@ -100,12 +100,19 @@ final class SetupEdgeLimitTest extends TestCase {
 	}
 
 	/**
-	 * @param array<string, string> $extrinsics Buyer identity extrinsics.
+	 * @param array<string, ?string> $extrinsics Buyer identity extrinsics. A
+	 *                                           null value is sent as a
+	 *                                           self-closing element.
 	 */
-	private function valid_body( string $sender = 'unknown', string $payload_id = 'edge-test', array $extrinsics = [] ): string {
+	private function valid_body( string $sender = 'unknown', string $payload_id = 'edge-test', array $extrinsics = [], string $contact_email = '' ): string {
 		$nodes = '';
 		foreach ( $extrinsics as $name => $value ) {
-			$nodes .= '<Extrinsic name="' . $name . '">' . $value . '</Extrinsic>';
+			$nodes .= null === $value
+				? '<Extrinsic name="' . $name . '"/>'
+				: '<Extrinsic name="' . $name . '">' . $value . '</Extrinsic>';
+		}
+		if ( '' !== $contact_email ) {
+			$nodes .= '<Contact><Name xml:lang="en">Buyer</Name><Email>' . $contact_email . '</Email></Contact>';
 		}
 		return '<cXML version="1.2.008" payloadID="' . $payload_id . '"><Header><From><Credential domain="NetworkID"><Identity>buyer</Identity></Credential></From><To><Credential domain="NetworkID"><Identity>shop</Identity></Credential></To><Sender><Credential domain="NetworkID"><Identity>' . $sender . '</Identity><SharedSecret>fixture-secret</SharedSecret></Credential></Sender></Header><Request><PunchOutSetupRequest operation="create"><BuyerCookie>cookie</BuyerCookie>' . $nodes . '<BrowserFormPost><URL>https://buyer.example.test/return</URL></BrowserFormPost></PunchOutSetupRequest></Request></cXML>';
 	}
@@ -328,6 +335,72 @@ final class SetupEdgeLimitTest extends TestCase {
 		self::assertStringNotContainsString( 'jdoe@example.test', (string) wp_json_encode( array_column( $this->audit->rows, 1 ) ), 'The raw buyer e-mail is never logged' );
 	}
 
+	public function test_the_pre_auth_archive_keeps_the_request_but_never_its_raw_e_mail(): void {
+		$this->connect();
+		$this->bind_account();
+		$body = $this->valid_body(
+			'known',
+			'p1',
+			[ 'UserEmail' => 'jane.doe@buyer.example.com', 'UniqueUsername' => 'JANE.DOE@buyer.example.com', 'UniqueName' => 'jane.doe', 'UserPrintableName' => 'Jane Doe' ],
+			'contact.jane@buyer.example.com'
+		);
+		self::assertSame( SetupEndpoint::STATUS_OK, $this->request( $this->endpoint( 10 ), $body ) );
+
+		$archive = (string) $this->audit->rows[0][1]['xml'];
+		self::assertSame( 'setup_rx', $this->audit->rows[0][0] );
+		foreach ( [ 'jane.doe@buyer.example.com', 'JANE.DOE@buyer.example.com', 'jane.doe', 'contact.jane@buyer.example.com' ] as $secret ) {
+			self::assertStringNotContainsString( $secret, $archive, 'The archived body must not carry the buyer identity in clear' );
+		}
+		// Evidence, not a hole: the document, the buyer's cookie, the
+		// punchback target and the name the log records anyway all survive.
+		self::assertStringContainsString( '[redacted]', $archive );
+		self::assertStringContainsString( 'payloadID="p1"', $archive );
+		self::assertStringContainsString( '<BuyerCookie>cookie</BuyerCookie>', $archive );
+		self::assertStringContainsString( 'https://buyer.example.test/return', $archive );
+		self::assertStringContainsString( '<Extrinsic name="UserPrintableName">Jane Doe</Extrinsic>', $archive );
+		self::assertSame( 4, substr_count( $archive, '[redacted]' ), 'Each identity-bearing element is blanked, and nothing else is' );
+		$doc = new DOMDocument();
+		self::assertTrue( $doc->loadXML( $archive ), 'A redacted archive is still a readable document' );
+
+		// The request itself is untouched: the parser read the identity, the
+		// visit row carries it for the administrator, and the replay hash is
+		// still the hash of what the buyer actually sent.
+		$visit = $this->visits()[0];
+		self::assertSame( 'jane.doe@buyer.example.com', $visit['buyer_identity'] );
+		self::assertSame( 'Jane Doe', $visit['buyer_name'] );
+		self::assertSame( hash( 'sha256', $body ), $visit['body_hash'] );
+	}
+
+	public function test_a_self_closing_identity_element_does_not_blank_the_element_after_it(): void {
+		$this->connect();
+		$this->bind_account();
+		self::assertSame(
+			SetupEndpoint::STATUS_OK,
+			$this->request( $this->endpoint( 10 ), $this->valid_body( 'known', 'p1', [ 'UserEmail' => null, 'UserPrintableName' => 'Jane Doe' ] ) )
+		);
+		$archive = (string) $this->audit->rows[0][1]['xml'];
+		self::assertStringContainsString( '<Extrinsic name="UserEmail"/>', $archive );
+		self::assertStringContainsString( '<Extrinsic name="UserPrintableName">Jane Doe</Extrinsic>', $archive );
+		self::assertStringNotContainsString( '[redacted]', $archive, 'An empty element has nothing to blank' );
+	}
+
+	public function test_setup_ok_records_a_name_sent_without_an_e_mail(): void {
+		$this->connect();
+		$this->bind_account();
+		self::assertSame(
+			SetupEndpoint::STATUS_OK,
+			$this->request( $this->endpoint( 10 ), $this->valid_body( 'known', 'p1', [ 'UserPrintableName' => 'Jane Doe' ] ) )
+		);
+		$visit = $this->visits()[0];
+		self::assertSame( '', $visit['buyer_identity'] );
+		self::assertSame( 'Jane Doe', $visit['buyer_name'] );
+
+		// The log must not deny a buyer the order screen goes on to name.
+		$detail = $this->audit->rows[ count( $this->audit->rows ) - 1 ][1]['detail'];
+		self::assertSame( 'none', $detail['buyer'], 'No identity was sent, so there is no hash to log' );
+		self::assertSame( 'Jane Doe', $detail['buyer_name'] );
+	}
+
 	public function test_an_anonymous_visit_commits_with_no_identity_and_says_so_in_the_log(): void {
 		$this->connect();
 		$this->bind_account();
@@ -449,6 +522,101 @@ final class SetupEdgeLimitTest extends TestCase {
 		self::assertSame( [], $this->visits(), 'The abandoned claim is released' );
 		self::assertFalse( in_array( 'setup_ok', array_column( $this->audit->rows, 0 ), true ) );
 	}
+
+	/* ---------------------------------------------------------------------
+	 * Two requests of one buyer, and what a failed commit may cost
+	 * ------------------------------------------------------------------ */
+
+	public function test_a_second_punch_in_of_one_buyer_never_expires_the_first_ones_in_flight_claim(): void {
+		$this->connect();
+		$this->bind_account();
+		$endpoint = $this->endpoint( 10 );
+		$buyer = [ 'UserEmail' => 'alice@acme.test' ];
+
+		// The second request lands in the window between the first one's claim
+		// insert and its commit — a double click, or a client-side timeout
+		// retry, which cXML sends under a new payloadID. It runs to
+		// completion, supersede loop included, while the first claim is still
+		// uncommitted: user_id 0 and no response stored.
+		$this->database->after_insert = function ( SetupEdgeDatabase $database ) use ( $endpoint, $buyer ): void {
+			$database->after_insert = null;
+			self::assertSame( 0, (int) $database->sessions[ $database->insert_id ]['user_id'] );
+			self::assertSame( SetupEndpoint::STATUS_OK, $this->request( $endpoint, $this->valid_body( 'known', 'P2', $buyer ) ) );
+		};
+
+		// The first request still commits: an in-flight claim is not a visit,
+		// so nothing expired the row it is about to write.
+		self::assertSame( SetupEndpoint::STATUS_OK, $this->request( $endpoint, $this->valid_body( 'known', 'P1', $buyer ) ) );
+
+		$statuses = [];
+		foreach ( $this->database->sessions as $row ) {
+			$statuses[ $row['payload_id'] ] = $row['status'];
+		}
+		// Latest-wins between the two, by commit order: exactly one live visit
+		// for this buyer, and the connection untouched.
+		self::assertSame( [ 'P1' => Session::PENDING, 'P2' => Session::EXPIRED ], $statuses );
+		self::assertSame( [], $this->database->partner_updates, 'One buyer punching in twice must never disable the connection' );
+		self::assertSame( 'active', (string) $this->database->partner['status'] );
+
+		$expired = array_values( array_filter( $this->audit->rows, static fn( array $row ): bool => 'session_expired' === $row[0] ) );
+		self::assertCount( 1, $expired, 'Only the committed visit is superseded, and only once' );
+		self::assertSame( 'superseded', $expired[0][1]['result'] );
+		self::assertSame( substr( hash( 'sha256', '7|alice@acme.test' ), 0, 12 ), $expired[0][1]['detail']['buyer_hash'] );
+		self::assertSame( 2, count( array_filter( $this->audit->rows, static fn( array $row ): bool => 'setup_ok' === $row[0] ) ) );
+	}
+
+	public function test_a_claim_resolved_under_this_request_answers_500_without_disabling_the_connection(): void {
+		$this->connect();
+		$this->bind_account();
+		// Something else resolved the claim row in the commit window — a
+		// sweep, or another request of this buyer that got there first. This
+		// request has lost a race, which is not persistence corruption.
+		$this->database->before_commit = static function ( SetupEdgeDatabase $database ): void {
+			$database->sessions[ $database->insert_id ]['status'] = Session::EXPIRED;
+		};
+		self::assertSame( SetupEndpoint::STATUS_INTERNAL, $this->request( $this->endpoint( 10 ), $this->valid_body( 'known', 'lost' ) ) );
+		self::assertSame( [], $this->database->partner_updates, 'A lost claim must not lock every buyer of this customer out' );
+		self::assertSame( 'active', (string) $this->database->partner['status'] );
+		self::assertFalse( in_array( 'setup_ok', array_column( $this->audit->rows, 0 ), true ) );
+	}
+
+	public function test_a_still_pending_claim_that_refuses_its_commit_disables_the_connection(): void {
+		$this->connect();
+		$this->bind_account();
+		// The row is exactly as it was claimed and the conditional UPDATE
+		// still takes nothing: the store is not doing what it reports, and a
+		// connection whose visits cannot be trusted stops answering.
+		$this->database->reject_commit = true;
+		self::assertSame( SetupEndpoint::STATUS_INTERNAL, $this->request( $this->endpoint( 10 ), $this->valid_body( 'known', 'corrupt' ) ) );
+		self::assertCount( 1, $this->database->partner_updates );
+		self::assertSame( 'disabled', $this->database->partner_updates[0][0]['status'] );
+		self::assertSame( [ 'id' => 7, 'status' => 'active' ], $this->database->partner_updates[0][1] );
+		self::assertSame( 'disabled', (string) $this->database->partner['status'] );
+		self::assertSame( [], $this->visits(), 'The uncommitted claim is released' );
+	}
+
+	public function test_another_connections_expired_backlog_cannot_hold_this_connection_at_its_cap(): void {
+		$this->connect();
+		$this->bind_account();
+		$past = gmdate( 'Y-m-d H:i:s', time() - 60 );
+		// Two other connections have abandoned a full global sweep window
+		// between them, all with lower ids than this connection's rows, which
+		// is the ordinary state when the hourly cron has not run.
+		$this->database->fill_open_visits( 3, 100, $past );
+		$this->database->fill_open_visits( 4, 100, $past );
+		$this->database->fill_open_visits( 7, Store::MAX_OPEN_VISITS, $past );
+
+		self::assertSame( SetupEndpoint::STATUS_OK, $this->request( $this->endpoint( 10 ), $this->valid_body( 'known', 'mine' ) ) );
+		self::assertFalse( in_array( 'setup_visit_cap', array_column( $this->audit->rows, 0 ), true ), 'Every row the cap blocked on was this connection\'s own and expired' );
+
+		$mine = array_filter( $this->database->sessions, static fn( array $row ): bool => 7 === (int) $row['partner_id'] && 'mine' !== $row['payload_id'] );
+		self::assertCount( Store::MAX_OPEN_VISITS, $mine );
+		self::assertSame( [ Session::EXPIRED ], array_values( array_unique( array_column( $mine, 'status' ) ) ) );
+
+		$others = array_filter( $this->database->sessions, static fn( array $row ): bool => in_array( (int) $row['partner_id'], [ 3, 4 ], true ) );
+		self::assertCount( 200, $others );
+		self::assertSame( [ Session::ACTIVE ], array_values( array_unique( array_column( $others, 'status' ) ) ), 'Another connection\'s rows belong to another lock' );
+	}
 }
 
 final class SetupEdgeAudit extends Log {
@@ -505,8 +673,14 @@ final class SetupEdgeDatabase {
 	/** @var array<int, array<string, mixed>> Visit rows keyed by id. */
 	public array $sessions = [];
 	public array $lookups = [];
+	/** Every attempted write to the connection row: [$data, $where]. */
+	public array $partner_updates = [];
 	/** Fired after a visit row is inserted — the claim/commit window. */
 	public ?\Closure $after_insert = null;
+	/** Fired when the claim-completion UPDATE arrives — the commit itself. */
+	public ?\Closure $before_commit = null;
+	/** Refuse the claim-completion UPDATE while leaving the row pending — persistence corruption. */
+	public bool $reject_commit = false;
 	private int $next_id = 0;
 
 	/** Pre-load a connection with open visits, to reach its cap. */
@@ -558,13 +732,32 @@ final class SetupEdgeDatabase {
 			);
 		}
 
-		if ( str_contains( $sql, 'expires < %s' ) ) {
-			return array_values(
-				array_filter(
-					$this->sessions,
-					static fn( array $row ): bool => in_array( $row['status'], self::OPEN, true ) && (string) $row['expires'] < (string) $args[3]
-				)
+		// The cap's own sweep. Scoped to one connection in SQL, oldest first
+		// and bounded: a query that dropped the partner_id predicate would be
+		// answered with every connection's expired rows here, which is the
+		// window the cap used to filter in PHP instead.
+		if ( str_contains( $sql, 'partner_id = %d' ) && str_contains( $sql, 'expires < %s' ) ) {
+			if ( ! str_contains( $sql, 'ORDER BY id ASC' ) ) {
+				throw new \RuntimeException( 'The cap sweep must drain its own connection oldest first.' );
+			}
+			$expired = array_filter(
+				$this->sessions,
+				static fn( array $row ): bool => (int) $args[0] === (int) $row['partner_id'] && in_array( $row['status'], self::OPEN, true ) && (string) $row['expires'] < (string) $args[4]
 			);
+			ksort( $expired );
+			return array_slice( array_values( $expired ), 0, max( 1, (int) $args[5] ) );
+		}
+
+		// Cron's global window, bounded as the real query is: another
+		// connection's backlog fills it, which is what the cap must not
+		// depend on.
+		if ( str_contains( $sql, 'expires < %s' ) ) {
+			$expired = array_filter(
+				$this->sessions,
+				static fn( array $row ): bool => in_array( $row['status'], self::OPEN, true ) && (string) $row['expires'] < (string) $args[3]
+			);
+			ksort( $expired );
+			return array_slice( array_values( $expired ), 0, max( 1, (int) $args[4] ) );
 		}
 
 		return [];
@@ -590,7 +783,27 @@ final class SetupEdgeDatabase {
 		$id = ++$this->next_id;
 		$this->insert_id = $id;
 		$this->sessions[ $id ] = array_replace( [ 'wp_session_token' => '', 'order_id' => 0, 'created' => gmdate( 'Y-m-d H:i:s' ) ], $data, [ 'id' => $id ] );
-		if ( $this->after_insert instanceof \Closure ) { ( $this->after_insert )( $this ); }
+		if ( $this->after_insert instanceof \Closure ) {
+			( $this->after_insert )( $this );
+			// A nested request is another database connection in life, and
+			// LAST_INSERT_ID() is per connection: this insert's own id is what
+			// this caller reads back.
+			$this->insert_id = $id;
+		}
+		return 1;
+	}
+
+	/**
+	 * The connection row's own writer, so a test can see whether the endpoint
+	 * disabled a customer's connection — the one consequence of a failed
+	 * commit that an administrator has to undo by hand.
+	 */
+	public function update( string $table, array $data, array $where ): int|false {
+		if ( ! str_contains( $table, 'wp_pow_partners' ) ) { return false; }
+		$this->partner_updates[] = [ $data, $where ];
+		if ( null === $this->partner || (int) $this->partner['id'] !== (int) ( $where['id'] ?? 0 ) ) { return false; }
+		if ( array_key_exists( 'status', $where ) && (string) $this->partner['status'] !== (string) $where['status'] ) { return false; }
+		$this->partner = array_replace( $this->partner, $data );
 		return 1;
 	}
 
@@ -605,6 +818,12 @@ final class SetupEdgeDatabase {
 		}
 
 		if ( str_contains( $sql, 'SET user_id = %d, response_xml = %s' ) ) {
+			if ( $this->before_commit instanceof \Closure ) {
+				$hook = $this->before_commit;
+				$this->before_commit = null;
+				$hook( $this );
+			}
+			if ( $this->reject_commit ) { return false; }
 			$id  = (int) $args[2];
 			$row = $this->sessions[ $id ] ?? null;
 			if ( ! $row || (int) $args[3] !== (int) $row['partner_id'] || (string) $args[4] !== (string) $row['payload_id'] || (string) $args[5] !== (string) $row['body_hash'] || (string) $args[6] !== (string) $row['one_time_token_hash'] || (string) $args[7] !== (string) $row['status'] || 0 !== (int) $row['user_id'] || null !== ( $row['response_xml'] ?? null ) || (string) $row['expires'] <= (string) $args[8] ) { return false; }

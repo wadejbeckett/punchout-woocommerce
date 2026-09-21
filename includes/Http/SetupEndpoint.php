@@ -179,12 +179,18 @@ final class SetupEndpoint {
 		// Pre-auth archive: this row is written before the sender is
 		// authenticated, so an anonymous client must not be able to store
 		// 2 MB per request. Real setup requests are a few KB; 64 KB keeps
-		// full evidence for anything legitimate.
+		// full evidence for anything legitimate. The buyer's identity is
+		// blanked first, because the log is read by more people than the
+		// orders screen is and this row is the one place the raw address
+		// would otherwise outlive the request. Redaction precedes the cap:
+		// truncating first can cut a closing tag and leave the address the
+		// pattern was going to blank.
+		$archive = self::redact_identities( $body );
 		$this->audit_event(
 			'setup_rx',
 			[
 				'direction' => 'in',
-				'xml'       => strlen( $body ) > 65536 ? substr( $body, 0, 65536 ) . "\n<!-- pow: pre-auth archive capped at 64 KB -->" : $body,
+				'xml'       => strlen( $archive ) > 65536 ? substr( $archive, 0, 65536 ) . "\n<!-- pow: pre-auth archive capped at 64 KB -->" : $archive,
 				'ip'        => $ip,
 			]
 		);
@@ -364,7 +370,19 @@ final class SetupEndpoint {
 			$committed = $this->registry->with_partner_lock( $partner->id, function () use ( $partner, $message, $identity, $ip, $claim, $user_id, $response ) {
 				$this->fresh_authorized( $partner, $message, $ip, $user_id );
 				if ( ! $this->sessions->complete_setup_claim( $claim, $user_id, $response ) ) {
-					$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+					// Two different failures wear the same false. The claim
+					// row no longer being pending means something else
+					// resolved it — a sweep, or another request of this
+					// buyer that committed first — and this request simply
+					// lost: answer 500 and leave the connection alone.
+					// Disabling a customer's whole connection is reserved
+					// for a row that is still waiting to be committed and
+					// still would not take the write, which is persistence
+					// corruption. An unreadable row proves nothing, so it
+					// does not disable either.
+					if ( $this->still_pending( $claim ) ) {
+						$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+					}
 					throw new ParseException( 'Session persistence unconfirmed', self::STATUS_INTERNAL );
 				}
 				$created = $this->sessions->find( $claim->id );
@@ -383,7 +401,15 @@ final class SetupEndpoint {
 				$identity_hash = $identity->hash( $partner->id );
 
 				foreach ( $this->sessions->open_for_identity( $partner->id, $identity_hash ) as $older ) {
-					if ( $older->id === $claim->id ) { continue; }
+					// An uncommitted claim is not a visit yet, and it belongs
+					// to another request that is still in flight: expiring it
+					// here would make that request's own commit fail on a row
+					// it is about to write, which reads as persistence
+					// corruption and would disable the whole connection over
+					// one buyer double-clicking. Such a claim either expires
+					// at its own token TTL or, when it commits, supersedes
+					// this visit instead — which is what latest-wins means.
+					if ( $older->id === $claim->id || 0 === $older->user_id || null === $older->response_xml ) { continue; }
 					if ( $older->partner_id !== $partner->id || ! $this->sessions->expire_locked( $older ) ) {
 						$this->sessions->expire_locked( $created );
 						$this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
@@ -419,7 +445,11 @@ final class SetupEndpoint {
 				// Who punched in, without the raw e-mail: the log is read by
 				// more people than the orders screen is, and the identity is
 				// already on the visit row and the quote order for the
-				// operator who legitimately needs it.
+				// operator who legitimately needs it. The two halves are
+				// logged independently, because a purchasing system may send
+				// a name and no e-mail: `buyer: none` is for the visit that
+				// named nobody at all, not for one the order screen goes on
+				// to name.
 				'detail'     => array_merge(
 					[
 						'slot'            => $slot,
@@ -427,8 +457,9 @@ final class SetupEndpoint {
 						'deployment_mode' => $message->deployment_mode,
 					],
 					'' !== $identity->identity
-						? [ 'buyer_hash' => substr( $identity->hash( $partner->id ), 0, 12 ), 'buyer_name' => $identity->name ]
-						: [ 'buyer' => 'none' ]
+						? [ 'buyer_hash' => substr( $identity->hash( $partner->id ), 0, 12 ) ]
+						: [ 'buyer' => 'none' ],
+					'' !== $identity->name ? [ 'buyer_name' => $identity->name ] : []
 				),
 				'ip'         => $ip,
 			]
@@ -574,6 +605,21 @@ final class SetupEndpoint {
 		return $session && $session->partner_id === $partner_id && $session->payload_id === $payload_id && $session->body_hash === $body_hash && ( null === $token_hash || $session->one_time_token_hash === $token_hash ) && Session::PENDING === $session->status && 0 === $session->user_id && null === $session->response_xml;
 	}
 
+	/**
+	 * Is this claim row, read afresh, still the uncommitted claim it was?
+	 *
+	 * Only a positive answer is ever given: a lookup that cannot run says
+	 * "no", because the one caller uses a true to disable a customer's
+	 * connection and a failed read is not evidence of corruption.
+	 */
+	private function still_pending( Session $claim ): bool {
+		try {
+			return $this->is_uncommitted_setup( $this->sessions->find( $claim->id ), $claim->partner_id, $claim->payload_id, $claim->body_hash, $claim->one_time_token_hash );
+		} catch ( \Throwable $error ) {
+			return false;
+		}
+	}
+
 	private function is_committed_setup( ?Session $session, int $partner_id, string $payload_id, string $body_hash, int $user_id, string $response_xml ): bool {
 		return $session && $session->partner_id === $partner_id && $session->payload_id === $payload_id && $session->body_hash === $body_hash && Session::PENDING === $session->status && $session->user_id === $user_id && $session->response_xml === $response_xml && $session->expires && $session->expires > gmdate( 'Y-m-d H:i:s' );
 	}
@@ -634,15 +680,18 @@ final class SetupEndpoint {
 	 * be raced and there is one refusal point rather than one per caller.
 	 * Expired-but-open rows of this connection are swept first: they count
 	 * toward the cap, so a connection whose buyers never punch back would
-	 * otherwise fill it permanently. Only this connection's rows are swept —
-	 * another connection's row belongs to another lock. The limit is
+	 * otherwise fill it permanently. The sweep asks for this connection's
+	 * own expired rows in SQL rather than filtering a global window, so the
+	 * rows the count is about to block on are always the rows swept: a
+	 * shared window is finite and other connections' rows can fill it, which
+	 * would hold this connection refused for as long as their backlog lasts.
+	 * Only this connection's rows are swept either way — another
+	 * connection's row belongs to another lock. The limit is
 	 * Store::MAX_OPEN_VISITS and is deliberately not filterable.
 	 */
 	private function refuse_over_cap( Partner $partner, string $payload_id, string $ip ): void {
-		foreach ( $this->sessions->expired_open() as $stale ) {
-			if ( $stale->partner_id === $partner->id ) {
-				$this->sessions->expire_locked( $stale );
-			}
+		foreach ( $this->sessions->expired_open_for_partner( $partner->id ) as $stale ) {
+			$this->sessions->expire_locked( $stale );
 		}
 
 		$open = $this->sessions->count_open_for_partner( $partner->id );
@@ -689,6 +738,41 @@ final class SetupEndpoint {
 
 		// Generic wording regardless of the actual reason (scope §7).
 		$this->respond( $this->status_doc( self::STATUS_AUTH_FAILED, 'Authentication failed', $partner?->cxml_version ?? $message->version ) );
+	}
+
+	/**
+	 * Blank the buyer's raw identity in the archived request body.
+	 *
+	 * The archive is evidence — it stays whole and readable — but the
+	 * identity is usually an e-mail address, and the log is read by more
+	 * people, exported more often and kept longer than the orders screen
+	 * where an administrator legitimately reads it. The audit detail already
+	 * carries only the 12-hex hash for exactly that reason; an unredacted
+	 * body would hand the address back on the same row.
+	 *
+	 * The elements are the ones Buyers\Identity reads for the identity, plus
+	 * the Contact e-mail it falls back to; a name extrinsic is left alone
+	 * because the buyer's name is logged in the detail JSON by decision. A
+	 * namespace prefix is legal cXML and is sent by real buyers, the name
+	 * attribute is matched case-insensitively because the extrinsic lookup
+	 * is, and a self-closing element is excluded so the pattern cannot run
+	 * on to the next element's closing tag and blank that instead.
+	 */
+	private static function redact_identities( string $xml ): string {
+		// Keep in step with Buyers\Identity::IDENTITY_EXTRINSICS.
+		$extrinsics = 'UserEmail|UniqueUsername|UniqueName';
+
+		$xml = (string) preg_replace(
+			'#(<(?:[A-Za-z0-9_.-]+:)?Extrinsic\b[^>]*\bname\s*=\s*(["\'])\s*(?:' . $extrinsics . ')\s*\2[^>]*(?<!/)>)(.*?)(</(?:[A-Za-z0-9_.-]+:)?Extrinsic\s*>)#is',
+			'$1[redacted]$4',
+			$xml
+		);
+
+		return (string) preg_replace(
+			'#(<(?:[A-Za-z0-9_.-]+:)?Email\b[^>]*(?<!/)>)(.*?)(</(?:[A-Za-z0-9_.-]+:)?Email\s*>)#is',
+			'$1[redacted]$3',
+			$xml
+		);
 	}
 
 	private function read_body(): string {
