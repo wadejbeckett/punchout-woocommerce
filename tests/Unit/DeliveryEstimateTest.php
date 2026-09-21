@@ -4,9 +4,15 @@ declare( strict_types = 1 );
 
 namespace POW\Tests\DeliveryEstimate {
 
+/** This visit's WooCommerce session key and a sibling visit's: `pow_` + 28 hex, 32 characters. */
+const VISIT_KEY = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
+const SIBLING_KEY = 'pow_00112233445566778899aabbccdd';
+
 final class SessionStore {}
 final class Customer {
 	public array $address = [];
+	/** The bound account's stored profile address, shared by every visit: the session data store never writes here. */
+	public array $profile = [ 'shipping_city' => 'Head office' ];
 	public bool $calculated = false;
 	public bool $fail = false;
 	public bool $wrong_store = false;
@@ -26,8 +32,8 @@ final class Customer {
 final class NativeSession {
 	public array $data = [];
 	public array $persisted = [];
-	public int $buyer = 99;
-	public function get_customer_id(): string { return (string)$this->buyer; }
+	public string $key = VISIT_KEY;
+	public function get_customer_id(): string { return $this->key; }
 	public function get_session_data(): array { return $this->persisted; }
 	public function get( string $key, mixed $default = null ): mixed { return $this->data[$key]??$default; }
 	public function set( string $key, mixed $value ): void { $this->data[$key]=$value; }
@@ -131,6 +137,8 @@ use POW\Sessions\Session;
 use POW\Partners\Partner;
 
 final class DeliveryEstimateTest extends TestCase {
+	private const KEY = \POW\Tests\DeliveryEstimate\VISIT_KEY;
+	private const OTHER_KEY = \POW\Tests\DeliveryEstimate\SIBLING_KEY;
 	private Runtime $wc;
 	private DeliveryEstimate $producer;
 	private mixed $saved;
@@ -147,7 +155,7 @@ final class DeliveryEstimateTest extends TestCase {
 	private function address(array $changes=[]):array{return array_replace(['first_name'=>'Ada','last_name'=>'Buyer','company'=>'Example Co','address_1'=>'1 Main Street','address_2'=>'','city'=>'Pretoria','state'=>'GP','postcode'=>'0001','country'=>'ZA','phone'=>''],$changes);}
 	private function destination(array $changes=[]):array{return ['address'=>$this->address($changes),'code'=>'DEPOT','source'=>'customer'];}
 	private function partner(array $changes=[]):Partner{return Partner::from_row(array_replace(['id'=>7,'owner_user_id'=>20,'status'=>'active','emit_delivery_line'=>true],$changes));}
-	private function session(array $changes=[]):Session{return Session::from_row(array_replace(['id'=>42,'partner_id'=>7,'user_id'=>99,'status'=>Session::ACTIVE],$changes));}
+	private function session(array $changes=[]):Session{return Session::from_row(array_replace(['id'=>42,'partner_id'=>7,'user_id'=>99,'status'=>Session::ACTIVE,'wc_session_key'=>self::KEY],$changes));}
 	private function quote(?Partner $partner=null,?array $destination=null):array{return $this->producer->quote($this->session(),$partner??$this->partner(),$destination??$this->destination());}
 	private function confirmed(array $delivery,?array $destination=null):Session {
 		$choice=null;
@@ -223,12 +231,34 @@ final class DeliveryEstimateTest extends TestCase {
 		$this->refuse(fn()=>$this->quote(null,$this->destination(['city'=>' <b>Pretoria</b> '])));
 		self::assertSame(0,$this->wc->cart->calls);
 	}
-	public function test_wrong_actor_customer_session_or_non_session_datastore_cannot_write():void{
+	public function test_wrong_actor_customer_visit_key_or_non_session_datastore_cannot_write():void{
 		$before=$this->wc->customer->address;
 		$this->wc->actor=20;$this->refuse(fn()=>$this->quote());$this->wc->actor=99;
 		$this->wc->customer->id=20;$this->refuse(fn()=>$this->quote());$this->wc->customer->id=99;
-		$this->wc->session->buyer=20;$this->refuse(fn()=>$this->quote());$this->wc->session->buyer=99;
+		// Same bound account, another visit's cart: the key is the only thing that can tell them apart.
+		$this->wc->session->key=self::OTHER_KEY;$this->refuse(fn()=>$this->quote());$this->wc->session->key=self::KEY;
+		$this->refuse(fn()=>$this->producer->quote($this->session(['wc_session_key'=>null]),$this->partner(),$this->destination()));
 		$this->wc->customer->wrong_store=true;$this->refuse(fn()=>$this->quote());self::assertSame($before,$this->wc->customer->address);self::assertSame(0,$this->wc->cart->calls);
+	}
+	/** One bound login, two visits: each quote writes its destination and rate snapshot into the handler it is holding, and neither writes through the account's shared profile. */
+	public function test_destination_and_rates_are_written_to_this_visits_row_only():void{
+		$first=$this->wc->session;
+		self::assertSame(1250,$this->quote()['delivery']['amount_cents']);
+		self::assertSame('Pretoria',$first->get('customer')['shipping_city']);
+		self::assertSame([0=>'flat_rate:1'],$first->get('chosen_shipping_methods'));
+		// The same account punches in a second time: its own handler, its own key, its own destination.
+		$second=new \POW\Tests\DeliveryEstimate\NativeSession();
+		$second->key=self::OTHER_KEY;
+		$this->wc->session=$second;
+		$this->wc->cart->defaults=[0=>'flat_rate:2'];
+		$quote=$this->producer->quote($this->session(['id'=>43,'wc_session_key'=>self::OTHER_KEY]),$this->partner(),$this->destination(['city'=>'Durban']));
+		self::assertSame(2250,$quote['delivery']['amount_cents']);
+		self::assertSame('Durban',$second->get('customer')['shipping_city']);
+		self::assertSame([0=>'flat_rate:2'],$second->get('chosen_shipping_methods'));
+		self::assertSame('Pretoria',$first->get('customer')['shipping_city'],'The other visit keeps its own destination.');
+		self::assertSame([0=>'flat_rate:1'],$first->get('chosen_shipping_methods'),'The other visit keeps its own chosen rate.');
+		// WC_Customer::save() goes through the session data store the producer insists on, so the shared billing_*/shipping_* profile is untouched.
+		self::assertSame(['shipping_city'=>'Head office'],$this->wc->customer->profile);
 	}
 	public function test_partial_customer_or_rate_failure_restores_prior_local_state_and_refuses():void{
 		$this->wc->session->set('customer',['old'=>'value']);$this->wc->session->set('chosen_shipping_methods',[0=>'flat_rate:2']);$before=$this->wc->customer->address;$totals=$this->wc->cart->totals;
@@ -252,12 +282,13 @@ final class DeliveryEstimateTest extends TestCase {
 			'session_customer'=>function(){$this->wc->session->set('customer',['id'=>'20']);},
 			'customer_replacement'=>function(){$this->wc->customer=clone $this->wc->customer;},
 			'actor'=>function(){$this->wc->actor=20;},
+			'visit_key'=>function(){$this->wc->session->key=self::OTHER_KEY;},
 			'currency'=>function(){$this->wc->currency='USD';},
 			'package'=>function(){$this->wc->shipping->packages[0]['destination']=['city'=>'Changed city'];},
 			'replacement'=>function(){$this->wc->shipping->packages[0]['rates']['flat_rate:1']=clone $this->wc->shipping->packages[0]['rates']['flat_rate:1'];},
 		];
 		foreach($cases as $change){
-			$this->wc->actor=99;$this->wc->currency='ZAR';$this->wc->cart->offers[0]['rates']['flat_rate:1']->cost='12.50';
+			$this->wc->actor=99;$this->wc->currency='ZAR';$this->wc->session->key=self::KEY;$this->wc->cart->offers[0]['rates']['flat_rate:1']->cost='12.50';
 			$this->wc->on_label=function()use($change){$this->wc->on_label=null;$change();};
 			$this->refuse(fn()=>$this->quote());
 		}

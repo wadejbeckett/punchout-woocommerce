@@ -86,6 +86,7 @@ final class DeliveryData {
 		try { $data = json_decode( $json, true, 16, JSON_THROW_ON_ERROR ); }
 		catch ( \JsonException $e ) { $invalid(); }
 		$fields = [ 'schema', 'session_id', 'buyer_user_id', 'choice_hash', 'cart_fingerprint', 'policy_fingerprint', 'delivery', 'notes', 'confirmed_at' ];
+		// Both bindings stay, but their meanings have parted: buyer_user_id is the connection's bound login, the same value for every concurrent visit, so session_id is the term that actually decides whose consent this is. Never write a guard on buyer_user_id alone.
 		if ( ! self::fields( $data, $fields ) || 1 !== $data['schema'] || $session_id <= 0 || $buyer_id <= 0 || $data['session_id'] !== $session_id || $data['buyer_user_id'] !== $buyer_id ) { $invalid(); }
 		foreach ( [ 'choice_hash', 'cart_fingerprint', 'policy_fingerprint' ] as $key ) {
 			if ( ! is_string( $data[ $key ] ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', $data[ $key ] ) ) { $invalid(); }
