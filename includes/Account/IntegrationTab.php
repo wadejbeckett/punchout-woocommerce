@@ -18,7 +18,6 @@ use POW\Docs\Page as DocsPage;
 use POW\Docs\Samples;
 use POW\Http\RateLimiter;
 use POW\Http\Router;
-use POW\Installer;
 use POW\Partners\{Registration, Registry};
 use POW\Plugin;
 use POW\Support\{Ip, Templates};
@@ -80,7 +79,7 @@ final class IntegrationTab {
 			if ( ! $this->plugin->enabled() || ! is_user_logged_in() ) { return 0; }
 			$id = get_current_user_id();
 			$user = $id > 0 ? get_userdata( $id ) : false;
-			return $user && user_can( $user, 'read' ) && ! in_array( Installer::ROLE, (array) $user->roles, true ) && ! get_user_meta( $id, '_pow_partner_id', true ) ? $id : 0;
+			return $user && user_can( $user, 'read' ) && ! get_user_meta( $id, '_pow_partner_id', true ) ? $id : 0;
 		} catch ( \Throwable $e ) { return 0; }
 	}
 

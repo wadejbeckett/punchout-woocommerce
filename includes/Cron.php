@@ -1,6 +1,6 @@
 <?php
 /**
- * Housekeeping: session GC, buyer deactivation, log retention.
+ * Housekeeping: visit GC, log retention, quote retention.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -12,7 +12,6 @@ namespace POW;
 
 use POW\Audit\Log;
 use POW\Orders\QuoteOrder;
-use POW\Sessions\Session;
 use POW\Sessions\Store;
 
 defined( 'ABSPATH' ) || exit;
@@ -20,15 +19,19 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Hourly GC (scope §7 "cron expires stragglers"):
  *
- * - open sessions past expiry -> expired, their recorded logins destroyed
- *   (including un-closed `ordered` rows — the buyer who closed the tab at
- *   the thank-you page, scope §5.4);
- * - buyers unseen for N days flagged inactive — flagged, never deleted,
- *   because they carry order attribution — their sessions torn down and
- *   pow_buyer_deactivated fired for site glue to clean up after;
+ * - open visits past expiry -> expired, their recorded logins destroyed and
+ *   their own WooCommerce basket row deleted (including un-closed `ordered`
+ *   rows — the buyer who closed the tab at the thank-you page, scope §5.4);
  * - audit-table retention trim;
  * - unconverted Punchout Quote orders past their retention cancelled
  *   (never deleted — QuoteOrder::expire()).
+ *
+ * No account is touched and no hook is fired. Buyers are not users of this
+ * plugin: every buyer of a connection shops as that connection's own
+ * customer account, so there is nothing dormant to deactivate. That makes
+ * the visit sweep below the ONLY thing that ever closes an abandoned visit
+ * — nobody logs out of a shared login — and the per-connection open-visit
+ * cap (Store::MAX_OPEN_VISITS) depends on this job running.
  *
  * Runs through Action Scheduler when WooCommerce provides it (reliable,
  * observable in WC > Status > Scheduled Actions), falling back to WP-Cron.
@@ -66,7 +69,6 @@ final class Cron {
 
 	public function run(): void {
 		$this->expire_sessions();
-		$this->deactivate_stale_buyers();
 		$this->audit->trim( $this->settings->int( 'log_retention_days' ) );
 		$this->quotes->expire();
 	}
@@ -83,79 +85,6 @@ final class Cron {
 					'session_id' => $session->id,
 					'user_id'    => $session->user_id,
 					'result'     => 'ttl',
-				]
-			);
-		}
-	}
-
-	private function deactivate_stale_buyers(): void {
-		$days = $this->settings->int( 'buyer_inactive_days' );
-
-		if ( $days < 1 ) {
-			return;
-		}
-
-		$cutoff = time() - $days * DAY_IN_SECONDS;
-
-		$query = new \WP_User_Query(
-			[
-				'role'       => Installer::ROLE,
-				'number'     => 100,
-				'fields'     => 'ID',
-				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
-				'meta_query' => [
-					[
-						'key'     => '_pow_last_seen',
-						'value'   => $cutoff,
-						'compare' => '<',
-						'type'    => 'NUMERIC',
-					],
-					[
-						'key'     => '_pow_deactivated',
-						'compare' => 'NOT EXISTS',
-					],
-				],
-			]
-		);
-
-		foreach ( $query->get_results() as $user_id ) {
-			$user_id = (int) $user_id;
-
-			$registry = Plugin::instance()->registry();
-			$partner_id = (int) get_user_meta( $user_id, '_pow_partner_id', true );
-			if ( ! $registry || $partner_id <= 0 ) { continue; }
-			try {
-				$clean = $registry->with_partner_lock( $partner_id, function () use ( $user_id, $partner_id ) {
-					update_user_meta( $user_id, '_pow_deactivated', 1 );
-					if ( ! get_user_meta( $user_id, '_pow_deactivated', true ) ) { return false; }
-					$after = 0;
-					$ok = true;
-					while ( $rows = $this->sessions->revocation_batch( $partner_id, $after ) ) {
-						foreach ( $rows as $row ) {
-							if ( $row->id <= $after ) { return false; }
-							$after = $row->id;
-							if ( $row->user_id === $user_id ) { $ok = $this->sessions->expire_locked( $row ) && $ok; }
-						}
-					}
-					return $ok;
-				} );
-			} catch ( \Throwable $e ) { $clean = false; }
-			if ( ! $clean ) { continue; }
-
-			/**
-			 * Fires when a dormant punchout buyer is deactivated, so site
-			 * glue can undo whatever pow_buyer_provisioned set up (group
-			 * membership, cached visibility, etc.).
-			 *
-			 * @param int $user_id Deactivated buyer user ID.
-			 */
-			do_action( 'pow_buyer_deactivated', $user_id );
-
-			$this->audit->write(
-				'buyer_deactivated',
-				[
-					'user_id' => $user_id,
-					'result'  => 'stale',
 				]
 			);
 		}

@@ -170,9 +170,8 @@ final class RegistrationSubmitTest extends TestCase {
 		$GLOBALS['pow_test_users'][7] = (object) [ 'ID' => 7, 'roles' => [ 'customer' ], 'allcaps' => [] ];
 		$this->refused( $this->registration->submit( 7, $this->fields() ) );
 		$GLOBALS['pow_test_users'][7]->allcaps = [ 'read' => true ];
-		$GLOBALS['pow_test_users'][7]->roles = [ 'customer', 'punchout_buyer' ];
-		$this->refused( $this->registration->submit( 7, $this->fields() ) );
-		$GLOBALS['pow_test_users'][7]->roles = [ 'customer' ];
+		// No role is consulted any more: what refuses an actor is the missing
+		// capability above and the legacy association meta below.
 		$GLOBALS['pow_test_user_meta'][7]['_pow_partner_id'] = 42;
 		$this->refused( $this->registration->submit( 7, $this->fields() ) );
 		self::assertSame( [], $this->db->rows );

@@ -4,12 +4,14 @@
  *
  * Runs only when the plugin is deleted from wp-admin, never on deactivation.
  *
- * NO USER IS TOUCHED. The plugin creates no users: a connection punches in
- * as a customer account the site owner already had, buyer identity is data
- * on a session row, and those accounts are ordinary WooCommerce customers
- * that outlive the plugin with their orders. The punchout_buyer role
- * definition is removed for sites upgraded from a version that created it;
- * accounts left holding it keep their user rows and lose its capabilities.
+ * NO USER IS TOUCHED. The plugin creates no users, no roles and no
+ * capabilities: a connection punches in as a customer account the site
+ * owner already had, buyer identity is data on a session row, and those
+ * accounts are ordinary WooCommerce customers that outlive the plugin with
+ * their orders. A site upgraded from a version that did create a buyer role
+ * keeps that role definition and whatever accounts still hold it — removing
+ * a role here would strip capabilities from accounts this plugin does not
+ * own, and it no longer knows which those are.
  *
  * Per-visit WooCommerce sessions ARE ours: every visit owns a
  * `pow_`-prefixed row in WooCommerce's own session table, so those rows are
@@ -37,8 +39,6 @@ global $wpdb;
 delete_option( 'pow_settings' );
 delete_option( 'pow_db_version' );
 delete_option( 'pow_rewrite_version' );
-
-remove_role( 'punchout_buyer' );
 
 wp_clear_scheduled_hook( 'pow_gc' );
 

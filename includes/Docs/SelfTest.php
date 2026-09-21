@@ -13,6 +13,7 @@ namespace POW\Docs;
 use POW\Support\Transport;
 
 use POW\Audit\Log;
+use POW\Buyers\Identity;
 use POW\Cxml\ParseException;
 use POW\Cxml\Parser;
 use POW\Cxml\SetupMessage;
@@ -32,10 +33,11 @@ defined( 'ABSPATH' ) || exit;
  * documentation page is public. Four rules follow from that, and each one
  * is held here rather than trusted to the page:
  *
- * 1. Nothing is written. No session row, no provisioned user, no login,
- *    no response document — run() reads and returns an array. The only
- *    write is the audit row the partner stage leaves behind, which is the
- *    point of rule 3.
+ * 1. Nothing is written. No session row, no login, no basket, no account of
+ *    any kind — the plugin creates no users at all, and this page creates
+ *    nothing else either — and no response document: run() reads and
+ *    returns an array. The only write is the audit row the partner stage
+ *    leaves behind, which is the point of rule 3.
  * 2. An anonymous run never distinguishes "identity unknown" from
  *    "connection disabled" from "secret wrong". Splitting those on a
  *    public page is a credential oracle; the live endpoint collapses all
@@ -200,6 +202,7 @@ final class SelfTest {
 		);
 
 		$checks[] = $this->check( __( 'Identity extrinsics seen', 'punchout-woocommerce' ), self::RESULT_INFO, implode( ', ', array_keys( $message->extrinsics ) ) );
+		$checks[] = $this->check( __( 'Buyer read from them', 'punchout-woocommerce' ), self::RESULT_INFO, self::buyer_detail( $message ) );
 		$checks[] = $this->check( __( 'ShipTo', 'punchout-woocommerce' ), self::RESULT_INFO, null !== $message->ship_to_xml ? __( 'present', 'punchout-woocommerce' ) : __( 'absent', 'punchout-woocommerce' ) );
 		$checks[] = $this->cart_handler_check();
 
@@ -515,6 +518,33 @@ final class SelfTest {
 		}
 
 		return $faults;
+	}
+
+	/**
+	 * What the buyer resolver read off this document, for the operator who
+	 * used to ask "which buyer account did that create". Nothing is created:
+	 * Buyers\Identity is a pure value object, so this row is the whole
+	 * visible result of a buyer identity — the visit row and the quote order
+	 * carry the same two values as evidence, and nothing else.
+	 */
+	private static function buyer_detail( SetupMessage $message ): string {
+		$buyer = Identity::from_message( $message );
+
+		if ( '' === $buyer->identity && '' === $buyer->name ) {
+			return __( 'none supplied — the visit is recorded without a buyer', 'punchout-woocommerce' );
+		}
+
+		if ( '' === $buyer->name ) {
+			return $buyer->identity;
+		}
+
+		if ( '' === $buyer->identity ) {
+			return $buyer->name;
+		}
+
+		// Not translatable: it is the buyer's own name beside their own
+		// address, in the same shape the order note and the admin line use.
+		return sprintf( '%1$s <%2$s>', $buyer->name, $buyer->identity );
 	}
 
 	/**

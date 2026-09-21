@@ -92,8 +92,10 @@ final class TransportTest extends TestCase {
 			$GLOBALS['pow_test_current_user_id']=99;
 			$guard(); // Signed in, no visit, no connection bound to this account.
 
-			// The removed signals must not resurrect the policy on their own.
-			$GLOBALS['pow_test_users'][99]=(object)['ID'=>99,'roles'=>['punchout_buyer']];
+			// The removed signals must not resurrect the policy on their own:
+			// no role at all is consulted now (the buyer role is gone), and
+			// the legacy company association meta is not a signal either.
+			$GLOBALS['pow_test_users'][99]=(object)['ID'=>99,'roles'=>['customer','legacy_buyer_role']];
 			$GLOBALS['pow_test_user_meta'][99]['_pow_partner_id']=7;
 			$guard();
 			unset($GLOBALS['pow_test_user_meta'][99]['_pow_partner_id']);
