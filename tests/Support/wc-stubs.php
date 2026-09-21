@@ -183,6 +183,16 @@ if ( ! class_exists( 'WC_Order' ) ) {
 			return $this->meta[ $key ] ?? '';
 		}
 
+		/**
+		 * WC_Data's own distinction between a key that was never written
+		 * and one written empty. get_meta() flattens the two to '', so a
+		 * caller that must tell "no attribution was ever stamped" from "the
+		 * request named nobody" needs this and cannot be tested without it.
+		 */
+		public function meta_exists( string $key ): bool {
+			return array_key_exists( $key, $this->meta );
+		}
+
 		public function add_order_note( string $note, int $is_customer_note = 0 ): int {
 			if ( isset( $GLOBALS['pow_test_order_note'] ) ) {
 				$result = ( $GLOBALS['pow_test_order_note'] )( $this );

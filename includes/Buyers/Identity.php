@@ -34,8 +34,19 @@ final class Identity {
 	/** Extrinsics that carry the buyer's identity, in descending precedence. */
 	private const IDENTITY_EXTRINSICS = [ 'UserEmail', 'UniqueUsername', 'UniqueName' ];
 
-	/** Extrinsics that carry the buyer's display name, in descending precedence. */
-	private const NAME_EXTRINSICS = [ 'UserPrintableName', 'UserFullName', 'UniqueUsername', 'User' ];
+	/**
+	 * Extrinsics that carry the buyer's display name, in descending
+	 * precedence.
+	 *
+	 * `UniqueUsername` is deliberately absent although it is the second
+	 * identity candidate: it is an identity, and purchasing systems
+	 * routinely put a raw e-mail address in it. As a name candidate it
+	 * would resolve the same string twice — the raw address would reach the
+	 * audit detail as `buyer_name`, which the log must never carry, and the
+	 * attribution sentence would print the address twice instead of falling
+	 * back to the e-mail alone.
+	 */
+	private const NAME_EXTRINSICS = [ 'UserPrintableName', 'UserFullName', 'User' ];
 
 	private function __construct(
 		/** Lower-cased, trimmed; usually an e-mail address. '' when the request named nobody. */
