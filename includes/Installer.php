@@ -91,7 +91,6 @@ final class Installer {
 	public static function maybe_upgrade(): void {
 		if ( (string) get_option( self::DB_VERSION_KEY, '0' ) !== self::DB_VERSION ) {
 			self::install_schema();
-			self::drop_retired_columns();
 			update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
 		}
 
@@ -104,33 +103,6 @@ final class Installer {
 		add_rewrite_endpoint( Account\IntegrationTab::ENDPOINT, EP_PAGES );
 		flush_rewrite_rules( false );
 		update_option( self::REWRITE_VERSION_KEY, self::REWRITE_VERSION, false );
-	}
-
-	/**
-	 * v2 retired two features: partner group mapping (a site owner assigns
-	 * the connection's own customer account its pricing and visibility,
-	 * once, outside this plugin) and the SKU map (buyer-side part numbers
-	 * are the buyer's own concern, handled in the buyer's own system). The
-	 * dropped columns are named after the plugin that once held that
-	 * mapping; the names survive only so an upgraded table can be cleaned.
-	 * dbDelta never drops anything, so the leftovers are removed explicitly
-	 * (guarded — MySQL has no DROP COLUMN IF EXISTS).
-	 */
-	private static function drop_retired_columns(): void {
-		global $wpdb;
-
-		$table = self::partners_table();
-
-		foreach ( [ 'b2bking_company_user_id', 'b2bking_group_id' ] as $column ) {
-			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			if ( null !== $wpdb->get_var( $wpdb->prepare( "SHOW COLUMNS FROM {$table} LIKE %s", $column ) ) ) {
-				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				$wpdb->query( "ALTER TABLE {$table} DROP COLUMN {$column}" );
-			}
-		}
-
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$wpdb->query( 'DROP TABLE IF EXISTS ' . $wpdb->prefix . 'pow_skumap' );
 	}
 
 	private static function install_schema(): void {
