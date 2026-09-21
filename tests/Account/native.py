@@ -1,4 +1,12 @@
-"""Opt-in real HTTP/native DB Account acceptance; expects guarded local runtime wrappers and server."""
+"""Opt-in real HTTP/native DB Account acceptance; expects guarded local runtime wrappers and server.
+
+The My Account surface under test is one read-only screen: the setup-XML download
+for the account a connection is bound to. There is no application form, no
+rotation and no deactivation to drive over HTTP any more — an administrator owns
+all of that — so what this driver proves is that the screen shows the connection
+and hands out the template to its own account holder, refuses everyone else, and
+does not exist at all for a request that is inside a punchout visit.
+"""
 import argparse
 import concurrent.futures
 import http.cookiejar
@@ -77,6 +85,9 @@ def nonce(body):
         raise AssertionError('native account form nonce missing')
     return match[1]
 
+def download(c, n):
+    return request(c, f['account_url'], dict(pow_account_action='download_setup_template', _wpnonce=n))
+
 seeded = False
 try:
     f = step('seed')
@@ -87,60 +98,37 @@ try:
     url = f['account_url']
     status, _, body = request(owner, url)
     (out / 'owner-get.html').write_text(body)
-    check(status == 200 and 'Request connection' in body and 'Punchout integration' in body, 'fresh/upgraded pretty endpoint resolves actual Woo account menu and application')
-    check(f['docs_url'] in body and all(s in body for s in ['UserEmail', 'UniqueUsername', 'UniqueName', 'Contact/Email']), 'actual published documentation and employee identity guidance')
-    n = nonce(body)
-    check('Request connection' not in request(guest, url)[2], 'guest cannot render management form')
-    check('Request connection' not in request(linked, url)[2], 'partner-linked ordinary login cannot render management form')
-    bclient, bjar = client()
-    request(bclient, args.url + '/wp-login.php')
-    status, _, _ = request(bclient, args.url + '/wp-login.php', dict(log=f['buyer_login'], pwd=f['password'], testcookie='1'))
-    check(not any(c.name.startswith('wordpress_logged_in_') for c in bjar), 'provisioned buyer native password login denied')
-    application = dict(pow_account_action='submit', _wpnonce=n, pow_name='Native account application', from_domain='NetworkID', from_identity=f['sender'], sender_domain='', sender_identity='', deployment_mode='test', owner_user_id=f['other'], partner=f['legacy'], status='active', secret='forged-not-a-secret')
-    invalid = request(owner, url, dict(application, _wpnonce='invalid'))
-    (out / 'invalid-post.html').write_text(invalid[2])
-    check(invalid[0] == 403, 'invalid native nonce refuses POST (HTTP ' + str(invalid[0]) + ')')
-    missing = dict(application)
-    del missing['_wpnonce']
-    check(request(owner, url, missing)[0] == 403, 'missing native nonce refuses POST')
-    check(request(other, url, application)[0] == 403, 'another authenticated actor cannot reuse owner nonce')
-    request(owner, f['account_url'].replace('punchout-integration/', ''), application)
-    check('Request connection' in request(owner, url)[2], 'wrong endpoint POST performs no account application')
-    check(request(owner, url, application)[0] == 200, 'real HTTP application succeeds')
-    check(request(owner, url, application)[0] == 400, 'repeated application refused')
+    check(status == 200 and 'Punchout integration' in body, 'fresh/upgraded pretty endpoint resolves the actual Woo account menu')
+    check('Request connection' not in body and 'pow_name' not in body and 'Rotate secret' not in body, 'the surviving tab offers no application or management form')
+    check(f['docs_url'] in body and all(s in body for s in ['UserEmail', 'UniqueUsername', 'UniqueName', 'Contact/Email']), 'actual published documentation and buyer identity guidance')
+    check('No active punchout connection' in body, 'a pending connection is not presented as usable')
     f = step('pending')
-    check('awaiting store approval' in request(owner, url)[2], 'pending view rendered by real Woo endpoint')
     f = step('approve')
     step('audit')
     active = request(owner, url)[2]
     check('native-supplier' in active and '2026-01-01 02:00:00.000' in active, 'owner sees safe connection fields and native audit result')
-    check(f['sender'] not in request(other, url)[2], 'other owner cannot view connection identity')
-    other_nonce = nonce(request(other, url)[2])
-    check(request(other, url, dict(pow_account_action='rotate', _wpnonce=other_nonce, partner=f['partner']))[0] == 403, 'forged partner ID cannot rotate another owner connection')
-    step('clear_limits')
+    check('Download setup XML' in active, 'an active bound connection offers its setup template')
+    check(f['sender'] not in request(other, url)[2], 'another account cannot view this connection identity')
+    check(f['sender'] not in request(linked, url)[2], 'a legacy-linked ordinary login cannot view this connection identity')
+    check(f['sender'] not in request(guest, url)[2], 'a guest cannot view this connection identity')
     n = nonce(active)
-    for i in range(5):
-        check(request(owner, url, dict(pow_account_action='finish_rotation', _wpnonce=n))[0] == 409, 'shared hourly action bucket accepted hit ' + str(i + 1))
-    check(request(owner, url, dict(pow_account_action='rotate', _wpnonce=n))[0] == 429, 'sixth account action blocked at five per hour')
-    f = step('expiry')
-    # Two simultaneous HTTP POSTs reach the real shared mutex and overlap guard.
+    check(download(owner, 'invalid')[0] == 403, 'invalid native nonce refuses the download')
+    check(request(owner, url, dict(pow_account_action='download_setup_template'))[0] == 403, 'missing native nonce refuses the download')
+    check(download(other, n)[0] == 403, 'another authenticated actor cannot reuse the owner nonce')
+    status, headers, xml = download(owner, n)
+    (out / 'setup-template.xml').write_text(xml)
+    check(status == 200 and headers.get('Content-Type', '').startswith('application/xml'), 'the owner downloads its setup template')
+    check('attachment; filename="punchout-setup-' in headers.get('Content-Disposition', '') and headers.get('X-Content-Type-Options') == 'nosniff', 'the template is a private attachment')
+    check(headers.get('Cache-Control') == 'no-store, private, max-age=0' and headers.get('Referrer-Policy') == 'no-referrer' and not headers.get('Location'), 'the download is private no-store no-referrer without redirect')
+    check(ET.fromstring(xml).findtext('.//SharedSecret') not in (None, '') and f['old_secret'] not in xml, 'the template carries a placeholder, never the issued secret')
+    # Two simultaneous downloads must both answer without inventing state.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: request(owner, url, dict(pow_account_action='rotate', _wpnonce=n)), range(2)))
-    check(sorted(x[0] for x in results) == [200, 409], 'simultaneous rotation yields one secret and one overlap refusal')
-    status, headers, rotated = next(x for x in results if x[0] == 200)
-    check(headers.get('Cache-Control') == 'no-store, private, max-age=0' and headers.get('Referrer-Policy') == 'no-referrer' and not headers.get('Location'), 'actual secret POST is private no-store no-referrer without redirect')
-    match = re.search(r'Shared secret[^<]*</strong>\s*<code>([^<]+)</code>', rotated)
-    check(bool(match), 'direct HTTP POST displays locally issued secret')
-    f = json.loads(fixture.read_text())
-    f['new_secret'] = match[1]
-    fixture.write_text(json.dumps(f))
-    step('rotation')
-    check(f['new_secret'] not in request(owner, url)[2], 'subsequent real GET never reveals plaintext')
-    check(request(owner, url, dict(pow_account_action='rotate', _wpnonce=n))[0] == 409, 'retried rotate refuses existing overlap')
+        results = list(pool.map(lambda _: download(owner, n), range(2)))
+    check([x[0] for x in results] == [200, 200], 'simultaneous downloads both succeed')
+    f = step('rotation')
+    check(f['new_secret'] not in request(owner, url)[2] and f['new_secret'] not in download(owner, n)[2], 'no GET or download ever reveals a plaintext secret')
     step('no_leaks')
-    check(request(owner, url, dict(pow_account_action='finish_rotation', _wpnonce=n))[0] == 200, 'real HTTP finish rotation succeeds')
-    step('finished')
-    step('clear_limits')
+    f = step('finished')
     payloads = []
     starts = []
     for employee in ['alice', 'bob', 'alice']:
@@ -152,14 +140,17 @@ try:
         starts.append(root.findtext('.//StartPage/URL'))
         payloads.append(xml)
     status, _, replay = request(guest, args.url + '/punchout/setup', payloads[-1].encode(), content_type='text/xml')
-    check(ET.fromstring(replay).findtext('.//StartPage/URL') == starts[-1], 'idempotent native setup replay reuses session')
-    employee, _ = client()
-    check(request(employee, starts[-1])[0] in [302, 303], 'real StartPage redeems one-time token and logs buyer in')
+    check(ET.fromstring(replay).findtext('.//StartPage/URL') == starts[-1], 'idempotent native setup replay reuses the visit')
+    visit, visit_jar = client()
+    check(request(visit, starts[-1])[0] in [302, 303], 'real StartPage redeems one-time token and signs the visit in')
+    check(any(cookie.name.startswith('wordpress_logged_in_') for cookie in visit_jar), 'the visit holds its own login cookie for the bound account')
     f = step('employees')
-    check('Rotate secret' not in request(employee, url)[2], 'actual provisioned cookie cannot render owner management')
-    request(employee, url, dict(pow_account_action='deactivate', _wpnonce=n, partner=f['partner']))
-    check('Rotate secret' in request(owner, url)[2], 'actual provisioned cookie cannot mutate owner management')
-    check(request(owner, url, dict(pow_account_action='deactivate', _wpnonce=n))[0] == 200, 'real owner HTTP deactivation succeeds')
+    status, headers, inside = request(visit, url)
+    (out / 'visit-get.html').write_text(inside)
+    check(status in [301, 302, 303] and 'Punchout integration' not in inside, 'the integration tab is unreachable during a punchout visit')
+    check(download(visit, n)[0] != 200, 'a visit cannot download the setup template')
+    check('Punchout integration' in request(owner, url)[2], 'the account holder keeps its own tab while a visit is live')
+    step('visit')
     step('deactivated')
     step('no_leaks')
     step('docs_absent')

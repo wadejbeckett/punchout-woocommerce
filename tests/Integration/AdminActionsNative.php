@@ -3,7 +3,7 @@
  * Opt-in native admin persistence tests. Creates neutral fixtures; never deletes fixtures or prints credentials.
  * Coordinator only, in disposable local WordPress/WooCommerce with this candidate active:
  * POW_NATIVE_TESTS=disposable wp --user=<fixture-admin> eval-file tests/Integration/AdminActionsNative.php
- * Real admin callbacks, nonces, users, SQL, sealed slots, audit, session tokens and captured mail.
+ * Real admin callbacks, nonces, users, SQL, sealed slots, audit, session tokens and captured mail. Binding a connection to a store account is admin work and the only writer of owner_user_id, so its refusals — a missing account, a privileged one, a legacy association and an account another connection already names — are proved here against real accounts.
  * CLI intercepts only terminal wp_die/redirect responses. Actual HTTP headers, browser behavior and independent-process races require a separate HTTP run.
  *
  * @package POW
@@ -13,6 +13,8 @@ declare( strict_types = 1 );
 if ( ! defined( 'WP_CLI' ) || ! WP_CLI || 'disposable' !== getenv( 'POW_NATIVE_TESTS' ) || 'local' !== wp_get_environment_type() || ! current_user_can( 'manage_woocommerce' ) || ! function_exists( 'WC' ) ) {
 	throw new RuntimeException( 'Requires opted-in disposable local WordPress/WooCommerce CLI and a capable fixture administrator.' );
 }
+
+require_once dirname( __DIR__ ) . '/Support/native-visits.php';
 
 final class AdminNativeResponse extends RuntimeException {
 	public function __construct( public string $html, public array $args ) { parent::__construct( 'Native response intercepted' ); }
@@ -49,7 +51,7 @@ final class AdminActionsNative {
 	private function fixture( bool $legacy = false ): array {
 		$owner = $legacy ? 0 : $this->account();
 		$suffix = bin2hex( random_bytes( 8 ) );
-		$data = [ 'name' => 'Example native admin company', 'owner_user_id' => $owner, 'status' => 'pending', 'from_domain' => 'NetworkID', 'from_identity' => 'buyer-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'buyer-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier', 'mode' => 'requisition_only', 'deployment_mode' => 'test', 'return_encoding' => 'base64', 'cxml_version' => '1.2.008', 'company_profile' => '{"book":"preserve"}' ];
+		$data = [ 'name' => 'Example native admin company', 'owner_user_id' => $owner, 'status' => 'pending', 'from_domain' => 'NetworkID', 'from_identity' => 'buyer-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'buyer-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier', 'deployment_mode' => 'test', 'return_encoding' => 'base64', 'cxml_version' => '1.2.008', 'company_profile' => '{"book":"preserve"}' ];
 		$id = $this->registry->insert( $data );
 		$this->check( $id > 0 );
 		return compact( 'id', 'owner', 'data' );
@@ -134,25 +136,37 @@ final class AdminActionsNative {
 				$this->call( 'associate_partner', $f['id'], [ 'owner_user_id' => $this->account() ] );
 				$this->check( $owner === $this->registry->find( $f['id'] )->owner_user_id );
 			} );
-			$this->case( 'missing provisioned duplicate and self-claimed owners refuse', function () {
-				$f = $this->fixture( true ); $existing = $this->fixture(); $buyer = $this->account( POW\Installer::ROLE ); $marked = $this->account(); update_user_meta( $marked, '_pow_partner_id', $existing['id'] );
-				foreach ( [ PHP_INT_MAX, $existing['owner'], $buyer, $marked ] as $owner ) {
+			$this->case( 'missing privileged duplicate legacy and self-claimed store accounts refuse binding', function () {
+				$f = $this->fixture( true ); $existing = $this->fixture();
+				// A shop manager is exactly the account a buyer's purchasing system
+				// must never be signed in as, so it cannot be bound either.
+				$privileged = $this->account(); ( new WP_User( $privileged ) )->add_cap( 'manage_woocommerce' );
+				$legacy = $this->account(); update_user_meta( $legacy, '_pow_partner_id', $existing['id'] );
+				foreach ( [ PHP_INT_MAX, $existing['owner'], $privileged, $legacy ] as $owner ) {
 					$this->call( 'associate_partner', $f['id'], [ 'owner_user_id' => $owner ] );
 					$this->check( 0 === $this->registry->find( $f['id'] )->owner_user_id );
 				}
+				$plain = $this->account();
+				$this->call( 'associate_partner', $f['id'], [ 'owner_user_id' => $plain ] );
+				$this->check( $plain === $this->registry->find( $f['id'] )->owner_user_id );
 				$r = $this->call( 'associate_partner', $f['id'], [ 'owner_user_id' => $existing['owner'] ], 'POST', $existing['owner'] );
 				$this->check( 403 === $r->args['response'] );
 			} );
-			$this->case( 'reset removes both slots and native buyer login while preserving owner and book', function () {
+			$this->case( 'reset removes both slots and every live visit login while preserving the bound account and its book', function () {
 				$f = $this->fixture(); $old = $this->secret( $this->call( 'approve_partner', $f['id'] ) ); $overlap = $this->secret( $this->call( 'rotate_partner', $f['id'] ) );
-				$buyer = $this->account( POW\Installer::ROLE ); update_user_meta( $buyer, '_pow_partner_id', $f['id'] );
-				$manager = WP_Session_Tokens::get_instance( $buyer ); $token = $manager->create( time() + 3600 );
-				$id = $this->sessions->create( [ 'partner_id' => $f['id'], 'user_id' => $buyer, 'status' => 'active', 'payload_id' => bin2hex( random_bytes( 8 ) ), 'one_time_token_hash' => hash( 'sha256', random_bytes( 32 ) ), 'wp_session_token' => $token, 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] );
-				$this->check( $id > 0 && $manager->verify( $token ) );
+				// Two employees, one bound account: two visits, two login tokens, two cart keys.
+				$first = pow_native_open_visit( $f['id'], $f['owner'], [ 'buyer_identity' => 'first-' . bin2hex( random_bytes( 5 ) ) . '@example.invalid' ] );
+				$second = pow_native_open_visit( $f['id'], $f['owner'], [ 'buyer_identity' => 'second-' . bin2hex( random_bytes( 5 ) ) . '@example.invalid' ] );
+				$manager = WP_Session_Tokens::get_instance( $f['owner'] ); $unrelated = $manager->create( time() + 3600 );
+				$this->check( $manager->verify( $first->wp_session_token ) && $manager->verify( $second->wp_session_token ) && $first->wc_session_key !== $second->wc_session_key );
 				$this->secret( $this->call( 'reset_partner', $f['id'], [ 'sender_identity' => 'forged' ] ) ); $p = $this->registry->find( $f['id'] );
 				$this->check( '' === $p->secret_previous && null === $this->registry->verify_secret( $p, $old ) && null === $this->registry->verify_secret( $p, $overlap ) );
 				$this->check( $f['owner'] === $p->owner_user_id && $f['data']['company_profile'] === $p->company_profile && $f['data']['sender_identity'] === $p->sender_identity );
-				$this->check( 'expired' === $this->sessions->find( $id )->status && ! $manager->verify( $token ) );
+				foreach ( [ $first, $second ] as $visit ) {
+					$this->check( 'expired' === $this->sessions->find( $visit->id )->status && ! $manager->verify( $visit->wp_session_token ) && null === pow_native_cart_row( (string) $visit->wc_session_key ) );
+				}
+				// The account itself survives: only the visits' own logins are destroyed.
+				$this->check( $manager->verify( $unrelated ) && get_userdata( $f['owner'] ) instanceof WP_User );
 			} );
 			$this->case( 'reset SQL revocation failure reports error and never supplies replacement', function () {
 				$f = $this->fixture(); $this->secret( $this->call( 'approve_partner', $f['id'] ) );

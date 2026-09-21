@@ -14,6 +14,8 @@ if ( ! defined( 'WP_CLI' ) || ! WP_CLI || 'disposable' !== getenv( 'POW_NATIVE_T
 	throw new RuntimeException( 'Requires opted-in disposable local WordPress/WooCommerce CLI and a capable fixture administrator.' );
 }
 
+require_once dirname( __DIR__ ) . '/Support/native-visits.php';
+
 final class CompanyBookNative {
 	private POW\Partners\Registry $registry;
 	private POW\Addresses\CompanyBook $book;
@@ -34,7 +36,7 @@ final class CompanyBookNative {
 	}
 	public function seed(): array {
 		$owner = $this->user(); $suffix = bin2hex( random_bytes( 8 ) );
-		$id = $this->registry->insert( [ 'name' => 'Example delivery company', 'owner_user_id' => $owner, 'status' => 'active', 'from_domain' => 'NetworkID', 'from_identity' => 'buyer-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'buyer-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier', 'mode' => 'requisition_only', 'deployment_mode' => 'test', 'return_encoding' => 'base64', 'cxml_version' => '1.2.008', 'delivery_code_prefix' => 'BUYER' ] );
+		$id = $this->registry->insert( [ 'name' => 'Example delivery company', 'owner_user_id' => $owner, 'status' => 'active', 'from_domain' => 'NetworkID', 'from_identity' => 'buyer-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'buyer-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier', 'deployment_mode' => 'test', 'return_encoding' => 'base64', 'cxml_version' => '1.2.008', 'delivery_code_prefix' => 'BUYER' ] );
 		if ( $id <= 0 ) { throw new RuntimeException( 'Native partner creation failed.' ); }
 		return [ 'id' => $id, 'owner' => $owner, 'meta_key' => '_pow_delivery_book_' . $id ];
 	}
@@ -78,8 +80,14 @@ final class CompanyBookNative {
 			$this->check( $this->refused( $this->save( $f, 8, null, [ 'code' => 'BUYER-001' ] ) ), 'retired claim cannot move to another key' );
 			wp_set_current_user( $this->admin );
 			$this->check( is_array( $this->book->read( $f['id'], $this->admin ) ), 'actual shop administrator reads owner book' );
-			$buyer = $this->user( POW\Installer::ROLE ); update_user_meta( $buyer, '_pow_partner_id', $f['id'] ); wp_set_current_user( $buyer );
-			$this->check( $this->refused( $this->book->save( $f['id'], $buyer, 8, null, $this->fields() ) ), 'provisioned buyer cannot mutate master book' );
+			// The buyer IS the bound account now, so the only thing that can still
+			// refuse the edit is the visit the request is inside.
+			$visit = pow_native_open_visit( $f['id'], $f['owner'], [ 'buyer_identity' => 'book-' . bin2hex( random_bytes( 5 ) ) . '@example.invalid' ] );
+			pow_native_enter_visit( $visit );
+			$this->check( $this->refused( $this->book->save( $f['id'], $f['owner'], 8, null, $this->fields() ) ), 'the bound account cannot mutate the master book inside a live visit' );
+			$this->check( $this->refused( $this->book->read( $f['id'], $f['owner'] ) ), 'the management view does not exist inside a live visit' );
+			$this->check( is_array( $this->registry->with_partner_lock( $f['id'], fn() => $this->book->read_for_partner_locked( $this->registry->find( $f['id'] ) ) ) ), 'the selection read a visit needs still answers' );
+			pow_native_leave_visit( $this->admin );
 			$this->check( $this->refused( $this->book->read( $f['id'], $f['owner'] ) ), 'posted owner cannot impersonate actual actor' );
 			$other = $this->user(); wp_set_current_user( $other );
 			$this->check( $this->refused( $this->book->save( $f['id'], $other, 8, null, $this->fields() ) ), 'other ordinary company actor refused' );
