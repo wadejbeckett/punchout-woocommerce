@@ -26,6 +26,10 @@ namespace POW\Cart {
 	function wp_create_nonce( string $action ): string { return 'fixture-' . $action; }
 	function wc_get_checkout_url(): string { return 'https://shop.example.test/checkout/'; }
 	function remove_action( string $hook, mixed $callback, int $priority = 10 ): void { $GLOBALS['pow_blocks_removed'][] = [ $hook, $callback, $priority ]; }
+	function wp_register_style( string $handle, mixed $src = '', array $deps = [], mixed $ver = false ): bool { $GLOBALS['pow_blocks_styles']['registered'][] = $handle; return true; }
+	function wp_enqueue_style( string $handle, string $src = '', array $deps = [], mixed $ver = false ): void { $GLOBALS['pow_blocks_styles']['enqueued'][] = $handle; }
+	function wp_add_inline_style( string $handle, string $data ): bool { $GLOBALS['pow_blocks_styles']['inline'][ $handle ][] = $data; return true; }
+	function esc_url( string $url ): string { return $url; }
 	function remove_all_actions( string $hook, mixed $priority = false ): bool { $GLOBALS['pow_blocks_removed_all'][] = $hook; unset( $GLOBALS['pow_blocks_hooks']['action'][ $hook ] ); return true; }
 }
 
@@ -88,7 +92,7 @@ namespace {
 		private POW\Cart\Surface $surface;
 
 		protected function setUp(): void {
-			foreach ( [ 'wpdb', 'pow_test_current_user_id', 'pow_test_users', 'pow_test_options', 'pow_test_filters', 'pow_blocks_scripts', 'pow_blocks_removed', 'pow_blocks_removed_all', 'pow_blocks_hooks' ] as $key ) { $this->saved[$key] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[$key] ?? null ]; }
+			foreach ( [ 'wpdb', 'pow_test_current_user_id', 'pow_test_users', 'pow_test_options', 'pow_test_filters', 'pow_blocks_scripts', 'pow_blocks_removed', 'pow_blocks_removed_all', 'pow_blocks_hooks', 'pow_blocks_styles' ] as $key ) { $this->saved[$key] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[$key] ?? null ]; }
 			$GLOBALS['wpdb'] = $this->db = new CartBlocksDatabase();
 			// Every buyer of the connection is signed in as this one account.
 			$GLOBALS['pow_test_current_user_id'] = self::ACCOUNT;
@@ -97,6 +101,7 @@ namespace {
 			$GLOBALS['pow_test_filters'] = [];
 			$GLOBALS['pow_blocks_removed'] = [];
 			$GLOBALS['pow_blocks_removed_all'] = [];
+			$GLOBALS['pow_blocks_styles'] = [];
 			$GLOBALS['pow_blocks_hooks'] = [];
 			$GLOBALS['pow_blocks_scripts'] = (object) [
 				'registered' => [ 'wc-blocks-checkout' => (object) [ 'deps' => [] ], 'wc-cart-block-frontend' => (object) [ 'deps' => [ 'wc-blocks-checkout' ] ] ],
@@ -186,6 +191,22 @@ namespace {
 			self::assertSame( [ 'woocommerce_proceed_to_checkout', 'woocommerce_widget_shopping_cart_buttons' ], $GLOBALS['pow_blocks_removed_all'] );
 			self::assertSame( [ [ $this->surface, 'render_cart_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'], 'The cart page keeps exactly one exit: the return control' );
 			self::assertSame( [ 'woocommerce_widget_shopping_cart_button_view_cart' ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'], 'The mini-cart keeps View cart and loses every checkout button' );
+		}
+		public function test_a_visit_hides_every_link_to_the_checkout_page_whoever_rendered_it(): void {
+			// A page-builder button, a theme mini-cart or a widget can all carry the checkout URL outside any hook; inside a visit none may show.
+			self::assertContains( [ $this->surface, 'enqueue_visit_styles' ], $GLOBALS['pow_blocks_hooks']['action']['wp_enqueue_scripts'] ?? [] );
+			$this->surface->enqueue_visit_styles();
+			self::assertSame( [ 'pow-visit' ], $GLOBALS['pow_blocks_styles']['enqueued'] ?? [] );
+			$css = implode( '', $GLOBALS['pow_blocks_styles']['inline']['pow-visit'] ?? [] );
+			self::assertStringContainsString( 'a[href^="https://shop.example.test/checkout"]', $css );
+			self::assertStringContainsString( '.checkout-button', $css );
+			self::assertStringContainsString( 'display:none!important', str_replace( ' ', '', $css ) );
+			self::assertStringNotContainsString( 'punchout/confirm', $css, 'The return control is never hidden' );
+		}
+		public function test_an_ordinary_shopper_gets_no_visit_stylesheet(): void {
+			$this->set_session( null );
+			$this->surface->enqueue_visit_styles();
+			self::assertSame( [], $GLOBALS['pow_blocks_styles'] );
 		}
 		public function test_an_ordinary_shopper_keeps_woos_own_proceed_button(): void {
 			$this->set_session( null );
