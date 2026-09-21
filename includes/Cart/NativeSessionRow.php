@@ -47,7 +47,7 @@ final class NativeSessionRow {
 		if ( ! $this->matches_locked() ) { return false; }
 		try {
 			if ( null !== $this->expected ) {
-				$affected = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $wpdb->prefix . 'woocommerce_sessions WHERE BINARY session_key = BINARY %s AND BINARY session_value = BINARY %s', $this->key, $this->expected ) );
+				$affected = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $wpdb->prefix . 'woocommerce_sessions WHERE session_key = %s AND BINARY session_value = BINARY %s', $this->key, $this->expected ) );
 				if ( 1 !== $affected || '' !== ( $wpdb->last_error ?? '' ) ) { $this->refuse(); return false; }
 			}
 			$removed = null === $this->read();
@@ -73,7 +73,7 @@ final class NativeSessionRow {
 			if ( null === $this->expected ) {
 				$sql = $wpdb->prepare( 'INSERT IGNORE INTO ' . $table . ' (session_key, session_value, session_expiry) VALUES (%s, %s, %d)', $this->key, $candidate, $expiry );
 			} else {
-				$sql = $wpdb->prepare( 'UPDATE ' . $table . ' SET session_value = %s, session_expiry = %d WHERE BINARY session_key = BINARY %s AND BINARY session_value = BINARY %s', $candidate, $expiry, $this->key, $this->expected );
+				$sql = $wpdb->prepare( 'UPDATE ' . $table . ' SET session_value = %s, session_expiry = %d WHERE session_key = %s AND BINARY session_value = BINARY %s', $candidate, $expiry, $this->key, $this->expected );
 			}
 			$affected = $wpdb->query( $sql );
 			if ( '' !== ( $wpdb->last_error ?? '' ) || false === $affected || ! in_array( $affected, [ 0, 1 ], true ) || ( null === $this->expected && 1 !== $affected ) ) { $this->refuse(); return false; }
@@ -84,12 +84,33 @@ final class NativeSessionRow {
 			return true;
 		} catch ( \Throwable $error ) { $this->refuse(); return false; }
 	}
+	/**
+	 * This visit's row, byte-exactly, over the column's own index.
+	 *
+	 * The predicate names `session_key` directly. Wrapping it in BINARY() is a
+	 * cast on the column, so MariaDB cannot use wp_woocommerce_sessions'
+	 * `UNIQUE KEY session_key` and scans the table instead — and one page view
+	 * inside a visit issues five of these statements, so on a store carrying
+	 * the usual two days of guest sessions every catalog page a buyer opened
+	 * cost five full scans while an ordinary shopper on the same store paid
+	 * nothing. Byte-exactness is kept where it costs nothing: the SELECT brings
+	 * the stored key back and hash_equals() decides, the way
+	 * Store::find_by_wc_session_key() proves the same column.
+	 *
+	 * The collation is case-insensitive and PAD SPACE, so an `=` can in
+	 * principle answer with a row that is not this visit's. Both shapes that
+	 * takes are refusals rather than answers: two candidates trip the LIMIT 2
+	 * count, and a single near-miss fails the comparison below. Since every
+	 * write is reached through matches_locked(), which reads first, a refusal
+	 * here fences the compare-and-set as well.
+	 */
 	private function read(): ?array {
 		global $wpdb;
-		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT session_value, session_expiry FROM ' . $wpdb->prefix . 'woocommerce_sessions WHERE BINARY session_key = BINARY %s LIMIT 2', $this->key ), ARRAY_A );
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT session_key, session_value, session_expiry FROM ' . $wpdb->prefix . 'woocommerce_sessions WHERE session_key = %s LIMIT 2', $this->key ), ARRAY_A );
 		if ( '' !== ( $wpdb->last_error ?? '' ) || ! is_array( $rows ) || count( $rows ) > 1 ) { throw new \RuntimeException( 'Native cart storage unavailable.' ); }
 		if ( [] === $rows ) { return null; }
 		$row = $rows[0];
+		if ( ! is_string( $row['session_key'] ?? null ) || ! hash_equals( $this->key, $row['session_key'] ) ) { throw new \RuntimeException( 'Native cart storage unavailable.' ); }
 		if ( ! is_string( $row['session_value'] ?? null ) || ! is_numeric( $row['session_expiry'] ?? null ) ) { throw new \RuntimeException( 'Native cart storage invalid.' ); }
 		return $row;
 	}
