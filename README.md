@@ -7,7 +7,7 @@ A buyer opens the store from their procurement system. It sends a cXML `PunchOut
 **Status: supplier implementation; release acceptance and receiver certification are separate gates.** The generated samples are checked against the exact offline cXML 1.2.008 and 1.2.071 DTDs. This does not establish consumption by a buyer system, including Dynamics 365. See [Receiver acceptance](#receiver-acceptance) before onboarding.
 
 - **Licence:** AGPL-3.0-or-later (full text in `LICENSE`)
-- **Requires:** PHP 8.2+, WordPress 6.4+, WooCommerce 8.0+
+- **Requires:** PHP 8.2+, WordPress 6.4+, WooCommerce 11.1+
 - **Dependencies:** none. No Composer, no vendor directory, no external packages. Action Scheduler is used for housekeeping when present (it ships inside WooCommerce), with a WP-Cron fallback.
 
 ---
