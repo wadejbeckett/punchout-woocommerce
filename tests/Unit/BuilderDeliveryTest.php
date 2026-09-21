@@ -98,6 +98,13 @@ final class BuilderDeliveryTest extends TestCase {
 			$this->valid( $xml, $version );
 		}
 	}
+	/**
+	 * This guards a Builder capability with no production producer. The paid
+	 * close-out is gone — checkout is blocked inside a visit and the return
+	 * endpoint passes supplier_order_info as null — so the argument is
+	 * supplied here directly. A green run says the dialect gate is right, not
+	 * that anything emits it.
+	 */
 	public function test_closeout_reference_is_emitted_only_in_the_verified_new_dialect(): void {
 		foreach ( [ '1.2.008', '1.2.071' ] as $version ) {
 			$args = $this->args( $version ); $args['items'] = []; $args['total_cents'] = 0; $args['emit_ship_to'] = false;

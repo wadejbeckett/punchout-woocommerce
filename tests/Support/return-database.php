@@ -114,6 +114,12 @@ final class ReturnDatabase {
 		foreach ( self::VISIT_KEYS as $column ) {
 			if ( str_contains( $sql, $column ) ) { return $this->visit_named( $sql, $column ); }
 		}
+		// A re-read by row id is the visit that id names. Answering it with the
+		// first visit would let a second visit's winner guard compare itself
+		// against somebody else's row and still agree.
+		if ( str_contains( $sql, 'pow_sessions' ) && preg_match( '/(?<![a-z_])id = (\d+)/', $sql, $m ) ) {
+			return $this->sessions[ (int) $m[1] ] ?? null;
+		}
 		return $this->session;
 	}
 	/**
