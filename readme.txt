@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 6.8
 Requires PHP: 8.2
-Stable tag: 0.2.4
+Stable tag: 0.3.0
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -54,6 +54,7 @@ No setup on your side. Each buyer is provisioned automatically as an ordinary Wo
 == Changelog ==
 
 = 0.3.0 =
+* Note: lema.co.za runs commit 3196586 of this line, deployed 2026-09-15 with the header still labelled 0.2.4; the header now matches the changelog.
 * Fix: a Punchout buyer's cart quantity change could be lost silently when another request saved the same session first. The guarded save now reloads the cart, replays only the buyer's change and retries once; any final refusal is logged at warning level with a hashed session key instead of being dropped without trace.
 * Fix: refusal log entries name the throwable behind an "exception" refusal, and a request refused at initialisation no longer logs a spurious refusal at shutdown.
 * Fix: an active connection saved with only its name and Sender credential no longer breaks the Integration docs page for administrators; its row explains which identities are still missing.
