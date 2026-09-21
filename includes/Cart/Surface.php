@@ -209,6 +209,9 @@ final class Surface {
 		$session = $this->plugin->current_session();
 
 		if ( null === $session ) {
+			// No RouteGuard consultation: outside a visit the guard refuses
+			// checkout for nothing a cart page can carry, so asking it here
+			// would only add a second answer that could disagree.
 			return '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>';
 		}
 

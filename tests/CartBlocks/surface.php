@@ -188,7 +188,9 @@ namespace {
 		public function test_the_bound_account_with_no_live_visit_gets_the_ordinary_checkout_link(): void {
 			// Behaviour change (single-login mode): the account a connection is
 			// bound to is an ordinary customer whenever no visit is live, so it
-			// keeps the native checkout link. There are no orphaned buyers.
+			// keeps the native checkout link. There are no orphaned buyers, and
+			// nothing about the account — role included — blocks checkout: only
+			// a live visit does.
 			$this->set_session( null );
 			$html = $this->surface->cart_exits_shortcode();
 			self::assertSame( 1, substr_count( $html, 'href="https://shop.example.test/checkout/"' ) );
