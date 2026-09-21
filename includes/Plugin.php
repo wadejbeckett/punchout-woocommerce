@@ -195,38 +195,40 @@ final class Plugin {
 	}
 
 	/**
-	 * The active punchout session bound to the current login, or null.
+	 * The punchout visit this request is inside, or null.
 	 *
-	 * Bound to the exact WP session token created at auto-login, so a
-	 * stale cookie from a superseded punchout never counts (scope §4.2).
-	 * Resolved once per request.
+	 * Delegates to Sessions\Current — the one resolver — and memoises its
+	 * answer for the request. Kept as a method on the container because
+	 * every guard and surface already asks the question here.
+	 *
+	 * The memo is three-state on purpose: "no visit" is cached only once a
+	 * lookup has actually returned it. The first caller can be WooCommerce
+	 * building its session handler at 'init' priority 0, long before any
+	 * caller of today; a resolution that could not run (no store yet, a
+	 * failed query) must be retried by the next caller, or one early miss
+	 * would silently disarm cart isolation, the route guard and the
+	 * checkout block for the whole request.
+	 *
+	 * Deliberately not gated on the master switch. The guards that ask
+	 * this question are registered before the switch is consulted, so an
+	 * already-authenticated visit must keep resolving after the switch
+	 * flips — otherwise it would get an unguarded cart. Ending live visits
+	 * is on_settings_updated()'s job, not this resolver's.
 	 */
 	public function current_session(): ?Session {
 		if ( $this->session_resolved ) {
 			return $this->current_session;
 		}
 
+		if ( null === $this->sessions ) {
+			return null;
+		}
+
+		// Order is load-bearing: the memo closes only after a lookup
+		// returned an answer, so a throw leaves the request unresolved
+		// rather than remembered as "no visit".
+		$this->current_session  = ( new Sessions\Current( $this->sessions ) )->visit();
 		$this->session_resolved = true;
-		$this->current_session  = null;
-
-		if ( null === $this->sessions || ! $this->enabled() || ! is_user_logged_in() ) {
-			return null;
-		}
-
-		$user = wp_get_current_user();
-
-		if ( ! in_array( Installer::ROLE, (array) $user->roles, true ) ) {
-			return null;
-		}
-
-		// `ordered` still counts as a live session: the login survives
-		// checkout until the close-out (or cron) tears it down, and the
-		// thank-you close-out CTA needs the session resolvable (§9.7).
-		$this->current_session = $this->sessions->find_for_login(
-			$user->ID,
-			wp_get_session_token(),
-			[ Session::ACTIVE, Session::ORDERED ]
-		);
 
 		return $this->current_session;
 	}
