@@ -10,6 +10,7 @@ declare( strict_types = 1 );
 
 namespace POW\Sessions;
 
+use POW\Cart\SessionKey;
 use POW\Installer;
 
 defined( 'ABSPATH' ) || exit;
@@ -20,8 +21,30 @@ defined( 'ABSPATH' ) || exit;
  * All state transitions are single conditional UPDATEs (status IN allowed
  * set), so two concurrent requests cannot both win a transition — the
  * atomic token redemption in particular is one query (scope §7).
+ *
+ * A row is a visit, not a person. A connection has one bound customer
+ * account, so many open rows share one `user_id` and that column identifies
+ * nobody: `(user_id, wp_session_token)` names the visit's login and
+ * `wc_session_key` names its basket. Every query that must act on one visit
+ * is scoped by the row id or by one of those two, never by `user_id` alone.
+ *
+ * Six methods define "open" as pending|active|ordered (revocation_batch,
+ * expire_locked's re-check, open_for_identity, open_for_partner, all_open,
+ * expired_open). Nothing writes ORDERED once the paid exit is gone, but the
+ * term stays in all six: rows written before that may still hold it, and an
+ * ordered visit is open — the per-connection cap counts it.
  */
 class Store {
+
+	/**
+	 * Open visits one connection may hold at once.
+	 *
+	 * A hard number with no filter: the cap exists so a purchasing system
+	 * that never returns a visit cannot mint them without limit, and a site
+	 * able to raise it could raise it to uselessness. Callers sweep expired
+	 * rows before counting (see count_open_for_partner()).
+	 */
+	public const MAX_OPEN_VISITS = 50;
 
 	public function find_by_token_hash( string $hash ): ?Session {
 		global $wpdb;
@@ -41,16 +64,29 @@ class Store {
 		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
 	}
 
-	/** Bind first: a crash must never leave a valid native token without a recorded reference. */
-	public function bind_login( int $id, string $token, string $expires ): bool {
+	/**
+	 * Bind first: a crash must never leave a valid native token without a recorded reference.
+	 *
+	 * A visit acquires its WordPress login and its own WooCommerce basket in
+	 * the same conditional UPDATE, so no state exists where one is recorded
+	 * and the other is not, and the readback confirms all three columns. The
+	 * key is minted by the caller (Cart\SessionKey::mint()) and written here
+	 * rather than on create()'s INSERT: a pending claim has no cart to name,
+	 * and a second UNIQUE column on that INSERT would make a key collision
+	 * indistinguishable from a duplicate (partner_id, payload_id) — which the
+	 * setup endpoint reads as "another request holds this payloadID" and
+	 * would answer with a bogus cXML 409. Here a collision is an ordinary
+	 * false and the caller may retry with a fresh key.
+	 */
+	public function bind_login( int $id, string $token, string $expires, string $wc_session_key ): bool {
 		global $wpdb;
-		if ( '' === $token ) { return false; }
+		if ( $id <= 0 || '' === $token || ! SessionKey::is_visit_key( $wc_session_key ) ) { return false; }
 		$ok = $wpdb->query( $wpdb->prepare(
-			'UPDATE ' . $this->table() . " SET wp_session_token = %s, expires = %s WHERE id = %d AND status = %s AND (wp_session_token IS NULL OR wp_session_token = '')",
-			$token, $expires, $id, Session::ACTIVE
+			'UPDATE ' . $this->table() . " SET wp_session_token = %s, expires = %s, wc_session_key = %s WHERE id = %d AND status = %s AND (wp_session_token IS NULL OR wp_session_token = '') AND wc_session_key IS NULL",
+			$token, $expires, $wc_session_key, $id, Session::ACTIVE
 		) );
 		$fresh = 1 === $ok ? $this->find( $id ) : null;
-		return $fresh && $fresh->wp_session_token === $token && $fresh->expires === $expires && $fresh->status === Session::ACTIVE;
+		return $fresh && $fresh->wp_session_token === $token && $fresh->expires === $expires && $fresh->wc_session_key === $wc_session_key && $fresh->status === Session::ACTIVE;
 	}
 
 	/** Caller holds the partner lock; invalidate native token-map cache before every read/write. */
@@ -96,7 +132,36 @@ class Store {
 			}
 		} catch ( \Throwable $e ) { $expired = false; }
 		$destroyed = $this->destroy_login_checked( $session );
-		return $expired && $destroyed;
+		// A visit's basket dies with the visit, and nothing else removes it in
+		// time: cron runs with no WooCommerce session handler bound, so the row
+		// would sit until core's own sweep — whose logged-in expiry is a week
+		// against a four-hour punchout session.
+		return $expired && $destroyed && $this->delete_cart_row( $session );
+	}
+
+	/**
+	 * Remove this visit's WooCommerce session row, named by its own key.
+	 *
+	 * The key's shape is the whole authority. A numeric or `t_` key belongs to
+	 * an ordinary shopper of the shared account and is never ours to delete,
+	 * and a row whose login was never bound has no basket at all; both are
+	 * nothing to do, not failure. Absence afterwards is the only proof of
+	 * removal, because zero affected rows is also a visit that never carted.
+	 */
+	private function delete_cart_row( Session $session ): bool {
+		global $wpdb;
+		$key = (string) ( $session->wc_session_key ?? '' );
+		if ( ! SessionKey::is_visit_key( $key ) ) { return true; }
+		try {
+			$table = $wpdb->prefix . 'woocommerce_sessions';
+			$wpdb->last_error = '';
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+			$wpdb->query( $wpdb->prepare( 'DELETE FROM ' . $table . ' WHERE BINARY session_key = BINARY %s', $key ) );
+			if ( '' !== ( $wpdb->last_error ?? '' ) ) { return false; }
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+			$remaining = $wpdb->get_var( $wpdb->prepare( 'SELECT session_id FROM ' . $table . ' WHERE BINARY session_key = BINARY %s LIMIT 1', $key ) );
+			return null === $remaining && '' === ( $wpdb->last_error ?? '' );
+		} catch ( \Throwable $error ) { return false; }
 	}
 
 	/**
@@ -138,6 +203,12 @@ class Store {
 	}
 
 	/**
+	 * Insert one row from the caller's column array, verbatim — the buyer
+	 * attribution columns need nothing here and have no second write path.
+	 * The visit's wc_session_key is deliberately not among them: it is minted
+	 * at bind_login(), where a UNIQUE collision is distinguishable from a
+	 * duplicate (partner_id, payload_id) and cheap to retry.
+	 *
 	 * @param array<string, mixed> $data Column values.
 	 * @return int New row id, 0 on failure (including a duplicate
 	 *             (partner_id, payload_id) hitting the UNIQUE key).
@@ -253,7 +324,13 @@ class Store {
 	}
 
 	/**
-	 * Fill only an unowned order column. PayExit's generic update remains authoritative.
+	 * Fill only an unowned order column, and never overwrite one.
+	 *
+	 * With the paid exit gone this is the only writer of sessions.order_id:
+	 * the quote order a returned visit produced. The contract no longer
+	 * defers to another writer — first write wins, a second is reported as
+	 * already owned, and nothing here may be relaxed on the assumption that a
+	 * generic update will correct it.
 	 *
 	 * @return string linked|already_owned|error. Zero affected rows also covers a missing session.
 	 */
@@ -387,6 +464,17 @@ class Store {
 	 * WP session token created at auto-login, so a stale login from an
 	 * earlier punchout can never act on a newer session (scope §4.2).
 	 *
+	 * This is the sole resolver of "which visit is this request inside" for a
+	 * shared customer account, and the token is the only discriminating
+	 * predicate — every open visit of that account carries the same user id.
+	 * `ORDER BY id DESC LIMIT 1` is load-bearing for the same reason, and the
+	 * empty-token refusal below is what stops a row whose login was never
+	 * bound from matching. The token comparison is deliberately not BINARY
+	 * (unlike expire_active_login_locked()) so the index is used; under a
+	 * case-insensitive collation two tokens differing only in case would
+	 * collide, which the 43-character random token makes vanishingly
+	 * unlikely but does not forbid.
+	 *
 	 * @param list<string> $statuses Acceptable statuses.
 	 */
 	public function find_for_login( int $user_id, string $wp_session_token, array $statuses = [ Session::ACTIVE ] ): ?Session {
@@ -414,28 +502,110 @@ class Store {
 	}
 
 	/**
-	 * Open (pending/active/ordered) sessions for a user — the latest-
-	 * punchout-wins sweep input (scope §5.1).
+	 * The visit a WooCommerce session key names.
+	 *
+	 * The resolver for anything that starts from a basket rather than from the
+	 * current login. The key is UNIQUE, so it names exactly one visit of the
+	 * shared account where the user id names none of them. A key that is not
+	 * a visit's own shape is refused before any query — an ordinary shopper's
+	 * numeric key and a guest's `t_` key own nothing here — and the stored key
+	 * is compared byte-exactly after the read, so a case-insensitive
+	 * collation cannot hand one visit another's basket.
+	 *
+	 * @param list<string> $statuses Statuses that still count as a live visit.
+	 */
+	public function find_by_wc_session_key( string $key, array $statuses = [ Session::ACTIVE, Session::ORDERED ] ): ?Session {
+		global $wpdb;
+
+		if ( ! SessionKey::is_visit_key( $key ) || [] === $statuses ) {
+			return null;
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$row = $wpdb->get_row(
+			$wpdb->prepare(
+				'SELECT * FROM ' . $this->table() . " WHERE wc_session_key = %s AND status IN ({$placeholders}) ORDER BY id DESC LIMIT 1",
+				$key,
+				...$statuses
+			),
+			ARRAY_A
+		);
+
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
+		$session = $row ? Session::from_row( $row ) : null;
+		return $session && $session->wc_session_key === $key ? $session : null;
+	}
+
+	/**
+	 * Open visits of one buyer identity at one connection — the supersede input.
+	 *
+	 * Scoped in SQL by partner_id as well as the identity hash: two customers'
+	 * buyers may share an e-mail address, and a buyer of one connection may
+	 * never end a visit of another. An empty hash matches nothing at all, so
+	 * anonymous visits — a purchasing system that sends neither name nor
+	 * e-mail — never supersede each other and are held only by the
+	 * per-connection cap.
 	 *
 	 * @return list<Session>
 	 */
-	public function open_for_user( int $user_id ): array {
+	public function open_for_identity( int $partner_id, string $identity_hash, int $limit = self::MAX_OPEN_VISITS ): array {
 		global $wpdb;
+
+		if ( $partner_id <= 0 || '' === $identity_hash ) {
+			return [];
+		}
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
-				'SELECT * FROM ' . $this->table() . ' WHERE user_id = %d AND status IN (%s, %s, %s)',
-				$user_id,
+				'SELECT * FROM ' . $this->table() . ' WHERE partner_id = %d AND buyer_identity_hash = %s AND status IN (%s, %s, %s) LIMIT %d',
+				$partner_id,
+				$identity_hash,
 				Session::PENDING,
 				Session::ACTIVE,
-				Session::ORDERED
+				Session::ORDERED,
+				max( 1, min( 500, $limit ) )
 			),
 			ARRAY_A
 		);
 
 		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
 		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
+	}
+
+	/**
+	 * How many visits one connection currently holds open — the cap input.
+	 *
+	 * One COUNT and no hydration. open_for_partner() is not reused for this:
+	 * its callers run it as an emptiness probe with a limit of 1, and
+	 * counting hydrated rows would silently stop at whatever limit was
+	 * passed. Expired-but-open rows are counted, so the caller sweeps them
+	 * (expired_open() then expire_locked()) before comparing against
+	 * MAX_OPEN_VISITS — otherwise a connection whose buyers never return
+	 * would fill its cap permanently.
+	 */
+	public function count_open_for_partner( int $partner_id ): int {
+		global $wpdb;
+
+		if ( $partner_id <= 0 ) {
+			return 0;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$count = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT COUNT(*) FROM ' . $this->table() . ' WHERE partner_id = %d AND status IN (%s, %s, %s)',
+				$partner_id,
+				Session::PENDING,
+				Session::ACTIVE,
+				Session::ORDERED
+			)
+		);
+
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session count failed.' ); }
+		return (int) $count;
 	}
 
 	/**
