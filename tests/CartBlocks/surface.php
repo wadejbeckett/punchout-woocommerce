@@ -195,9 +195,12 @@ namespace {
 			self::assertSame( 1, substr_count( $html, 'href="https://shop.example.test/checkout/"' ) );
 			self::assertStringNotContainsString( 'pow-return-form', $html );
 		}
-		public function test_cart_exits_shortcode_is_empty_for_an_orphaned_buyer_with_no_session(): void {
+		/** An account with no visit is an ordinary shopper, whatever role it carries: only a live visit blocks checkout. */
+		public function test_cart_exits_shortcode_gives_checkout_to_an_account_with_no_session(): void {
 			$this->set_session( null );
-			self::assertSame( '', $this->surface->cart_exits_shortcode() );
+			$html = $this->surface->cart_exits_shortcode();
+			self::assertSame( 1, substr_count( $html, 'href="https://shop.example.test/checkout/"' ) );
+			self::assertStringNotContainsString( 'pow-return-form', $html );
 		}
 		public function test_cart_exits_shortcode_is_empty_for_an_invalid_session(): void {
 			$this->set_session( POW\Sessions\Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 31, 'status' => 'active', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] ) );

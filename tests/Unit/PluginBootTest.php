@@ -12,7 +12,10 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 		self::assertTrue( $result['registered'] );
 		self::assertSame( 1, substr_count( $result['ordinary'], 'href="https://shop.example.test/checkout/"' ) );
 		self::assertStringNotContainsString( 'pow-return-form', $result['ordinary'] );
-		self::assertSame( '', $result['orphan'] );
+		// Nothing about the *account* blocks checkout any more: only a live
+		// visit does. An account with no visit is an ordinary shopper and
+		// gets the ordinary control, whatever role it happens to carry.
+		self::assertSame( $result['ordinary'], $result['orphan'] );
 		self::assertFalse( $result['return_shortcode_registered'] );
 		self::assertFalse( $result['router_registered'] );
 	}
