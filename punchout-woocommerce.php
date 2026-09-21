@@ -11,8 +11,16 @@
  * License URI:       https://www.gnu.org/licenses/agpl-3.0.html
  * Text Domain:       punchout-woocommerce
  * Domain Path:       /languages
- * WC requires at least: 8.0
+ * WC requires at least: 11.1
  * WC tested up to:   11.1
+ *
+ * The WooCommerce minimum is not a guess. One basket per punchout visit is a
+ * bypass of WC_Session_Handler's own keying, and Docs\SelfTest pins the 21
+ * core session methods it stands on, including four that must still be
+ * private or protected. A store whose handler does not have that shape
+ * refuses every visit with a 409, so the minimum is the earliest WooCommerce
+ * the shape was actually verified against — 11.1 — and not an older release
+ * nobody checked.
  *
  * PunchOut for WooCommerce — cXML PunchOut supplier plugin.
  * Copyright (C) 2026 Noiz.

@@ -36,6 +36,29 @@ final class Installer {
 	public const REWRITE_VERSION = '1';
 	public const REWRITE_VERSION_KEY = 'pow_rewrite_version';
 
+	/**
+	 * The session columns schema seven adds, read back after dbDelta().
+	 *
+	 * dbDelta() runs its ALTERs and discards every failure — it returns the
+	 * changes it intended, not the ones the server applied — so an ALTER
+	 * killed by a lock wait or a DDL timeout is otherwise indistinguishable
+	 * from success. Recording DB_VERSION over a migration that did not land
+	 * breaks every visit permanently: the setup insert and bind_login() name
+	 * columns that are not there, and maybe_upgrade() never comes back.
+	 */
+	private const SESSIONS_COLUMNS = [ 'wc_session_key', 'buyer_identity', 'buyer_name', 'buyer_identity_hash' ];
+
+	/**
+	 * The session indexes schema seven adds, and whether each must be UNIQUE.
+	 *
+	 * `wc_session_key` UNIQUE is what keeps one basket to one visit; the other
+	 * two are the lookups the per-identity supersede and the login resolver
+	 * ride on.
+	 *
+	 * @var array<string, bool>
+	 */
+	private const SESSIONS_INDEXES = [ 'wc_session_key' => true, 'partner_buyer' => false, 'login' => false ];
+
 	public static function partners_table(): string {
 		global $wpdb;
 
@@ -55,8 +78,10 @@ final class Installer {
 	}
 
 	public static function activate(): void {
-		self::install_schema();
-		update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
+		if ( self::install_schema() ) {
+			update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
+		}
+
 		self::install_rewrites();
 
 		// Nothing is scheduled on activation. The GC job is (re)scheduled
@@ -87,10 +112,14 @@ final class Installer {
 	/**
 	 * Run on admin_init so a plugin file update migrates the schema without
 	 * requiring a deactivate/reactivate cycle.
+	 *
+	 * The version marker only advances when install_schema() proved the
+	 * migration landed. A migration that did not land leaves the marker where
+	 * it was, so this runs again on the next admin request — and logs one
+	 * error line rather than fataling a wp-admin page load.
 	 */
 	public static function maybe_upgrade(): void {
-		if ( (string) get_option( self::DB_VERSION_KEY, '0' ) !== self::DB_VERSION ) {
-			self::install_schema();
+		if ( (string) get_option( self::DB_VERSION_KEY, '0' ) !== self::DB_VERSION && self::install_schema() ) {
 			update_option( self::DB_VERSION_KEY, self::DB_VERSION, false );
 		}
 
@@ -105,7 +134,14 @@ final class Installer {
 		update_option( self::REWRITE_VERSION_KEY, self::REWRITE_VERSION, false );
 	}
 
-	private static function install_schema(): void {
+	/**
+	 * Create or migrate the three tables.
+	 *
+	 * @return bool True when the schema this release needs is present afterwards.
+	 *              False means the migration did not land and the caller must
+	 *              leave the version marker alone.
+	 */
+	private static function install_schema(): bool {
 		global $wpdb;
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -256,6 +292,77 @@ final class Installer {
 		dbDelta( $sql_sessions );
 		if ( $from_version < 7 ) { self::close_visits_without_a_key(); }
 		dbDelta( $sql_log );
+
+		$faults = self::sessions_schema_faults();
+
+		if ( [] !== $faults ) {
+			// One line, and no exception: this runs on admin_init, where a
+			// throw would take the whole wp-admin page with it. The version
+			// marker stays behind, so the next admin request tries again.
+			( new Logger( new Settings() ) )->error(
+				'Schema ' . self::DB_VERSION . ' did not land on ' . $sessions . ': ' . implode( '; ', $faults )
+				. '. The recorded schema version stays at ' . $from_version . ' and the migration is retried on the next admin request.'
+			);
+
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * What schema seven asked for and the sessions table does not have, as a
+	 * list of one-line faults. Empty means the migration landed.
+	 *
+	 * A table that cannot be read at all is itself a fault: an unreadable
+	 * answer is not evidence of a completed migration.
+	 *
+	 * @return list<string>
+	 */
+	private static function sessions_schema_faults(): array {
+		global $wpdb;
+
+		$sessions = self::sessions_table();
+		$faults   = [];
+
+		$wpdb->last_error = '';
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$columns = $wpdb->get_results( "SHOW COLUMNS FROM {$sessions}", ARRAY_A );
+		if ( ! is_array( $columns ) || [] === $columns || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			return [ 'its columns could not be read' ];
+		}
+
+		$present = array_map( 'strval', array_column( $columns, 'Field' ) );
+		foreach ( self::SESSIONS_COLUMNS as $column ) {
+			if ( ! in_array( $column, $present, true ) ) { $faults[] = 'column ' . $column . ' is missing'; }
+		}
+
+		$wpdb->last_error = '';
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$indexes = $wpdb->get_results( "SHOW INDEX FROM {$sessions}", ARRAY_A );
+		if ( ! is_array( $indexes ) || [] === $indexes || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			$faults[] = 'its indexes could not be read';
+
+			return $faults;
+		}
+
+		foreach ( self::SESSIONS_INDEXES as $index => $unique ) {
+			$rows = array_values( array_filter( $indexes, static fn( array $row ): bool => $index === (string) ( $row['Key_name'] ?? '' ) ) );
+
+			if ( [] === $rows ) {
+				$faults[] = 'index ' . $index . ' is missing';
+
+				continue;
+			}
+
+			// SHOW INDEX reports Non_unique 0 for a UNIQUE key. A visit key
+			// that is merely indexed lets two visits share one basket row.
+			if ( $unique && 0 !== (int) ( $rows[0]['Non_unique'] ?? 1 ) ) {
+				$faults[] = 'index ' . $index . ' is not UNIQUE';
+			}
+		}
+
+		return $faults;
 	}
 
 	/**
