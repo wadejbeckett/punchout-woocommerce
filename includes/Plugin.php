@@ -127,7 +127,8 @@ final class Plugin {
 		// same way whatever the switch says: the delivery book is an
 		// administrator surface with no front-end route to gate.
 		$address_fields->register();
-		( new AdminPage( $this->settings, $this->registry, $this->audit, $address_fields ) )->register();
+		$admin_page = new AdminPage( $this->settings, $this->registry, $this->audit, $address_fields );
+		$admin_page->register();
 		( new AdminActions( $this->registry, $this->audit, $registration ) )->register();
 		( new \POW\Account\IntegrationTab( $this, $this->registry, $this->audit ) )->register();
 		( new AdminDetails() )->register();
@@ -152,6 +153,11 @@ final class Plugin {
 
 		add_action( 'admin_init', [ Installer::class, 'maybe_upgrade' ] );
 		add_action( 'admin_notices', [ $this, 'render_key_notice' ] );
+		// Unlike the sealing-key notice, this one is not scoped to the
+		// plugin's own screens: a connection with no usable store account
+		// refuses every setup request, so the operator must meet it wherever
+		// they are in wp-admin rather than only where they went looking.
+		add_action( 'admin_notices', [ $admin_page, 'render_unbound_notice' ] );
 
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			Command::register( $this );
