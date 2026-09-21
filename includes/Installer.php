@@ -113,7 +113,7 @@ final class Installer {
 	 * v2 retired two features: partner group mapping (a site owner assigns
 	 * the customer account's own pricing and visibility, once, outside this
 	 * plugin) and the SKU map (buyer-side part numbers are the buyer's own
-	 * concern), which became the pow_poom_lines filter. dbDelta never drops
+	 * concern, handled in the buyer's own system). dbDelta never drops
 	 * anything, so the leftovers are removed explicitly (guarded — MySQL has
 	 * no DROP COLUMN IF EXISTS).
 	 */

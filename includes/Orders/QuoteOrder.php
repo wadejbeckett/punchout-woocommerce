@@ -40,8 +40,7 @@ defined( 'ABSPATH' ) || exit;
  *
  * - line_args() derives the order line from the POOM line, so the order
  *   and the document the buyer received cannot disagree about price. The
- *   cents are the ones PoomMapper emitted, after
- *   pow_poom_unit_price_cents, and they are ex-tax.
+ *   cents are the ones PoomMapper emitted, and they are ex-tax.
  * - resolve_shipping() fixes the delivery-address precedence in one place
  *   rather than in a chain of ifs at the call site.
  * - address_from_ship_to() reads the ShipTo fragment the session stored
@@ -58,8 +57,32 @@ final class QuoteOrder {
 	 */
 	public const META_POOM_XML      = '_pow_poom_xml';
 	public const META_SESSION_ID    = '_pow_session_id';
+	/**
+	 * Careful: '_pow_partner_id' is two keys with one name. The buyer-to-
+	 * connection USER meta of that name belongs to the removed per-employee
+	 * accounts; this is ORDER meta, it is how QuoteCompatibility reads a
+	 * historical quote, and a grep-and-delete on the string corrupts every
+	 * quote order already on the shop.
+	 */
 	public const META_PARTNER_ID    = '_pow_partner_id';
+	/**
+	 * What the connection was called when the buyer bought. Stamped rather
+	 * than looked up, because a connection that has since been renamed or
+	 * deleted must not rewrite or erase the attribution on an order that has
+	 * already shipped.
+	 */
+	public const META_PARTNER_NAME  = '_pow_partner_name';
 	public const META_DELIVERY_CODE = '_pow_delivery_code';
+	/**
+	 * Who bought. Buyers share the connection's own customer account, so
+	 * customer_id names the company and only these keys name the person.
+	 * An empty string is the legitimate, audited anonymous case — the
+	 * purchasing system sent no identity — not a missing value.
+	 */
+	public const META_BUYER_IDENTITY = '_pow_buyer_identity';
+	public const META_BUYER_NAME    = '_pow_buyer_name';
+	/** The buyer's own correlator for this basket, straight off the setup request. */
+	public const META_BUYER_COOKIE  = '_pow_buyer_cookie';
 	public const META_DELIVERY      = '_pow_delivery';
 	public const META_DELIVERY_NOTES = '_pow_delivery_notes';
 	public const META_DELIVERY_CHOICE = '_pow_delivery_choice';
@@ -172,9 +195,11 @@ final class QuoteOrder {
 			// Stored as strings: that is what WooCommerce writes back after
 			// a round trip through the meta store, so a reader comparing
 			// values sees the same type whether the order was just built or
-			// re-fetched (PayExit does the same).
+			// re-fetched.
 			$order->update_meta_data( self::META_SESSION_ID, (string) $session->id );
 			$order->update_meta_data( self::META_PARTNER_ID, (string) $partner->id );
+			$order->update_meta_data( self::META_PARTNER_NAME, $partner->name );
+			foreach ( self::attribution( $session ) as $key => $value ) { $order->update_meta_data( $key, $value ); }
 			$order->update_meta_data( self::META_DELIVERY_CODE, $shipping['code'] );
 
 			$delivery = null;
@@ -239,7 +264,7 @@ final class QuoteOrder {
 					'currency' => $currency, 'total' => (int) ( $poom_lines['total_cents'] ?? array_sum( array_column( $prepared_lines, 'total' ) ) ),
 					'shipping_total' => null !== $delivery && $delivery['emit'] ? $delivery['amount_cents'] : 0,
 					'note' => null !== $provenance ? $provenance[ self::META_DELIVERY_NOTES ] : $saved->get_customer_note( 'edit' ),
-					'meta' => [ self::META_SESSION_ID => (string) $session->id, self::META_PARTNER_ID => (string) $partner->id, self::META_DELIVERY_CODE => $shipping['code'] ],
+					'meta' => [ self::META_SESSION_ID => (string) $session->id, self::META_PARTNER_ID => (string) $partner->id, self::META_PARTNER_NAME => $partner->name, self::META_DELIVERY_CODE => $shipping['code'] ] + self::attribution( $session ),
 				];
 			}
 		} catch ( \Throwable $e ) {
@@ -267,11 +292,12 @@ final class QuoteOrder {
 		try {
 			$noted = $order->add_order_note(
 				sprintf(
-					/* translators: 1: session id, 2: customer connection name, 3: address source */
-					__( 'Punchout Quote created from punchout session #%1$d (%2$s). Delivery address source: %3$s.', 'punchout-woocommerce' ),
+					/* translators: 1: session id, 2: customer connection name, 3: address source, 4: the "Bought by ..." attribution sentence */
+					__( 'Punchout Quote created from punchout session #%1$d (%2$s). Delivery address source: %3$s. %4$s.', 'punchout-woocommerce' ),
 					$session->id,
 					$partner->name,
-					$shipping['source']
+					$shipping['source'],
+					self::bought_by( (string) $session->buyer_name, (string) $session->buyer_identity, self::connection_label( $partner->name, $partner->id ) )
 				)
 			);
 
@@ -363,7 +389,7 @@ final class QuoteOrder {
 	private function attachment_snapshot( \WC_Order $order ): array {
 		$groups = $this->collect_verification_items( $order );
 		$meta = [];
-		foreach ( [ self::META_SESSION_ID, self::META_PARTNER_ID, self::META_DELIVERY_CODE ] as $key ) { $meta[ $key ] = $order->get_meta( $key, true, 'edit' ); }
+		foreach ( [ self::META_SESSION_ID, self::META_PARTNER_ID, self::META_PARTNER_NAME, self::META_DELIVERY_CODE, self::META_BUYER_IDENTITY, self::META_BUYER_NAME, self::META_BUYER_COOKIE ] as $key ) { $meta[ $key ] = $order->get_meta( $key, true, 'edit' ); }
 		$shipping = [];
 		foreach ( self::SHIPPING_FIELDS as $field ) { $getter = 'get_shipping_' . $field; $shipping[ $field ] = $order->{$getter}( 'edit' ); }
 		$delivery = $order->get_meta( self::META_DELIVERY, true, 'edit' );
@@ -372,6 +398,12 @@ final class QuoteOrder {
 		foreach ( [ self::META_DELIVERY_CHOICE, self::META_DELIVERY_CONFIRMATION, self::META_DELIVERY_NOTES ] as $key ) { $provenance[ $key ] = $order->get_meta( $key, true, 'edit' ); }
 		if ( array_filter( $provenance, static fn( $value ): bool => '' !== $value ) ) {
 			$choice = 'null' === $provenance[ self::META_DELIVERY_CHOICE ] ? null : DeliveryData::choice( $provenance[ self::META_DELIVERY_CHOICE ], (int) $meta[ self::META_PARTNER_ID ] );
+			// The stored confirmation's buyer_user_id is the connection's own
+			// customer account, identical on every visit of that connection,
+			// so this pair binds through META_SESSION_ID alone: one visit's
+			// accepted destination cannot validate against another's order.
+			// The customer id is still checked because a confirmation that
+			// names a different account belongs to a different connection.
 			$confirmation = DeliveryData::confirmation( $provenance[ self::META_DELIVERY_CONFIRMATION ], (int) $meta[ self::META_SESSION_ID ], (int) $order->get_customer_id( 'edit' ), $choice );
 			if ( $confirmation['notes'] !== $provenance[ self::META_DELIVERY_NOTES ] || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $delivery ) ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
 			$shipping = QuoteAddress::payload( $choice )['address'] ?? array_fill_keys( self::SHIPPING_FIELDS, '' );
@@ -405,6 +437,85 @@ final class QuoteOrder {
 	public function register_admin(): void {
 		add_filter( 'woocommerce_order_actions', [ $this, 'add_order_action' ], 10, 2 );
 		add_action( 'woocommerce_order_action_' . self::CONVERT_ACTION, [ $this, 'convert' ] );
+		add_action( 'woocommerce_admin_order_data_after_billing_address', [ $this, 'render_bought_by' ] );
+	}
+
+	/**
+	 * The "Bought by" line under the order screen's billing address.
+	 *
+	 * Buyers share the connection's customer account, so the order screen's
+	 * own customer field names the company. This is the only place an admin
+	 * can see which person bought, which is why it is registered outside
+	 * the master switch alongside the conversion action: a shop that
+	 * switches punchout off must not lose the attribution on the orders it
+	 * already has.
+	 *
+	 * Anything that is not one of our quotes prints nothing at all.
+	 *
+	 * @param mixed $order Order being rendered (WooCommerce passes \WC_Order).
+	 */
+	public function render_bought_by( mixed $order ): void {
+		if ( ! $order instanceof \WC_Order || '' === (string) $order->get_meta( self::META_SESSION_ID ) ) {
+			return;
+		}
+
+		echo '<p class="pow-bought-by"><strong>' . esc_html__( 'PunchOut', 'punchout-woocommerce' ) . '</strong><br />' . esc_html( $this->bought_by_for( $order ) ) . '</p>';
+	}
+
+	/** The attribution sentence for one order, unescaped: the rule, separate from its markup. */
+	public function bought_by_for( \WC_Order $order ): string {
+		return self::bought_by(
+			(string) $order->get_meta( self::META_BUYER_NAME ),
+			(string) $order->get_meta( self::META_BUYER_IDENTITY ),
+			self::connection_label( (string) $order->get_meta( self::META_PARTNER_NAME ), (int) $order->get_meta( self::META_PARTNER_ID ) )
+		);
+	}
+
+	/**
+	 * The one "Bought by" sentence, used verbatim in the order note and on
+	 * the admin order screen so the two can never drift apart.
+	 *
+	 * Pure, and it escapes nothing: each caller escapes for its own output.
+	 * The anonymous case is worded rather than left blank, because
+	 * "Bought by  <>" reads as a fault in the shop instead of as a
+	 * purchasing system that sent no identity.
+	 */
+	public static function bought_by( string $name, string $identity, string $connection ): string {
+		if ( '' === $name && '' === $identity ) {
+			/* translators: %s: customer connection name */
+			return sprintf( __( 'Bought by an unnamed buyer via PunchOut (%s); the purchasing system sent no name or e-mail', 'punchout-woocommerce' ), $connection );
+		}
+
+		if ( '' === $name || '' === $identity ) {
+			/* translators: 1: buyer name or e-mail address, 2: customer connection name */
+			return sprintf( __( 'Bought by %1$s via PunchOut (%2$s)', 'punchout-woocommerce' ), '' === $name ? $identity : $name, $connection );
+		}
+
+		/* translators: 1: buyer name, 2: buyer e-mail address, 3: customer connection name */
+		return sprintf( __( 'Bought by %1$s <%2$s> via PunchOut (%3$s)', 'punchout-woocommerce' ), $name, $identity, $connection );
+	}
+
+	/** Name the connection by the name it carried at the time, or by its id when it carried none. */
+	private static function connection_label( string $name, int $id ): string {
+		/* translators: %d: customer connection id */
+		return '' !== $name ? $name : sprintf( __( 'connection #%d', 'punchout-woocommerce' ), $id );
+	}
+
+	/**
+	 * The buyer meta one visit stamps on its quote, as strings.
+	 *
+	 * Session::buyer_identity and buyer_name are nullable because the column
+	 * is, and an absent column and a stored empty string are the same thing
+	 * here: nobody was named.
+	 *
+	 * @return array<string, string>
+	 */
+	private static function attribution( Session $session ): array {
+		return [
+			self::META_BUYER_IDENTITY => (string) $session->buyer_identity,
+			self::META_BUYER_NAME     => (string) $session->buyer_name,
+			self::META_BUYER_COOKIE   => $session->buyer_cookie,
+		];
 	}
 
 	/**
@@ -580,11 +691,13 @@ final class QuoteOrder {
 	}
 
 	/**
-	 * The quote this session already has, or 0.
+	 * The quote this visit already has, or 0.
 	 *
-	 * The meta check is what separates our own quote from the paid order
-	 * PayExit links to the same column: that one carries _pow_session,
-	 * never _pow_session_id.
+	 * The meta check is not redundant with the column: sessions.order_id
+	 * has historically been written by more than one producer, and only a
+	 * row carrying META_SESSION_ID back at us is a quote this service
+	 * built. An order that answers with a different visit is not this
+	 * visit's quote and must not be reused as one.
 	 */
 	private function existing_quote( Session $session ): int {
 		if ( $session->order_id <= 0 || ! function_exists( 'wc_get_order' ) ) {
@@ -689,30 +802,26 @@ final class QuoteOrder {
 	}
 
 	/**
-	 * The WordPress side of the delivery-address rule: gather the three
-	 * candidates, then let the pure resolve_shipping() pick.
+	 * The WordPress side of the delivery-address rule for a legacy caller:
+	 * gather the two candidates, then let the pure resolve_shipping() pick.
+	 *
+	 * Reachable only when the caller supplied no 'delivery_destination'.
+	 * A confirmed return always supplies one, so neither candidate here can
+	 * overrule an accepted destination.
 	 *
 	 * @return array{address: array<string, string>, code: string, source: string}
 	 */
 	private function shipping_for( Session $session, Partner $partner ): array {
-		/**
-		 * Filter the delivery address for a Punchout Quote order.
-		 *
-		 * The addresses feature hooks this and returns
-		 * [ 'address' => WC-style array, 'code' => string ], or null to
-		 * fall through to the inbound ShipTo and then the customer's own
-		 * saved shipping address.
-		 *
-		 * @param array|null $address ['address' => array, 'code' => string] or null.
-		 * @param Session    $session The returning session.
-		 * @param Partner    $partner The customer connection.
-		 */
-		$filtered = apply_filters( 'pow_quote_shipping_address', null, $session, $partner );
-
 		$inbound = null !== $session->ship_to ? self::address_from_ship_to( $session->ship_to ) : null;
 
 		$customer = null;
 
+		// The live WC customer, which inside a visit is this visit's own
+		// overlay of the shared profile: the basket the buyer just returned
+		// is keyed by the per-visit session key, so no colleague's address
+		// can be read here. A visit that supplied none leaves the profile's
+		// own saved address as the last candidate, which is what a Quote
+		// built without a confirmed destination has always done.
 		if ( function_exists( 'WC' ) && null !== WC()->customer ) {
 			// A customer who has never saved a shipping address still has
 			// the full set of empty fields; offering that as a candidate
@@ -731,7 +840,7 @@ final class QuoteOrder {
 			}
 		}
 
-		return self::resolve_shipping( is_array( $filtered ) ? $filtered : null, $inbound, $customer );
+		return self::resolve_shipping( $inbound, $customer );
 	}
 
 	/**
@@ -777,6 +886,10 @@ final class QuoteOrder {
 		$choice_json = json_encode( $mapped['delivery_choice'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 		$confirmation_json = json_encode( $mapped['delivery_confirmation'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 		$choice = null === $mapped['delivery_choice'] ? null : DeliveryData::choice( $choice_json, $session->partner_id );
+		// Same pair as attachment_snapshot() rebuilds: the session id is the
+		// discriminator, the user id is the shared bound account. Who agreed
+		// to this destination is answered by the buyer attribution meta, not
+		// by buyer_user_id.
 		$confirmation = DeliveryData::confirmation( $confirmation_json, $session->id, $session->user_id, $choice );
 		$notes = $mapped['delivery_notes'];
 		// Decoding must not silently upgrade/rewrite this winner's payload, and neither the native note nor its metadata may contain a different instruction.
@@ -1037,21 +1150,21 @@ final class QuoteOrder {
 
 	/**
 	 * Pick the delivery address, in the order fixed by the design: the
-	 * pow_quote_shipping_address filter, then the ShipTo the buyer's
-	 * system sent at setup, then the customer's own saved address.
+	 * ShipTo the buyer's system sent at setup, then the customer's own
+	 * saved address. There is no third, outside candidate: what a quote
+	 * ships to is the shop's own answer, taken from the request or from the
+	 * account, and a confirmed return has already decided it.
 	 *
 	 * A candidate counts only when it carries an 'address' array. Anything
-	 * else — a filter returning true, a string, a bare code — falls
-	 * through to the next source rather than becoming a blank shipping
-	 * address on a real order.
+	 * else — true, a string, a bare code — falls through to the next source
+	 * rather than becoming a blank shipping address on a real order.
 	 *
-	 * @param array<string, mixed>|null $filtered Result of pow_quote_shipping_address.
 	 * @param array<string, mixed>|null $inbound  Parsed inbound ShipTo.
 	 * @param array<string, mixed>|null $customer WC()->customer shipping address.
 	 * @return array{address: array<string, string>, code: string, source: string}
 	 */
-	public static function resolve_shipping( ?array $filtered, ?array $inbound, ?array $customer ): array {
-		foreach ( [ 'filter' => $filtered, 'ship_to' => $inbound, 'customer' => $customer ] as $source => $candidate ) {
+	public static function resolve_shipping( ?array $inbound, ?array $customer ): array {
+		foreach ( [ 'ship_to' => $inbound, 'customer' => $customer ] as $source => $candidate ) {
 			if ( ! is_array( $candidate ) || ! isset( $candidate['address'] ) || ! is_array( $candidate['address'] ) ) {
 				continue;
 			}
