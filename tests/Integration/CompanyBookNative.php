@@ -22,7 +22,7 @@ final class CompanyBookNative {
 	private int $failed = 0;
 	public function __construct() {
 		$this->registry = POW\Plugin::instance()->registry();
-		$this->book = new POW\Addresses\CompanyBook( $this->registry, POW\Plugin::instance()->audit() );
+		$this->book = new POW\Addresses\CompanyBook( $this->registry, POW\Plugin::instance()->audit(), new POW\Sessions\Current( POW\Plugin::instance()->sessions() ) );
 		$this->admin = get_current_user_id();
 	}
 	private function check( bool $ok, string $label ): void { if ( ! $ok ) { ++$this->failed; throw new RuntimeException( 'FAIL ' . $label ); } ++$this->passed; echo 'PASS ' . $label . "\n"; }

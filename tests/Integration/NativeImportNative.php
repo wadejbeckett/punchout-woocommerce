@@ -22,7 +22,7 @@ final class NativeImportNative {
 	private int $failed = 0;
 	public function __construct() {
 		$this->registry = POW\Plugin::instance()->registry();
-		$this->book = new POW\Addresses\CompanyBook( $this->registry, POW\Plugin::instance()->audit() );
+		$this->book = new POW\Addresses\CompanyBook( $this->registry, POW\Plugin::instance()->audit(), new POW\Sessions\Current( POW\Plugin::instance()->sessions() ) );
 		$this->import = new POW\Addresses\NativeImport( $this->registry, $this->book );
 		$this->admin = get_current_user_id();
 	}

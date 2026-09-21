@@ -80,13 +80,14 @@ function woocommerce_form_field( string $key, array $args, mixed $value = null )
 namespace {
 use PHPUnit\Framework\TestCase;
 use POW\Tests\Fields\Fields;
-use POW\Tests\CompanyBook\{CompanyBook, Database, Audit, Countries};
+use POW\Tests\CompanyBook\{CompanyBook, Current, Database, Audit, Countries};
 use POW\Tests\NativeImport\{NativeImport, Customer};
 use POW\Partners\{Registry, Secrets};
 
 final class CompanyAddressAccessTest extends TestCase {
 	private Fields $fields;
 	private CompanyBook $book;
+	private Current $visits;
 	private Database $db;
 	private array $saved = [];
 	protected function setUp(): void {
@@ -97,14 +98,15 @@ final class CompanyAddressAccessTest extends TestCase {
 			20 => (object) [ 'ID' => 20, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			21 => (object) [ 'ID' => 21, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			30 => (object) [ 'ID' => 30, 'roles' => [ 'shop_manager' ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
-			40 => (object) [ 'ID' => 40, 'roles' => [ \POW\Installer::ROLE ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
+			// A privileged account that can no longer read the shop: still neither an editor nor a connection's login.
+			40 => (object) [ 'ID' => 40, 'roles' => [ 'shop_manager' ], 'allcaps' => [ 'read' => false, 'manage_woocommerce' => true ] ],
 		];
 		$GLOBALS['pow_test_user_meta'] = []; $GLOBALS['pow_test_current_user_id'] = 20;
 		$GLOBALS['pow_fields_test'] = [ 'account' => true, 'endpoint' => 'punchout-integration', 'admin' => false, 'hooks' => [], 'private' => 0, 'countries' => [], 'fields' => [], 'fields_fail' => false ];
 		$_POST = []; $_GET = []; $_SERVER['REQUEST_METHOD'] = 'GET';
 		Countries::$unavailable = false; Countries::$country_removed = false; Countries::$company_required = false;
 		Customer::$data = [ 20 => [ 'shipping' => $this->address(), 'billing' => $this->address() + [ 'email' => 'private@example.test' ] ] ]; Customer::$loaded = []; Customer::$fail = false; Customer::$missing = false; Customer::$on_read = null;
-		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->book = new CompanyBook( $registry, new Audit() );
+		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->visits = new Current(); $this->book = new CompanyBook( $registry, new Audit(), $this->visits );
 		$this->fields = new Fields( $registry, $this->book, new NativeImport( $registry, $this->book ) );
 	}
 	protected function tearDown(): void {
@@ -126,7 +128,7 @@ final class CompanyAddressAccessTest extends TestCase {
 		$this->fields->register(); self::assertSame( [ 'template_redirect', 'admin_init' ], array_keys( $GLOBALS['pow_fields_test']['hooks'] ) );
 		$this->post(); ( $GLOBALS['pow_fields_test']['hooks']['template_redirect'] )(); self::assertSame( 1, $this->state()['revision'] );
 	}
-	public function test_private_markup_owner_and_admin_only_buyer_unrelated_and_guest_denied(): void {
+	public function test_private_markup_owner_and_admin_only_blocked_unrelated_and_guest_denied(): void {
 		$this->seed();
 		foreach ( [ 20, 30 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; self::assertStringContainsString( 'PRIVATE-DEPOT', $this->fields->markup( 12 ) ); }
 		foreach ( [ 0, 21, 40 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; $html = $this->fields->markup( 12 ); self::assertStringNotContainsString( 'PRIVATE-DEPOT', $html ); self::assertStringNotContainsString( '<form', $html ); }
@@ -143,9 +145,13 @@ final class CompanyAddressAccessTest extends TestCase {
 		$GLOBALS['pow_test_current_user_id'] = 30; $GLOBALS['pow_fields_test']['account'] = false; $GLOBALS['pow_fields_test']['admin'] = true; $_GET = [ 'page' => 'punchout-woocommerce' ];
 		$this->submit(); self::assertSame( 1, $this->state()['revision'] );
 	}
-	public function test_unrelated_actor_buyer_meta_provisioned_and_forged_owner_cannot_mutate(): void {
+	public function test_unrelated_actor_blocked_account_live_visit_and_forged_owner_cannot_mutate(): void {
 		foreach ( [ 21, 40 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; $this->submit(); }
-		$GLOBALS['pow_test_current_user_id'] = 20; $GLOBALS['pow_test_user_meta'][20]['_pow_partner_id'] = 12; $this->submit(); $GLOBALS['pow_test_user_meta'] = [];
+		// The editor is unreachable during a visit: the visit signs in as user 20, the account that owns the book.
+		$GLOBALS['pow_test_current_user_id'] = 20;
+		$this->visits->live = \POW\Sessions\Session::from_row( [ 'id' => 81, 'partner_id' => 12, 'user_id' => 20, 'status' => \POW\Sessions\Session::ACTIVE, 'wc_session_key' => 'pow_1a2b3c4d5e6f708192a3b4c5d6e7' ] );
+		self::assertStringNotContainsString( '<form', $this->submit() );
+		$this->visits->live = null;
 		$this->submit( 'save', 0, '', '', [ 'owner_user_id' => '30' ] ); self::assertSame( [], $this->db->writes );
 	}
 	public function test_forged_partner_nonce_binding_and_foreign_key_cannot_mutate(): void {

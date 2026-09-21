@@ -330,10 +330,13 @@ final class DeliveryConfirmationTest extends TestCase {
 		require_once __DIR__.'/AddressProviderTest.php';\POW\Tests\AddressProvider\load_source();
 		$keys=['wpdb','pow_test_users','pow_test_user_meta','pow_test_current_user_id'];$before=[];foreach($keys as $key){$before[$key]=[array_key_exists($key,$GLOBALS),$GLOBALS[$key]??null];}
 		try{
-			$GLOBALS['wpdb']=(object)['last_error'=>''];$GLOBALS['pow_test_current_user_id']=99;$GLOBALS['pow_test_users']=[99=>(object)['ID'=>99,'roles'=>[\POW\Installer::ROLE],'allcaps'=>['read'=>true]],20=>(object)['ID'=>20,'roles'=>['customer'],'allcaps'=>['read'=>true]]];$GLOBALS['pow_test_user_meta']=[99=>['_pow_partner_id'=>'7']];
+			// The visit signs in as the connection's own bound account, so the row must name it and be this request's.
+			$visit=new Session(...array_replace(get_object_vars($this->s->store->session),['user_id'=>20]));
+			$GLOBALS['wpdb']=(object)['last_error'=>''];$GLOBALS['pow_test_current_user_id']=20;$GLOBALS['pow_test_users']=[20=>(object)['ID'=>20,'roles'=>['customer'],'allcaps'=>['read'=>true]],30=>(object)['ID'=>30,'roles'=>['customer'],'allcaps'=>['read'=>true]]];$GLOBALS['pow_test_user_meta']=[];
 			$r=new \POW\Tests\AddressProvider\Registry();$r->rows=[7=>['id'=>7,'owner_user_id'=>20,'status'=>'active']];$b=new \POW\Tests\AddressProvider\CompanyBook($r);$b->state=['revision'=>9,'addresses'=>['depot'=>['label'=>'Depot','address'=>$this->s->resolver->choices[0]['address'],'code'=>'DEPOT','use_for_punchout'=>true],'disabled'=>['label'=>'Disabled','address'=>$this->s->resolver->choices[0]['address'],'code'=>'OFF','use_for_punchout'=>false]]];
-			$resolver=new \POW\Tests\AddressProvider\Resolver($r,$b);self::assertTrue(method_exists($resolver,'choices_for_session'),'Full choice producer must exist');$choices=$resolver->choices_for_session($this->s->store->session,$r->find(7));self::assertCount(1,$choices);self::assertSame(9,$choices[0]['book_revision']);self::assertSame(20,$choices[0]['storage_user_id']);self::assertSame(\POW\Tests\AddressProvider\CompanyBook::entry_fingerprint('depot',$b->state['addresses']['depot']),$choices[0]['entry_fingerprint']);self::assertSame(1,$b->reads);
-			$r->on_lock=function()use($r){$r->rows[7]['owner_user_id']=30;};self::assertInstanceOf(WP_Error::class,$resolver->choices_for_session($this->s->store->session,$r->find(7)));
+			$visits=new \POW\Tests\AddressProvider\Current();$visits->live=$visit;
+			$resolver=new \POW\Tests\AddressProvider\Resolver($r,$b,$visits);self::assertTrue(method_exists($resolver,'choices_for_session'),'Full choice producer must exist');$choices=$resolver->choices_for_session($visit,$r->find(7));self::assertCount(1,$choices);self::assertSame(9,$choices[0]['book_revision']);self::assertSame(20,$choices[0]['storage_user_id']);self::assertSame(\POW\Tests\AddressProvider\CompanyBook::entry_fingerprint('depot',$b->state['addresses']['depot']),$choices[0]['entry_fingerprint']);self::assertSame(1,$b->reads);
+			$r->on_lock=function()use($r){$r->rows[7]['owner_user_id']=30;};self::assertInstanceOf(WP_Error::class,$resolver->choices_for_session($visit,$r->find(7)));
 		}finally{foreach($before as $key=>[$exists,$value]){if($exists){$GLOBALS[$key]=$value;}else{unset($GLOBALS[$key]);}}}
 	}
 }

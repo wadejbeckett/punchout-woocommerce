@@ -105,8 +105,13 @@ final class Plugin {
 		$parser      = new Parser();
 		$builder     = new Builder();
 		$mapper      = new PoomMapper( $this->settings, $this->logger );
-		$address_book = new Addresses\CompanyBook( $this->registry, $this->audit );
-		$address_resolver = new Addresses\Resolver( $this->registry, $address_book );
+		// One resolver for "is this request inside a visit", shared by the
+		// book's editor gate and the address resolver: with a single bound
+		// login, that question is the only thing that still separates the
+		// customer managing their delivery book from an employee shopping.
+		$visits = new Sessions\Current( $this->sessions );
+		$address_book = new Addresses\CompanyBook( $this->registry, $this->audit, $visits );
+		$address_resolver = new Addresses\Resolver( $this->registry, $address_book, $visits );
 		$address_fields = new Addresses\Fields( $this->registry, $address_book, new Addresses\NativeImport( $this->registry, $address_book ) );
 
 		// Built before the master-switch gate because housekeeping needs it:
