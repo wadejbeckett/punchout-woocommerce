@@ -24,6 +24,21 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Registry {
 
+	/**
+	 * Capabilities a connection's store account may not hold.
+	 *
+	 * Every buyer a purchasing system authorises is signed in as this one
+	 * account, on a token that came from that system rather than from a
+	 * password, so binding an account that can manage the shop, the store
+	 * or other users would hand the connection the shop itself. The list
+	 * lives here because this class performs the binding; the setup and
+	 * redemption endpoints re-prove it on every visit against the same
+	 * constant, so the bind screen and the runtime cannot drift apart.
+	 *
+	 * @var list<string>
+	 */
+	public const PRIVILEGED_CAPABILITIES = [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ];
+
 	/** Shared across Registry instances on this request/connection. */
 	private static array $partner_locks = [];
 
@@ -65,8 +80,20 @@ final class Registry {
 	}
 
 	/**
-	 * Resolve the partner a WordPress user owns (self-service registration).
-	 * Newest row wins; user 0 owns nothing.
+	 * Resolve the connection a WordPress account is the store account of.
+	 * User 0 owns nothing.
+	 *
+	 * `owner_user_id` is the authentication subject now: it is the account
+	 * every buyer of that connection is signed in as, and the account the
+	 * My Account download is offered to. Two connections sharing it would
+	 * therefore be two answers to "whose connection is this request acting
+	 * for", so the second row is refused rather than silently ordered away.
+	 * `associate_owner()` cannot create that state, but a legacy row or a
+	 * hand-edited table can, and every caller of this method treats a throw
+	 * as a refusal.
+	 *
+	 * @throws \RuntimeException When the lookup cannot run, or two
+	 *                           connections name the same account.
 	 */
 	public function find_by_owner( int $user_id ): ?Partner {
 		global $wpdb;
@@ -75,11 +102,14 @@ final class Registry {
 			return null;
 		}
 
+		// Two rows are read on purpose: the second one is the ambiguity test.
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
-		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE owner_user_id = %d ORDER BY id DESC LIMIT 1', $user_id ), ARRAY_A );
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE owner_user_id = %d ORDER BY id ASC LIMIT 2', $user_id ), ARRAY_A );
 
 		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Partner lookup failed.' ); }
-		return $row ? Partner::from_row( $row ) : null;
+		$rows = is_array( $rows ) ? array_values( $rows ) : [];
+		if ( count( $rows ) > 1 ) { throw new \RuntimeException( 'Partner owner is ambiguous.' ); }
+		return $rows ? Partner::from_row( $rows[0] ) : null;
 	}
 
 	/**
@@ -158,11 +188,12 @@ final class Registry {
 	}
 
 	/**
-	 * The one authorisation left on the retired `exit_policy` column.
+	 * A real shop administrator: the only actor the registry's privileged
+	 * writes accept, now that no front-end surface reaches any of them.
 	 *
-	 * It replaces the exit-entitlement service's own administrator test,
-	 * which went with the paid exit. The column is no longer written by any
-	 * path (sanitise() drops it, and every connection reads as
+	 * It also replaces the exit-entitlement service's own administrator
+	 * test, which went with the paid exit. That column is no longer written
+	 * by any path (sanitise() drops it, and every connection reads as
 	 * punchout-only), but a caller naming it is still refused unless it is a
 	 * real shop administrator: silently dropping the guard would leave a
 	 * retired entitlement writable from anywhere reaching insert() or
@@ -174,7 +205,18 @@ final class Registry {
 		return (bool) $user && user_can( $user, \POW\Admin\Page::CAP );
 	}
 
-	/** Explicit admin association only; owner serialization precedes the partner lock. */
+	/**
+	 * Bind a connection to the store account its buyers punch in as.
+	 *
+	 * This is the only way a connection gets an account: the front-end
+	 * application flow is gone, and nothing else writes `owner_user_id`. It
+	 * therefore carries the whole binding policy — an existing ordinary
+	 * account, unprivileged, not already another connection's, and no
+	 * transfer of an existing binding.
+	 *
+	 * Explicit admin association only; owner serialization precedes the
+	 * partner lock, and every test is repeated inside both locks.
+	 */
 	public function associate_owner( int $partner_id, int $owner_user_id ): bool {
 		global $wpdb;
 		$confirmed = false;
@@ -187,8 +229,11 @@ final class Registry {
 					$partner = $this->find( $partner_id );
 					// No role is tested: the account being bound is an ordinary
 					// customer. The meta read is an absence test for a legacy
-					// company association, not an ownership test.
+					// company association, not an ownership test — the redeem
+					// path refuses such an account, so binding it would build a
+					// connection whose every visit is refused.
 					if ( ! $owner || ! user_can( $owner, 'read' ) || get_user_meta( $owner_user_id, '_pow_partner_id', true ) ) { return; }
+					if ( self::privileged( $owner ) ) { return; }
 					// A nonzero association owns the company's book; no transfer semantics exist.
 					if ( ! $partner || 0 !== $partner->owner_user_id || null !== $this->find_by_owner( $owner_user_id ) ) { return; }
 					$data = [ 'owner_user_id' => $owner_user_id, 'updated' => gmdate( 'Y-m-d H:i:s' ) ];
@@ -197,6 +242,14 @@ final class Registry {
 			} );
 		} catch ( \Throwable $e ) { /* Only a confirmed association is reported, even after a release failure. */ }
 		return $confirmed;
+	}
+
+	/** Whether an account holds any capability that bars it from being a connection's login. */
+	public static function privileged( mixed $user ): bool {
+		foreach ( self::PRIVILEGED_CAPABILITIES as $capability ) {
+			if ( user_can( $user, $capability ) ) { return true; }
+		}
+		return false;
 	}
 
 	/** A lifecycle write must be conditional, changed once, and freshly confirmed. */
@@ -251,10 +304,16 @@ final class Registry {
 		return true;
 	}
 
-	private function rotation_actor( Partner $partner ): bool {
-		$actor = get_current_user_id();
-		$user = $actor > 0 ? get_userdata( $actor ) : false;
-		return $user && ( user_can( $user, 'manage_woocommerce' ) || ( $partner->is_owned_by( $actor ) && user_can( $user, 'read' ) && ! get_user_meta( $actor, '_pow_partner_id', true ) ) );
+	/**
+	 * Secret rotation is an administrator action only.
+	 *
+	 * The owner branch went with the My Account rotation form: the account
+	 * holder's surface is the read-only setup-XML download, and a
+	 * connection's own login is the account every buyer arrives on, so it
+	 * must not be able to re-issue the credential it authenticates with.
+	 */
+	private function rotation_actor(): bool {
+		return self::shop_administrator();
 	}
 
 	/**
@@ -355,7 +414,7 @@ final class Registry {
 		try {
 			$this->with_partner_lock( $id, function () use ( $id, &$issued ) {
 				$p = $this->find( $id );
-				if ( ! $p || ! $p->is_active() || '' !== $p->secret_previous || ! $this->rotation_actor( $p ) ) { return; }
+				if ( ! $p || ! $p->is_active() || '' !== $p->secret_previous || ! $this->rotation_actor() ) { return; }
 				$secret = Secrets::generate_secret();
 				if ( $this->transition_status( $id, Partner::STATUS_ACTIVE, [ 'secret_previous' => $p->secret_current, 'secret_rotated_at' => gmdate( 'Y-m-d H:i:s' ) ], $secret ) ) { $issued = $secret; }
 			} );
@@ -370,7 +429,7 @@ final class Registry {
 		try {
 			return $this->with_partner_lock( $id, function () use ( $id ) {
 				$p = $this->find( $id );
-				return $p && $p->is_active() && $this->rotation_actor( $p ) && ( '' === $p->secret_previous || $this->transition_status( $id, Partner::STATUS_ACTIVE, [ 'secret_previous' => '' ] ) );
+				return $p && $p->is_active() && $this->rotation_actor() && ( '' === $p->secret_previous || $this->transition_status( $id, Partner::STATUS_ACTIVE, [ 'secret_previous' => '' ] ) );
 			} );
 		} catch ( \Throwable $e ) { return false; }
 	}

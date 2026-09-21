@@ -43,7 +43,6 @@ namespace {
   public function get_row(string $key,string $format): ?array {
    [$sql,$args]=$this->queries[$key];$this->last_error='';
    foreach(array_reverse($this->rows) as $row) {
-    if(str_contains($sql,'WHERE owner_user_id') && $row['owner_user_id']===$args[0])return $row;
     if(str_contains($sql,'WHERE id =') && $row['id']===$args[0])return $row;
     if(str_contains($sql,'WHERE sender_domain') && $row['sender_domain']===$args[0] && $row['sender_identity']===$args[1])return $row;
    }return null;
@@ -51,6 +50,8 @@ namespace {
   public function get_results(string $key,string $format): array {
    [$sql,$args]=$this->queries[$key]??[$key,[]];$this->last_error='';
    if(str_contains($sql,'WHERE partner_id')) {if(!$this->locks)throw new LogicException('Unlocked sweep');$this->last_error=$this->fail_sessions?'Injected session failure':'';return [];}
+   // The owner lookup reads two rows on purpose: a second connection sharing the account is an ambiguity the registry refuses.
+   if(str_contains($sql,'WHERE owner_user_id'))return array_slice(array_values(array_filter($this->rows,fn($r)=>$r['owner_user_id']===$args[0])),0,2);
    if(str_contains($sql,'WHERE status'))return array_values(array_filter($this->rows,fn($r)=>$r['status']===$args[0]));
    return $this->rows;
   }

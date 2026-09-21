@@ -1,12 +1,11 @@
 <?php
-/** Private company address editor producer; account/admin embedding is separate. @package POW @license AGPL-3.0-or-later */
+/** Private company address editor producer; the admin connection screen embeds it. @package POW @license AGPL-3.0-or-later */
 declare( strict_types = 1 );
 
 namespace POW\Addresses;
 
 use POW\Support\Transport;
 
-use POW\Account\IntegrationTab;
 use POW\Admin\Page;
 use POW\Partners\Registry;
 use POW\Support\Templates;
@@ -21,12 +20,12 @@ final class Fields {
 
 	public function __construct( private Registry $registry, private CompanyBook $book, private NativeImport $import ) {}
 
+	/** One registration: the editor lives on the admin connection screen, so nothing hooks the front end. */
 	public function register(): void {
-		add_action( 'template_redirect', [ $this, 'handle' ] );
 		add_action( 'admin_init', [ $this, 'handle' ] );
 	}
 
-	/** Handle only editor POSTs on the existing account/admin surfaces. The same instance must later render markup in that request; no redirect loses failed input. */
+	/** Handle only editor POSTs on the admin connection screen. The same instance must later render markup in that request; no redirect loses failed input. */
 	public function handle(): void {
 		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! isset( $_POST['pow_address_action'] ) || ! $this->route() ) { return; }
 		Transport::require_https();
@@ -116,9 +115,15 @@ final class Fields {
 		} catch ( \Throwable $error ) { return self::error_markup( self::unavailable(), $response['draft'] ?? $response['copy'] ?? null ); }
 	}
 
+	/**
+	 * The one surface this editor answers on.
+	 *
+	 * The company delivery book is administrator-managed: the My Account tab
+	 * keeps only its read-only setup-XML download, so there is no front-end
+	 * route left to accept an editor POST on.
+	 */
 	private function route(): bool {
-		if ( is_admin() ) { return ( $_GET['page'] ?? null ) === Page::SLUG && current_user_can( Page::CAP ); }
-		return is_account_page() && is_wc_endpoint_url( IntegrationTab::ENDPOINT );
+		return is_admin() && ( $_GET['page'] ?? null ) === Page::SLUG && current_user_can( Page::CAP );
 	}
 
 	private function native_fields( int $partner_id, string $country, array $address ): string {
