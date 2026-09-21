@@ -46,6 +46,8 @@ final class ReturnConfirmationFixture implements \POW\Addresses\ReturnConfirmati
 	public ?WP_Error $error = null;
 	public bool|WP_Error $valid = true;
 	public mixed $on_validate = null;
+	/** Runs at the end of preparation, on the prepared array: what the removed pow_poom_lines filter used to give these tests. */
+	public mixed $mutate = null;
 	public int $prepared_calls = 0;
 	public int $validated_calls = 0;
 	public function __construct(private PoomMapper $mapper){}
@@ -56,7 +58,8 @@ final class ReturnConfirmationFixture implements \POW\Addresses\ReturnConfirmati
 		if(null===$confirmation){return new WP_Error('delivery_review_required','Review delivery before returning.');}
 		$mapped=$this->mapper->from_cart($partner);$choice=$session->delivery_choice();$delivery=$confirmation['delivery'];
 		$mapped['merchandise_total_cents']=$mapped['total_cents'];$mapped['total_cents']+=$delivery['emit']?$delivery['amount_cents']:0;
-		return $mapped+['delivery_destination'=>\POW\Addresses\QuoteAddress::payload($choice),'delivery_choice'=>$choice,'delivery_confirmation'=>$confirmation,'delivery'=>$delivery,'delivery_notes'=>$confirmation['notes'],'_guard'=>['cart'=>'fixture-cart','policy'=>'fixture-policy','choice_json'=>$session->delivery_choice_json,'confirmation_json'=>$session->delivery_confirmation_json]];
+		$prepared=$mapped+['delivery_destination'=>\POW\Addresses\QuoteAddress::payload($choice),'delivery_choice'=>$choice,'delivery_confirmation'=>$confirmation,'delivery'=>$delivery,'delivery_notes'=>$confirmation['notes'],'_guard'=>['cart'=>'fixture-cart','policy'=>'fixture-policy','choice_json'=>$session->delivery_choice_json,'confirmation_json'=>$session->delivery_confirmation_json]];
+		return $this->mutate?($this->mutate)($prepared):$prepared;
 	}
 	public function validate_prepared_locked(\POW\Sessions\Session $session,\POW\Partners\Partner $partner,array $prepared):bool|WP_Error{
 		++$this->validated_calls;
@@ -96,11 +99,12 @@ final class ReturnIntegrationTest extends TestCase {
 		$GLOBALS['pow_test_mail'] = [];
 		$GLOBALS['pow_test_setup_io'] = [ 'headers' => [] ];
 		$GLOBALS['pow_test_wc'] = new POW_Test_WC();
+		// One real basket line, so the real mapper does the mapping: 375.33 ex
+		// tax over three units is 12511c each and 37533c in total.
 		$GLOBALS['pow_test_wc']->cart = new class {
-			public function get_cart(): array { return []; }
+			public function get_cart(): array { return [ [ 'data' => new WC_Product( 412, 'Example item', 'SKU-1001' ), 'product_id' => 412, 'variation_id' => 0, 'quantity' => 3, 'line_total' => 375.33 ] ]; }
 			public function empty_cart( bool $persistent ): void { $GLOBALS['pow_test_cart_emptied'][] = true; }
 		};
-		$GLOBALS['pow_test_filters']['pow_poom_lines'] = static fn( $value ) => [ 'currency' => 'ZAR', 'total_cents' => 37533, 'skipped' => [], 'items' => [ [ 'quantity' => 3, 'supplier_part_id' => 'SKU-1001', 'aux_id' => '412|0', 'unit_price_cents' => 12511, 'description' => 'Example item', 'uom' => 'EA', 'classification' => '' ] ] ];
 		if ( ! defined( 'POW\VERSION' ) ) { define( 'POW\VERSION', 'test' ); }
 		$settings = new QuoteOrderTestSettings(); $logger = new QuoteOrderTestLogger();
 		$this->make_endpoint();
@@ -156,15 +160,14 @@ final class ReturnIntegrationTest extends TestCase {
 
 	public function test_secure_return_succeeds_in_production_and_receiver_changes_during_preparation_lose(): void {
 		$GLOBALS['pow_test_environment_type']='production'; $_SERVER['HTTPS']='on';
-		$mapping=$GLOBALS['pow_test_filters']['pow_poom_lines'];
-		$GLOBALS['pow_test_filters']['pow_poom_lines']=function($value) use($mapping){
+		$this->delivery->mutate=function($prepared){
 			$this->db->session['browser_form_post_url']='http://buyer.example.test/changed';
-			return $mapping($value);
+			return $prepared;
 		};
 		$response=$this->response();
 		self::assertStringNotContainsString('pow-handoff-form',$response);
 		self::assertSame('active',$this->db->session['status']); self::assertSame([],$GLOBALS['pow_test_orders']);
-		$GLOBALS['pow_test_filters']['pow_poom_lines']=$mapping;
+		$this->delivery->mutate=null;
 		$this->db->session['browser_form_post_url']='https://buyer.example.test/return';
 		self::assertStringContainsString('pow-handoff-form',$this->response());
 		self::assertSame('returned',$this->db->session['status']);
@@ -173,11 +176,9 @@ final class ReturnIntegrationTest extends TestCase {
 	public function test_two_snapshot_contenders_create_only_the_handoff_winners_quote(): void {
 		$other = ''; $ran = false;
 		// Both read active/0. B completes after A mapped but before A attempts its transition.
-		$mapping = $GLOBALS['pow_test_filters']['pow_poom_lines'];
-		$GLOBALS['pow_test_filters']['pow_poom_lines'] = function( $value ) use ( &$other, &$ran, $mapping ) {
-			$mapped = $mapping( $value );
+		$this->delivery->mutate = function( $prepared ) use ( &$other, &$ran ) {
 			if ( ! $ran ) { $ran = true; $other = $this->response(); }
-			return $mapped;
+			return $prepared;
 		};
 		$first = $this->response();
 		self::assertCount( 1, $GLOBALS['pow_test_orders'] );
@@ -258,8 +259,7 @@ final class ReturnIntegrationTest extends TestCase {
 		self::assertSame( 'active', $this->db->session['status'] ); self::assertSame( [], $GLOBALS['pow_test_orders'] );
 	}
 	public function test_builder_throw_does_not_consume_session_or_create_quote(): void {
-		$mapping = $GLOBALS['pow_test_filters']['pow_poom_lines'];
-		$GLOBALS['pow_test_filters']['pow_poom_lines'] = static function( $value ) use ( $mapping ) { $mapped = $mapping( $value ); $mapped['items'][0]['classification'] = new stdClass(); return $mapped; };
+		$this->delivery->mutate = static function( $prepared ) { $prepared['items'][0]['classification'] = new stdClass(); return $prepared; };
 		try { $this->response(); } catch ( TypeError $e ) { /* The real Builder rejects the malformed mapped total. */ }
 		self::assertSame( 'active', $this->db->session['status'] ); self::assertSame( [], $GLOBALS['pow_test_orders'] );
 	}
@@ -327,6 +327,6 @@ final class ReturnIntegrationTest extends TestCase {
 	public function test_changed_raw_confirmation_after_validation_loses_atomic_transition():void{$this->delivery->on_validate=function(){$this->db->before_transition=function(){$this->db->session['delivery_confirmation']=null;};};$response=$this->response();self::assertSame(1,$this->db->guarded_updates);self::assertSame('active',$this->db->session['status']);self::assertStringNotContainsString('pow-handoff-form',$response);self::assertSame([],$GLOBALS['pow_test_orders']);}
 	private function xml(string $response):DOMXPath{self::assertSame(1,preg_match('/name="cxml-base64" value="([^"]+)"/',$response,$match));$doc=new DOMDocument();self::assertTrue($doc->loadXML(base64_decode(html_entity_decode($match[1]),true),LIBXML_NONET));return new DOMXPath($doc);}
 	public function test_one_wire_freight_matches_two_native_shipping_items_without_double_charge():void{$this->set_delivery(true,true);$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'emit_delivery_code'=>true,'delivery_code_extrinsic_name'=>'DestinationCode','delivery_notes_policy'=>'item_detail_extrinsic','cxml_version'=>'1.2.071'];$response=$this->response();$xml=$this->xml($response);self::assertSame(2,$xml->query('//ItemIn')->length);self::assertSame('35.00',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitPrice/Money)'));self::assertSame('410.33',$xml->evaluate('string(//PunchOutOrderMessageHeader/Total/Money)'));self::assertSame(1,$xml->query('//ShipTo')->length);self::assertSame(1,$xml->query('//ItemDetail/Extrinsic[@name="DeliveryInstructions"]')->length);self::assertSame(2,$xml->query('//ItemIn/Extrinsic[@name="DestinationCode"]')->length);$order=array_values($GLOBALS['pow_test_orders'])[0];self::assertCount(1,$order->items);self::assertCount(2,$order->get_items('shipping'));self::assertSame('410.33',$order->get_total());self::assertSame('35.00',$order->get_shipping_total());self::assertSame('Pretoria',$order->props['shipping_city']);}
-	public function test_builder_uses_fresh_company_options_after_confirmation_preparation():void{$this->set_delivery(true,true);$mapping=$GLOBALS['pow_test_filters']['pow_poom_lines'];$GLOBALS['pow_test_filters']['pow_poom_lines']=function($value)use($mapping){$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'delivery_notes_policy'=>'item_detail_extrinsic'];return $mapping($value);};$xml=$this->xml($this->response());self::assertSame(1,$xml->query('//ShipTo')->length);self::assertSame(1,$xml->query('//ItemDetail/Extrinsic[@name="DeliveryInstructions"]')->length);}
+	public function test_builder_uses_fresh_company_options_after_confirmation_preparation():void{$this->set_delivery(true,true);$this->delivery->mutate=function($prepared){$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'delivery_notes_policy'=>'item_detail_extrinsic'];return $prepared;};$xml=$this->xml($this->response());self::assertSame(1,$xml->query('//ShipTo')->length);self::assertSame(1,$xml->query('//ItemDetail/Extrinsic[@name="DeliveryInstructions"]')->length);}
 }
 }

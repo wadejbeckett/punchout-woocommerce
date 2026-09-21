@@ -25,10 +25,11 @@ defined( 'ABSPATH' ) || exit;
  * which is exactly why the one-cart design exists: the POOM quotes the
  * same numbers the buyer would have paid at checkout.
  *
- * Unit price policy (default, filterable): the line total after discounts,
- * excluding tax, divided by quantity — D365 requisitions conventionally
- * carry ex-tax unit prices; flip via the pow_poom_unit_price_cents filter
- * once the buyer confirms VAT treatment (ask-partner item, scope §14).
+ * Unit price policy: the line total after discounts, excluding tax,
+ * divided by quantity — D365 requisitions conventionally carry ex-tax unit
+ * prices. It is not adjustable from outside. The prices and the line set a
+ * buyer's system receives are the shop's own answer to what this basket
+ * costs, and nothing may rewrite them between the cart and the document.
  */
 final class PoomMapper {
 
@@ -43,8 +44,7 @@ final class PoomMapper {
 	 * A line with no SKU is a catalogue-hygiene failure: skipped, logged,
 	 * surfaced to the buyer before handoff (scope §9.4). Lines carry the
 	 * raw store SKU — mapping to the buyer's internal part numbers is the
-	 * buyer's own concern; sites that must rewrite lines anyway have the
-	 * pow_poom_lines filter.
+	 * buyer's own concern, and happens in the buyer's own system.
 	 *
 	 * @return array{
 	 *   items: list<array<string, mixed>>,
@@ -96,21 +96,11 @@ final class PoomMapper {
 			$line_cents = Money::to_cents( (float) ( $cart_item['line_total'] ?? 0 ) );
 			$unit_cents = (int) round( $line_cents / $quantity );
 
-			/**
-			 * Filter the unit price (in cents) emitted for a POOM line.
-			 *
-			 * @param int        $unit_cents Ex-tax unit price in cents.
-			 * @param array      $cart_item  Raw cart item.
-			 * @param Partner    $partner    Trading partner.
-			 * @param \WC_Product $product   Line product.
-			 */
-			$unit_cents = (int) apply_filters( 'pow_poom_unit_price_cents', $unit_cents, $cart_item, $partner, $product );
-
 			// Total is accumulated from the EMITTED unit prices, not the raw
-			// cart line totals: per-line rounding (100.00/3) and the unit
-			// price filter would otherwise make Total disagree with
-			// sum(UnitPrice x quantity) — the only reconstruction a receiver
-			// can perform, since ItemIn carries no extended amount.
+			// cart line totals: per-line rounding (100.00/3) would otherwise
+			// make Total disagree with sum(UnitPrice x quantity) — the only
+			// reconstruction a receiver can perform, since ItemIn carries no
+			// extended amount.
 			$total_cents += (int) round( $unit_cents * $quantity );
 
 			$items[] = [
@@ -135,22 +125,12 @@ final class PoomMapper {
 			$items = self::uppercase_items( $items );
 		}
 
-		/**
-		 * Filter the assembled POOM line set before the document is built.
-		 *
-		 * @param array   $result  items/total_cents/currency/skipped.
-		 * @param Partner $partner Trading partner.
-		 */
-		return (array) apply_filters(
-			'pow_poom_lines',
-			[
-				'items'       => $items,
-				'total_cents' => $total_cents,
-				'currency'    => $currency,
-				'skipped'     => $skipped,
-			],
-			$partner
-		);
+		return [
+			'items'       => $items,
+			'total_cents' => $total_cents,
+			'currency'    => $currency,
+			'skipped'     => $skipped,
+		];
 	}
 
 	/**
