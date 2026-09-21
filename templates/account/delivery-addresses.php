@@ -1,6 +1,6 @@
 <?php
 /**
- * Private company delivery editor. Embed outside any existing account/admin form.
+ * Private company delivery editor. Embed outside any existing admin form.
  * Native field markup and the hidden-field closure are prepared by Fields after authorization.
  * @var int $partner_id
  * @var array $book
@@ -24,7 +24,7 @@ $prefix = 'pow_address_' . $partner_id;
 	<?php if ( is_array( $notice ) ) : ?>
 		<div class="<?php echo 'error' === $notice['type'] ? 'woocommerce-error' : 'woocommerce-message'; ?>" role="alert"><?php echo esc_html( $notice['text'] ); ?></div>
 	<?php endif; ?>
-	<p><?php esc_html_e( 'Company owners and shop administrators manage this delivery book. Buyers select enabled entries in their own shopping sessions.', 'punchout-woocommerce' ); ?></p>
+	<p><?php esc_html_e( 'Shop administrators manage this delivery book. Buyers select enabled entries in their own punchout visit.', 'punchout-woocommerce' ); ?></p>
 	<p><?php esc_html_e( 'Disabling an entry prevents new selection and return of still-active confirmations using it. Affected buyers must select an eligible address again. After an address, label or code changes, affected buyers must reconfirm the displayed values. Completed Quote snapshots remain unchanged.', 'punchout-woocommerce' ); ?></p>
 	<p><?php esc_html_e( 'Changing or removing an issued code leaves its old claim retired permanently. A blank code preserves an existing code; for a new entry the company prefix generates a code when configured, otherwise the address stays uncoded.', 'punchout-woocommerce' ); ?></p>
 	<?php if ( [] === $book['addresses'] ) : ?>
