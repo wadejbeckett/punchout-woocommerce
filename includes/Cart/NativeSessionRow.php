@@ -9,7 +9,29 @@ final class NativeSessionRow {
 	private bool $loaded = false;
 	private bool $conflicted = false;
 	private ?string $expected = null;
-	public function __construct( private string $key ) {}
+	/**
+	 * The one funnel every read and write of a visit's basket passes through.
+	 *
+	 * A basket row belongs to a visit, so the key must be that visit's own:
+	 * anything else would address an ordinary shopper's row, and under one
+	 * shared customer account a foreign `pow_` key would address a
+	 * colleague's basket. The width test is the column's own — session_key is
+	 * char(32) — because a wider key is refused outright under
+	 * STRICT_TRANS_TABLES and silently truncated without it, so the readback
+	 * that verifies a committed write would compare against a value the
+	 * database never stored.
+	 *
+	 * Both are refused here, before a statement is prepared, rather than at
+	 * the first write of a visit that has already been handed to a browser.
+	 *
+	 * @throws \RuntimeException When the key is not this visit's own. The
+	 *                          message names no key.
+	 */
+	public function __construct( private string $key ) {
+		if ( strlen( $key ) > SessionKey::LENGTH || ! SessionKey::is_visit_key( $key ) ) {
+			throw new \RuntimeException( 'Native cart row key unsupported.' );
+		}
+	}
 	public function load(): ?string {
 		if ( ! $this->loaded ) {
 			try { $this->expected = $this->read()['session_value'] ?? null; $this->loaded = true; }
