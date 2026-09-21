@@ -14,7 +14,6 @@ use POW\Admin\Actions as AdminActions;
 use POW\Admin\Details as AdminDetails;
 use POW\Admin\Page as AdminPage;
 use POW\Audit\Log;
-use POW\Buyers\Provisioner;
 use POW\Cart\Guard;
 use POW\Cart\PoomMapper;
 use POW\Cart\Surface;
@@ -103,7 +102,6 @@ final class Plugin {
 		$this->audit    = new Log( $this->logger );
 		$registration  = new \POW\Partners\Registration( $this->registry, $this->sessions, $this->audit );
 
-		$provisioner = new Provisioner( $this->sessions, $this->audit, $this->logger );
 		$parser      = new Parser();
 		$builder     = new Builder();
 		$mapper      = new PoomMapper( $this->settings, $this->logger );
@@ -177,7 +175,7 @@ final class Plugin {
 		// Buyer-facing runtime.
 		$rate_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'rate_limit_per_min' ), 30 ) );
 		$edge_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'edge_rate_limit_per_min' ), 120 ) );
-		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $provisioner, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter );
+		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter );
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
 		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), new Checkout\ExitPolicy( $this->settings, $this->registry ), $address_resolver, $mapper, $native_sessions );
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
