@@ -40,4 +40,23 @@ final class DeliveryReturnTransitionTest extends TestCase {
 	}
 	public function test_recovery_failed_update_does_not_authorize_token_cleanup():void{$store=$this->recovery_store();$this->db->transition_fails=true;self::assertFalse($store->expire_active_login_locked($store->find(42)));self::assertSame([],$store->destroyed);self::assertSame('active',$this->db->session['status']);}
 
+	private function sibling():array{return $this->db->add_visit(43,['wp_session_token'=>'sibling-login','wc_session_key'=>'pow_00112233445566778899aabbccdd','expires'=>$this->db->session['expires'],'delivery_choice'=>$this->db->session['delivery_choice'],'delivery_confirmation'=>$this->db->session['delivery_confirmation']]);}
+	/** Two employees of one customer shop as one account: user_id and the delivery snapshot are identical, so only the per-visit login can pick the winner. */
+	public function test_guard_on_user_and_snapshot_alone_cannot_win_against_a_sibling_visit():void{
+		$this->sibling();$store=new Store();
+		self::assertFalse($store->transition(43,'active','returned',[],$this->guard()));
+		self::assertSame('active',$this->db->sessions[43]['status']);self::assertSame('active',$this->db->session['status']);
+		self::assertTrue($store->transition(43,'active','returned',[],$this->guard(['wp_session_token'=>'sibling-login'])));
+		self::assertSame('returned',$this->db->sessions[43]['status']);self::assertSame('active',$this->db->session['status']);
+		self::assertFalse($store->transition(42,'active','returned',[],$this->guard(['wp_session_token'=>'sibling-login'])));
+		self::assertSame('active',$this->db->session['status']);
+	}
+	public function test_recovery_cas_cannot_reach_a_sibling_visit_of_the_same_account():void{
+		$this->sibling();$store=$this->recovery_store();$session=$store->find(42);
+		self::assertTrue($store->expire_active_login_locked($session));
+		self::assertSame('expired',$this->db->session['status']);
+		self::assertSame('active',$this->db->sessions[43]['status']);self::assertSame('sibling-login',$this->db->sessions[43]['wp_session_token']);
+		self::assertSame([[99,'test-login']],$store->destroyed);
+	}
+
 }
