@@ -19,7 +19,16 @@ namespace {
 	if ( ! function_exists( 'is_checkout' ) ) { function is_checkout(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['checkout'] ?? false ); } }
 	if ( ! function_exists( 'is_wc_endpoint_url' ) ) { function is_wc_endpoint_url( string $endpoint = '' ): bool { return '' !== $endpoint && $endpoint === ( $GLOBALS['pow_route_guard_test']['endpoint'] ?? '' ); } }
 	if ( ! function_exists( 'wc_get_cart_url' ) ) { function wc_get_cart_url(): string { return 'https://shop.example.test/cart/'; } }
+
+	// WooCommerce's answer to "is this AJAX", which it derives from the
+	// ?wc-ajax= query parameter on every request. RouteGuard deliberately
+	// does not ask it any more; it stays here so a test can set it true and
+	// prove the guard is no longer switched off by it.
 	if ( ! function_exists( 'wp_doing_ajax' ) ) { function wp_doing_ajax(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['ajax'] ?? false ); } }
+
+	// The cookie a WordPress request carries its session token in, and the
+	// only place wp_get_session_token() looks. A visit's teardown forgets it.
+	if ( ! defined( 'LOGGED_IN_COOKIE' ) ) { define( 'LOGGED_IN_COOKIE', 'wordpress_logged_in_pow_test' ); }
 
 	/** The redirect RouteGuard would have sent. */
 	final class RouteGuardRedirect extends RuntimeException {
@@ -37,11 +46,56 @@ namespace {
 		public array $rows = [];
 		public int $lookups = 0;
 		public bool $unreachable = false;
+		/** @var list<int> Visits a teardown was asked for, in order. */
+		public array $expired = [];
+		/** @var list<int> Those of them asked for outside the connection lock, which must stay empty. */
+		public array $unlocked = [];
+		public bool $refuse_teardown = false;
 		public function find_for_login( int $user_id, string $wp_session_token, array $statuses = [ POW\Sessions\Session::ACTIVE ] ): ?POW\Sessions\Session {
 			++$this->lookups;
 			if ( $this->unreachable ) { throw new RuntimeException( 'Session lookup failed.' ); }
 			$row = $this->rows[ $wp_session_token ] ?? null;
 			return $row && $user_id === $row->user_id && in_array( $row->status, $statuses, true ) ? $row : null;
+		}
+		/**
+		 * The one write that touches the account's shared session_tokens row.
+		 *
+		 * The real body is proved elsewhere; what matters here is that the
+		 * caller reached it through Store::expire_and_destroy(), i.e. with the
+		 * connection lock held, and that it ended this visit and no other.
+		 */
+		public function expire_locked( POW\Sessions\Session $session ): bool {
+			$this->expired[] = $session->id;
+			$database = $GLOBALS['wpdb'] ?? null;
+			if ( ! $database instanceof RouteGuardLockDatabase || ! $database->held ) { $this->unlocked[] = $session->id; }
+			if ( $this->refuse_teardown ) { return false; }
+			unset( $this->rows[ $session->wp_session_token ] );
+			return true;
+		}
+	}
+
+	/**
+	 * Enough of $wpdb for Registry::with_partner_lock(), and a record of
+	 * whether the lock is held at the moment a write happens.
+	 */
+	final class RouteGuardLockDatabase {
+		public string $prefix = 'fixture_';
+		public string $last_error = '';
+		public bool $held = false;
+		/** @var list<string> */
+		public array $events = [];
+		private array $prepared = [];
+		public function prepare( string $sql, mixed ...$args ): string {
+			$key = $sql . ' /* ' . count( $this->prepared ) . ' */';
+			$this->prepared[ $key ] = $sql;
+			return $key;
+		}
+		public function suppress_errors( bool $suppress = true ): bool { return false; }
+		public function get_var( string $key ): mixed {
+			$sql = $this->prepared[ $key ] ?? $key;
+			if ( str_contains( $sql, 'GET_LOCK' ) ) { $this->events[] = 'lock'; $this->held = true; return '1'; }
+			if ( str_contains( $sql, 'RELEASE_LOCK' ) ) { $this->events[] = 'release'; $this->held = false; return '1'; }
+			throw new RuntimeException( 'Unexpected SQL' );
 		}
 	}
 
@@ -57,9 +111,19 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 	private const VISIT   = 44;
 
 	private array $saved = [];
+	private array $saved_request = [];
 
 	protected function setUp(): void {
-		foreach ( [ 'wp', 'wpdb', 'pow_route_guard_test', 'pow_test_current_user_id', 'pow_test_options', 'pow_test_users', 'pow_test_roles', 'pow_test_login_token', 'pow_test_login_tokens', 'pow_test_login_token_index', 'pow_test_orders', 'pow_test_filters' ] as $key ) {
+		// The request itself is fixture too: the wp-admin door reads the
+		// running script, the logout door reads the action, the nonce and the
+		// session-token cookie.
+		$this->saved_request = [ 'request' => $_REQUEST, 'get' => $_GET, 'cookie' => $_COOKIE, 'script' => $_SERVER['SCRIPT_FILENAME'] ?? null ];
+		$_REQUEST = [];
+		$_GET     = [];
+		$_COOKIE  = [];
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/index.php';
+
+		foreach ( [ 'wp', 'wpdb', 'pow_route_guard_test', 'pow_test_current_user_id', 'pow_test_options', 'pow_test_users', 'pow_test_roles', 'pow_test_login_token', 'pow_test_login_tokens', 'pow_test_login_token_index', 'pow_test_orders', 'pow_test_filters', 'pow_test_valid_nonce' ] as $key ) {
 			$this->saved[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 			unset( $GLOBALS[ $key ] );
 		}
@@ -76,6 +140,11 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		foreach ( $this->saved as $key => [ $exists, $value ] ) {
 			if ( $exists ) { $GLOBALS[ $key ] = $value; } else { unset( $GLOBALS[ $key ] ); }
 		}
+
+		$_REQUEST = $this->saved_request['request'];
+		$_GET     = $this->saved_request['get'];
+		$_COOKIE  = $this->saved_request['cookie'];
+		if ( null === $this->saved_request['script'] ) { unset( $_SERVER['SCRIPT_FILENAME'] ); } else { $_SERVER['SCRIPT_FILENAME'] = $this->saved_request['script']; }
 	}
 
 	/** A visit row for the shared customer account. */
@@ -236,14 +305,46 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 	public function test_wp_admin_is_refused_inside_a_visit_without_breaking_ajax(): void {
 		$guard = $this->guard( $this->visit() );
 
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/profile.php';
 		try { $guard->guard_admin(); self::fail( 'wp-admin must be refused inside a visit' ); }
 		catch ( RouteGuardRedirect $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
 
-		$GLOBALS['pow_route_guard_test']['ajax'] = true;
+		// The exemption is the one script a front-end basket calls.
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/admin-ajax.php';
 		$guard->guard_admin();
 
-		$GLOBALS['pow_route_guard_test']['ajax'] = false;
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/profile.php';
 		$this->guard( null )->guard_admin();
+	}
+
+	/**
+	 * The wp-admin refusal may not depend on anything the buyer can send.
+	 *
+	 * WooCommerce defines DOING_AJAX from its own ?wc-ajax= query parameter at
+	 * `init` priority 0 on every request, wp-admin page loads included, so
+	 * wp_doing_ajax() answers whatever the request asks it to — and the screen
+	 * behind it, profile.php, changes the password and e-mail address of the
+	 * account every colleague of the connection shares.
+	 */
+	public function test_a_query_parameter_cannot_switch_off_the_wp_admin_refusal(): void {
+		$GLOBALS['pow_route_guard_test']['ajax'] = true;
+		$_GET['wc-ajax'] = '1';
+		$_REQUEST['wc-ajax'] = '1';
+
+		foreach ( [ 'profile.php', 'user-edit.php', 'admin-post.php', 'admin.php', 'options-general.php' ] as $script ) {
+			$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/' . $script;
+			try { $this->guard( $this->visit() )->guard_admin(); self::fail( $script . ' must stay refused inside a visit' ); }
+			catch ( RouteGuardRedirect $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
+		}
+
+		// The genuine AJAX entry point stays open, query parameter or not.
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/admin-ajax.php';
+		$this->guard( $this->visit() )->guard_admin();
+
+		// A request whose script cannot be read is not provably that one.
+		unset( $_SERVER['SCRIPT_FILENAME'] );
+		try { $this->guard( $this->visit() )->guard_admin(); self::fail( 'An unreadable script name keeps the refusal' ); }
+		catch ( RouteGuardRedirect $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
 	}
 
 	public function test_users_and_application_password_rest_routes_are_refused_inside_a_visit(): void {
@@ -306,6 +407,98 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		}
 	}
 
+	/**
+	 * A logout ends its own visit under the connection lock.
+	 *
+	 * session_tokens is ONE user-meta row holding every concurrent visit's
+	 * login token for the shared account, so a writer that is not serialized
+	 * on the connection lock can drop a colleague's token — the redeem path
+	 * states that invariant and obeys it, and core's own
+	 * wp_destroy_current_session() does not. The visit must therefore be torn
+	 * down here, before core is reached, and core's read-modify-write left
+	 * with no token to look for.
+	 */
+	public function test_a_logout_ends_only_its_own_visit_and_writes_under_the_connection_lock(): void {
+		$store = new RouteGuardStore();
+		$store->rows = [ 'visit-a' => $this->visit( self::VISIT, 'active', 7, 'visit-a' ), 'visit-b' => $this->visit( 45, 'active', 7, 'visit-b' ) ];
+		$GLOBALS['pow_test_login_tokens'] = [ 'visit-a' ];
+		$GLOBALS['wpdb']                  = $database = new RouteGuardLockDatabase();
+		$GLOBALS['pow_test_valid_nonce']  = 'the-log-out-nonce';
+		$_REQUEST['action']               = 'logout';
+		$_REQUEST['_wpnonce']             = 'the-log-out-nonce';
+		$_COOKIE[ LOGGED_IN_COOKIE ]      = 'cookie-carrying-visit-a';
+
+		// No redirect: logout is the one action a visit may take here.
+		$this->guard( null, $store )->guard_login_screen();
+
+		self::assertSame( [ self::VISIT ], $store->expired, 'The logout ended its own visit, and only its own' );
+		self::assertSame( [], $store->unlocked, "The account's shared session_tokens row was never written outside the connection lock" );
+		self::assertSame( [ 'lock', 'release' ], $database->events, 'The connection lock was taken and released exactly once' );
+		self::assertArrayHasKey( 'visit-b', $store->rows, "The colleague's visit on the same account survives" );
+		self::assertFalse( array_key_exists( LOGGED_IN_COOKIE, $_COOKIE ), "core's unlocked teardown is left no token to read" );
+	}
+
+	public function test_a_logout_that_was_never_authorized_or_never_confirmed_tears_nothing_down(): void {
+		$GLOBALS['pow_test_login_tokens'] = [ 'visit-a' ];
+		$GLOBALS['pow_test_valid_nonce']  = 'the-log-out-nonce';
+		$_REQUEST['action']               = 'logout';
+
+		// wp-login.php checks its own log-out nonce after this hook and only
+		// offers a confirmation screen without one, so an unauthorized request
+		// — a link from anywhere, a prefetch — must not end a live basket.
+		foreach ( [ 'a-stale-nonce', '' ] as $nonce ) {
+			$store                       = new RouteGuardStore();
+			$store->rows                 = [ 'visit-a' => $this->visit( self::VISIT, 'active', 7, 'visit-a' ) ];
+			$GLOBALS['wpdb']             = $database = new RouteGuardLockDatabase();
+			$_REQUEST['_wpnonce']        = $nonce;
+			$_COOKIE[ LOGGED_IN_COOKIE ] = 'cookie-carrying-visit-a';
+
+			$this->guard( null, $store )->guard_login_screen();
+
+			self::assertSame( [], $store->expired, 'A logout core will not perform ends no visit' );
+			self::assertSame( [], $database->events, 'An unauthorized logout takes no connection lock' );
+			self::assertArrayHasKey( LOGGED_IN_COOKIE, $_COOKIE, 'The request keeps the login it still has' );
+		}
+
+		// A teardown that could not be confirmed leaves the token for core's
+		// best effort rather than suppressing the only remaining destroy.
+		$store                            = new RouteGuardStore();
+		$store->rows                      = [ 'visit-a' => $this->visit( self::VISIT, 'active', 7, 'visit-a' ) ];
+		$store->refuse_teardown           = true;
+		$GLOBALS['wpdb']                  = new RouteGuardLockDatabase();
+		$_REQUEST['_wpnonce']             = 'the-log-out-nonce';
+		$_COOKIE[ LOGGED_IN_COOKIE ]      = 'cookie-carrying-visit-a';
+
+		$this->guard( null, $store )->guard_login_screen();
+
+		self::assertSame( [ self::VISIT ], $store->expired, 'The teardown was attempted' );
+		self::assertSame( [], $store->unlocked, 'A failed teardown was still attempted under the lock' );
+		self::assertArrayHasKey( LOGGED_IN_COOKIE, $_COOKIE, 'An unconfirmed teardown keeps the token reachable' );
+	}
+
+	/** Every other way out of a visit still ends the row and its basket, under the same lock. */
+	public function test_the_logout_action_ends_a_resolved_visit_under_the_connection_lock(): void {
+		$store = new RouteGuardStore();
+		$store->rows = [ 'visit-a' => $this->visit( self::VISIT, 'active', 7, 'visit-a' ), 'visit-b' => $this->visit( 45, 'active', 7, 'visit-b' ) ];
+		$GLOBALS['pow_test_login_tokens'] = [ 'visit-a' ];
+		$GLOBALS['wpdb']                  = $database = new RouteGuardLockDatabase();
+
+		$this->guard( null, $store )->end_visit_on_logout();
+
+		self::assertSame( [ self::VISIT ], $store->expired, 'The resolved visit is expired and its basket deleted' );
+		self::assertSame( [], $store->unlocked, 'Even this late the shared row is written under the lock' );
+		self::assertSame( [ 'lock', 'release' ], $database->events );
+		self::assertArrayHasKey( 'visit-b', $store->rows, "A colleague's visit is never ended by another's logout" );
+
+		// Outside a visit — an ordinary shopper of the bound account logging
+		// out — nothing is torn down and no lock is taken.
+		$shopper = new RouteGuardStore();
+		$GLOBALS['wpdb'] = $ordinary = new RouteGuardLockDatabase();
+		$this->guard( null, $shopper )->end_visit_on_logout();
+		self::assertSame( [], $shopper->expired );
+		self::assertSame( [], $ordinary->events );
+	}
+
 	public function test_an_unreachable_session_store_fails_closed_on_every_door(): void {
 		$store = new RouteGuardStore();
 		$store->unreachable = true;
@@ -321,6 +514,125 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		catch ( RouteGuardRedirect $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
 
 		self::assertGreaterThan( 0, $store->lookups );
+	}
+
+	/**
+	 * Decision 12 of the confirmed model, over the whole shipped tree.
+	 *
+	 * Every visit of a connection is signed in as the same WordPress user, so
+	 * `$thing->get_customer_id() === $visit->user_id` is true for every
+	 * colleague: an ownership check written that way silently degrades to "is
+	 * this the bound account" and still looks right in every single-buyer test.
+	 * Nothing about the result gives it away, so the proximity of the two is
+	 * what is refused, everywhere under includes/. The exemption list holds the
+	 * per-visit key's own class and nothing else — a line that compares the
+	 * key, which is the only ownership proof the model has, has no reason to
+	 * carry a user id within three lines of it.
+	 */
+	public function test_no_shipped_source_proves_ownership_with_a_user_id(): void {
+		$root    = dirname( __DIR__, 2 );
+		$allowed = [ 'includes/Cart/SessionKey.php' ];
+		$files   = $this->php_files( $root . '/includes' );
+
+		self::assertGreaterThan( 40, count( $files ), 'The source scan found too few files to be trusted' );
+
+		$offences = [];
+
+		foreach ( $files as $file ) {
+			$relative = str_replace( $root . '/', '', $file );
+
+			if ( in_array( $relative, $allowed, true ) ) {
+				continue;
+			}
+
+			foreach ( $this->ownership_tautologies( $this->code_lines( (string) file_get_contents( $file ) ) ) as $line ) {
+				$offences[] = $relative . ':' . $line;
+			}
+		}
+
+		self::assertSame( [], $offences, 'get_customer_id() within three lines of a user id: ownership is proved by the per-visit key, never by the shared account' );
+	}
+
+	/** The scan has teeth: the shape it exists for, and the shapes it must leave alone. */
+	public function test_the_ownership_scan_catches_the_shape_it_exists_for(): void {
+		$defect = "<?php\n\$visit = \$this->visit();\nif ( \$order->get_customer_id() === \$visit->user_id ) { return true; }\n";
+		self::assertSame( [ 3 ], $this->ownership_tautologies( $this->code_lines( $defect ) ), 'An ownership check written on the account id is caught' );
+
+		$current = "<?php\nif ( get_current_user_id() === (int) \$handler->get_customer_id() ) { return true; }\n";
+		self::assertSame( [ 2 ], $this->ownership_tautologies( $this->code_lines( $current ) ), 'The current user is the same defect' );
+
+		$apart = "<?php\n\$user_id = 1;\n\$one = 1;\n\$two = 2;\n\$three = 3;\n\$key = \$session->get_customer_id();\n";
+		self::assertSame( [], $this->ownership_tautologies( $this->code_lines( $apart ) ), 'Four lines apart is outside the rule' );
+
+		$comment = "<?php\n/* core compares get_current_user_id() with the customer id */\n\$key = \$session->get_customer_id();\n";
+		self::assertSame( [], $this->ownership_tautologies( $this->code_lines( $comment ) ), 'A comment compares nothing' );
+
+		$key = "<?php\n\$expected = SessionKey::for_session( \$visit );\nif ( ! hash_equals( \$expected, (string) \$session->get_customer_id() ) ) { return false; }\n";
+		self::assertSame( [], $this->ownership_tautologies( $this->code_lines( $key ) ), 'A per-visit key comparison is the shape the model wants' );
+	}
+
+	/**
+	 * Line numbers where get_customer_id() sits within three lines of a user
+	 * id. `get_current_user_id` carries `user_id` in its own name, so one
+	 * needle covers both halves of the rule.
+	 *
+	 * @param list<string> $lines Code lines, comments already removed.
+	 * @return list<int>
+	 */
+	private function ownership_tautologies( array $lines ): array {
+		$found = [];
+
+		foreach ( $lines as $number => $line ) {
+			if ( ! str_contains( $line, 'get_customer_id' ) ) {
+				continue;
+			}
+
+			for ( $near = $number - 3; $near <= $number + 3; ++$near ) {
+				if ( str_contains( (string) ( $lines[ $near ] ?? '' ), 'user_id' ) ) {
+					$found[] = $number + 1;
+					break;
+				}
+			}
+		}
+
+		return $found;
+	}
+
+	/**
+	 * The file's code with its comments blanked out and every line still where
+	 * it was, so a reported line number names the real one.
+	 *
+	 * @return list<string>
+	 */
+	private function code_lines( string $source ): array {
+		$code = '';
+
+		foreach ( token_get_all( $source ) as $token ) {
+			$text = is_array( $token ) ? $token[1] : $token;
+
+			if ( is_array( $token ) && in_array( $token[0], [ T_COMMENT, T_DOC_COMMENT ], true ) ) {
+				$text = str_repeat( "\n", substr_count( $text, "\n" ) );
+			}
+
+			$code .= $text;
+		}
+
+		return explode( "\n", $code );
+	}
+
+	/** @return list<string> Every PHP file under a directory, sorted. */
+	private function php_files( string $directory ): array {
+		$files = [];
+
+		foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $directory ) ) as $file ) {
+			if ( $file->isFile() && 'php' === $file->getExtension() ) {
+				$files[] = $file->getPathname();
+			}
+		}
+
+		sort( $files );
+
+		return $files;
 	}
 
 	public function test_no_site_glue_hook_and_no_exit_policy_remain_in_the_guard(): void {

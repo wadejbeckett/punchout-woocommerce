@@ -136,16 +136,37 @@ final class VisitLockdownNative {
 		return $order->get_id();
 	}
 
+	/**
+	 * wp-admin, and the one entry point under it a visit may still call.
+	 *
+	 * The exemption is the script, not wp_doing_ajax(): WooCommerce defines
+	 * DOING_AJAX from its own ?wc-ajax= parameter at `init` priority 0 on every
+	 * request, wp-admin page loads included, so the refusal is proved here
+	 * against a wp-admin script that carries that parameter as well.
+	 */
 	private function admin_area(): void {
 		[ $first ] = $this->visits;
+		$script = $_SERVER['SCRIPT_FILENAME'] ?? null;
+		$query  = $_GET['wc-ajax'] ?? null;
 		pow_native_enter_visit( $first );
-		$this->check( $this->redirected( fn() => $this->guard->guard_admin() ), 'wp-admin is refused inside a visit' );
-		$ajax = static fn(): bool => true;
-		add_filter( 'wp_doing_ajax', $ajax );
-		try { $this->check( ! $this->redirected( fn() => $this->guard->guard_admin() ), 'admin-ajax keeps working inside a visit, because the front-end basket calls it' ); }
-		finally { remove_filter( 'wp_doing_ajax', $ajax ); }
-		pow_native_leave_visit( $this->account );
-		$this->check( ! $this->redirected( fn() => $this->guard->guard_admin() ), 'the bound account outside a visit keeps its own wp-admin answer' );
+		try {
+			$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'wp-admin/profile.php';
+			$this->check( $this->redirected( fn() => $this->guard->guard_admin() ), 'wp-admin is refused inside a visit' );
+			$_GET['wc-ajax'] = '1';
+			$ajax = static fn(): bool => true;
+			add_filter( 'wp_doing_ajax', $ajax );
+			try { $this->check( $this->redirected( fn() => $this->guard->guard_admin() ), 'a ?wc-ajax= query parameter does not open wp-admin inside a visit' ); }
+			finally { remove_filter( 'wp_doing_ajax', $ajax ); }
+			unset( $_GET['wc-ajax'] );
+			$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'wp-admin/admin-ajax.php';
+			$this->check( ! $this->redirected( fn() => $this->guard->guard_admin() ), 'admin-ajax keeps working inside a visit, because the front-end basket calls it' );
+			$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'wp-admin/profile.php';
+			pow_native_leave_visit( $this->account );
+			$this->check( ! $this->redirected( fn() => $this->guard->guard_admin() ), 'the bound account outside a visit keeps its own wp-admin answer' );
+		} finally {
+			if ( null === $script ) { unset( $_SERVER['SCRIPT_FILENAME'] ); } else { $_SERVER['SCRIPT_FILENAME'] = $script; }
+			if ( null === $query ) { unset( $_GET['wc-ajax'] ); } else { $_GET['wc-ajax'] = $query; }
+		}
 		pow_native_leave_visit( $this->admin );
 	}
 
@@ -192,7 +213,7 @@ final class VisitLockdownNative {
 			$_REQUEST['action'] = 'login';
 			$this->check( $this->redirected( fn() => $this->guard->guard_login_screen() ), 'wp-login.php is refused inside a visit' );
 			$_REQUEST['action'] = 'logout';
-			$this->check( ! $this->redirected( fn() => $this->guard->guard_login_screen() ), 'logout stays available inside a visit, and ends that one visit' );
+			$this->check( ! $this->redirected( fn() => $this->guard->guard_login_screen() ), 'logout stays available inside a visit' );
 		} finally {
 			if ( null === $saved ) { unset( $_REQUEST['action'] ); } else { $_REQUEST['action'] = $saved; }
 			pow_native_leave_visit( $this->admin );
@@ -265,6 +286,65 @@ final class VisitLockdownNative {
 		pow_native_leave_visit( $this->admin );
 	}
 
+	/**
+	 * Logging out of a visit ends that visit and nobody else's.
+	 *
+	 * The teardown has to happen here, under the connection lock, because
+	 * core's own wp_destroy_current_session() is an unlocked read-modify-write
+	 * of the single session_tokens row the whole account shares and runs before
+	 * any hook a plugin can reach. The proof is therefore that by the time this
+	 * door returns the row is expired, its login token no longer verifies and
+	 * its basket row is gone, while every visit seeded earlier is untouched. It
+	 * opens its own visit, so it can run last without disturbing them.
+	 */
+	private function logout(): void {
+		$suffix  = bin2hex( random_bytes( 6 ) );
+		$visit   = pow_native_open_visit( $this->partner->id, $this->account, [ 'buyer_identity' => 'logout-' . $suffix . '@example.invalid', 'buyer_name' => 'Employee logging out' ] );
+		$key     = POW\Cart\SessionKey::for_session( $visit );
+		$handler = pow_native_visit_handler( $visit );
+		WC()->session = $handler;
+		$handler->set( 'cart', [ 'logout-' . $suffix => [ 'product_id' => 0, 'quantity' => 1 ] ] );
+		if ( ! $handler->save_checked() ) { throw new RuntimeException( 'Logout basket could not be persisted.' ); }
+		$this->check( null !== pow_native_cart_row( $key ), 'the visit about to log out has a basket row of its own' );
+
+		$saved = [ $_REQUEST['action'] ?? null, $_REQUEST['_wpnonce'] ?? null ];
+		try {
+			$_REQUEST['action'] = 'logout';
+
+			// wp-login.php checks its own log-out nonce after this hook and
+			// offers a confirmation screen without one, so an unauthorized
+			// request must leave the visit exactly as it is.
+			pow_native_enter_visit( $visit );
+			pow_native_forget_visit_memo();
+			$_REQUEST['_wpnonce'] = 'not-this-visits-nonce';
+			$this->check( ! $this->redirected( fn() => $this->guard->guard_login_screen() ), 'an unauthorized logout is not redirected' );
+			$this->check( POW\Sessions\Session::ACTIVE === ( $this->sessions->find( $visit->id )?->status ?? '' ), 'an unauthorized logout ends no visit' );
+			$this->check( null !== pow_native_cart_row( $key ), 'an unauthorized logout deletes no basket row' );
+
+			pow_native_enter_visit( $visit );
+			pow_native_forget_visit_memo();
+			$_REQUEST['_wpnonce'] = wp_create_nonce( 'log-out' );
+			$this->check( ! $this->redirected( fn() => $this->guard->guard_login_screen() ), 'the authorized logout is allowed through' );
+			$this->check( POW\Sessions\Session::EXPIRED === ( $this->sessions->find( $visit->id )?->status ?? '' ), 'the logout expired its own visit row' );
+			$this->check( ! WP_Session_Tokens::get_instance( $this->account )->verify( $visit->wp_session_token ), 'the logout destroyed its own login token' );
+			$this->check( null === pow_native_cart_row( $key ), "the logout deleted its own visit's basket row" );
+			$this->check( ! isset( $_COOKIE[ LOGGED_IN_COOKIE ] ), "core's unlocked teardown is left no token to read" );
+
+			foreach ( $this->visits as $colleague ) {
+				$live = $this->sessions->find( $colleague->id );
+				$this->check(
+					$live && POW\Sessions\Session::ACTIVE === $live->status && WP_Session_Tokens::get_instance( $this->account )->verify( $colleague->wp_session_token ),
+					'visit ' . $colleague->id . ' of the same account keeps its row and its login'
+				);
+			}
+		} finally {
+			[ $action, $nonce ] = $saved;
+			if ( null === $action ) { unset( $_REQUEST['action'] ); } else { $_REQUEST['action'] = $action; }
+			if ( null === $nonce ) { unset( $_REQUEST['_wpnonce'] ); } else { $_REQUEST['_wpnonce'] = $nonce; }
+			pow_native_leave_visit( $this->admin );
+		}
+	}
+
 	public function run(): void {
 		$cookies = $_COOKIE;
 		$session = WC()->session ?? null;
@@ -277,6 +357,7 @@ final class VisitLockdownNative {
 			$this->foreign_basket();
 			$this->foreign_order();
 			$this->checkout();
+			$this->logout();
 		} finally {
 			$this->endpoint( [] );
 			pow_native_leave_visit( $this->admin );

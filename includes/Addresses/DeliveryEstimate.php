@@ -177,7 +177,10 @@ final class DeliveryEstimate {
 	private static function native_context( int $visit ): array {
 		$actor = get_current_user_id();
 		$wc = WC();
-		return [ $visit, $actor, spl_object_id( $wc ), spl_object_id( $wc->cart ), spl_object_id( $wc->customer ), spl_object_id( $wc->session ), $wc->customer->get_id(), $wc->session->get_customer_id() ];
+		$objects = [ spl_object_id( $wc ), spl_object_id( $wc->cart ), spl_object_id( $wc->customer ), spl_object_id( $wc->session ) ];
+		$customer = $wc->customer->get_id();
+		$key = $wc->session->get_customer_id();
+		return array_merge( [ $visit, $actor ], $objects, [ $customer, $key ] );
 	}
 
 	/** Copy live native values, never filtered rate getters or the earlier package array. Object identity also detects replacement by a callback. */
