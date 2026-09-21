@@ -10,12 +10,16 @@ use POW\Partners\Registry;
 use POW\Plugin;
 use POW\Sessions\{Session, Store};
 use POW\Sessions\ConsentFence;
+use POW\Sessions\Current;
+use POW\Cart\SessionKey;
 use POW\Support\Templates;
 use POW\Cart\NativeSessionGuard;
 
 defined( 'ABSPATH' ) || exit;
 
 final class Chooser {
+	private ?Current $current = null;
+
 	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null ) {}
 
 	public function register(): void {
@@ -127,7 +131,9 @@ final class Chooser {
 		$native = $this->native?->prepare( $session );
 		return $this->registry->with_partner_lock( $session->partner_id, function () use ( $session, $native ) {
 			$fresh = $this->sessions->find( $session->id );
-			if ( ! $fresh || Session::ACTIVE !== $fresh->status || $fresh->user_id !== get_current_user_id() || $fresh->partner_id !== $session->partner_id || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) ) { return false; }
+			// Consent is per visit, so the basket that changed must be this visit's own: the login token proves the visit and the cart key proves the basket. The actor id proves neither, because every visit shares it.
+			$live = (string) ( WC()->session?->get_customer_id() ?? '' );
+			if ( ! $fresh || Session::ACTIVE !== $fresh->status || $fresh->partner_id !== $session->partner_id || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) || ! hash_equals( SessionKey::for_session( $fresh ), $live ) ) { return false; }
 			if ( null !== $native && ! $this->native->check_locked( $fresh, $native ) ) { return false; }
 			return ( new ConsentFence( $this->sessions, $this->registry ) )->clear_locked( $fresh );
 		} );
@@ -135,7 +141,8 @@ final class Chooser {
 
 	private function context(): array {
 		if ( ! $this->plugin->enabled() || ! is_user_logged_in() ) { throw new \DomainException(); }
-		$session = $this->sessions->find_for_login( get_current_user_id(), wp_get_session_token(), [ Session::ACTIVE ] );
+		// One resolver answers "which visit is this request inside" plugin-wide; a delivery review is only ever offered for an active one, never for a visit that has already handed its cart back.
+		$session = ( $this->current ??= new Current( $this->sessions ) )->visit( [ Session::ACTIVE ] );
 		$partner = $session ? $this->registry->find( $session->partner_id ) : null;
 		if ( ! $session || ! $partner || ! $partner->is_active() ) { throw new \DomainException(); }
 		return [ $session, $partner ];
