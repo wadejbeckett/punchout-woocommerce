@@ -21,7 +21,7 @@ The plugin does its whole job on any WordPress site with WooCommerce and nothing
 ## Decisions on the open points (owner delegated these; do not reopen)
 
 1. Audit log: no new column. Setup rows put `buyer_hash` (sha256 of partner_id|identity, first 12 hex) and `buyer_name` in the detail JSON; never the raw email in the log.
-2. Delivery consent JSON gains `buyer_identity` and `buyer_name` beside `buyer_user_id` (which is now the shared account and no longer discriminates). `session_id` remains the key.
+2. Withdrawn. The delivery consent JSON gains no buyer fields: the quote order carries the buyer meta beside the confirmation and the session row carries the identity, so the consent record needs neither. `buyer_user_id` remains the connection's bound account and no longer discriminates; `session_id` remains the key.
 3. Open-visit cap per connection: constant `Store::MAX_OPEN_VISITS = 50`, no filter. Expired rows are swept before counting.
 4. Raw buyer identity (usually an email) is stored in cleartext on the session row (`buyer_identity`) and on the quote order (`_pow_buyer_identity`) because admins must see who bought; the indexed column is `buyer_identity_hash`.
 5. Anonymous visit: no new audit event; `setup_ok` detail carries `buyer: none`.
@@ -30,7 +30,7 @@ The plugin does its whole job on any WordPress site with WooCommerce and nothing
 8. `[punchout_cart_exits]` keeps rendering the native checkout link for ordinary shoppers outside a visit; inside a visit only the return control renders.
 9. `Session::ORDERED` stays as inert vocabulary; nothing writes it after PayExit goes.
 10. A fresh visit's customer snapshot is seeded from the bound account's profile address, labelled "Company address" (not "Your current delivery address"); the delivery review still decides.
-11. "Bought by" wording. Admin line and order note: `Bought by {name} <{email}> via PunchOut ({connection name})`; when name is empty use the email alone; when nothing was supplied: `Bought by an unnamed buyer via PunchOut ({connection name}); the purchasing system sent no name or e-mail`.
+11. "Bought by" wording. Admin line and order note: `Bought by {name} ({email}) via PunchOut ({connection name})` — parentheses, never angle brackets, because a WooCommerce order note is rendered through `wp_kses_post`, which reads `<{email}>` as an HTML tag and deletes the address; when name is empty use the email alone; when nothing was supplied: `Bought by an unnamed buyer via PunchOut ({connection name}); the purchasing system sent no name or e-mail`. A quote order carrying no `_pow_buyer_*` meta at all — one taken before this release, whose buyer was the order's own customer — gets no line and no note rather than a false claim that the purchasing system named nobody.
 12. Tautology guard: a unit test greps `includes/` and fails when `get_customer_id()` appears within three lines of `user_id` or `get_current_user_id()` outside `includes/Cart/SessionKey.php`.
 13. `docs/single-login-mode.md` keeps its name.
 14. B2BKing, or any other plugin, is never named in code or in-plugin strings; docs may say "your pricing or visibility plugin".
