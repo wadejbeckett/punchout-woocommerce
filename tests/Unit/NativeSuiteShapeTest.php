@@ -62,6 +62,7 @@ namespace {
 			'DeliveryEstimateNative.php',
 			'DeliveryStoreNative.php',
 			'VisitLockdownNative.php',
+			'TwoBuyerNative.php',
 		];
 
 		private function directory(): string {
@@ -144,6 +145,24 @@ namespace {
 
 			foreach ( [ '/wp/v2/users', '/wp/v2/application-passwords', 'guard_admin', 'pow_visit_locked', 'edit-account', 'checkout' ] as $needle ) {
 				self::assertStringContainsString( $needle, $source, 'The lockdown suite covers ' . $needle );
+			}
+		}
+
+		/**
+		 * The release's acceptance path is one script, and it must stay whole.
+		 *
+		 * Two employees on one bound account is the release, so the suite that
+		 * proves it end to end — the wire setup, the redeem, two baskets, two
+		 * delivery reviews, two attributed quotes, the two setup refusals an
+		 * operator meets, and the three regressions that only appear once an
+		 * account is shared — is the one script whose coverage may not quietly
+		 * shrink.
+		 */
+		public function test_the_two_buyer_suite_covers_the_whole_acceptance_path(): void {
+			$source = $this->script( 'TwoBuyerNative.php' );
+
+			foreach ( [ 'StartEndpoint', 'ReturnEndpoint', 'bought_by', 'order-received', 'setup_visit_cap', 'setup_no_login', 'wc_last_active', '_woocommerce_load_saved_cart_after_login' ] as $needle ) {
+				self::assertStringContainsString( $needle, $source, 'The two-buyer acceptance suite covers ' . $needle );
 			}
 		}
 
