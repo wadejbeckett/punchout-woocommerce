@@ -291,7 +291,7 @@ Three equivalent ways; all render only inside an active punchout session and out
 
 - Shortcode: `[punchout_return_button]` (page builders, widgets, block editor shortcode block)
 - PHP: `pow_return_button();` in any template
-- Automatic: injected on the cart page at `woocommerce_proceed_to_checkout` priority 30. Inside a visit the native checkout button is unhooked there, so the return control stands alone; outside one the cart is untouched
+- Automatic: injected on the cart page at `woocommerce_after_cart_totals` priority 5, outside the proceed-to-checkout container (themes and page-builder cart elements hide or replace that container wholesale). Inside a visit every callback on `woocommerce_proceed_to_checkout` and on the mini-cart buttons hook is cleared and every link to the checkout page is hidden, so the return control stands alone; outside one the cart is untouched
 
 The cart-return control opens the mandatory delivery review at `/punchout/confirm`. For a dedicated review placement, use `[punchout_delivery_confirmation]`; its forms still post to the protected confirmation route. Custom cart markup cannot bypass the final return checks.
 

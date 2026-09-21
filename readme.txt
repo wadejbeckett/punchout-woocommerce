@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.3
+Stable tag: 0.4.4
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,9 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.4 =
+* Fix: the return control on the classic cart page now renders after the cart totals instead of inside the proceed-to-checkout container, which a theme or page-builder cart element may hide wholesale while drawing its own button; on such a layout the visit had no visible exit.
 
 = 0.4.3 =
 * Fix: 0.4.2 hid the cart-totals container that also holds the return control, so a visit saw no exit at all on the cart page. The stylesheet now hides only checkout links and buttons.
