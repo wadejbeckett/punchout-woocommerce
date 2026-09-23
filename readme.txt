@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.4
+Stable tag: 0.4.6
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -24,7 +24,7 @@ PunchOut for WooCommerce lets enterprise buyers "punch out" from their procureme
 
 **Security first.** Constant-time secret comparison, sodium-sealed secrets (wp-config key), single-use hashed StartPage tokens, per-customer rate limiting and IP allowlists, XXE-hardened XML parsing with no runtime DTD fetches, no-store/noindex on every punchout response, a full audit trail with secrets redacted, and session teardown at every exit.
 
-**One visit, one basket.** Every punchout visit gets its own WordPress auth cookie, its own session token and its own WooCommerce session row, so two employees of one customer shopping at the same moment never see each other's basket or delivery selection. Inside a visit the request is also refused at wp-admin, the users REST routes, application passwords, the account-details and password screens, another visit's basket and another visit's quote order.
+**One visit, one basket.** Every punchout visit gets its own WordPress auth cookie, its own session token and its own WooCommerce session row, so two employees of one customer shopping at the same moment never see each other's basket or delivery selection. Inside a visit the request is also refused at wp-admin, the users REST routes, application passwords, My Account (except the pages the connection ticks), another visit's basket and another visit's quote order, and no user can be created through WordPress's user insert.
 
 **Placement flexibility.** The RFQ exit button is available as the `[punchout_return_button]` shortcode, the `pow_return_button()` PHP helper, and automatic cart-page injection — with theme-overridable templates and filters for every string.
 
@@ -57,6 +57,18 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.6 =
+* New: "My Account pages in a visit" on the connection screen is now a checkbox list of the account pages the site registers, grouped as WooCommerce's own pages, this plugin's Punchout integration tab, and pages added by other plugins. The list reads WooCommerce's endpoint list and WordPress's page addresses, so it also shows pages another plugin adds to WooCommerce only on the shop side. Each row shows the page's title, its endpoint name and a note on what sharing it means. A page the connection lists that the site does not show when the screen loads stays on the form, ticked, under "Ticked, but not found on this site right now", so saving does not drop it. "Add a page by name" below the list adds a page the list does not show.
+* New: the dashboard (the account page itself) can open in a visit. A new connection ticks it and nothing else; pages added by other plugins stay off until ticked. Inside a visit the account menu shows only the ticked pages that open. Inside a visit WooCommerce's "temporary password" notice and its Resend link do not show, and a request to resend that link is refused, so a buyer cannot trigger a password-reset mail to the shared account.
+* Change: most pages 0.4.5 kept closed whatever the list said can now be ticked, with a note beside each. Orders shows the order list; a single order's page stays closed in a visit. Log out, lost password, order-pay, order-received and the Punchout integration tab are shown disabled and stay closed in a visit. The payment-method pages are shown disabled: they open only for a connection whose exit policy allows WooCommerce's checkout, and every connection is punchout-only. Checkout stays refused in every visit.
+* Upgrade: no schema change. The dashboard is stored as "dashboard" in the existing visit_endpoints column, and existing lists are kept exactly as they are, so a connection saved under 0.4.5 opens no dashboard until it is ticked.
+
+= 0.4.5 =
+* New: a connection can list My Account pages its punchout visits may open, for example a third-party quick-order page. Set it in "My Account pages in a visit" on the connection screen at WooCommerce > PunchOut > Customers. It is empty by default, which keeps all of My Account closed in a visit as before. A listed page opens only when WooCommerce has account content for it on that request; otherwise it stays closed rather than show the account dashboard. Inside a visit the account menu shows only the listed pages that open, and the account holder sees the list on My Account > Punchout integration.
+* Security: the account's own pages can never be listed and stay closed in every visit: the dashboard, orders and order view, downloads, addresses, account details, payment methods, password reset, logout and the Punchout integration tab, plus the order-pay and order-received endpoints, which would show the dashboard. Every buyer of a connection shares that account.
+* Security: a punchout visit can no longer create a WordPress user through WordPress's user insert, which registration forms, the users REST route and other plugins' admin-ajax actions such as a sub-account form use. The refusal is recorded in the audit log as visit_user_create_refused, once per request, with the route that asked. Code that writes the users table directly is not covered.
+* Upgrade: schema 8 adds one column, visit_endpoints, to the connections table. It runs on the next wp-admin page load and leaves open visits alone.
 
 = 0.4.4 =
 * Fix: the return control on the classic cart page now renders after the cart totals instead of inside the proceed-to-checkout container, which a theme or page-builder cart element may hide wholesale while drawing its own button; on such a layout the visit had no visible exit.

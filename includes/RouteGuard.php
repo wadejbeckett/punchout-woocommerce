@@ -10,6 +10,7 @@ declare( strict_types = 1 );
 
 namespace POW;
 
+use POW\Account\VisitEndpoints;
 use POW\Orders\QuoteOrder;
 use POW\Partners\Registry;
 use POW\Sessions\Session;
@@ -30,19 +31,32 @@ defined( 'ABSPATH' ) || exit;
  *
  * A request whose visit cannot be proved (the session store could not
  * answer) is refused rather than treated as an ordinary shopper.
+ *
+ * The one per-connection question here is which My Account pages a visit
+ * may open. It is the connection's `visit_endpoints` column: the pages an
+ * administrator ticked, `dashboard` standing for the account page itself.
  */
 final class RouteGuard {
 
 	/** Whether this request's visit has already been torn down, once and for all. */
 	private bool $visit_ended = false;
 
+	/** @var array<int, list<string>> Each connection's endpoint list, read once per request. */
+	private array $visit_endpoints = [];
+
+	/** Whether this request has already recorded a refused user creation. */
+	private bool $user_create_recorded = false;
+
 	/**
 	 * @param Plugin   $plugin   Container, asked for the request's visit.
-	 * @param Registry $registry Connection registry. No decision here reads
-	 *                           it — the visit row is the whole proof — but
-	 *                           it holds the connection lock every writer of
-	 *                           the account's shared session_tokens row runs
-	 *                           under, which is what ends a visit on logout.
+	 * @param Registry $registry Connection registry: the source of the My
+	 *                           Account endpoints a visit's connection lists,
+	 *                           and the holder of the connection lock every
+	 *                           writer of the account's shared session_tokens
+	 *                           row runs under, which is what ends a visit on
+	 *                           logout. Whether a request is inside a visit
+	 *                           is never asked of it — the visit row is the
+	 *                           whole proof.
 	 * @param Settings $settings Operator settings: landing page and labels.
 	 */
 	public function __construct(
@@ -53,6 +67,9 @@ final class RouteGuard {
 
 	public function register(): void {
 		add_action( 'template_redirect', [ $this, 'guard' ], 1 );
+		// The account page again, last: content registered for an endpoint
+		// after the first pass is judged before the page renders.
+		add_action( 'template_redirect', [ $this, 'recheck_account_page' ], PHP_INT_MAX );
 
 		// template_redirect runs for front-end page requests only. wp-admin,
 		// admin-ajax.php and the REST API never reach it, so the shared
@@ -60,6 +77,12 @@ final class RouteGuard {
 		add_action( 'admin_init', [ $this, 'guard_admin' ], 1 );
 		add_filter( 'rest_pre_dispatch', [ $this, 'guard_rest' ], -99, 3 );
 		add_filter( 'wp_is_application_passwords_available_for_user', [ $this, 'deny_application_passwords' ], PHP_INT_MAX, 2 );
+
+		// Last, so items and user-data changes made by anything else are
+		// judged too.
+		add_filter( 'woocommerce_account_menu_items', [ $this, 'visit_menu_items' ], PHP_INT_MAX );
+		add_filter( 'wp_pre_insert_user_data', [ $this, 'refuse_user_creation' ], PHP_INT_MAX, 4 );
+		add_filter( 'get_user_option_default_password_nag', [ $this, 'hide_temporary_password' ], PHP_INT_MAX );
 
 		add_action( 'woocommerce_checkout_process', [ $this, 'block_checkout_process' ] );
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'block_store_api_checkout' ] );
@@ -76,13 +99,23 @@ final class RouteGuard {
 	public function guard(): void {
 		$visit = $this->plugin->current_session();
 
-		// Account surfaces (order history, addresses, downloads, account
-		// details, password changes, the integration tab) are outside a
-		// visit's remit. This fires on template_redirect only, so it never
-		// sees admin-ajax.php, the REST API or wp-admin — guard_admin() and
+		// My Account opens inside a visit only where the connection ticked
+		// the page: the dashboard, a third-party quick-order screen, and
+		// only those. This fires on template_redirect only, so it never sees
+		// admin-ajax.php, the REST API or wp-admin — guard_admin() and
 		// guard_rest() hold those. The bound account outside a visit keeps
 		// its whole account area.
-		if ( null !== $visit && function_exists( 'is_account_page' ) && is_account_page() ) {
+		if ( $this->account_page_refused( $visit ) ) {
+			$this->redirect_to_landing();
+			return;
+		}
+
+		// WooCommerce's "resend the set-password link" action, which it
+		// handles later on this same hook for any page: it mails the shared
+		// account a new password-reset link and replaces the account's reset
+		// key. A visit never sees that link (hide_temporary_password()), and
+		// a request carrying the action is refused as well.
+		if ( isset( $_GET['wc-resend-set-password'] ) && $this->inside_visit() ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing decision.
 			$this->redirect_to_landing();
 			return;
 		}
@@ -113,6 +146,327 @@ final class RouteGuard {
 			wp_safe_redirect( $target, 302 );
 			exit;
 		}
+	}
+
+	/**
+	 * The account-page check once more, at the end of template_redirect.
+	 *
+	 * guard() runs at priority 1, before WooCommerce's own form handlers, and
+	 * reads which endpoints have account content at that moment. Content a
+	 * plugin registers later in template_redirect, for a query var
+	 * WooCommerce does not map, would otherwise render unjudged. Content
+	 * registered while the page itself renders is beyond any redirect.
+	 */
+	public function recheck_account_page(): void {
+		if ( $this->account_page_refused( $this->plugin->current_session() ) ) {
+			$this->redirect_to_landing();
+		}
+	}
+
+	/** Whether this request is an account page inside a visit that must not open. */
+	private function account_page_refused( ?Session $visit ): bool {
+		return null !== $visit && function_exists( 'is_account_page' ) && is_account_page() && ! $this->account_endpoint_open( $visit );
+	}
+
+	/**
+	 * Whether every My Account endpoint this request names is one the
+	 * visit's connection lists and has account content of its own. An
+	 * account page naming no endpoint is the dashboard, which opens only
+	 * when the connection lists `dashboard`. Any failure to read the
+	 * connection keeps the account area closed.
+	 *
+	 * The content check is what keeps a ticked name from showing another
+	 * page. WooCommerce renders the first query var that has an
+	 * account-endpoint action and falls back to the dashboard when none has.
+	 * Every query var with such an action is among the requested endpoints,
+	 * so when each requested endpoint has one, the page WooCommerce renders
+	 * is one of them, and so a listed one. A listed endpoint without content
+	 * stays closed even when the dashboard is ticked, so what opens is always
+	 * the page that was asked for.
+	 */
+	private function account_endpoint_open( Session $visit ): bool {
+		try {
+			$allowed = $this->visit_endpoints( $visit );
+
+			if ( [] === $allowed ) {
+				return false;
+			}
+
+			$requested = $this->requested_account_endpoints();
+
+			if ( null === $requested ) {
+				return false;
+			}
+
+			foreach ( $requested as $endpoint ) {
+				// `dashboard` names the account page itself here, so a page
+				// another plugin registers under that name is never opened
+				// by the dashboard's tick; the form does not offer it either.
+				if ( VisitEndpoints::DASHBOARD === $endpoint || ! VisitEndpoints::allows( $allowed, $endpoint ) ) {
+					return false;
+				}
+
+				if ( '' !== $endpoint && ! self::has_account_content( $endpoint ) ) {
+					return false;
+				}
+			}
+
+			return true;
+		} catch ( \Throwable $e ) {
+			return false;
+		}
+	}
+
+	/**
+	 * Whether WooCommerce's account page has content for $endpoint: an action
+	 * on woocommerce_account_<endpoint>_endpoint. Without one, the page shows
+	 * the dashboard instead. That covers a checkout endpoint such as order-pay
+	 * and a third-party endpoint whose plugin registers the query var for
+	 * everyone but the content only for some users.
+	 */
+	private static function has_account_content( string $endpoint ): bool {
+		return '' !== $endpoint && function_exists( 'has_action' ) && false !== has_action( 'woocommerce_account_' . $endpoint . '_endpoint' );
+	}
+
+	/**
+	 * The pages the visit's connection lists: none unless the connection is
+	 * active, and never a payment-method page unless its exit policy allows
+	 * WooCommerce's checkout. A lookup that throws is not remembered, so the
+	 * next caller asks again.
+	 *
+	 * @return list<string>
+	 * @throws \RuntimeException When the connection cannot be read.
+	 */
+	private function visit_endpoints( Session $visit ): array {
+		if ( ! array_key_exists( $visit->partner_id, $this->visit_endpoints ) ) {
+			$partner = $this->registry->find( $visit->partner_id );
+
+			$this->visit_endpoints[ $visit->partner_id ] = null !== $partner && $partner->is_active() ? $partner->visit_endpoint_list() : [];
+		}
+
+		return $this->visit_endpoints[ $visit->partner_id ];
+	}
+
+	/**
+	 * Every My Account endpoint this request names; [''] for the dashboard;
+	 * null when that cannot be proved.
+	 *
+	 * WooCommerce's current endpoint is the first of its own endpoint list
+	 * the request sets, while the page renders the first query var that has
+	 * an account-endpoint action — two different orders. So this is not one
+	 * answer but all of them: the current endpoint, every WooCommerce
+	 * endpoint the request sets (an ?orders= added to an allowed URL
+	 * included), and every query var an account-endpoint action would
+	 * render. The caller requires every one of them to be open.
+	 *
+	 * Before WordPress has parsed the request there are no query vars to
+	 * read; the request path and query string, matched against WooCommerce's
+	 * endpoint slugs, stand in for them. A path naming none of them cannot be
+	 * told apart from a page WooCommerce does not map, so it proves nothing
+	 * and the parsed request decides. Without WooCommerce's endpoint map
+	 * nothing can be proved at all.
+	 *
+	 * @return list<string>|null
+	 */
+	private function requested_account_endpoints(): ?array {
+		global $wp;
+
+		$query = function_exists( 'WC' ) ? ( WC()->query ?? null ) : null;
+
+		if ( ! is_object( $query ) || ! method_exists( $query, 'get_query_vars' ) ) {
+			return null;
+		}
+
+		$slugs = (array) $query->get_query_vars();
+		$vars  = is_object( $wp ) && isset( $wp->query_vars ) && is_array( $wp->query_vars ) ? $wp->query_vars : [];
+
+		if ( [] === $vars ) {
+			$endpoints = self::endpoints_in_request( $slugs );
+
+			if ( [] === $endpoints ) {
+				return null;
+			}
+		} else {
+			$endpoints = is_object( $query ) && method_exists( $query, 'get_current_endpoint' ) ? [ (string) $query->get_current_endpoint() ] : [];
+
+			foreach ( array_keys( $slugs ) as $key ) {
+				if ( isset( $vars[ $key ] ) ) {
+					$endpoints[] = (string) $key;
+				}
+			}
+
+			foreach ( array_keys( $vars ) as $key ) {
+				if ( 'pagename' !== $key && function_exists( 'has_action' ) && has_action( 'woocommerce_account_' . $key . '_endpoint' ) ) {
+					$endpoints[] = (string) $key;
+				}
+			}
+		}
+
+		$endpoints = array_values( array_unique( array_filter( $endpoints, static fn( string $endpoint ): bool => '' !== $endpoint ) ) );
+
+		return [] === $endpoints ? [ '' ] : $endpoints;
+	}
+
+	/**
+	 * WooCommerce endpoints named by the raw request: a path segment or a
+	 * query-string key equal to an endpoint's slug, reported by the
+	 * endpoint's own name.
+	 *
+	 * @param array<string, string> $slugs Endpoint name => slug, as WooCommerce maps them.
+	 * @return list<string>
+	 */
+	private static function endpoints_in_request( array $slugs ): array {
+		$path     = wp_parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '' ), PHP_URL_PATH ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- compared against known slugs, never output.
+		$segments = array_values( array_filter( explode( '/', is_string( $path ) ? $path : '' ), static fn( string $segment ): bool => '' !== $segment ) );
+		$found    = [];
+
+		foreach ( $slugs as $key => $slug ) {
+			$slug = (string) $slug;
+
+			if ( '' !== $slug && ( in_array( $slug, $segments, true ) || isset( $_GET[ $slug ] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing decision.
+				$found[] = (string) $key;
+			}
+		}
+
+		return $found;
+	}
+
+	/**
+	 * The account menu inside a visit: only the pages its connection lists,
+	 * whoever added the item. The dashboard item stays when `dashboard` is
+	 * listed; any other item also needs account content, since the guard
+	 * refuses the rest. Outside a visit the menu is untouched. A visit that
+	 * cannot be resolved, or whose connection cannot be read, gets an empty
+	 * menu.
+	 *
+	 * @param mixed $items Menu items, endpoint => label.
+	 */
+	public function visit_menu_items( mixed $items ): mixed {
+		if ( ! is_array( $items ) ) {
+			return $items;
+		}
+
+		try {
+			$visit = $this->plugin->current_session();
+
+			if ( null === $visit ) {
+				return $items;
+			}
+
+			$allowed = $this->visit_endpoints( $visit );
+		} catch ( \Throwable $e ) {
+			return [];
+		}
+
+		return array_filter(
+			$items,
+			static fn( mixed $endpoint ): bool => VisitEndpoints::DASHBOARD === (string) $endpoint
+				? VisitEndpoints::allows( $allowed, '' )
+				: VisitEndpoints::allows( $allowed, (string) $endpoint ) && self::has_account_content( (string) $endpoint ),
+			ARRAY_FILTER_USE_KEY
+		);
+	}
+
+	/**
+	 * WooCommerce's temporary-password notice, inside a visit.
+	 *
+	 * An account whose password WooCommerce generated, or that registered
+	 * itself through WordPress, carries the default_password_nag user
+	 * option. WooCommerce then shows "Your account is using a temporary
+	 * password" on the account dashboard and on account details, with a
+	 * Resend link that mails the account a new password-reset link and
+	 * replaces its reset key. In a visit that account is the connection's
+	 * shared login and the buyer is not its holder, so inside a visit the
+	 * option reads false and neither the notice nor its link renders. A
+	 * request whose visit cannot be proved reads false too. Outside a visit,
+	 * the account holder's own login included, the option is untouched.
+	 *
+	 * @param mixed $value The option as stored.
+	 */
+	public function hide_temporary_password( mixed $value ): mixed {
+		if ( empty( $value ) ) {
+			return $value;
+		}
+
+		return $this->inside_visit() ? false : $value;
+	}
+
+	/**
+	 * No user is created from inside a visit through WordPress's user insert.
+	 *
+	 * A visit is a buyer shopping as the connection's one account, not a
+	 * person with a login of their own, and the plugin never creates a user.
+	 * admin-ajax.php stays open inside a visit because the front-end basket
+	 * calls it, so any plugin action there that creates users — a
+	 * sub-account form, a registration handler — would hand a buyer a lasting
+	 * password login outside PunchOut. Registration forms, the users REST
+	 * route and such AJAX actions all create users through core's one
+	 * user-insert routine, and this filter is its earliest generic veto:
+	 * given an empty user row, core returns a WP_Error before anything is
+	 * written. Code that writes the users table itself, without that
+	 * routine, is beyond any WordPress hook. Updates to an existing user pass
+	 * untouched.
+	 *
+	 * A request whose visit cannot be proved is refused, like every other door.
+	 *
+	 * The audit row names the request, not the account: the script, the
+	 * admin-ajax action, the wc-ajax action, the REST route and the path.
+	 * One row per request, so a handler that retries in a loop records once;
+	 * across requests the rows are trimmed with the rest of the audit log.
+	 *
+	 * @param mixed $data     The user row about to be written.
+	 * @param mixed $update   Whether an existing user is being updated.
+	 * @param mixed $user_id  The existing user's id on update, null on creation.
+	 * @param mixed $userdata The raw array given to core's user insert, unused.
+	 */
+	public function refuse_user_creation( mixed $data, mixed $update = false, mixed $user_id = null, mixed $userdata = [] ): mixed {
+		if ( true === $update || ! $this->inside_visit() ) {
+			return $data;
+		}
+
+		if ( $this->user_create_recorded ) {
+			return [];
+		}
+
+		$this->user_create_recorded = true;
+
+		try {
+			$visit = $this->plugin->current_session();
+		} catch ( \Throwable $e ) {
+			$visit = null;
+		}
+
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput -- recorded as reduced data, never acted on.
+		$action  = $_REQUEST['action'] ?? '';
+		$wc_ajax = $_GET['wc-ajax'] ?? '';
+		$path    = wp_parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '' ), PHP_URL_PATH );
+		$script  = basename( (string) ( $_SERVER['SCRIPT_FILENAME'] ?? '' ) );
+		// phpcs:enable
+		$rest_route = $GLOBALS['wp']->query_vars['rest_route'] ?? '';
+
+		$this->plugin->audit()?->write_checked(
+			'visit_user_create_refused',
+			[
+				'partner_id' => $visit?->partner_id ?? 0,
+				'session_id' => $visit?->id ?? 0,
+				'user_id'    => get_current_user_id(),
+				'result'     => 'refused',
+				'detail'     => [
+					'script'     => self::route_text( $script, 64 ),
+					'action'     => is_string( $action ) ? substr( sanitize_key( $action ), 0, 64 ) : '',
+					'wc_ajax'    => is_string( $wc_ajax ) ? substr( sanitize_key( $wc_ajax ), 0, 64 ) : '',
+					'rest_route' => is_string( $rest_route ) ? self::route_text( $rest_route, 128 ) : '',
+					'path'       => is_string( $path ) ? self::route_text( $path, 128 ) : '',
+				],
+			]
+		);
+
+		return [];
+	}
+
+	/** A route or script name reduced to path characters and cut to $length, for the audit trail. */
+	private static function route_text( string $text, int $length ): string {
+		return substr( (string) preg_replace( '#[^A-Za-z0-9/_.\-]#', '', $text ), 0, $length );
 	}
 
 	/**

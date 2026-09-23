@@ -6,7 +6,7 @@
  * form but the download, shows no secret and edits nothing.
  *
  * @var string $state none|pending|active|disabled|unavailable
- * @var array<string,string> $connection Public connection details.
+ * @var array<string,string> $connection Public connection details, including `visit_endpoints`: the My Account endpoints a visit may open, comma-separated, '' for none.
  * @var bool $template_ready Whether the connection's identities are complete enough to build the setup XML.
  * @var array|null $notice Escaped direct response notice.
  * @var string $setup_url
@@ -26,7 +26,7 @@ defined( 'ABSPATH' ) || exit;
 	<?php endif; ?>
 	<?php if ( 'active' === $state ) : ?>
 		<table class="woocommerce-table shop_table"><tbody>
-			<?php foreach ( [ __( 'Status', 'punchout-woocommerce' ) => __( 'Active', 'punchout-woocommerce' ), __( 'Connection name', 'punchout-woocommerce' ) => $connection['name'] ?? '', __( 'Setup URL (test and production)', 'punchout-woocommerce' ) => $setup_url, __( 'Your identity (From)', 'punchout-woocommerce' ) => $connection['from'] ?? '', __( 'Your identity (Sender)', 'punchout-woocommerce' ) => $connection['sender'] ?? '', __( 'Supplier identity (To)', 'punchout-woocommerce' ) => $connection['to'] ?? '', __( 'Deployment mode', 'punchout-woocommerce' ) => $connection['deployment_mode'] ?? '', __( 'cXML version', 'punchout-woocommerce' ) => $connection['cxml_version'] ?? '', __( 'Return encoding', 'punchout-woocommerce' ) => $connection['return_encoding'] ?? '', __( 'Last successful setup (UTC)', 'punchout-woocommerce' ) => $last_setup ?? __( 'None yet', 'punchout-woocommerce' ) ] as $label => $value ) : ?>
+			<?php foreach ( [ __( 'Status', 'punchout-woocommerce' ) => __( 'Active', 'punchout-woocommerce' ), __( 'Connection name', 'punchout-woocommerce' ) => $connection['name'] ?? '', __( 'Setup URL (test and production)', 'punchout-woocommerce' ) => $setup_url, __( 'Your identity (From)', 'punchout-woocommerce' ) => $connection['from'] ?? '', __( 'Your identity (Sender)', 'punchout-woocommerce' ) => $connection['sender'] ?? '', __( 'Supplier identity (To)', 'punchout-woocommerce' ) => $connection['to'] ?? '', __( 'Deployment mode', 'punchout-woocommerce' ) => $connection['deployment_mode'] ?? '', __( 'cXML version', 'punchout-woocommerce' ) => $connection['cxml_version'] ?? '', __( 'Return encoding', 'punchout-woocommerce' ) => $connection['return_encoding'] ?? '', __( 'My Account pages open during a visit', 'punchout-woocommerce' ) => '' !== ( $connection['visit_endpoints'] ?? '' ) ? $connection['visit_endpoints'] : __( 'None', 'punchout-woocommerce' ), __( 'Last successful setup (UTC)', 'punchout-woocommerce' ) => $last_setup ?? __( 'None yet', 'punchout-woocommerce' ) ] as $label => $value ) : ?>
 				<tr><th scope="row"><?php echo esc_html( $label ); ?></th><td><code><?php echo esc_html( $value ); ?></code></td></tr>
 			<?php endforeach; ?>
 		</tbody></table>

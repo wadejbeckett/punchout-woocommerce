@@ -138,6 +138,8 @@ final class DeliveryCodeTest extends TestCase {
 		try {
 			$operation();
 		} catch ( InvalidArgumentException $e ) {
+			// Counted as an assertion, so PHPUnit does not report the test as risky.
+			self::assertInstanceOf( InvalidArgumentException::class, $e );
 			return;
 		}
 		self::fail( 'Malformed code input must be refused, not converted into a usable identifier.' );
