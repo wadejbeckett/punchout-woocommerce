@@ -11,11 +11,13 @@ final class ReviewFormatTest extends TestCase {
 		self::assertSame( "R\u{00A0}1 619,86", $text );
 		self::assertStringNotContainsString( '<', $text );
 	}
-	public function test_money_forces_two_decimals_to_match_the_cxml_cents(): void {
+	public function test_money_is_built_from_the_cents_without_wc_price(): void {
 		unset( $GLOBALS['pow_test_wc_price_args'] );
-		ReviewFormat::money( 5, 'ZAR' );
-		self::assertSame( 2, $GLOBALS['pow_test_wc_price_args']['decimals'] ?? null );
-		self::assertSame( 'ZAR', $GLOBALS['pow_test_wc_price_args']['currency'] ?? null );
+		self::assertSame( "R\u{00A0}0,05", ReviewFormat::money( 5, 'ZAR' ) );
+		self::assertSame( "R\u{00A0}1,00", ReviewFormat::money( 100, 'ZAR' ) );
+		self::assertSame( "R\u{00A0}1 234 567,89", ReviewFormat::money( 123456789, 'ZAR' ) );
+		// wc_price, and with it the formatted_woocommerce_price / raw_woocommerce_price value filters, never ran.
+		self::assertFalse( array_key_exists( 'pow_test_wc_price_args', $GLOBALS ) );
 	}
 	public function test_money_follows_store_separators(): void {
 		$GLOBALS['pow_test_price_thousand_sep'] = ''; $GLOBALS['pow_test_price_format'] = '%1$s%2$s';
@@ -31,9 +33,6 @@ final class ReviewFormatTest extends TestCase {
 		$items = [ [ 'unit_price_cents' => 53995, 'quantity' => 3 ], [ 'unit_price_cents' => 333, 'quantity' => '1.5' ], [ 'unit_price_cents' => 1, 'quantity' => 1 ] ];
 		self::assertSame( 161985, ReviewFormat::line_total_cents( $items[0] ) );
 		self::assertSame( 500, ReviewFormat::line_total_cents( $items[1] ) );
-		$sum = 0; $map_sum = 0;
-		foreach ( $items as $line ) { $sum += ReviewFormat::line_total_cents( $line ); $map_sum += (int) round( $line['unit_price_cents'] * (float) $line['quantity'] ); }
-		self::assertSame( $map_sum, $sum );
 	}
 	private static function with_countries( ?object $countries, callable $run ): void {
 		$before = $GLOBALS['pow_test_wc'] ?? null;
