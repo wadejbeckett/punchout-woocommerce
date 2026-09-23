@@ -13,8 +13,8 @@ A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `i
 - Keep secrets out of files and logs. The Globex shared secret lives only in `(local path)` (mode 600) — read it at runtime, never print it.
 
 ## Current state (22 Sep 2026)
-- **Live on example.com: 0.4.6 = 97ed427** (branch `feature/0.4.6-endpoint-checkboxes`, tag `v0.4.6`, not pushed or merged), installed 23 Sep 20:27 SAST. Before it: 0.4.5 = 1089f86 (`feature/0.4.5-visit-endpoints`, tag v0.4.5, 23 Sep 17:03) and 0.4.4 = 7cfdfe7 (`feature/0.4.0-single-login`, tag `acme-live-2026-09-21-7cfdfe7`). The 0.4.5/0.4.6 branches sit on top of `feature/0.4.0-single-login`. master is at v0.3.0. Merge to master and tag v0.4.0 only after Globex's re-test.
-- Unit suite: `php tests/run-tests.php` (1009 pass, no Composer). Cart surface suite: `php tests/CartBlocks/surface.php`. Native suites (opt-in, real WP): see "Local fixture".
+- **Live on example.com: 0.4.7 = cad2077** (branch `feature/0.4.7-hide-logout-in-visit`, tag `v0.4.7`, merged to master), installed 23 Sep 21:15 SAST: a visit's My Account dashboard shows no "Log out" link. Before it: 0.4.6 = 97ed427 (`feature/0.4.6-endpoint-checkboxes`, tag v0.4.6, 23 Sep 20:27), 0.4.5 = 1089f86 (`feature/0.4.5-visit-endpoints`, tag v0.4.5, 23 Sep 17:03) and 0.4.4 = 7cfdfe7 (`feature/0.4.0-single-login`, tag `acme-live-2026-09-21-7cfdfe7`). master holds 0.4.0–0.4.7 (merges 55a2715, 63aab53 and the 0.4.7 merge).
+- Unit suite: `php tests/run-tests.php` (1058 pass at 0.4.7, no Composer). Cart surface suite: `php tests/CartBlocks/surface.php`. Native suites (opt-in, real WP): see "Local fixture".
 - Acme cleanup done: 20 legacy `punchout_buyer` accounts, 6 test quotes and the mu-plugin `acme-punchout-groups.php` deleted (backups under `/var/www/vhosts/example.com/AVADA-OPTION-BACKUPS/punchout-20260921-*`). User 4 `Globex-company` is connection 1's account, B2BKing group 10717.
 - Browser-verified as a visit: cart page shows the "Punchout" exit under the totals, no checkout button. Nine smoke visits (132–140) expire ~22 Sep evening; visit 135 still holds 2 test items in its own cart row (the sweep deletes it).
 

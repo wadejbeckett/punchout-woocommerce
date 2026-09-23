@@ -177,6 +177,9 @@ final class Plugin {
 		add_action( 'update_option_' . Settings::OPTION_KEY, [ $this, 'on_settings_updated' ], 10, 2 );
 
 		( new RouteGuard( $this, $this->registry, $this->settings ) )->register();
+		// The dashboard a visit sees, registered with the guard that opens it:
+		// a visit that outlived the switch's sweep still gets no logout link.
+		( new \POW\Account\VisitDashboard( $this ) )->register();
 		// Basket isolation has the same lifetime as visit resolution, and for
 		// the same reason. NativeSessionGuard above keeps resolving visits and
 		// keeps binding each one its own `pow_` session row whatever the switch

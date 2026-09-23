@@ -591,6 +591,65 @@ final class VisitLockdownNative {
 	}
 
 	/**
+	 * WooCommerce's dashboard greets the account with "not you? Log out",
+	 * a wp-login.php logout link that would end the visit and delete its
+	 * basket. With the dashboard ticked, the account holder outside a visit
+	 * keeps that link and the menu's Log out item; inside a visit the whole
+	 * account page, dashboard text and menu, has neither, the greeting still
+	 * names the account, and content added to the dashboard still shows.
+	 */
+	private function dashboard_logout(): void {
+		global $wp;
+		[ $first ] = $this->visits;
+		$vars    = $wp->query_vars;
+		$main    = [ $GLOBALS['wp_the_query'] ?? null, $GLOBALS['wp_query'] ?? null ];
+		$session = WC()->session ?? null;
+		$mark    = static function (): void { echo '<p>' . self::DASHBOARD_MARK . '</p>'; };
+		$swap    = null;
+		foreach ( $GLOBALS['wp_filter']['wc_get_template']->callbacks ?? [] as $callbacks ) {
+			foreach ( $callbacks as $callback ) {
+				$function = $callback['function'] ?? null;
+				if ( is_array( $function ) && $function[0] instanceof POW\Account\VisitDashboard ) { $swap = $function; }
+			}
+		}
+		$logout = static fn( ?string $html ): bool => is_string( $html ) && str_contains( $html, 'wp-login.php?action=logout' );
+		add_action( 'woocommerce_account_dashboard', $mark );
+		try {
+			$this->check( null !== $swap, 'the plugin swaps the dashboard template through WooCommerce\'s own template filter' );
+			pow_native_leave_visit( $this->admin );
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'dashboard' ] ), 'the connection ticks the dashboard' );
+			$guard = new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
+
+			pow_native_leave_visit( $this->account );
+			$outside = $this->account_shortcode( $guard );
+			$this->check( $logout( $outside ), 'outside a visit the account holder\'s dashboard keeps WooCommerce\'s wp-login.php logout link' );
+			$this->check( is_string( $outside ) && str_contains( $outside, 'customer-logout' ), 'and the account menu keeps its Log out item' );
+
+			pow_native_enter_visit( $first );
+			WC()->session = pow_native_visit_handler( $first );
+			$inside = $this->account_shortcode( $guard );
+			$name   = (string) ( get_userdata( $this->account )->display_name ?? '' );
+			$this->check( is_string( $inside ) && str_contains( $inside, self::DASHBOARD_MARK ), 'inside a visit the ticked dashboard opens, and content added to it still shows' );
+			$this->check( is_string( $inside ) && ! $logout( $inside ) && ! str_contains( $inside, 'action=logout' ), 'inside a visit the dashboard text has no logout link' );
+			$this->check( is_string( $inside ) && ! str_contains( $inside, 'customer-logout' ), 'and the account menu has no Log out item' );
+			$this->check( is_string( $inside ) && '' !== $name && str_contains( $inside, 'Hello <strong>' . esc_html( $name ) . '</strong>' ), 'the dashboard still greets the account by name' );
+			if ( null !== $swap ) {
+				remove_filter( 'wc_get_template', $swap, PHP_INT_MAX );
+				$control = $this->account_shortcode( $guard );
+				add_filter( 'wc_get_template', $swap, PHP_INT_MAX, 2 );
+				$this->check( $logout( $control ), 'control: without the swap the same visit would see WooCommerce\'s logout link' );
+			}
+			$this->check( POW\Sessions\Session::ACTIVE === ( $this->sessions->find( $first->id )?->status ?? '' ), 'the visit is still open after its dashboard rendered' );
+		} finally {
+			remove_action( 'woocommerce_account_dashboard', $mark );
+			$wp->query_vars = $vars;
+			[ $GLOBALS['wp_the_query'], $GLOBALS['wp_query'] ] = $main;
+			WC()->session = $session;
+			pow_native_leave_visit( $this->admin );
+		}
+	}
+
+	/**
 	 * The whole account page as WooCommerce's shortcode renders it for a
 	 * request with no endpoint, notices included; null when the guard
 	 * refused it. The empty `page` query var is what a pretty-permalink
@@ -785,6 +844,7 @@ final class VisitLockdownNative {
 			$this->account_endpoints();
 			$this->wp_admin_form();
 			$this->temporary_password();
+			$this->dashboard_logout();
 			$this->foreign_basket();
 			$this->foreign_order();
 			$this->checkout();
