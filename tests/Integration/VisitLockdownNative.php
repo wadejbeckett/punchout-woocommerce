@@ -41,6 +41,10 @@ require_once dirname( __DIR__ ) . '/Support/native-visits.php';
 final class VisitLockdownRedirect extends RuntimeException {}
 
 final class VisitLockdownNative {
+	/** What the suite's own bulkorder content and dashboard hook print, so a render is judged by what it shows. */
+	private const BULKORDER_MARK = 'pow-fixture-bulkorder-content';
+	private const DASHBOARD_MARK = 'pow-fixture-account-dashboard';
+
 	private POW\Partners\Registry $registry;
 	private POW\Sessions\Store $sessions;
 	private POW\RouteGuard $guard;
@@ -227,43 +231,99 @@ final class VisitLockdownNative {
 
 	/**
 	 * A connection's My Account list against real WooCommerce endpoints,
-	 * the real account menu and a real second connection.
+	 * real request parsing, WooCommerce's own account-content renderer, the
+	 * real account menu and a real second connection.
+	 *
+	 * Each request is a real front-end load of the account page: WordPress
+	 * parses it (plain permalinks, WooCommerce mapping its endpoint slugs)
+	 * and runs the main query, then the guard's two passes run and, when both
+	 * let it through, woocommerce_account_content() renders it. Whether a
+	 * page opened is judged on that HTML, not on the absence of a redirect:
+	 * WooCommerce renders the dashboard for a request whose endpoint has no
+	 * content action, and the dashboard must never render inside a visit.
 	 */
 	private function account_endpoints(): void {
-		global $wp;
+		global $wp, $wpdb;
 		[ $first, $second ] = $this->visits;
 		$register   = static fn( array $vars ): array => $vars + [ 'bulkorder' => 'bulkorder' ];
 		$registered = ! isset( WC()->query->get_query_vars()['bulkorder'] );
-		$is_account = static fn(): bool => true;
+		$late_var   = static fn( array $vars ): array => array_merge( $vars, [ 'pow_fixture_late' ] );
+		$render     = static function (): void { echo '<p>' . self::BULKORDER_MARK . '</p>'; };
+		$late       = static function (): void { echo '<p>late content</p>'; };
+		$dashboard  = static function (): void { echo '<p>' . self::DASHBOARD_MARK . '</p>'; };
 		$menu_item  = static fn( array $items ): array => $items + [ 'bulkorder' => 'Quick order', 'subaccounts' => 'Subaccounts' ];
 		$vars       = $wp->query_vars;
+		$main       = [ $GLOBALS['wp_the_query'] ?? null, $GLOBALS['wp_query'] ?? null ];
+		// Whatever else registers bulkorder content on this fixture is not
+		// part of the proof; the suite's own renderer is the only one.
+		remove_all_actions( 'woocommerce_account_bulkorder_endpoint' );
 		if ( $registered ) { add_filter( 'woocommerce_get_query_vars', $register ); }
-		add_filter( 'woocommerce_is_account_page', $is_account );
+		add_filter( 'query_vars', $late_var );
+		add_action( 'woocommerce_account_bulkorder_endpoint', $render );
+		add_action( 'woocommerce_account_dashboard', $dashboard );
 		add_filter( 'woocommerce_account_menu_items', $menu_item );
-		$request = static function ( array $endpoints ) use ( $wp ): void { $wp->query_vars = [ 'pagename' => 'my-account' ] + array_fill_keys( $endpoints, '' ); };
+		$opened    = static fn( ?string $html ): bool => is_string( $html ) && str_contains( $html, self::BULKORDER_MARK ) && ! str_contains( $html, self::DASHBOARD_MARK );
+		$guard_for = fn(): POW\RouteGuard => new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
 		try {
-			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'bulkorder,orders' ] ), 'the connection saves an endpoint list under its lock' );
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'bulkorder,orders,order-pay,order-received' ] ), 'the connection saves an endpoint list under its lock' );
 			$saved = $this->registry->find( $this->partner->id );
-			$this->check( 'bulkorder' === ( $saved?->visit_endpoints ?? '' ), 'a hard-denied entry never reaches the column, whoever writes it' );
+			$this->check( 'bulkorder' === ( $saved?->visit_endpoints ?? '' ), 'a hard-denied entry, order-pay and order-received included, never reaches the column, whoever writes it' );
 
 			// A fresh guard: each instance reads a connection's list once.
-			$guard = new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
+			$guard = $guard_for();
 			foreach ( [ $first, $second ] as $index => $visit ) {
 				pow_native_enter_visit( $visit );
-				$request( [ 'bulkorder' ] );
-				$this->check( ! $this->redirected( fn() => $guard->guard() ), 'visit ' . ( $index + 1 ) . ' opens the listed bulkorder endpoint' );
+				$this->check( $opened( $this->account_page( $guard, [ 'bulkorder' => '' ] ) ), 'visit ' . ( $index + 1 ) . ' opens the listed bulkorder endpoint and WooCommerce renders its content, not the dashboard' );
 			}
 			pow_native_enter_visit( $first );
-			foreach ( [ 'orders' => [ 'orders' ], 'the dashboard' => [], 'edit-account' => [ 'edit-account' ], 'an unlisted endpoint' => [ 'subaccounts' ], 'bulkorder carrying ?orders' => [ 'bulkorder', 'orders' ] ] as $label => $endpoints ) {
-				$request( $endpoints );
-				$this->check( $this->redirected( fn() => $guard->guard() ), $label . ' stays closed inside a visit of a connection listing bulkorder' );
+			$closed = [
+				'orders'                     => [ 'orders' => '' ],
+				'the dashboard'              => [],
+				'edit-account'               => [ 'edit-account' => '' ],
+				'an unregistered endpoint'   => [ 'subaccounts' => '' ],
+				'bulkorder carrying ?orders' => [ 'bulkorder' => '', 'orders' => '' ],
+				'order-pay'                  => [ 'order-pay' => '' ],
+				'order-received'             => [ 'order-received' => '' ],
+			];
+			foreach ( $closed as $label => $query ) {
+				$this->check( null === $this->account_page( $guard, $query ), $label . ' stays closed inside a visit of a connection listing bulkorder' );
 			}
 			$menu = wc_get_account_menu_items();
 			$this->check( [ 'bulkorder' ] === array_keys( $menu ), 'the real account menu inside a visit holds only the listed endpoint' );
 
+			// A row edited by hand to list the checkout endpoints, which have
+			// no account content and would render the dashboard, reads back
+			// without them and opens neither.
+			$wpdb->update( POW\Installer::partners_table(), [ 'visit_endpoints' => 'bulkorder,order-pay,order-received' ], [ 'id' => $this->partner->id ] );
+			$this->check( [ 'bulkorder' ] === ( $this->registry->find( $this->partner->id )?->visit_endpoint_list() ?? [] ), 'a hand-edited row listing order-pay and order-received reads back without them' );
+			$edited = $guard_for();
+			foreach ( [ 'order-pay', 'order-received' ] as $endpoint ) {
+				$this->check( null === $this->account_page( $edited, [ $endpoint => '' ] ), $endpoint . ' on the account page stays closed although the row names it' );
+			}
+
+			// A listed endpoint WooCommerce has no content for would render
+			// the dashboard, so it stays closed and leaves the menu. This is
+			// the state of a third-party endpoint whose plugin registers its
+			// query var for every user but its content only for some.
+			remove_action( 'woocommerce_account_bulkorder_endpoint', $render );
+			$this->check( null === $this->account_page( $edited, [ 'bulkorder' => '' ] ), 'a listed endpoint with no account content stays closed instead of rendering the dashboard' );
+			$this->check( [] === wc_get_account_menu_items(), 'and the account menu drops it' );
+			add_action( 'woocommerce_account_bulkorder_endpoint', $render );
+
+			// Content registered after the guard's first pass, for a query
+			// var WooCommerce does not map, is judged by the second pass.
+			$second_pass = null;
+			$html = $this->account_page(
+				$edited,
+				[ 'bulkorder' => '', 'pow_fixture_late' => '1' ],
+				static function () use ( $late ): void { add_action( 'woocommerce_account_pow_fixture_late_endpoint', $late ); }
+			);
+			remove_action( 'woocommerce_account_pow_fixture_late_endpoint', $late );
+			$this->check( null === $html, 'content registered after the first pass for an unlisted query var closes the page before it renders' );
+
 			pow_native_leave_visit( $this->account );
-			$request( [ 'subaccounts' ] );
-			$this->check( ! $this->redirected( fn() => $guard->guard() ), 'the account holder outside a visit keeps every account page' );
+			$this->check( str_contains( (string) $this->account_page( $guard, [] ), self::DASHBOARD_MARK ), 'the account holder outside a visit keeps the dashboard' );
+			$this->check( null !== $this->account_page( $guard, [ 'orders' => '' ] ), 'and its orders page' );
 			$menu = wc_get_account_menu_items();
 			$this->check( isset( $menu['dashboard'], $menu['orders'], $menu['bulkorder'], $menu['customer-logout'] ), 'the account holder outside a visit keeps the whole menu' );
 
@@ -274,15 +334,51 @@ final class VisitLockdownNative {
 			$other_id = $this->registry->insert( [ 'name' => 'Lockdown other ' . $suffix, 'status' => POW\Partners\Partner::STATUS_ACTIVE, 'owner_user_id' => $other_account, 'from_domain' => 'NetworkID', 'from_identity' => 'other-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'other-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier-' . $suffix, 'cxml_version' => '1.2.008', 'deployment_mode' => 'test', 'return_encoding' => 'base64' ], wp_generate_password( 40, false, false ) );
 			$other_visit = pow_native_open_visit( $other_id, $other_account, [ 'buyer_identity' => 'other-' . $suffix . '@example.invalid' ] );
 			pow_native_enter_visit( $other_visit );
-			$request( [ 'bulkorder' ] );
-			$this->check( $this->redirected( fn() => $guard->guard() ), "another connection's visit does not inherit this connection's list" );
+			$this->check( null === $this->account_page( $guard, [ 'bulkorder' => '' ] ), "another connection's visit does not inherit this connection's list" );
 			$this->check( [] === wc_get_account_menu_items(), "that visit's account menu is empty" );
 		} finally {
 			$wp->query_vars = $vars;
+			[ $GLOBALS['wp_the_query'], $GLOBALS['wp_query'] ] = $main;
 			remove_filter( 'woocommerce_account_menu_items', $menu_item );
-			remove_filter( 'woocommerce_is_account_page', $is_account );
+			remove_action( 'woocommerce_account_dashboard', $dashboard );
+			remove_action( 'woocommerce_account_bulkorder_endpoint', $render );
+			remove_filter( 'query_vars', $late_var );
 			if ( $registered ) { remove_filter( 'woocommerce_get_query_vars', $register ); }
 			pow_native_leave_visit( $this->admin );
+		}
+	}
+
+	/**
+	 * One front-end load of the account page with plain permalinks: parse,
+	 * main query, the guard's first pass (template_redirect priority 1),
+	 * whatever else runs before the second pass ($between), the second pass
+	 * (priority PHP_INT_MAX), then WooCommerce's own account content.
+	 *
+	 * @param array<string, string> $query Endpoint query string, beside page_id.
+	 * @return string|null The rendered account content, or null when the guard refused the request.
+	 */
+	private function account_page( POW\RouteGuard $guard, array $query, ?callable $between = null ): ?string {
+		global $wp;
+		$saved = [ $_GET, $_SERVER['REQUEST_URI'] ?? null, $_SERVER['QUERY_STRING'] ?? null ];
+		$_GET  = [ 'page_id' => (string) wc_get_page_id( 'myaccount' ) ] + $query;
+		$_SERVER['QUERY_STRING'] = http_build_query( $_GET );
+		$_SERVER['REQUEST_URI']  = '/?' . $_SERVER['QUERY_STRING'];
+		$GLOBALS['wp_the_query'] = new WP_Query();
+		$GLOBALS['wp_query']     = $GLOBALS['wp_the_query'];
+		try {
+			$wp->parse_request();
+			$wp->query_posts();
+			if ( ! is_account_page() ) { throw new RuntimeException( 'The fixture request did not reach the account page.' ); }
+			if ( $this->redirected( fn() => $guard->guard() ) ) { return null; }
+			if ( null !== $between ) { $between(); }
+			if ( $this->redirected( fn() => $guard->recheck_account_page() ) ) { return null; }
+			ob_start();
+			woocommerce_account_content();
+			return (string) ob_get_clean();
+		} finally {
+			[ $_GET, $uri, $query_string ] = $saved;
+			if ( null === $uri ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $uri; }
+			if ( null === $query_string ) { unset( $_SERVER['QUERY_STRING'] ); } else { $_SERVER['QUERY_STRING'] = $query_string; }
 		}
 	}
 
@@ -296,10 +392,11 @@ final class VisitLockdownNative {
 		global $wpdb;
 		[ $first ] = $this->visits;
 		$login = 'visit-created-' . bin2hex( random_bytes( 6 ) );
-		$saved = [ $_SERVER['SCRIPT_FILENAME'] ?? null, $_REQUEST['action'] ?? null ];
+		$saved = [ $_SERVER['SCRIPT_FILENAME'] ?? null, $_REQUEST['action'] ?? null, $_SERVER['REQUEST_URI'] ?? null ];
 		pow_native_enter_visit( $first );
 		try {
 			$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'wp-admin/admin-ajax.php';
+			$_SERVER['REQUEST_URI'] = '/wp-admin/admin-ajax.php';
 			$_REQUEST['action'] = 'fixture_create_subaccount';
 			$result = wp_insert_user( [ 'user_login' => $login, 'user_email' => $login . '@example.invalid', 'user_pass' => wp_generate_password( 32 ), 'role' => 'customer' ] );
 			$this->check( $result instanceof WP_Error && 'empty_data' === $result->get_error_code(), 'creating a user inside a visit returns a WP_Error' );
@@ -308,15 +405,20 @@ final class VisitLockdownNative {
 			$detail = is_array( $row ) ? json_decode( (string) $row['detail'], true ) : null;
 			$this->check(
 				is_array( $row ) && (int) $row['partner_id'] === $this->partner->id && (int) $row['user_id'] === $this->account && 'refused' === $row['result']
-					&& [ 'script' => 'admin-ajax.php', 'action' => 'fixture_create_subaccount' ] === $detail && ! str_contains( (string) $row['detail'], $login ),
-				'the refusal is audited with its connection, visit, script and action, and nothing about the refused account'
+					&& [ 'script' => 'admin-ajax.php', 'action' => 'fixture_create_subaccount', 'wc_ajax' => '', 'rest_route' => '', 'path' => '/wp-admin/admin-ajax.php' ] === $detail && ! str_contains( (string) $row['detail'], $login ),
+				'the refusal is audited with its connection, visit, script, action and path, and nothing about the refused account'
 			);
+			$refused = static fn(): int => (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . POW\Installer::log_table() . ' WHERE event = %s AND session_id = %d', 'visit_user_create_refused', $first->id ) );
+			$before  = $refused();
+			$again   = wp_insert_user( [ 'user_login' => $login . '-2', 'user_email' => $login . '-2@example.invalid', 'user_pass' => wp_generate_password( 32 ), 'role' => 'customer' ] );
+			$this->check( $again instanceof WP_Error && false === username_exists( $login . '-2' ) && $refused() === $before, 'a second attempt in the same request is refused and not recorded again' );
 			$updated = wp_update_user( [ 'ID' => $this->account, 'display_name' => (string) get_userdata( $this->account )->display_name ] );
 			$this->check( $updated === $this->account, 'updating the shared account inside a visit is not creation and still works' );
 		} finally {
-			[ $script, $action ] = $saved;
+			[ $script, $action, $uri ] = $saved;
 			if ( null === $script ) { unset( $_SERVER['SCRIPT_FILENAME'] ); } else { $_SERVER['SCRIPT_FILENAME'] = $script; }
 			if ( null === $action ) { unset( $_REQUEST['action'] ); } else { $_REQUEST['action'] = $action; }
+			if ( null === $uri ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $uri; }
 			pow_native_leave_visit( $this->admin );
 		}
 		$this->check( pow_native_bound_account( 'lockdown-outside' ) > 0, 'outside a visit users are created normally' );

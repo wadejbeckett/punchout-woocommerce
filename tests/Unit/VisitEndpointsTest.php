@@ -30,6 +30,21 @@ final class VisitEndpointsTest extends TestCase {
 		self::assertContains( 'dashboard', VisitEndpoints::HARD_DENY, "The account menu's name for the dashboard is denied with it" );
 	}
 
+	/**
+	 * WooCommerce's checkout endpoints are in its endpoint map but have no
+	 * account content, so on the account page they would show the dashboard.
+	 * The form refuses them by name, and a row that names them reads back
+	 * without them.
+	 */
+	public function test_the_checkout_endpoints_are_hard_denied_because_they_would_show_the_dashboard(): void {
+		foreach ( [ 'order-pay', 'order-received' ] as $endpoint ) {
+			self::assertContains( $endpoint, VisitEndpoints::HARD_DENY );
+			self::assertFalse( VisitEndpoints::allows( [ $endpoint ], $endpoint ), "'{$endpoint}' never opens, even when listed" );
+		}
+		self::assertSame( [ 'order-pay', 'order-received' ], VisitEndpoints::parse( 'bulkorder,order-pay,order-received' )['rejected'] );
+		self::assertSame( [ 'bulkorder' ], Partner::from_row( [ 'id' => 1, 'visit_endpoints' => 'order-pay,bulkorder,order-received' ] )->visit_endpoint_list() );
+	}
+
 	public function test_lowercase_slugs_are_accepted_in_order_without_duplicates(): void {
 		$parsed = VisitEndpoints::parse( " bulkorder, purchase-lists ,purchase_list2,bulkorder,\nnew-list, " );
 

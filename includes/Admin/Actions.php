@@ -14,6 +14,7 @@ use POW\Support\Transport;
 
 use POW\Account\VisitEndpoints;
 use POW\Audit\Log;
+use POW\Installer;
 use POW\Partners\Registry;
 use POW\Partners\Registration;
 use POW\Partners\Secrets;
@@ -73,7 +74,8 @@ final class Actions {
 
 		// Only when the form sent the field, so a form without it never
 		// clears a connection's list. A list with any bad entry is refused
-		// whole, and the notice names each one.
+		// whole, before anything is written, and the notice names each one
+		// and says the rest of the form was not kept either.
 		if ( array_key_exists( 'visit_endpoints', $posted ) ) {
 			$endpoints = VisitEndpoints::parse( sanitize_text_field( (string) $posted['visit_endpoints'] ) );
 			if ( [] !== $endpoints['rejected'] ) {
@@ -81,7 +83,7 @@ final class Actions {
 					'partners',
 					sprintf(
 						/* translators: %s: comma-separated endpoint names that were refused */
-						__( 'Not saved. These cannot open in a punchout visit: %s. List lowercase My Account endpoint names only; the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout and the integration tab always stay closed.', 'punchout-woocommerce' ),
+						__( 'Not saved, and no other change on the form was kept either. These cannot open in a punchout visit: %s. List lowercase My Account endpoint names only; the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout, the order-pay and order-received pages and the integration tab always stay closed.', 'punchout-woocommerce' ),
 						implode( ', ', $endpoints['rejected'] )
 					),
 					'error'
@@ -89,7 +91,7 @@ final class Actions {
 			}
 			if ( $endpoints['too_long'] ) {
 				/* translators: %d: maximum length of the endpoint list */
-				$this->finish( 'partners', sprintf( __( 'Not saved. The My Account endpoint list must fit in %d characters.', 'punchout-woocommerce' ), VisitEndpoints::MAX_LENGTH ), 'error' );
+				$this->finish( 'partners', sprintf( __( 'Not saved, and no other change on the form was kept either. The My Account endpoint list must fit in %d characters.', 'punchout-woocommerce' ), VisitEndpoints::MAX_LENGTH ), 'error' );
 			}
 			$data['visit_endpoints'] = implode( ',', $endpoints['endpoints'] );
 		}
@@ -122,7 +124,30 @@ final class Actions {
 			$this->record( 'partner_saved', $partner_id, array_key_exists( 'visit_endpoints', $data ) ? [ 'visit_endpoints' => $data['visit_endpoints'] ] : [] );
 			if ( '' !== $issued ) { $this->secret_response( __( 'Customer saved.', 'punchout-woocommerce' ), $issued ); }
 		}
-		$this->finish( 'partners', $ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : __( 'Saving failed — is the Sender identity unique?', 'punchout-woocommerce' ), $ok ? 'success' : 'error' );
+		$this->finish( 'partners', $ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : $this->save_failed_message(), $ok ? 'success' : 'error' );
+	}
+
+	/**
+	 * Why a connection save failed, as far as the handler can tell. The form
+	 * writes every column, so a schema upgrade that has not landed fails
+	 * every save; say that rather than blame the Sender identity.
+	 */
+	private function save_failed_message(): string {
+		try {
+			$faults = Installer::partners_schema_faults();
+		} catch ( \Throwable $e ) {
+			$faults = [];
+		}
+
+		if ( [] !== $faults ) {
+			return sprintf(
+				/* translators: %s: what the connections table is missing, e.g. "column visit_endpoints is missing" */
+				__( 'Saving failed: the connections table has not been upgraded yet (%s). The upgrade runs again on every wp-admin page load, and the WooCommerce log (source punchout-woocommerce) says why it has not landed.', 'punchout-woocommerce' ),
+				implode( '; ', $faults )
+			);
+		}
+
+		return __( 'Saving failed — is the Sender identity unique?', 'punchout-woocommerce' );
 	}
 
 	public function approve_partner(): void {

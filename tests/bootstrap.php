@@ -22,8 +22,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', '/' );
 }
 
-// Under real PHPUnit this shim defines nothing.
-require_once __DIR__ . '/Support/testcase-shim.php';
+// Under real PHPUnit this shim is never loaded. The check has to run here,
+// before the shim file is compiled: PHP declares a file's top-level classes
+// at compile time, so a class_exists() test inside the shim would find the
+// shim's own TestCase and never PHPUnit's, which autoloads only on demand.
+if ( ! class_exists( \PHPUnit\Framework\TestCase::class ) ) {
+	require_once __DIR__ . '/Support/testcase-shim.php';
+}
 
 // Under WordPress these stubs define nothing.
 require_once __DIR__ . '/Support/wp-stubs.php';
