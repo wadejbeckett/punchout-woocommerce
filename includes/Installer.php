@@ -381,10 +381,11 @@ final class Installer {
 
 	/**
 	 * What schema eight asked of the partners table and it does not have.
+	 * The connection form reads it too, to say why a save failed.
 	 *
 	 * @return list<string>
 	 */
-	private static function partners_schema_faults(): array {
+	public static function partners_schema_faults(): array {
 		global $wpdb;
 
 		$partners = self::partners_table();

@@ -27,7 +27,8 @@ namespace {
 	if ( ! function_exists( 'wp_doing_ajax' ) ) { function wp_doing_ajax(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['ajax'] ?? false ); } }
 
 	// Whether an account-endpoint action would render a query var: the
-	// fixture names the query vars that have one.
+	// fixture names the query vars that have one. RouteGuardTest::rendered()
+	// replays WooCommerce's own choice of content over the same answer.
 	if ( ! function_exists( 'has_action' ) ) {
 		function has_action( string $hook, mixed $callback = false ): bool {
 			foreach ( $GLOBALS['pow_route_guard_test']['account_actions'] ?? [] as $endpoint ) {
@@ -372,13 +373,38 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		'bulkorder', 'purchase-lists', 'subaccounts',
 	];
 
+	/**
+	 * The endpoints with account content on this fixture: WooCommerce's own
+	 * content actions, the plugin's tab and the three third-party pages.
+	 * order-pay, order-received, lost-password, customer-logout and the
+	 * payment-method actions have none, so on the account page WooCommerce
+	 * would show the dashboard for them.
+	 */
+	private const WITH_CONTENT = [
+		'orders', 'view-order', 'downloads', 'edit-address', 'payment-methods', 'add-payment-method', 'edit-account', 'punchout-integration',
+		'bulkorder', 'purchase-lists', 'subaccounts',
+	];
+
 	/** Connection 7, active, listing $endpoints exactly as the row would hold them. */
 	private function connection( string $endpoints, string $status = 'active' ): RouteGuardPartnerDatabase {
 		$GLOBALS['wpdb'] = $database = new RouteGuardPartnerDatabase();
 		$database->rows[7] = [ 'id' => 7, 'name' => 'Example', 'status' => $status, 'owner_user_id' => self::ACCOUNT, 'visit_endpoints' => $endpoints ];
 		WC()->query = new RouteGuardWcQuery( array_combine( self::WC_ENDPOINTS, self::WC_ENDPOINTS ) );
 		$GLOBALS['pow_route_guard_test']['account'] = true;
+		$GLOBALS['pow_route_guard_test']['account_actions'] = self::WITH_CONTENT;
 		return $database;
+	}
+
+	/**
+	 * What woocommerce_account_content() would render for the current query
+	 * vars: the first one, pagename aside, with an account-endpoint action,
+	 * else the dashboard.
+	 */
+	private function rendered(): string {
+		foreach ( array_keys( $GLOBALS['wp']->query_vars ) as $key ) {
+			if ( 'pagename' !== $key && has_action( 'woocommerce_account_' . $key . '_endpoint' ) ) { return (string) $key; }
+		}
+		return 'dashboard';
 	}
 
 	/** An account page request carrying these query vars, as WordPress and WooCommerce leave them. */
@@ -454,6 +480,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertFalse( $this->opens( [ 'unmapped', 'bulkorder' ], $this->visit() ), 'An endpoint WooCommerce would render but does not map is still judged' );
 
 		$this->connection( 'unmapped' );
+		$GLOBALS['pow_route_guard_test']['account_actions'] = [ 'bulkorder', 'unmapped' ];
 		self::assertTrue( $this->opens( [ 'unmapped' ], $this->visit() ), 'Listed, it opens like any other' );
 	}
 
@@ -501,6 +528,86 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
+	 * WooCommerce shows the dashboard for an account request whose endpoints
+	 * have no content action, and the dashboard is hard-denied. A listed name
+	 * without content therefore never opens: a checkout endpoint such as
+	 * order-pay, or a third-party endpoint whose plugin registers its query
+	 * var for everyone but its content only for some accounts.
+	 */
+	public function test_a_listed_endpoint_without_account_content_never_opens(): void {
+		$this->connection( 'bulkorder,purchase-lists' );
+		$GLOBALS['pow_route_guard_test']['account_actions'] = array_values( array_diff( self::WITH_CONTENT, [ 'bulkorder' ] ) );
+
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit() ), 'Listed, but without content it would render the dashboard' );
+		self::assertTrue( $this->opens( [ 'purchase-lists' ], $this->visit() ), 'A listed endpoint with content still opens' );
+		self::assertFalse( $this->opens( [ 'purchase-lists', 'bulkorder' ], $this->visit() ), 'A content-less endpoint beside a good one closes the page' );
+		self::assertSame(
+			[ 'purchase-lists' => 'Lists' ],
+			$this->guard( $this->visit() )->visit_menu_items( [ 'bulkorder' => 'Quick order', 'purchase-lists' => 'Lists' ] ),
+			'The menu drops a listed item that would not open'
+		);
+
+		$this->connection( 'bulkorder,order-pay,order-received' );
+		self::assertSame( [ 'bulkorder' ], POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'A row naming the checkout endpoints reads back without them' );
+		foreach ( [ 'order-pay', 'order-received' ] as $endpoint ) {
+			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} on the account page never opens inside a visit" );
+			self::assertFalse( $this->opens( [ 'bulkorder', $endpoint ], $this->visit() ), "{$endpoint} beside a listed endpoint closes the page" );
+		}
+	}
+
+	/**
+	 * The invariant behind the list: whatever the request carries and
+	 * whichever endpoints have content, a page the guard opens inside a visit
+	 * renders a listed endpoint, never the dashboard. Every request of up to
+	 * two endpoints from the pool, in either order, under three content sets.
+	 */
+	public function test_whatever_opens_inside_a_visit_renders_a_listed_endpoint_never_the_dashboard(): void {
+		$pool    = [ 'bulkorder', 'purchase-lists', 'unmapped', 'order-pay', 'order-received', 'orders', 'subaccounts', 'lost-password' ];
+		$listed  = [ 'bulkorder', 'purchase-lists', 'unmapped' ];
+		$content = [
+			'all'            => array_merge( self::WITH_CONTENT, [ 'unmapped' ] ),
+			'no bulkorder'   => array_merge( array_diff( self::WITH_CONTENT, [ 'bulkorder' ] ), [ 'unmapped' ] ),
+			'no third party' => array_values( array_diff( self::WITH_CONTENT, [ 'bulkorder', 'purchase-lists', 'subaccounts' ] ) ),
+		];
+		$requests = [ [] ];
+		foreach ( $pool as $a ) {
+			$requests[] = [ $a ];
+			foreach ( $pool as $b ) { if ( $a !== $b ) { $requests[] = [ $a, $b ]; } }
+		}
+
+		$opened = 0;
+		foreach ( $content as $label => $actions ) {
+			$this->connection( implode( ',', array_merge( $listed, [ 'order-pay' ] ) ) );
+			$GLOBALS['pow_route_guard_test']['account_actions'] = array_values( $actions );
+			foreach ( $requests as $endpoints ) {
+				if ( ! $this->opens( $endpoints, $this->visit() ) ) { continue; }
+				++$opened;
+				self::assertContains( $this->rendered(), $listed, $label . ': [' . implode( ',', $endpoints ) . '] opened and renders ' . $this->rendered() );
+			}
+		}
+		self::assertGreaterThan( 0, $opened, 'Some requests open, so the invariant is not vacuous' );
+	}
+
+	/**
+	 * The second pass at the end of template_redirect judges content a plugin
+	 * registered after the first, for a query var WooCommerce does not map.
+	 */
+	public function test_the_second_pass_judges_content_registered_after_the_first(): void {
+		$this->connection( 'bulkorder' );
+		$this->account_request( [ 'bulkorder', 'late' ] );
+		$guard = $this->guard( $this->visit() );
+
+		self::assertNull( $this->guarded( $guard ), 'At the first pass the late query var has no content and names nothing' );
+		try { $guard->recheck_account_page(); } catch ( RouteGuardRedirect $redirect ) { self::fail( 'Nothing changed, so the second pass agrees' ); }
+
+		$GLOBALS['pow_route_guard_test']['account_actions'][] = 'late';
+		try { $guard->recheck_account_page(); self::fail( 'Content for an unlisted query var appeared, so the page must close' ); }
+		catch ( RouteGuardRedirect $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
+
+		try { $this->guard( null )->recheck_account_page(); } catch ( RouteGuardRedirect $redirect ) { self::fail( 'Outside a visit the second pass never redirects' ); }
+	}
+
+	/**
 	 * P2: a visit creates no user. admin-ajax.php stays reachable inside a
 	 * visit so the basket works, which also makes every plugin action behind
 	 * it reachable; a sub-account form there would otherwise hand a buyer a
@@ -517,7 +624,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		[ $event, $context ] = $audit->events[0];
 		self::assertSame( 'visit_user_create_refused', $event );
 		self::assertSame( [ 7, self::VISIT, self::ACCOUNT, 'refused' ], [ $context['partner_id'], $context['session_id'], $context['user_id'], $context['result'] ] );
-		self::assertSame( [ 'script' => 'admin-ajax.php', 'action' => 'example_create_subaccount' ], $context['detail'] );
+		self::assertSame( [ 'script' => 'admin-ajax.php', 'action' => 'example_create_subaccount', 'wc_ajax' => '', 'rest_route' => '', 'path' => '' ], $context['detail'] );
 		self::assertStringNotContainsString( 'new-colleague', (string) json_encode( $audit->events ), 'Nothing about the refused account is recorded' );
 
 		$audit->events = [];
@@ -532,9 +639,32 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertSame( [ 0, 0 ], [ $audit->events[0][1]['partner_id'], $audit->events[0][1]['session_id'] ], 'An unproven visit is recorded without one' );
 	}
 
-	/** Both filters run last, so nothing registered after them can undo the decision. */
+	/** The audit row names the route a creation came through, whichever it was, and a request records once. */
+	public function test_a_refused_creation_records_its_route_once_per_request(): void {
+		$data = [ 'user_login' => 'new-colleague' ];
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/index.php';
+
+		$audit = new RouteGuardAudit();
+		$_GET['wc-ajax'] = 'example_register';
+		$_SERVER['REQUEST_URI'] = '/?wc-ajax=example_register';
+		$guard = $this->guard( $this->visit(), null, $audit );
+		self::assertSame( [], $guard->refuse_user_creation( $data, false, null, $data ) );
+		self::assertSame( [ 'script' => 'index.php', 'action' => '', 'wc_ajax' => 'example_register', 'rest_route' => '', 'path' => '/' ], $audit->events[0][1]['detail'], 'A wc-ajax request is named by its action' );
+		self::assertSame( [], $guard->refuse_user_creation( $data, false, null, $data ), 'A second attempt in the same request is refused too' );
+		self::assertCount( 1, $audit->events, 'but recorded once' );
+
+		$audit = new RouteGuardAudit();
+		unset( $_GET['wc-ajax'] );
+		$GLOBALS['wp']->query_vars['rest_route'] = '/example/v1/accounts';
+		$_SERVER['REQUEST_URI'] = '/wp-json/example/v1/accounts?name=<b>x</b>';
+		self::assertSame( [], $this->guard( $this->visit(), null, $audit )->refuse_user_creation( $data, false, null, $data ) );
+		self::assertSame( [ 'script' => 'index.php', 'action' => '', 'wc_ajax' => '', 'rest_route' => '/example/v1/accounts', 'path' => '/wp-json/example/v1/accounts' ], $audit->events[0][1]['detail'], 'A REST request is named by its route and path, never its query string' );
+	}
+
+	/** Both filters and the account page's second pass run last, so nothing registered after them can undo the decision. */
 	public function test_the_menu_filter_and_the_user_veto_are_registered_last(): void {
 		$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/RouteGuard.php' );
+		self::assertStringContainsString( "add_action( 'template_redirect', [ \$this, 'recheck_account_page' ], PHP_INT_MAX );", $source );
 		self::assertStringContainsString( "add_filter( 'woocommerce_account_menu_items', [ \$this, 'visit_menu_items' ], PHP_INT_MAX );", $source );
 		self::assertStringContainsString( "add_filter( 'wp_pre_insert_user_data', [ \$this, 'refuse_user_creation' ], PHP_INT_MAX, 4 );", $source );
 	}

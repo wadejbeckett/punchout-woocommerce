@@ -38,11 +38,19 @@ final class VisitEndpoints {
 	 * '' is the account dashboard, and 'dashboard' is the name WooCommerce's
 	 * account menu gives that same page.
 	 *
+	 * 'order-pay' and 'order-received' are WooCommerce's checkout endpoints.
+	 * They are in its endpoint map but have no account content, so on the
+	 * account page WooCommerce renders the dashboard for them. The guard
+	 * refuses any endpoint without account content anyway; listing them here
+	 * as well means the form refuses them by name.
+	 *
 	 * @var list<string>
 	 */
 	public const HARD_DENY = [
 		'',
 		'dashboard',
+		'order-pay',
+		'order-received',
 		'orders',
 		'view-order',
 		'downloads',

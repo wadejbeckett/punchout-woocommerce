@@ -580,7 +580,7 @@ final class Page {
 			sprintf(
 				'<input type="text" class="regular-text" name="visit_endpoints" value="%s" placeholder="bulkorder" /><p class="description">%s</p>',
 				esc_attr( str_replace( ',', ', ', (string) ( $partner->visit_endpoints ?? '' ) ) ),
-				esc_html__( 'Optional. Comma-separated My Account endpoint names a buyer may open during a punchout visit, for example a third-party quick-order page. Empty keeps all of My Account closed in a visit. Every buyer of this connection shares one account, so the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout and the integration tab always stay closed and cannot be listed. Inside a visit the account menu shows only the listed pages.', 'punchout-woocommerce' )
+				esc_html__( 'Optional. Comma-separated My Account endpoint names a buyer may open during a punchout visit, for example a third-party quick-order page. Empty keeps all of My Account closed in a visit. Every buyer of this connection shares one account, so the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout, the order-pay and order-received pages and the integration tab always stay closed and cannot be listed. A listed page opens only when WooCommerce has account content for it on that request; a name that is not a registered endpoint, or whose plugin shows its content only to some accounts, opens nothing. Inside a visit the account menu shows only the listed pages that open.', 'punchout-woocommerce' )
 			)
 		);
 

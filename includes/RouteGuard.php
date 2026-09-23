@@ -44,6 +44,9 @@ final class RouteGuard {
 	/** @var array<int, list<string>> Each connection's endpoint list, read once per request. */
 	private array $visit_endpoints = [];
 
+	/** Whether this request has already recorded a refused user creation. */
+	private bool $user_create_recorded = false;
+
 	/**
 	 * @param Plugin   $plugin   Container, asked for the request's visit.
 	 * @param Registry $registry Connection registry: the source of the My
@@ -64,6 +67,9 @@ final class RouteGuard {
 
 	public function register(): void {
 		add_action( 'template_redirect', [ $this, 'guard' ], 1 );
+		// The account page again, last: content registered for an endpoint
+		// after the first pass is judged before the page renders.
+		add_action( 'template_redirect', [ $this, 'recheck_account_page' ], PHP_INT_MAX );
 
 		// template_redirect runs for front-end page requests only. wp-admin,
 		// admin-ajax.php and the REST API never reach it, so the shared
@@ -100,7 +106,7 @@ final class RouteGuard {
 		// template_redirect only, so it never sees admin-ajax.php, the REST
 		// API or wp-admin — guard_admin() and guard_rest() hold those. The
 		// bound account outside a visit keeps its whole account area.
-		if ( null !== $visit && function_exists( 'is_account_page' ) && is_account_page() && ! $this->account_endpoint_open( $visit ) ) {
+		if ( $this->account_page_refused( $visit ) ) {
 			$this->redirect_to_landing();
 			return;
 		}
@@ -134,10 +140,38 @@ final class RouteGuard {
 	}
 
 	/**
+	 * The account-page check once more, at the end of template_redirect.
+	 *
+	 * guard() runs at priority 1, before WooCommerce's own form handlers, and
+	 * reads which endpoints have account content at that moment. Content a
+	 * plugin registers later in template_redirect, for a query var
+	 * WooCommerce does not map, would otherwise render unjudged. Content
+	 * registered while the page itself renders is beyond any redirect.
+	 */
+	public function recheck_account_page(): void {
+		if ( $this->account_page_refused( $this->plugin->current_session() ) ) {
+			$this->redirect_to_landing();
+		}
+	}
+
+	/** Whether this request is an account page inside a visit that must not open. */
+	private function account_page_refused( ?Session $visit ): bool {
+		return null !== $visit && function_exists( 'is_account_page' ) && is_account_page() && ! $this->account_endpoint_open( $visit );
+	}
+
+	/**
 	 * Whether every My Account endpoint this request names is one the
-	 * visit's connection lists and none is hard-denied. The dashboard is
-	 * hard-denied, so an account page naming no endpoint never opens. Any
-	 * failure to read the connection keeps the account area closed.
+	 * visit's connection lists, none is hard-denied, and each has account
+	 * content of its own. The dashboard is hard-denied, so an account page
+	 * naming no endpoint never opens. Any failure to read the connection
+	 * keeps the account area closed.
+	 *
+	 * The content check is what keeps the dashboard closed behind a listed
+	 * name. WooCommerce renders the first query var that has an
+	 * account-endpoint action and falls back to the dashboard when none has.
+	 * Every query var with such an action is among the requested endpoints,
+	 * so when each requested endpoint has one, the page WooCommerce renders
+	 * is one of them, and so a listed one.
 	 */
 	private function account_endpoint_open( Session $visit ): bool {
 		try {
@@ -148,7 +182,7 @@ final class RouteGuard {
 			}
 
 			foreach ( $this->requested_account_endpoints() as $endpoint ) {
-				if ( ! VisitEndpoints::allows( $allowed, $endpoint ) ) {
+				if ( ! VisitEndpoints::allows( $allowed, $endpoint ) || ! self::has_account_content( $endpoint ) ) {
 					return false;
 				}
 			}
@@ -157,6 +191,17 @@ final class RouteGuard {
 		} catch ( \Throwable $e ) {
 			return false;
 		}
+	}
+
+	/**
+	 * Whether WooCommerce's account page has content for $endpoint: an action
+	 * on woocommerce_account_<endpoint>_endpoint. Without one, the page shows
+	 * the dashboard instead. That covers a checkout endpoint such as order-pay
+	 * and a third-party endpoint whose plugin registers the query var for
+	 * everyone but the content only for some users.
+	 */
+	private static function has_account_content( string $endpoint ): bool {
+		return '' !== $endpoint && function_exists( 'has_action' ) && false !== has_action( 'woocommerce_account_' . $endpoint . '_endpoint' );
 	}
 
 	/**
@@ -250,7 +295,8 @@ final class RouteGuard {
 
 	/**
 	 * The account menu inside a visit: only the endpoints its connection
-	 * lists, never a hard-denied one, whoever added the item. Outside a
+	 * lists, never a hard-denied one, whoever added the item, and only those
+	 * with account content, since the guard refuses the rest. Outside a
 	 * visit the menu is untouched. A visit that cannot be resolved, or whose
 	 * connection cannot be read, gets an empty menu.
 	 *
@@ -273,23 +319,31 @@ final class RouteGuard {
 			return [];
 		}
 
-		return array_filter( $items, static fn( mixed $endpoint ): bool => VisitEndpoints::allows( $allowed, (string) $endpoint ), ARRAY_FILTER_USE_KEY );
+		return array_filter( $items, static fn( mixed $endpoint ): bool => VisitEndpoints::allows( $allowed, (string) $endpoint ) && self::has_account_content( (string) $endpoint ), ARRAY_FILTER_USE_KEY );
 	}
 
 	/**
-	 * No user is created from inside a visit.
+	 * No user is created from inside a visit through WordPress's user insert.
 	 *
 	 * A visit is a buyer shopping as the connection's one account, not a
 	 * person with a login of their own, and the plugin never creates a user.
 	 * admin-ajax.php stays open inside a visit because the front-end basket
 	 * calls it, so any plugin action there that creates users — a
 	 * sub-account form, a registration handler — would hand a buyer a lasting
-	 * password login outside PunchOut. Every such path ends in core's one
+	 * password login outside PunchOut. Registration forms, the users REST
+	 * route and such AJAX actions all create users through core's one
 	 * user-insert routine, and this filter is its earliest generic veto:
 	 * given an empty user row, core returns a WP_Error before anything is
-	 * written. Updates to an existing user pass untouched.
+	 * written. Code that writes the users table itself, without that
+	 * routine, is beyond any WordPress hook. Updates to an existing user pass
+	 * untouched.
 	 *
 	 * A request whose visit cannot be proved is refused, like every other door.
+	 *
+	 * The audit row names the request, not the account: the script, the
+	 * admin-ajax action, the wc-ajax action, the REST route and the path.
+	 * One row per request, so a handler that retries in a loop records once;
+	 * across requests the rows are trimmed with the rest of the audit log.
 	 *
 	 * @param mixed $data     The user row about to be written.
 	 * @param mixed $update   Whether an existing user is being updated.
@@ -301,16 +355,26 @@ final class RouteGuard {
 			return $data;
 		}
 
+		if ( $this->user_create_recorded ) {
+			return [];
+		}
+
+		$this->user_create_recorded = true;
+
 		try {
 			$visit = $this->plugin->current_session();
 		} catch ( \Throwable $e ) {
 			$visit = null;
 		}
 
-		$action = $_REQUEST['action'] ?? ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- recorded, never acted on.
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput -- recorded as reduced data, never acted on.
+		$action  = $_REQUEST['action'] ?? '';
+		$wc_ajax = $_GET['wc-ajax'] ?? '';
+		$path    = wp_parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '' ), PHP_URL_PATH );
+		$script  = basename( (string) ( $_SERVER['SCRIPT_FILENAME'] ?? '' ) );
+		// phpcs:enable
+		$rest_route = $GLOBALS['wp']->query_vars['rest_route'] ?? '';
 
-		// The request's own script and action name what tried; nothing about
-		// the account that would have been created is recorded.
 		$this->plugin->audit()?->write_checked(
 			'visit_user_create_refused',
 			[
@@ -319,13 +383,21 @@ final class RouteGuard {
 				'user_id'    => get_current_user_id(),
 				'result'     => 'refused',
 				'detail'     => [
-					'script' => basename( (string) ( $_SERVER['SCRIPT_FILENAME'] ?? '' ) ), // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- basename only, stored as data.
-					'action' => is_string( $action ) ? substr( sanitize_key( $action ), 0, 64 ) : '',
+					'script'     => self::route_text( $script, 64 ),
+					'action'     => is_string( $action ) ? substr( sanitize_key( $action ), 0, 64 ) : '',
+					'wc_ajax'    => is_string( $wc_ajax ) ? substr( sanitize_key( $wc_ajax ), 0, 64 ) : '',
+					'rest_route' => is_string( $rest_route ) ? self::route_text( $rest_route, 128 ) : '',
+					'path'       => is_string( $path ) ? self::route_text( $path, 128 ) : '',
 				],
 			]
 		);
 
 		return [];
+	}
+
+	/** A route or script name reduced to path characters and cut to $length, for the audit trail. */
+	private static function route_text( string $text, int $length ): string {
+		return substr( (string) preg_replace( '#[^A-Za-z0-9/_.\-]#', '', $text ), 0, $length );
 	}
 
 	/**
