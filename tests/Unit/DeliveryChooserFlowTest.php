@@ -32,10 +32,30 @@ final class ReturnEndpoint {
 
 final class Templates {
 	public static ?array $view = null;
+	public static ?array $vars = null;
 	public static function render( string $name, array $vars ): string {
 		self::$view = $vars['view'];
+		self::$vars = $vars;
 		return '';
 	}
+}
+
+/** Stands in for Addresses\CompanyBook's one visit write; the lock, flag and ownership checks it makes are CompanyBookTest's. */
+final class CompanyBook {
+	/** @var list<array{int, string, array}> */
+	public array $calls = [];
+	public mixed $result = null;
+	public function add_for_visit( Session $visit, string $label, array $address ): array|\WP_Error {
+		$this->calls[] = [ $visit->id, $label, $address ];
+		return is_callable( $this->result ) ? ( $this->result )() : $this->result;
+	}
+}
+
+/** The buyer form's schema and draft come from the real Addresses\Fields; only the native field markup is replaced. */
+final class Fields {
+	public static function buyer_post_allowed( array $post ): bool { return \POW\Addresses\Fields::buyer_post_allowed( $post ); }
+	public static function buyer_draft( array $post ): array { return \POW\Addresses\Fields::buyer_draft( $post ); }
+	public static function address_inputs( string $id_prefix, string $country, array $address ): string { return '<input name="shipping_city">'; }
 }
 
 function is_user_logged_in(): bool { return state()->actor > 0; }
@@ -82,6 +102,8 @@ if (!isset($available[$chosen[0]??''])) { $chosen=[0=>array_key_first($available
 DEFAULTS
 	);
 	$fixture = replace_once( $fixture, "foreach(['flat:1'=>\$this->amount,'flat:2'=>900] as \$id=>\$amount)", 'foreach($available as $id=>$amount)' );
+	// WC()->countries, for the base country an empty add-address form starts from.
+	$fixture = replace_once( $fixture, 'public function shipping():Shipping{return $this->shipping;}', 'public function shipping():Shipping{return $this->shipping;} public ?object $countries = null;' );
 	eval( substr( $fixture, 5 ) );
 	load_source(); // Existing loader now binds the actual Confirmation to this namespace.
 
@@ -100,7 +122,7 @@ namespace {
 use PHPUnit\Framework\TestCase;
 use POW\Partners\Partner;
 use POW\Sessions\Session;
-use POW\Tests\DeliveryChooserFlow\{Chooser, Confirmation, Plugin, PolicyDatabase, ReturnEndpoint, State, Templates};
+use POW\Tests\DeliveryChooserFlow\{Chooser, CompanyBook, Confirmation, Plugin, PolicyDatabase, ReturnEndpoint, State, Templates};
 
 final class DeliveryChooserFlowTest extends TestCase {
 	/** The same two keys the reused fixture declares as VISIT_KEY and SIBLING_KEY; they are literals here because that namespace's constants only exist once load_flow_source() has run. */
@@ -110,6 +132,7 @@ final class DeliveryChooserFlowTest extends TestCase {
 	private Confirmation $model;
 	private Chooser $chooser;
 	private ReturnEndpoint $return_endpoint;
+	private CompanyBook $book;
 	private array $globals_before = [];
 
 	protected function setUp(): void {
@@ -120,6 +143,7 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$GLOBALS['wpdb'] = new PolicyDatabase();
 		$this->state = new State();
 		$GLOBALS['delivery_chooser_flow_state'] = $this->state;
+		$this->state->countries = new class() { public function get_base_country(): string { return 'ZA'; } };
 		$this->state->registry->partner = Partner::from_row( [ 'id' => 7, 'owner_user_id' => 99, 'status' => 'active', 'emit_delivery_line' => true ] );
 		$this->state->store->session = Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 99, 'wp_session_token' => 'exact-token', 'status' => 'active', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ), 'wc_session_key' => self::KEY ] );
 		$address = [ 'first_name' => 'Ada', 'last_name' => 'Buyer', 'company' => 'Company', 'address_1' => '1 Main St', 'address_2' => '', 'city' => 'Pretoria', 'state' => 'GP', 'postcode' => '0001', 'country' => 'ZA', 'phone' => '' ];
@@ -129,12 +153,14 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$s = $this->state;
 		$this->model = new Confirmation( $s->registry, $s->store, $s->address, $s->estimate, $s->resolver, $s->mapper );
 		$this->return_endpoint = new ReturnEndpoint();
-		$this->chooser = new Chooser( new Plugin(), $s->registry, $s->store, $this->model, $this->return_endpoint );
+		$this->book = new CompanyBook();
+		$this->chooser = new Chooser( new Plugin(), $s->registry, $s->store, $this->model, $this->return_endpoint, null, $this->book );
 		Templates::$view = null;
 	}
 
 	protected function tearDown(): void {
 		Templates::$view = null;
+		Templates::$vars = null;
 		foreach ( $this->globals_before as $key => [ $existed, $value ] ) {
 			if ( $existed ) { $GLOBALS[$key] = $value; } else { unset( $GLOBALS[$key] ); }
 		}
@@ -382,6 +408,128 @@ final class DeliveryChooserFlowTest extends TestCase {
 		self::assertSame( 0, $recovery->destroyed );
 		self::assertSame( 1, $this->state->registry->fences );
 		self::assertFalse( $this->state->registry->partner->is_active() );
+	}
+
+	// ------------------------------------------------ buyer-added addresses
+
+	private function offer_buyer_addresses(): void {
+		$this->state->registry->partner = Partner::from_row( array_replace( get_object_vars( $this->state->registry->partner ), [ 'buyer_addresses' => true ] ) );
+	}
+
+	/** Exactly what the add form posts: no return nonce, no rates, no choice. */
+	private function add_request( array $fields = [], array $without = [] ): array {
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$post = array_replace( [ 'pow_nonce' => 'nonce-pow_confirm_delivery', 'pow_address_nonce' => 'nonce-pow_add_delivery_address', 'pow_delivery_action' => 'add_address', 'pow_address_label' => 'Site B', 'shipping_first_name' => 'Ada', 'shipping_last_name' => 'Buyer', 'shipping_company' => '', 'shipping_address_1' => '9 Dock Road', 'shipping_address_2' => '', 'shipping_city' => 'Durban', 'shipping_state' => 'KZN', 'shipping_postcode' => '4001', 'shipping_country' => 'ZA', 'shipping_phone' => '' ], $fields );
+		$_POST = array_diff_key( $post, array_flip( $without ) );
+		$GLOBALS['pow_test_status_headers'] = [];
+		Templates::$view = null; Templates::$vars = null;
+		ob_start();
+		try { $this->chooser->handle(); } finally { ob_end_clean(); }
+		return Templates::$view ?? [];
+	}
+
+	private function assert_expired( array $view, string $case ): void {
+		self::assertSame( [ 403 ], $GLOBALS['pow_test_status_headers'], $case );
+		self::assertSame( 'delivery_unavailable', $view['error']->get_error_code(), $case );
+		self::assertSame( [], $this->book->calls, $case );
+		self::assertNull( Templates::$vars['add_address'] ?? null, $case );
+	}
+
+	public function test_review_offers_the_add_form_only_when_the_connection_allows_it(): void {
+		$this->request();
+		self::assertNull( Templates::$vars['add_address'] );
+		$this->offer_buyer_addresses();
+		$this->request();
+		$add = Templates::$vars['add_address'];
+		self::assertSame( '<input name="shipping_city">', $add['fields'] );
+		self::assertSame( 'nonce-pow_add_delivery_address', $add['nonce'] );
+		self::assertSame( '', $add['label'] );
+		self::assertFalse( $add['open'] );
+		self::assertNull( $add['notice'] );
+		$chooser = new Chooser( new Plugin(), $this->state->registry, $this->state->store, $this->model, $this->return_endpoint );
+		$this->chooser = $chooser; $this->request();
+		self::assertNull( Templates::$vars['add_address'], 'No book wired, no form.' );
+	}
+
+	public function test_add_address_is_refused_when_the_connection_does_not_offer_it(): void {
+		$this->assert_expired( $this->add_request(), 'flag off' );
+		$this->offer_buyer_addresses();
+		$this->chooser = new Chooser( new Plugin(), $this->state->registry, $this->state->store, $this->model, $this->return_endpoint );
+		$this->assert_expired( $this->add_request(), 'no book' );
+		$this->assert_no_consent_or_handoff();
+	}
+
+	public function test_add_address_needs_its_own_nonce(): void {
+		$this->offer_buyer_addresses();
+		$this->assert_expired( $this->add_request( [], [ 'pow_address_nonce' ] ), 'missing' );
+		$this->assert_expired( $this->add_request( [ 'pow_address_nonce' => 'nonce-pow_confirm_delivery' ] ), 'the review nonce' );
+		$this->assert_expired( $this->add_request( [ 'pow_address_nonce' => [ 'nonce-pow_add_delivery_address' ] ] ), 'an array' );
+		$this->add_request( [], [ 'pow_nonce' ] );
+		self::assertSame( [ 403 ], $GLOBALS['pow_test_status_headers'] );
+		self::assertSame( [], $this->book->calls );
+		$this->assert_no_consent_or_handoff();
+	}
+
+	public function test_add_address_refuses_a_forged_code_or_any_other_field(): void {
+		$this->offer_buyer_addresses();
+		foreach ( [ [ 'pow_address_code' => 'MINE' ], [ 'pow_address_code' => '' ], [ 'use_for_punchout' => '1' ], [ 'pow_return_nonce' => 'nonce-pow_return' ], [ 'choice' => 'native:depot' ], [ 'shipping_city' => [ 'Durban' ] ], [ 'pow_address_refresh' => '2' ] ] as $forged ) {
+			$this->assert_expired( $this->add_request( $forged ), (string) json_encode( $forged ) );
+		}
+		$this->assert_no_consent_or_handoff();
+	}
+
+	public function test_a_successful_add_previews_the_new_entry_as_selected_without_consent(): void {
+		$this->offer_buyer_addresses();
+		$fresh = array_replace( $this->state->resolver->choices[1], [ 'key' => 'fresh', 'code' => 'BUYER-003', 'label' => 'Site B', 'entry_fingerprint' => str_repeat( 'c', 64 ) ] );
+		$this->book->result = function () use ( $fresh ): array {
+			$this->state->resolver->choices[] = $fresh;
+			return [ 'revision' => 2, 'key' => 'fresh', 'entry' => [], 'changed' => true ];
+		};
+		$view = $this->add_request();
+		self::assertSame( [], $GLOBALS['pow_test_status_headers'] );
+		self::assertSame( [ [ 42, 'Site B', [ 'first_name' => 'Ada', 'last_name' => 'Buyer', 'company' => '', 'address_1' => '9 Dock Road', 'address_2' => '', 'city' => 'Durban', 'state' => 'KZN', 'postcode' => '4001', 'country' => 'ZA', 'phone' => '' ] ] ], $this->book->calls );
+		self::assertNull( $view['error'] );
+		self::assertSame( 'fresh', $view['selected_choice']['key'] );
+		self::assertSame( 'Durban', $view['delivery_destination']['address']['city'] );
+		self::assertTrue( $view['can_confirm'] );
+		$add = Templates::$vars['add_address'];
+		self::assertStringContainsString( 'selected for this cart', (string) $add['notice'] );
+		self::assertFalse( $add['open'] );
+		self::assertSame( '', $add['label'], 'A saved address leaves an empty form behind.' );
+		$this->assert_no_consent_or_handoff();
+	}
+
+	public function test_a_book_error_keeps_the_draft_and_cannot_confirm(): void {
+		$this->offer_buyer_addresses();
+		$this->book->result = new WP_Error( 'address_book_invalid', 'Supply a valid delivery address, label and unused delivery code within the allowed lengths.' );
+		$view = $this->add_request( [ 'pow_address_label' => 'Site "B"' ] );
+		self::assertSame( [], $GLOBALS['pow_test_status_headers'] );
+		self::assertSame( 'address_book_invalid', $view['error']->get_error_code() );
+		self::assertSame( 'Enter an address name of at most 190 characters and a complete delivery address.', $view['error']->get_error_message() );
+		self::assertFalse( $view['can_confirm'] );
+		$add = Templates::$vars['add_address'];
+		self::assertSame( 'Site "B"', $add['label'] );
+		self::assertTrue( $add['open'] );
+		self::assertNull( $add['notice'] );
+		foreach ( [ 'address_add_forbidden', 'address_book_full' ] as $code ) {
+			$this->book->result = new WP_Error( $code, 'Message for ' . $code );
+			$view = $this->add_request();
+			self::assertSame( 'Message for ' . $code, $view['error']->get_error_message() );
+			self::assertFalse( $view['can_confirm'] );
+		}
+		$this->assert_no_consent_or_handoff();
+	}
+
+	public function test_a_country_refresh_redraws_the_form_without_saving(): void {
+		$this->offer_buyer_addresses();
+		$view = $this->add_request( [ 'pow_address_refresh' => '1', 'pow_address_label' => 'Site C' ] );
+		self::assertSame( [], $GLOBALS['pow_test_status_headers'] );
+		self::assertSame( [], $this->book->calls );
+		self::assertNull( $view['error'] );
+		$add = Templates::$vars['add_address'];
+		self::assertSame( 'Site C', $add['label'] );
+		self::assertTrue( $add['open'] );
+		$this->assert_no_consent_or_handoff();
 	}
 }
 }

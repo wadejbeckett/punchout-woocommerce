@@ -1,5 +1,11 @@
 <?php
-/** Theme-overridable delivery confirmation; all choices and amounts are prepared server-side. @package POW @license AGPL-3.0-or-later */
+/**
+ * Theme-overridable delivery confirmation; all choices and amounts are prepared server-side.
+ *
+ * Variables: $view, $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the separate add form. An override that ignores $add_address simply offers no add form.
+ *
+ * @package POW @license AGPL-3.0-or-later
+ */
 defined( 'ABSPATH' ) || exit;
 $money = static fn( int $cents ): string => \POW\Addresses\ReviewFormat::money( $cents, (string) ( $view['currency'] ?? 'ZAR' ) );
 $logo = ! empty( $document ) ? \POW\Addresses\ReviewFormat::logo_html() : '';
@@ -9,6 +15,10 @@ $selected_id = $selected ? $selected['provider'] . ':' . $selected['key'] : '';
 $delivery = $view['delivery'] ?? null;
 $disabled = empty( $view['can_confirm'] ) || $error instanceof \WP_Error;
 $collection = ! empty( $view['collection'] );
+$add = isset( $add_address ) && is_array( $add_address ) && ! ( $delivery && 'not_required' === $delivery['status'] ) ? $add_address : null;
+// Extra button classes a site configures for the primary actions; empty until the surface offers them.
+$button_extra = is_callable( [ \POW\Cart\Surface::class, 'extra_button_classes' ] ) ? trim( (string) \POW\Cart\Surface::extra_button_classes() ) : '';
+$button_extra = '' !== $button_extra ? ' ' . $button_extra : '';
 if ( $document ) : ?>
 <!doctype html><html <?php language_attributes(); ?>><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title><?php echo esc_html__( 'Review your cart', 'punchout-woocommerce' ); ?> — <?php echo esc_html( $shop_name ); ?></title></head><body>
 <?php endif; ?>
@@ -19,6 +29,7 @@ if ( $document ) : ?>
 	<p class="pow-confirmation__intro"><?php echo esc_html__( 'Check your delivery details, then send this cart to your purchasing system for approval.', 'punchout-woocommerce' ); ?></p>
 	<ol class="pow-confirmation__steps" aria-label="<?php echo esc_attr( __( 'Shopping progress', 'punchout-woocommerce' ) ); ?>"><li><?php echo esc_html__( 'Cart', 'punchout-woocommerce' ); ?></li><li aria-current="step"><?php echo esc_html__( 'Delivery and review', 'punchout-woocommerce' ); ?></li><li><?php echo esc_html__( 'Purchasing approval', 'punchout-woocommerce' ); ?></li></ol>
 	<?php if ( $error instanceof \WP_Error ) : ?><div class="pow-confirmation__notice pow-confirmation__error" role="alert"><?php echo esc_html( $error->get_error_message() ); ?></div><?php endif; ?>
+	<?php if ( null !== $add && ! empty( $add['notice'] ) ) : ?><div class="pow-confirmation__notice" role="status"><?php echo esc_html( (string) $add['notice'] ); ?></div><?php endif; ?>
 	<?php if ( ! isset( $view['items'] ) ) : ?>
 		<p><a href="<?php echo esc_url( $cart_url ); ?>"><?php echo esc_html__( 'Back to cart', 'punchout-woocommerce' ); ?></a></p>
 	<?php else : ?>
@@ -40,10 +51,11 @@ if ( $document ) : ?>
 				<?php endforeach; ?>
 			</select>
 			<?php if ( $collection ) : ?><p class="pow-confirmation__hint"><?php echo esc_html__( 'Collection orders keep this address on the order; WooCommerce uses it to find the collection points for your area.', 'punchout-woocommerce' ); ?></p><?php endif; ?>
-			<?php else : ?><p><?php echo esc_html__( 'No delivery address is available. Ask your company administrator to add and enable one.', 'punchout-woocommerce' ); ?></p><?php endif; ?>
+			<?php else : ?><p><?php echo esc_html( null !== $add ? __( 'No delivery address is available yet. Add one below, or ask your company administrator.', 'punchout-woocommerce' ) : __( 'No delivery address is available. Ask your company administrator to add and enable one.', 'punchout-woocommerce' ) ); ?></p><?php endif; ?>
 			<?php if ( ! empty( $view['delivery_destination']['address'] ) ) : ?>
 			<address class="pow-confirmation__address"><?php foreach ( \POW\Addresses\ReviewFormat::address_lines( $view['delivery_destination']['address'] ) as $line ) { echo esc_html( $line ) . '<br>'; } ?></address>
 			<?php endif; ?>
+			<?php if ( null !== $add ) : ?><p class="pow-confirmation__hint"><a href="#pow-add-address"><?php echo esc_html__( 'Not in the list? Add a delivery address.', 'punchout-woocommerce' ); ?></a></p><?php endif; ?>
 		</section>
 		<section class="pow-confirmation__section" aria-labelledby="pow-shipping-title">
 			<h2 id="pow-shipping-title"><?php echo esc_html( $collection ? __( 'Collection', 'punchout-woocommerce' ) : __( 'Delivery method', 'punchout-woocommerce' ) ); ?></h2>
@@ -60,7 +72,7 @@ if ( $document ) : ?>
 			<?php if ( ! empty( $view['requires_unknown_acknowledgement'] ) ) : ?>
 			<label class="pow-confirmation__rate"><input type="checkbox" name="acknowledge_unknown" value="1" required><span><?php echo esc_html__( 'Delivery will be quoted separately. I understand that no delivery charge is included in this transfer.', 'punchout-woocommerce' ); ?></span></label>
 			<?php endif; ?>
-			<button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary" formnovalidate><?php echo esc_html__( 'Update delivery options', 'punchout-woocommerce' ); ?></button>
+			<button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary<?php echo esc_attr( $button_extra ); ?>" formnovalidate><?php echo esc_html__( 'Update delivery options', 'punchout-woocommerce' ); ?></button>
 			<p class="pow-confirmation__hint"><?php echo esc_html__( 'Update after changing an address or method to review the current estimate.', 'punchout-woocommerce' ); ?></p>
 		</section>
 		<section class="pow-confirmation__section" aria-labelledby="pow-notes-title"><h2 id="pow-notes-title"><?php echo esc_html__( 'Delivery instructions or notes', 'punchout-woocommerce' ); ?></h2>
@@ -75,11 +87,28 @@ if ( $document ) : ?>
 		</div><aside class="pow-confirmation__summary" aria-labelledby="pow-summary-title"><h2 id="pow-summary-title"><?php echo esc_html__( 'Cart summary', 'punchout-woocommerce' ); ?></h2><dl><dt><?php echo esc_html__( 'Merchandise', 'punchout-woocommerce' ); ?></dt><dd><?php echo esc_html( $money( $view['merchandise_total_cents'] ) ); ?></dd><dt><?php echo esc_html__( 'Delivery estimate', 'punchout-woocommerce' ); ?></dt><dd><?php echo esc_html( $delivery && null !== $delivery['amount_cents'] ? $money( $delivery['amount_cents'] ) : __( 'Not included', 'punchout-woocommerce' ) ); ?></dd><dt class="pow-confirmation__total"><?php echo esc_html__( 'Amount sent for approval', 'punchout-woocommerce' ); ?></dt><dd class="pow-confirmation__total"><?php echo esc_html( $money( $view['total_cents'] ) ); ?></dd></dl>
 			<p class="pow-confirmation__hint"><?php echo esc_html__( 'Amounts sent for approval exclude tax.', 'punchout-woocommerce' ); ?></p>
 			<?php if ( $delivery && 'not_required' !== $delivery['status'] && ! $delivery['emit'] && null !== $delivery['amount_cents'] ) : ?><p class="pow-confirmation__hint"><?php echo esc_html__( 'The delivery estimate is saved with the local quote. This connection does not include it in the transferred amount.', 'punchout-woocommerce' ); ?></p><?php endif; ?>
-			<button type="submit" name="pow_delivery_action" value="submit" class="button alt wp-element-button pow-confirmation__submit" <?php if ( $disabled ) { echo 'disabled'; } ?>><?php echo esc_html__( 'Submit for approval', 'punchout-woocommerce' ); ?></button>
+			<button type="submit" name="pow_delivery_action" value="submit" class="button alt wp-element-button pow-confirmation__submit<?php echo esc_attr( $button_extra ); ?>" <?php if ( $disabled ) { echo 'disabled'; } ?>><?php echo esc_html__( 'Submit for approval', 'punchout-woocommerce' ); ?></button>
 			<p><?php echo esc_html__( 'Your complete cart will return to your purchasing system. Your company’s approval process continues there.', 'punchout-woocommerce' ); ?></p>
 			<button type="submit" name="pow_delivery_action" value="back" class="pow-confirmation__back" formnovalidate><?php echo esc_html__( 'Back to cart', 'punchout-woocommerce' ); ?></button>
 		</aside></div>
 	</form>
+	<?php if ( null !== $add ) : ?>
+	<details class="pow-confirmation__add" id="pow-add-address"<?php if ( ! empty( $add['open'] ) ) { echo ' open'; } ?>>
+		<summary><?php echo esc_html__( 'Add a delivery address', 'punchout-woocommerce' ); ?></summary>
+		<p class="pow-confirmation__hint"><?php echo esc_html__( 'It is saved to your company’s delivery book for every buyer of your company and selected for this cart. Only your company administrator can change or remove it.', 'punchout-woocommerce' ); ?></p>
+		<form method="post" action="<?php echo esc_url( $action_url ); ?>">
+			<input type="hidden" name="pow_nonce" value="<?php echo esc_attr( $nonce ); ?>">
+			<input type="hidden" name="pow_address_nonce" value="<?php echo esc_attr( (string) ( $add['nonce'] ?? '' ) ); ?>">
+			<input type="hidden" name="pow_delivery_action" value="add_address">
+			<label for="pow-add-address-label"><?php echo esc_html__( 'Address name', 'punchout-woocommerce' ); ?></label>
+			<input type="text" id="pow-add-address-label" name="pow_address_label" maxlength="190" value="<?php echo esc_attr( (string) ( $add['label'] ?? '' ) ); ?>">
+			<p class="pow-confirmation__hint"><?php echo esc_html__( 'For example, the site or depot name.', 'punchout-woocommerce' ); ?></p>
+			<div class="pow-confirmation__add-fields"><?php echo $add['fields'] ?? ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- WooCommerce's own woocommerce_form_field() markup, escaped by it. ?></div>
+			<button type="submit" name="pow_address_refresh" value="1" class="pow-confirmation__back" formnovalidate><?php echo esc_html__( 'Update fields for the chosen country', 'punchout-woocommerce' ); ?></button>
+			<button type="submit" class="button wp-element-button pow-confirmation__secondary pow-confirmation__add-submit<?php echo esc_attr( $button_extra ); ?>"><?php echo esc_html__( 'Add and use this address', 'punchout-woocommerce' ); ?></button>
+		</form>
+	</details>
+	<?php endif; ?>
 	<?php endif; ?>
 <?php if ( $document ) : ?></main><?php else : ?></section><?php endif; ?>
 <?php if ( $document ) : ?></body></html><?php endif; ?>

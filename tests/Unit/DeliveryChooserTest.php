@@ -173,4 +173,43 @@ final class DeliveryChooserTest extends TestCase {
 		self::assertStringNotContainsString( 'type="date"', $html );
 		self::assertStringNotContainsString( 'preferred_delivery_date', $html );
 	}
+
+	public function test_add_address_form_renders_only_when_offered(): void {
+		$html = $this->render( self::physical() );
+		self::assertStringNotContainsString( 'add_address', $html );
+		self::assertStringNotContainsString( 'pow-add-address', $html );
+		self::assertSame( 1, substr_count( $html, '<form' ) );
+		self::assertSame( 3, substr_count( $html, 'type="hidden"' ) );
+		$add = [ 'fields' => '<p class="form-row"><input type="text" name="shipping_city" id="pow_add_address_shipping_city" value=""></p>', 'label' => 'Site "B"', 'nonce' => 'add-nonce', 'notice' => null, 'open' => false ];
+		$html = $this->render( self::physical(), [ 'add_address' => $add ] );
+		self::assertSame( 2, substr_count( $html, '<form' ) );
+		// A sibling, never nested: the review form closes before the add form opens, and keeps its three hidden inputs.
+		$review_end = strpos( $html, '</form>' );
+		self::assertGreaterThan( $review_end, strrpos( $html, '<form' ) );
+		self::assertSame( 3, substr_count( substr( $html, 0, $review_end ), 'type="hidden"' ) );
+		self::assertStringContainsString( '<input type="hidden" name="pow_delivery_action" value="add_address">', $html );
+		self::assertStringContainsString( '<input type="hidden" name="pow_address_nonce" value="add-nonce">', $html );
+		self::assertSame( 2, substr_count( $html, 'name="pow_nonce" value="confirmation-nonce"' ) );
+		self::assertStringContainsString( 'name="pow_address_label" maxlength="190" value="Site &quot;B&quot;"', $html );
+		self::assertStringContainsString( $add['fields'], $html );
+		self::assertStringContainsString( 'Add a delivery address', $html );
+		self::assertStringContainsString( 'href="#pow-add-address"', $html );
+		self::assertStringContainsString( '<details class="pow-confirmation__add" id="pow-add-address">', $html );
+		self::assertStringContainsString( 'name="pow_address_refresh" value="1"', $html );
+		self::assertStringContainsString( 'Add and use this address', $html );
+		self::assertStringContainsString( 'Only your company administrator can change or remove it.', $html );
+		self::assertStringNotContainsString( 'pow_address_code', $html );
+		self::assertStringNotContainsString( 'role="status"', $html );
+		self::assertStringNotContainsString( '<script', $html );
+		// A refused add reopens the form, and a saved one says so.
+		$html = $this->render( self::physical(), [ 'add_address' => [ 'open' => true, 'notice' => 'Address added <b>now</b>' ] + $add ] );
+		self::assertStringContainsString( '<details class="pow-confirmation__add" id="pow-add-address" open>', $html );
+		self::assertStringContainsString( '<div class="pow-confirmation__notice" role="status">Address added &lt;b&gt;now&lt;/b&gt;</div>', $html );
+		// An empty book points at the form instead of only at the administrator.
+		$html = $this->render( self::physical( [ 'choices' => [], 'selected_choice' => null, 'delivery_destination' => null ] ), [ 'add_address' => $add ] );
+		self::assertStringContainsString( 'No delivery address is available yet. Add one below, or ask your company administrator.', $html );
+		self::assertStringContainsString( 'No delivery address is available. Ask your company administrator to add and enable one.', $this->render( self::physical( [ 'choices' => [], 'selected_choice' => null, 'delivery_destination' => null ] ) ) );
+		// A cart that needs no delivery offers no address form.
+		self::assertSame( 1, substr_count( $this->render( [], [ 'add_address' => $add ] ), '<form' ) );
+	}
 }

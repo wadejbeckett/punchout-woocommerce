@@ -30,7 +30,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '8';
+	public const DB_VERSION     = '9';
 	public const DB_VERSION_KEY = 'pow_db_version';
 	// Routing changes independently of the table schema.
 	public const REWRITE_VERSION = '1';
@@ -60,11 +60,11 @@ final class Installer {
 	private const SESSIONS_INDEXES = [ 'wc_session_key' => true, 'partner_buyer' => false, 'login' => false ];
 
 	/**
-	 * The partner column schema eight adds, read back for the same reason:
-	 * the connection form writes it, and a save naming a column that is not
-	 * there fails every time.
+	 * The partner columns schemas eight and nine add, read back for the same
+	 * reason: the connection form writes them, and a save naming a column
+	 * that is not there fails every time.
 	 */
-	private const PARTNERS_COLUMNS = [ 'visit_endpoints' ];
+	private const PARTNERS_COLUMNS = [ 'visit_endpoints', 'buyer_addresses', 'owner_settings' ];
 
 	public static function partners_table(): string {
 		global $wpdb;
@@ -168,6 +168,10 @@ final class Installer {
 		// so only requisition_only / punchout_only are ever written.
 		// visit_endpoints (schema 8) lists the My Account endpoints a visit
 		// may open; empty keeps the whole account area closed.
+		// buyer_addresses (schema 9) lets this connection's visits add an
+		// entry to its company delivery book; owner_settings (schema 9) is
+		// the comma list of actions the bound account may take for itself
+		// (Partner::OWNER_ACTIONS). Both default to off.
 		$sql_partners = "CREATE TABLE {$partners} (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			name VARCHAR(190) NOT NULL,
@@ -206,6 +210,8 @@ final class Installer {
 			freight_classification_domain VARCHAR(64) NOT NULL DEFAULT 'supplier',
 			freight_classification VARCHAR(64) NOT NULL DEFAULT 'freight',
 			visit_endpoints VARCHAR(255) NOT NULL DEFAULT '',
+			buyer_addresses TINYINT(1) NOT NULL DEFAULT 0,
+			owner_settings VARCHAR(64) NOT NULL DEFAULT '',
 			created DATETIME NULL,
 			updated DATETIME NULL,
 			PRIMARY KEY  (id),
@@ -380,7 +386,7 @@ final class Installer {
 	}
 
 	/**
-	 * What schema eight asked of the partners table and it does not have.
+	 * What schemas eight and nine asked of the partners table and it does not have.
 	 * The connection form reads it too, to say why a save failed.
 	 *
 	 * @return list<string>
