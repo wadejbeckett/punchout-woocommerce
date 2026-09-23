@@ -80,6 +80,23 @@ final class Surface {
 		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
 		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_visit_styles' ] );
+		add_filter( 'body_class', [ $this, 'visit_body_class' ] );
+	}
+
+	/**
+	 * The theme-facing visit signal: `pow-visit` on <body> while a live visit
+	 * is being served. Themes and page builders gate presentation on it (or
+	 * on POW\pow_is_punchout()); it is never access control, RouteGuard is.
+	 *
+	 * @param string[] $classes
+	 * @return string[]
+	 */
+	public function visit_body_class( array $classes ): array {
+		$session = $this->plugin->current_session();
+		if ( null !== $session && $this->visit_is_live( $session ) && ! in_array( 'pow-visit', $classes, true ) ) {
+			$classes[] = 'pow-visit';
+		}
+		return $classes;
 	}
 
 	/**

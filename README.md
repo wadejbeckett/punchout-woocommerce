@@ -407,6 +407,7 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 | `pow_start_redirect` | filter | Post-login destination |
 | `pow_client_ip` | filter | Trust a proxy header for rate limiting / allowlists / audit |
 | `pow_is_punchout()` | function | Presentation gating for themes/builders (never access control). Namespaced: call it as `POW\pow_is_punchout()`, or check `function_exists( 'POW\\pow_is_punchout' )` — the unqualified name does not exist. |
+| `pow-visit` | body class | Added to `<body>` on every page served inside a live visit. Page builders and theme CSS gate presentation on it (`body.pow-visit .my-trade-console { display: none }`, or a builder's body-class condition); never access control. |
 
 ## WP-CLI
 
