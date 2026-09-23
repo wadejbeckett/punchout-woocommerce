@@ -3,7 +3,7 @@
 Read this first, then `.remember/remember.md` (latest state) and `docs/single-login-mode.md` (the spec). Owner: Wade Beckett (plain English, no essays, HIGH priority; he does not read long briefs).
 
 ## What this is
-A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `includes/`). Only install: **example.com** (Plesk host server.example, `ssh -p 24 root@server.example`, site user `jcaxkarn`, table prefix `wp_`, WooCommerce 11.1.1, WordPress 7.1.1, Avada theme, B2BKing). Customer: Globex (tester the tester Wessels), Dynamics 365 sends the PunchOutSetupRequest.
+A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `includes/`). Only install: **example.com** (Plesk host server.example, `ssh -p 24 root@server.example`, site user `jcaxkarn`, table prefix `wp_`, WooCommerce 11.1.2, WordPress 7.1.1, Avada theme, B2BKing). Customer: Globex (tester the tester Wessels), Dynamics 365 sends the PunchOutSetupRequest.
 
 ## Owner's rules (binding)
 - Standalone: no mu-plugin, no site glue file, no hook whose purpose is site glue, no `if plugin X` branch, never name another plugin or theme in code or strings. Solve inside the plugin with WordPress/WooCommerce primitives.
