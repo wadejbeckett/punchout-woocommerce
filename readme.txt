@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.6
+Stable tag: 0.4.7
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,9 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.7 =
+* Change: inside a punchout visit the My Account dashboard no longer shows WooCommerce's "not you? Log out" link. Logging out there ended the visit and deleted its basket. The dashboard shows the plugin's own copy of WooCommerce's dashboard in a visit, the same page without that sentence, and a theme can override it at punchout-woocommerce/account/dashboard.php. Outside a visit, including the account holder's own login, the dashboard and its logout link are unchanged. The account menu already left out Log out in a visit.
 
 = 0.4.6 =
 * New: "My Account pages in a visit" on the connection screen is now a checkbox list of the account pages the site registers, grouped as WooCommerce's own pages, this plugin's Punchout integration tab, and pages added by other plugins. The list reads WooCommerce's endpoint list and WordPress's page addresses, so it also shows pages another plugin adds to WooCommerce only on the shop side. Each row shows the page's title, its endpoint name and a note on what sharing it means. A page the connection lists that the site does not show when the screen loads stays on the form, ticked, under "Ticked, but not found on this site right now", so saving does not drop it. "Add a page by name" below the list adds a page the list does not show.
