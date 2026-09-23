@@ -32,9 +32,9 @@ defined( 'ABSPATH' ) || exit;
  * A request whose visit cannot be proved (the session store could not
  * answer) is refused rather than treated as an ordinary shopper.
  *
- * The one per-connection question here is which My Account endpoints a
- * visit may open. It is the connection's `visit_endpoints` column, empty by
- * default, and it can never open what VisitEndpoints::HARD_DENY names.
+ * The one per-connection question here is which My Account pages a visit
+ * may open. It is the connection's `visit_endpoints` column: the pages an
+ * administrator ticked, `dashboard` standing for the account page itself.
  */
 final class RouteGuard {
 
@@ -98,14 +98,12 @@ final class RouteGuard {
 	public function guard(): void {
 		$visit = $this->plugin->current_session();
 
-		// Account surfaces (order history, addresses, downloads, account
-		// details, password changes, the integration tab) belong to the
-		// shared login, not to the visit, and stay outside its remit. A
-		// connection may list other My Account endpoints — a third-party
-		// quick-order screen — and only those open. This fires on
-		// template_redirect only, so it never sees admin-ajax.php, the REST
-		// API or wp-admin — guard_admin() and guard_rest() hold those. The
-		// bound account outside a visit keeps its whole account area.
+		// My Account opens inside a visit only where the connection ticked
+		// the page: the dashboard, a third-party quick-order screen, and
+		// only those. This fires on template_redirect only, so it never sees
+		// admin-ajax.php, the REST API or wp-admin — guard_admin() and
+		// guard_rest() hold those. The bound account outside a visit keeps
+		// its whole account area.
 		if ( $this->account_page_refused( $visit ) ) {
 			$this->redirect_to_landing();
 			return;
@@ -161,17 +159,19 @@ final class RouteGuard {
 
 	/**
 	 * Whether every My Account endpoint this request names is one the
-	 * visit's connection lists, none is hard-denied, and each has account
-	 * content of its own. The dashboard is hard-denied, so an account page
-	 * naming no endpoint never opens. Any failure to read the connection
-	 * keeps the account area closed.
+	 * visit's connection lists and has account content of its own. An
+	 * account page naming no endpoint is the dashboard, which opens only
+	 * when the connection lists `dashboard`. Any failure to read the
+	 * connection keeps the account area closed.
 	 *
-	 * The content check is what keeps the dashboard closed behind a listed
-	 * name. WooCommerce renders the first query var that has an
+	 * The content check is what keeps a ticked name from showing another
+	 * page. WooCommerce renders the first query var that has an
 	 * account-endpoint action and falls back to the dashboard when none has.
 	 * Every query var with such an action is among the requested endpoints,
 	 * so when each requested endpoint has one, the page WooCommerce renders
-	 * is one of them, and so a listed one.
+	 * is one of them, and so a listed one. A listed endpoint without content
+	 * stays closed even when the dashboard is ticked, so what opens is always
+	 * the page that was asked for.
 	 */
 	private function account_endpoint_open( Session $visit ): bool {
 		try {
@@ -181,8 +181,18 @@ final class RouteGuard {
 				return false;
 			}
 
-			foreach ( $this->requested_account_endpoints() as $endpoint ) {
-				if ( ! VisitEndpoints::allows( $allowed, $endpoint ) || ! self::has_account_content( $endpoint ) ) {
+			$requested = $this->requested_account_endpoints();
+
+			if ( null === $requested ) {
+				return false;
+			}
+
+			foreach ( $requested as $endpoint ) {
+				if ( ! VisitEndpoints::allows( $allowed, $endpoint ) ) {
+					return false;
+				}
+
+				if ( '' !== $endpoint && ! self::has_account_content( $endpoint ) ) {
 					return false;
 				}
 			}
@@ -205,8 +215,9 @@ final class RouteGuard {
 	}
 
 	/**
-	 * The endpoints the visit's connection lists: none unless the
-	 * connection is active. A lookup that throws is not remembered, so the
+	 * The pages the visit's connection lists: none unless the connection is
+	 * active, and never a payment-method page unless its exit policy allows
+	 * WooCommerce's checkout. A lookup that throws is not remembered, so the
 	 * next caller asks again.
 	 *
 	 * @return list<string>
@@ -223,7 +234,8 @@ final class RouteGuard {
 	}
 
 	/**
-	 * Every My Account endpoint this request names; [''] for the dashboard.
+	 * Every My Account endpoint this request names; [''] for the dashboard;
+	 * null when that cannot be proved.
 	 *
 	 * WooCommerce's current endpoint is the first of its own endpoint list
 	 * the request sets, while the page renders the first query var that has
@@ -235,19 +247,31 @@ final class RouteGuard {
 	 *
 	 * Before WordPress has parsed the request there are no query vars to
 	 * read; the request path and query string, matched against WooCommerce's
-	 * endpoint slugs, stand in for them.
+	 * endpoint slugs, stand in for them. A path naming none of them cannot be
+	 * told apart from a page WooCommerce does not map, so it proves nothing
+	 * and the parsed request decides. Without WooCommerce's endpoint map
+	 * nothing can be proved at all.
 	 *
-	 * @return list<string>
+	 * @return list<string>|null
 	 */
-	private function requested_account_endpoints(): array {
+	private function requested_account_endpoints(): ?array {
 		global $wp;
 
 		$query = function_exists( 'WC' ) ? ( WC()->query ?? null ) : null;
-		$slugs = is_object( $query ) && method_exists( $query, 'get_query_vars' ) ? (array) $query->get_query_vars() : [];
+
+		if ( ! is_object( $query ) || ! method_exists( $query, 'get_query_vars' ) ) {
+			return null;
+		}
+
+		$slugs = (array) $query->get_query_vars();
 		$vars  = is_object( $wp ) && isset( $wp->query_vars ) && is_array( $wp->query_vars ) ? $wp->query_vars : [];
 
 		if ( [] === $vars ) {
 			$endpoints = self::endpoints_in_request( $slugs );
+
+			if ( [] === $endpoints ) {
+				return null;
+			}
 		} else {
 			$endpoints = is_object( $query ) && method_exists( $query, 'get_current_endpoint' ) ? [ (string) $query->get_current_endpoint() ] : [];
 
@@ -294,11 +318,12 @@ final class RouteGuard {
 	}
 
 	/**
-	 * The account menu inside a visit: only the endpoints its connection
-	 * lists, never a hard-denied one, whoever added the item, and only those
-	 * with account content, since the guard refuses the rest. Outside a
-	 * visit the menu is untouched. A visit that cannot be resolved, or whose
-	 * connection cannot be read, gets an empty menu.
+	 * The account menu inside a visit: only the pages its connection lists,
+	 * whoever added the item. The dashboard item stays when `dashboard` is
+	 * listed; any other item also needs account content, since the guard
+	 * refuses the rest. Outside a visit the menu is untouched. A visit that
+	 * cannot be resolved, or whose connection cannot be read, gets an empty
+	 * menu.
 	 *
 	 * @param mixed $items Menu items, endpoint => label.
 	 */
@@ -319,7 +344,13 @@ final class RouteGuard {
 			return [];
 		}
 
-		return array_filter( $items, static fn( mixed $endpoint ): bool => VisitEndpoints::allows( $allowed, (string) $endpoint ) && self::has_account_content( (string) $endpoint ), ARRAY_FILTER_USE_KEY );
+		return array_filter(
+			$items,
+			static fn( mixed $endpoint ): bool => VisitEndpoints::DASHBOARD === (string) $endpoint
+				? VisitEndpoints::allows( $allowed, '' )
+				: VisitEndpoints::allows( $allowed, (string) $endpoint ) && self::has_account_content( (string) $endpoint ),
+			ARRAY_FILTER_USE_KEY
+		);
 	}
 
 	/**

@@ -73,25 +73,39 @@ final class Actions {
 		}
 
 		// Only when the form sent the field, so a form without it never
-		// clears a connection's list. A list with any bad entry is refused
-		// whole, before anything is written, and the notice names each one
-		// and says the rest of the form was not kept either.
+		// clears a connection's list. The form's checkboxes arrive as one
+		// entry each, behind an empty hidden entry that makes an all-unticked
+		// list arrive too. A list with any bad entry is refused whole, before
+		// anything is written, and the notice names each one and says the
+		// rest of the form was not kept either.
 		if ( array_key_exists( 'visit_endpoints', $posted ) ) {
-			$endpoints = VisitEndpoints::parse( sanitize_text_field( (string) $posted['visit_endpoints'] ) );
+			$endpoints = VisitEndpoints::parse( self::posted_endpoints( $posted['visit_endpoints'] ) );
 			if ( [] !== $endpoints['rejected'] ) {
 				$this->finish(
 					'partners',
 					sprintf(
-						/* translators: %s: comma-separated endpoint names that were refused */
-						__( 'Not saved, and no other change on the form was kept either. These cannot open in a punchout visit: %s. List lowercase My Account endpoint names only; the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout, the order-pay and order-received pages and the integration tab always stay closed.', 'punchout-woocommerce' ),
+						/* translators: %s: comma-separated entries that were refused */
+						__( 'Not saved, and no other change on the form was kept either. These are not My Account page names: %s. Tick pages from the list on the form.', 'punchout-woocommerce' ),
 						implode( ', ', $endpoints['rejected'] )
+					),
+					'error'
+				);
+			}
+			$payment = array_values( array_intersect( $endpoints['endpoints'], VisitEndpoints::PAYMENT ) );
+			if ( [] !== $payment && ! $this->allows_native_checkout( $partner_id ) ) {
+				$this->finish(
+					'partners',
+					sprintf(
+						/* translators: %s: comma-separated payment-method page names */
+						__( 'Not saved, and no other change on the form was kept either. A punchout-only connection never pays on site, so these pages cannot open in its visits: %s.', 'punchout-woocommerce' ),
+						implode( ', ', $payment )
 					),
 					'error'
 				);
 			}
 			if ( $endpoints['too_long'] ) {
 				/* translators: %d: maximum length of the endpoint list */
-				$this->finish( 'partners', sprintf( __( 'Not saved, and no other change on the form was kept either. The My Account endpoint list must fit in %d characters.', 'punchout-woocommerce' ), VisitEndpoints::MAX_LENGTH ), 'error' );
+				$this->finish( 'partners', sprintf( __( 'Not saved, and no other change on the form was kept either. The ticked My Account pages must fit in %d characters; untick some.', 'punchout-woocommerce' ), VisitEndpoints::MAX_LENGTH ), 'error' );
 			}
 			$data['visit_endpoints'] = implode( ',', $endpoints['endpoints'] );
 		}
@@ -125,6 +139,33 @@ final class Actions {
 			if ( '' !== $issued ) { $this->secret_response( __( 'Customer saved.', 'punchout-woocommerce' ), $issued ); }
 		}
 		$this->finish( 'partners', $ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : $this->save_failed_message(), $ok ? 'success' : 'error' );
+	}
+
+	/**
+	 * The posted My Account list: one entry per checkbox, or a comma list
+	 * from an older form. Anything that is not a string reads as empty and
+	 * is skipped.
+	 *
+	 * @return string|list<string>
+	 */
+	private static function posted_endpoints( mixed $value ): string|array {
+		if ( is_array( $value ) ) {
+			return array_map( static fn( mixed $entry ): string => is_string( $entry ) ? sanitize_text_field( $entry ) : '', array_values( $value ) );
+		}
+
+		return sanitize_text_field( is_scalar( $value ) ? (string) $value : '' );
+	}
+
+	/**
+	 * Whether the connection's exit policy lets its visits pay on site. A new
+	 * connection is punchout-only, and so is one that cannot be read.
+	 */
+	private function allows_native_checkout( int $partner_id ): bool {
+		try {
+			return $partner_id > 0 && true === $this->registry->find( $partner_id )?->allows_native_checkout();
+		} catch ( \Throwable $e ) {
+			return false;
+		}
 	}
 
 	/**
@@ -294,7 +335,10 @@ final class Actions {
 		if ( array_key_exists( 'pow_address_action', $_POST ) ) {
 			wp_die( esc_html__( 'Delivery address changes must use the company delivery editor.', 'punchout-woocommerce' ), '', [ 'response' => 400 ] );
 		}
-		foreach ( $_POST as $value ) {
+		foreach ( $_POST as $key => $value ) {
+			// The connection form's My Account checkboxes are the one field
+			// that arrives as a list, and only as a flat list of strings.
+			if ( 'visit_endpoints' === $key && is_array( $value ) && array_is_list( $value ) && [] === array_filter( $value, static fn( mixed $entry ): bool => ! is_string( $entry ) ) ) { continue; }
 			if ( ! is_scalar( $value ) ) { wp_die( esc_html__( 'Invalid form value.', 'punchout-woocommerce' ), '', [ 'response' => 400 ] ); }
 		}
 	}

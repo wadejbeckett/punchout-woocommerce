@@ -436,21 +436,55 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
-	 * The hard-deny list is the guard's, not the row's: a row edited by hand
-	 * to list the shared login's own surfaces still opens none of them.
+	 * The shared login's own pages open when the connection ticks them; the
+	 * form warns about each. What never opens, ticked or not: a page
+	 * WooCommerce has no account content for (logout, lost password,
+	 * order-pay, order-received), because it would render another page, and
+	 * the payment-method pages, because every connection is punchout-only.
 	 */
-	public function test_hard_denied_endpoints_stay_closed_even_when_a_row_lists_them(): void {
-		$denied = array_values( array_diff( POW\Account\VisitEndpoints::HARD_DENY, [ '', 'dashboard' ] ) );
-		$this->connection( 'bulkorder,dashboard,' . implode( ',', $denied ) );
-
-		self::assertSame( [ 'bulkorder' ], POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The row reads back without the hard-denied entries' );
-		self::assertContains( POW\Account\IntegrationTab::ENDPOINT, $denied, "The plugin's own tab is on the list by its constant" );
-
-		foreach ( $denied as $endpoint ) {
-			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} never opens inside a visit" );
+	public function test_the_shared_login_pages_open_only_when_ticked_and_payment_pages_never(): void {
+		$with_content = [ 'orders', 'view-order', 'downloads', 'edit-address', 'edit-account', 'punchout-integration' ];
+		$no_content   = [ 'customer-logout', 'lost-password', 'order-pay', 'order-received' ];
+		$this->connection( 'bulkorder' );
+		foreach ( array_merge( $with_content, $no_content, POW\Account\VisitEndpoints::PAYMENT ) as $endpoint ) {
+			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} stays closed while it is not ticked" );
 		}
-		self::assertFalse( $this->opens( [], $this->visit() ), 'Nor does the dashboard' );
-		self::assertTrue( $this->opens( [ 'bulkorder' ], $this->visit() ), 'The listed endpoint beside them still opens' );
+
+		$this->connection( 'bulkorder,' . implode( ',', array_merge( $with_content, $no_content, POW\Account\VisitEndpoints::PAYMENT ) ) );
+		self::assertSame( array_merge( [ 'bulkorder' ], $with_content, $no_content ), POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The row reads back without the payment pages' );
+		foreach ( $with_content as $endpoint ) {
+			self::assertTrue( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} opens once ticked" );
+		}
+		foreach ( $no_content as $endpoint ) {
+			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} has no account content, so it stays closed even when ticked" );
+		}
+		foreach ( POW\Account\VisitEndpoints::PAYMENT as $endpoint ) {
+			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} never opens for a punchout-only connection, even when the row names it" );
+		}
+		self::assertFalse( $this->opens( [], $this->visit() ), 'The dashboard stays closed unless it is ticked' );
+	}
+
+	/** The dashboard flag opens /my-account/ itself and nothing it links to. */
+	public function test_the_dashboard_opens_only_when_ticked(): void {
+		$this->connection( 'dashboard,bulkorder' );
+		self::assertTrue( $this->opens( [], $this->visit() ), 'The account page with no endpoint opens when dashboard is listed' );
+		self::assertSame( 'dashboard', $this->rendered() );
+		self::assertTrue( $this->opens( [ 'bulkorder' ], $this->visit() ), 'A listed endpoint beside it still opens' );
+		self::assertFalse( $this->opens( [ 'orders' ], $this->visit() ), 'The pages the dashboard links to stay closed unless ticked' );
+		self::assertFalse( $this->opens( [ 'bulkorder', 'orders' ], $this->visit() ) );
+
+		$GLOBALS['pow_route_guard_test']['account_actions'] = array_values( array_diff( self::WITH_CONTENT, [ 'bulkorder' ] ) );
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit() ), 'A listed endpoint without content stays closed, although the dashboard it would render is ticked' );
+
+		$this->connection( 'bulkorder' );
+		self::assertFalse( $this->opens( [], $this->visit() ), 'Without the flag the dashboard stays closed' );
+
+		$this->connection( 'dashboard' );
+		self::assertTrue( $this->opens( [], $this->visit() ), 'The dashboard alone, a new connection\'s default, opens' );
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit() ) );
+
+		$this->connection( 'dashboard', 'disabled' );
+		self::assertFalse( $this->opens( [], $this->visit() ), 'A connection that is not active opens nothing, the dashboard included' );
 	}
 
 	public function test_an_empty_disabled_missing_or_unreadable_connection_keeps_my_account_closed(): void {
@@ -496,9 +530,18 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 
 		self::assertTrue( $request( '/my-account/bulkorder/' ), 'The listed endpoint opens from its path' );
 		self::assertFalse( $request( '/my-account/' ), 'The dashboard stays closed' );
-		self::assertFalse( $request( '/my-account/orders/' ), 'A hard-denied endpoint stays closed' );
+		self::assertFalse( $request( '/my-account/orders/' ), 'An unlisted endpoint stays closed' );
 		self::assertFalse( $request( '/my-account/bulkorder/', [ 'orders' => '1' ] ), 'A query-string endpoint beside it closes the page' );
 		self::assertFalse( $request( '/?page_id=9', [ 'edit-account' => '' ] ), 'Plain permalinks are read the same way' );
+
+		// Before parsing, a path naming no known endpoint cannot be told
+		// apart from a page WooCommerce does not map, so even a ticked
+		// dashboard waits for the parsed request.
+		$this->connection( 'dashboard,bulkorder' );
+		self::assertFalse( $request( '/my-account/' ), 'An unparsed request naming no endpoint proves nothing, so it stays closed' );
+		self::assertTrue( $request( '/my-account/bulkorder/' ), 'A listed endpoint still opens from its path' );
+		self::assertFalse( $request( '/my-account/', [ 'orders' => '1' ] ), 'A query-string endpoint stays closed' );
+		self::assertTrue( $this->opens( [], $this->visit() ), 'Once parsed, the ticked dashboard opens' );
 
 		WC()->query = null;
 		self::assertFalse( $request( '/my-account/bulkorder/' ), 'Without WooCommerce\'s endpoint map nothing can be proved, so nothing opens' );
@@ -516,7 +559,13 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertSame( 'not-a-menu', $this->guard( $this->visit() )->visit_menu_items( 'not-a-menu' ), 'Something that is not a menu is passed on' );
 
 		$this->connection( 'bulkorder,dashboard,orders,customer-logout' );
-		self::assertSame( [ 'bulkorder' => 'Quick order' ], $this->guard( $this->visit() )->visit_menu_items( $items ), 'A hard-denied item never survives, whoever listed it' );
+		self::assertSame( [ 'dashboard' => 'Dashboard', 'orders' => 'Orders', 'bulkorder' => 'Quick order' ], $this->guard( $this->visit() )->visit_menu_items( $items ), 'Ticked items stay; the dashboard needs only its flag; logout has no content and leaves' );
+
+		$this->connection( 'bulkorder,orders' );
+		self::assertSame( [ 'orders' => 'Orders', 'bulkorder' => 'Quick order' ], $this->guard( $this->visit() )->visit_menu_items( $items ), 'Without the flag the dashboard item leaves' );
+
+		$this->connection( 'dashboard' );
+		self::assertSame( [ 'dashboard' => 'Dashboard' ], $this->guard( $this->visit() )->visit_menu_items( $items ), 'A new connection\'s visit sees the dashboard alone' );
 
 		$this->connection( '' );
 		self::assertSame( [], $this->guard( $this->visit() )->visit_menu_items( $items ), 'An empty list leaves an empty menu' );
@@ -529,10 +578,10 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 
 	/**
 	 * WooCommerce shows the dashboard for an account request whose endpoints
-	 * have no content action, and the dashboard is hard-denied. A listed name
-	 * without content therefore never opens: a checkout endpoint such as
-	 * order-pay, or a third-party endpoint whose plugin registers its query
-	 * var for everyone but its content only for some accounts.
+	 * have no content action. A listed name without content therefore never
+	 * opens, whether or not the dashboard is ticked: a checkout endpoint such
+	 * as order-pay, or a third-party endpoint whose plugin registers its
+	 * query var for everyone but its content only for some accounts.
 	 */
 	public function test_a_listed_endpoint_without_account_content_never_opens(): void {
 		$this->connection( 'bulkorder,purchase-lists' );
@@ -547,10 +596,10 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 			'The menu drops a listed item that would not open'
 		);
 
-		$this->connection( 'bulkorder,order-pay,order-received' );
-		self::assertSame( [ 'bulkorder' ], POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'A row naming the checkout endpoints reads back without them' );
+		$this->connection( 'dashboard,bulkorder,order-pay,order-received' );
+		self::assertSame( [ 'dashboard', 'bulkorder', 'order-pay', 'order-received' ], POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The checkout endpoints can be ticked' );
 		foreach ( [ 'order-pay', 'order-received' ] as $endpoint ) {
-			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} on the account page never opens inside a visit" );
+			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} on the account page never opens inside a visit, even with the dashboard ticked" );
 			self::assertFalse( $this->opens( [ 'bulkorder', $endpoint ], $this->visit() ), "{$endpoint} beside a listed endpoint closes the page" );
 		}
 	}
@@ -558,10 +607,11 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 	/**
 	 * The invariant behind the list: whatever the request carries and
 	 * whichever endpoints have content, a page the guard opens inside a visit
-	 * renders a listed endpoint, never the dashboard. Every request of up to
-	 * two endpoints from the pool, in either order, under three content sets.
+	 * renders a ticked page, and the dashboard only when it is ticked and was
+	 * asked for. Every request of up to two endpoints from the pool, in
+	 * either order, under three content sets, with and without the flag.
 	 */
-	public function test_whatever_opens_inside_a_visit_renders_a_listed_endpoint_never_the_dashboard(): void {
+	public function test_whatever_opens_inside_a_visit_renders_a_ticked_page(): void {
 		$pool    = [ 'bulkorder', 'purchase-lists', 'unmapped', 'order-pay', 'order-received', 'orders', 'subaccounts', 'lost-password' ];
 		$listed  = [ 'bulkorder', 'purchase-lists', 'unmapped' ];
 		$content = [
@@ -575,17 +625,30 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 			foreach ( $pool as $b ) { if ( $a !== $b ) { $requests[] = [ $a, $b ]; } }
 		}
 
-		$opened = 0;
-		foreach ( $content as $label => $actions ) {
-			$this->connection( implode( ',', array_merge( $listed, [ 'order-pay' ] ) ) );
-			$GLOBALS['pow_route_guard_test']['account_actions'] = array_values( $actions );
-			foreach ( $requests as $endpoints ) {
-				if ( ! $this->opens( $endpoints, $this->visit() ) ) { continue; }
-				++$opened;
-				self::assertContains( $this->rendered(), $listed, $label . ': [' . implode( ',', $endpoints ) . '] opened and renders ' . $this->rendered() );
+		$opened    = 0;
+		$dashboard = 0;
+		// Once without the dashboard flag, once with it: the dashboard may
+		// render only in the second run, and only for a request naming no
+		// endpoint.
+		foreach ( [ $listed, array_merge( [ 'dashboard' ], $listed ) ] as $ticked ) {
+			foreach ( $content as $label => $actions ) {
+				$this->connection( implode( ',', array_merge( $ticked, [ 'order-pay', 'lost-password' ] ) ) );
+				$GLOBALS['pow_route_guard_test']['account_actions'] = array_values( $actions );
+				foreach ( $requests as $endpoints ) {
+					if ( ! $this->opens( $endpoints, $this->visit() ) ) { continue; }
+					++$opened;
+					self::assertContains( $this->rendered(), $ticked, $label . ': [' . implode( ',', $endpoints ) . '] opened and renders ' . $this->rendered() );
+					if ( 'dashboard' === $this->rendered() ) {
+						++$dashboard;
+						// Asked for by naming no endpoint at all: nothing in
+						// WooCommerce's map and nothing with account content.
+						self::assertSame( [], array_intersect( $endpoints, array_merge( self::WC_ENDPOINTS, $actions ) ), $label . ': the dashboard rendered for [' . implode( ',', $endpoints ) . ']' );
+					}
+				}
 			}
 		}
 		self::assertGreaterThan( 0, $opened, 'Some requests open, so the invariant is not vacuous' );
+		self::assertGreaterThan( 0, $dashboard, 'The ticked dashboard opens, so its half of the invariant is not vacuous either' );
 	}
 
 	/**

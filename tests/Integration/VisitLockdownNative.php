@@ -20,10 +20,12 @@
  * the web server's: an actual HTTP run is still the only thing that shows the
  * 302 reaching a browser.
  *
- * It also lists one My Account endpoint on that connection (`bulkorder`,
- * registered with WooCommerce here the way a store's own plugin registers
- * it, when nothing on the fixture already does), opens a second connection
- * that lists nothing, and proves that a visit creates no user.
+ * It also ticks the dashboard and one third-party My Account endpoint on
+ * that connection (`bulkorder`, registered with WooCommerce here the way a
+ * store's own plugin registers it, when nothing on the fixture already
+ * does), renders the connection form from WooCommerce's live endpoint map,
+ * opens a second, new connection that lists only its dashboard, and proves
+ * that a visit creates no user.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -232,7 +234,8 @@ final class VisitLockdownNative {
 	/**
 	 * A connection's My Account list against real WooCommerce endpoints,
 	 * real request parsing, WooCommerce's own account-content renderer, the
-	 * real account menu and a real second connection.
+	 * real account menu, the real connection form and a real second
+	 * connection.
 	 *
 	 * Each request is a real front-end load of the account page: WordPress
 	 * parses it (plain permalinks, WooCommerce mapping its endpoint slugs)
@@ -240,7 +243,8 @@ final class VisitLockdownNative {
 	 * let it through, woocommerce_account_content() renders it. Whether a
 	 * page opened is judged on that HTML, not on the absence of a redirect:
 	 * WooCommerce renders the dashboard for a request whose endpoint has no
-	 * content action, and the dashboard must never render inside a visit.
+	 * content action, and the dashboard may render only where it is ticked
+	 * and was asked for.
 	 */
 	private function account_endpoints(): void {
 		global $wp, $wpdb;
@@ -263,56 +267,81 @@ final class VisitLockdownNative {
 		add_action( 'woocommerce_account_dashboard', $dashboard );
 		add_filter( 'woocommerce_account_menu_items', $menu_item );
 		$opened    = static fn( ?string $html ): bool => is_string( $html ) && str_contains( $html, self::BULKORDER_MARK ) && ! str_contains( $html, self::DASHBOARD_MARK );
+		$dashboard_opened = static fn( ?string $html ): bool => is_string( $html ) && str_contains( $html, self::DASHBOARD_MARK ) && ! str_contains( $html, self::BULKORDER_MARK );
 		$guard_for = fn(): POW\RouteGuard => new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
+		$set       = function ( string $list ): POW\RouteGuard {
+			pow_native_leave_visit( $this->admin );
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => $list ] ) && $list === ( $this->registry->find( $this->partner->id )?->visit_endpoints ?? null ), 'the connection saves "' . $list . '" under its lock, exactly as ticked' );
+			return new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
+		};
 		try {
-			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'bulkorder,orders,order-pay,order-received' ] ), 'the connection saves an endpoint list under its lock' );
-			$saved = $this->registry->find( $this->partner->id );
-			$this->check( 'bulkorder' === ( $saved?->visit_endpoints ?? '' ), 'a hard-denied entry, order-pay and order-received included, never reaches the column, whoever writes it' );
+			$this->check( 'dashboard' === $this->partner->visit_endpoints, 'a new connection lists the dashboard and nothing else' );
 
-			// A fresh guard: each instance reads a connection's list once.
-			$guard = $guard_for();
+			// The form an administrator ticks, rendered from WooCommerce's live endpoint map.
+			$form = $this->connection_form();
+			$this->check( 1 === preg_match( '#<strong>WooCommerce</strong>.*value="dashboard" checked="checked".*value="orders" />.*<strong>This plugin</strong>.*value="punchout-integration" />.*<strong>Added by other plugins</strong>.*value="bulkorder" />#s', $form ), 'the connection form lists WooCommerce\'s pages first, the dashboard ticked, then this plugin\'s tab, then the registered third-party page, unticked' );
+			$this->check( 4 === substr_count( $form, ' disabled="disabled"' ) && str_contains( $form, 'Orders <code>orders</code>' ), 'the four payment-method rows are disabled on a punchout-only connection, and WooCommerce\'s own titles label the rows' );
+
+			$guard = $set( 'dashboard,bulkorder' );
+			$form  = $this->connection_form();
+			$this->check( 1 === preg_match( '#<strong>Added by other plugins</strong>.*value="bulkorder" checked="checked"#s', $form ), 'the form shows the ticked third-party page as ticked' );
 			foreach ( [ $first, $second ] as $index => $visit ) {
 				pow_native_enter_visit( $visit );
 				$this->check( $opened( $this->account_page( $guard, [ 'bulkorder' => '' ] ) ), 'visit ' . ( $index + 1 ) . ' opens the listed bulkorder endpoint and WooCommerce renders its content, not the dashboard' );
+				$this->check( $dashboard_opened( $this->account_page( $guard, [] ) ), 'visit ' . ( $index + 1 ) . ' opens the ticked dashboard and WooCommerce renders the dashboard' );
 			}
 			pow_native_enter_visit( $first );
 			$closed = [
 				'orders'                     => [ 'orders' => '' ],
-				'the dashboard'              => [],
 				'edit-account'               => [ 'edit-account' => '' ],
-				'an unregistered endpoint'   => [ 'subaccounts' => '' ],
 				'bulkorder carrying ?orders' => [ 'bulkorder' => '', 'orders' => '' ],
+				'the dashboard carrying ?orders' => [ 'orders' => '1' ],
 				'order-pay'                  => [ 'order-pay' => '' ],
 				'order-received'             => [ 'order-received' => '' ],
 			];
 			foreach ( $closed as $label => $query ) {
-				$this->check( null === $this->account_page( $guard, $query ), $label . ' stays closed inside a visit of a connection listing bulkorder' );
+				$this->check( null === $this->account_page( $guard, $query ), $label . ' stays closed inside a visit of a connection listing the dashboard and bulkorder' );
 			}
-			$menu = wc_get_account_menu_items();
-			$this->check( [ 'bulkorder' ] === array_keys( $menu ), 'the real account menu inside a visit holds only the listed endpoint' );
+			// A name nothing registered is not an endpoint: WordPress drops it
+			// and WooCommerce shows the account page, the ticked dashboard.
+			$this->check( $dashboard_opened( $this->account_page( $guard, [ 'subaccounts' => '' ] ) ), 'an unregistered name shows the ticked dashboard and nothing else' );
+			$menu = $this->menu();
+			$this->check( [ 'bulkorder', 'dashboard' ] === $this->sorted_keys( $menu ), 'the real account menu inside a visit holds the dashboard and the listed endpoint only' );
 
-			// A row edited by hand to list the checkout endpoints, which have
-			// no account content and would render the dashboard, reads back
-			// without them and opens neither.
-			$wpdb->update( POW\Installer::partners_table(), [ 'visit_endpoints' => 'bulkorder,order-pay,order-received' ], [ 'id' => $this->partner->id ] );
-			$this->check( [ 'bulkorder' ] === ( $this->registry->find( $this->partner->id )?->visit_endpoint_list() ?? [] ), 'a hand-edited row listing order-pay and order-received reads back without them' );
-			$edited = $guard_for();
-			foreach ( [ 'order-pay', 'order-received' ] as $endpoint ) {
-				$this->check( null === $this->account_page( $edited, [ $endpoint => '' ] ), $endpoint . ' on the account page stays closed although the row names it' );
+			// The shared login's own pages open once ticked; a page WooCommerce
+			// has no account content for stays closed even when ticked, and a
+			// payment page never opens for a punchout-only connection.
+			$edited = $set( 'dashboard,bulkorder,orders,order-pay,order-received,customer-logout,lost-password' );
+			pow_native_enter_visit( $first );
+			$orders = $this->account_page( $edited, [ 'orders' => '' ] );
+			$this->check( is_string( $orders ) && ! str_contains( $orders, self::DASHBOARD_MARK ), 'a ticked orders page opens with its own content' );
+			foreach ( [ 'order-pay', 'order-received', 'customer-logout', 'lost-password' ] as $endpoint ) {
+				$this->check( null === $this->account_page( $edited, [ $endpoint => '' ] ), $endpoint . ' on the account page stays closed although ticked: WooCommerce has no account content for it' );
+			}
+			$this->check( [ 'bulkorder', 'dashboard', 'orders' ] === $this->sorted_keys( $this->menu() ), 'the menu shows the ticked pages that open, and no logout item' );
+			pow_native_leave_visit( $this->admin );
+			$wpdb->update( POW\Installer::partners_table(), [ 'visit_endpoints' => 'dashboard,payment-methods,add-payment-method' ], [ 'id' => $this->partner->id ] );
+			$this->check( [ 'dashboard' ] === ( $this->registry->find( $this->partner->id )?->visit_endpoint_list() ?? [] ), 'a hand-edited row naming payment pages reads back without them for a punchout-only connection' );
+			$paying = $guard_for();
+			pow_native_enter_visit( $first );
+			foreach ( [ 'payment-methods', 'add-payment-method' ] as $endpoint ) {
+				$this->check( null === $this->account_page( $paying, [ $endpoint => '' ] ), $endpoint . ' stays closed although the row names it' );
 			}
 
 			// A listed endpoint WooCommerce has no content for would render
-			// the dashboard, so it stays closed and leaves the menu. This is
-			// the state of a third-party endpoint whose plugin registers its
-			// query var for every user but its content only for some.
+			// the dashboard, so it stays closed and leaves the menu, even with
+			// the dashboard ticked. This is the state of a third-party endpoint
+			// whose plugin registers its query var for every user but its
+			// content only for some.
+			$edited = $set( 'dashboard,bulkorder' );
+			pow_native_enter_visit( $first );
 			remove_action( 'woocommerce_account_bulkorder_endpoint', $render );
 			$this->check( null === $this->account_page( $edited, [ 'bulkorder' => '' ] ), 'a listed endpoint with no account content stays closed instead of rendering the dashboard' );
-			$this->check( [] === wc_get_account_menu_items(), 'and the account menu drops it' );
+			$this->check( [ 'dashboard' ] === array_keys( $this->menu() ), 'and the account menu drops it' );
 			add_action( 'woocommerce_account_bulkorder_endpoint', $render );
 
 			// Content registered after the guard's first pass, for a query
 			// var WooCommerce does not map, is judged by the second pass.
-			$second_pass = null;
 			$html = $this->account_page(
 				$edited,
 				[ 'bulkorder' => '', 'pow_fixture_late' => '1' ],
@@ -321,21 +350,31 @@ final class VisitLockdownNative {
 			remove_action( 'woocommerce_account_pow_fixture_late_endpoint', $late );
 			$this->check( null === $html, 'content registered after the first pass for an unlisted query var closes the page before it renders' );
 
+			// A 0.4.5 row, which never names the dashboard, keeps the dashboard closed.
+			$older = $set( 'bulkorder' );
+			pow_native_enter_visit( $first );
+			$this->check( null === $this->account_page( $older, [] ), 'without dashboard in the row the account page stays closed' );
+			$this->check( null === $this->account_page( $older, [ 'subaccounts' => '' ] ), 'and so does an unregistered name, which would show it' );
+			$this->check( $opened( $this->account_page( $older, [ 'bulkorder' => '' ] ) ), 'and the listed endpoint still opens' );
+			$this->check( [ 'bulkorder' ] === array_keys( $this->menu() ), 'and the menu holds only the listed endpoint' );
+
 			pow_native_leave_visit( $this->account );
 			$this->check( str_contains( (string) $this->account_page( $guard, [] ), self::DASHBOARD_MARK ), 'the account holder outside a visit keeps the dashboard' );
 			$this->check( null !== $this->account_page( $guard, [ 'orders' => '' ] ), 'and its orders page' );
-			$menu = wc_get_account_menu_items();
+			$menu = $this->menu();
 			$this->check( isset( $menu['dashboard'], $menu['orders'], $menu['bulkorder'], $menu['customer-logout'] ), 'the account holder outside a visit keeps the whole menu' );
 
-			// Every customer difference is a column: a second connection that lists nothing opens nothing.
+			// Every customer difference is a column: a second connection, new,
+			// opens its dashboard and nothing this connection lists.
 			pow_native_leave_visit( $this->admin );
 			$suffix = bin2hex( random_bytes( 6 ) );
 			$other_account = pow_native_bound_account( 'lockdown-other' );
 			$other_id = $this->registry->insert( [ 'name' => 'Lockdown other ' . $suffix, 'status' => POW\Partners\Partner::STATUS_ACTIVE, 'owner_user_id' => $other_account, 'from_domain' => 'NetworkID', 'from_identity' => 'other-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'other-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier-' . $suffix, 'cxml_version' => '1.2.008', 'deployment_mode' => 'test', 'return_encoding' => 'base64' ], wp_generate_password( 40, false, false ) );
 			$other_visit = pow_native_open_visit( $other_id, $other_account, [ 'buyer_identity' => 'other-' . $suffix . '@example.invalid' ] );
 			pow_native_enter_visit( $other_visit );
-			$this->check( null === $this->account_page( $guard, [ 'bulkorder' => '' ] ), "another connection's visit does not inherit this connection's list" );
-			$this->check( [] === wc_get_account_menu_items(), "that visit's account menu is empty" );
+			$this->check( null === $this->account_page( $guard_for(), [ 'bulkorder' => '' ] ), "another connection's visit does not inherit this connection's list" );
+			$this->check( $dashboard_opened( $this->account_page( $guard_for(), [] ) ), 'a new connection\'s visit opens its dashboard' );
+			$this->check( [ 'dashboard' ] === array_keys( $this->menu() ), "that visit's account menu holds the dashboard alone" );
 		} finally {
 			$wp->query_vars = $vars;
 			[ $GLOBALS['wp_the_query'], $GLOBALS['wp_query'] ] = $main;
@@ -345,6 +384,49 @@ final class VisitLockdownNative {
 			remove_filter( 'query_vars', $late_var );
 			if ( $registered ) { remove_filter( 'woocommerce_get_query_vars', $register ); }
 			pow_native_leave_visit( $this->admin );
+		}
+	}
+
+	/**
+	 * WooCommerce's real account menu. The plugin's own guard reads each
+	 * connection's list once per request, and this whole suite is one
+	 * request, so its memo is cleared first: each menu is judged on the list
+	 * as it is saved now.
+	 *
+	 * @return array<string, string>
+	 */
+	private function menu(): array {
+		foreach ( $GLOBALS['wp_filter']['woocommerce_account_menu_items']->callbacks ?? [] as $callbacks ) {
+			foreach ( $callbacks as $callback ) {
+				$function = $callback['function'] ?? null;
+				if ( is_array( $function ) && $function[0] instanceof POW\RouteGuard ) {
+					( new ReflectionProperty( POW\RouteGuard::class, 'visit_endpoints' ) )->setValue( $function[0], [] );
+				}
+			}
+		}
+		return wc_get_account_menu_items();
+	}
+
+	/** @param array<string, string> $menu @return list<string> */
+	private function sorted_keys( array $menu ): array {
+		$keys = array_map( 'strval', array_keys( $menu ) );
+		sort( $keys );
+		return $keys;
+	}
+
+	/** The connection's edit form as the fixture administrator sees it, from WooCommerce's live endpoint map. */
+	private function connection_form(): string {
+		$saved = $_GET;
+		$_GET  = [ 'page' => POW\Admin\Page::SLUG, 'tab' => 'partners', 'action' => 'edit', 'partner' => (string) $this->partner->id ];
+		wp_set_current_user( $this->admin );
+		ob_start();
+		try {
+			$plugin = POW\Plugin::instance();
+			( new POW\Admin\Page( $plugin->settings(), $this->registry, $plugin->audit() ?? throw new RuntimeException( 'Audit log unavailable.' ) ) )->render();
+			return (string) ob_get_contents();
+		} finally {
+			ob_end_clean();
+			$_GET = $saved;
 		}
 	}
 

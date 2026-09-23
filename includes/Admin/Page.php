@@ -12,6 +12,8 @@ namespace POW\Admin;
 
 use POW\Support\Transport;
 
+use POW\Account\IntegrationTab;
+use POW\Account\VisitEndpoints;
 use POW\Addresses\Fields;
 use POW\Audit\Log;
 use POW\Http\RateLimiter;
@@ -575,14 +577,7 @@ final class Page {
 			sprintf( '<textarea name="ip_allowlist" rows="3" class="regular-text" placeholder="203.0.113.0/24">%s</textarea><p class="description">%s</p>', esc_textarea( $cidrs ), esc_html__( 'Optional. Empty = no IP restriction on /punchout/setup for this customer.', 'punchout-woocommerce' ) )
 		);
 
-		$this->form_row(
-			__( 'My Account pages in a visit', 'punchout-woocommerce' ),
-			sprintf(
-				'<input type="text" class="regular-text" name="visit_endpoints" value="%s" placeholder="bulkorder" /><p class="description">%s</p>',
-				esc_attr( str_replace( ',', ', ', (string) ( $partner->visit_endpoints ?? '' ) ) ),
-				esc_html__( 'Optional. Comma-separated My Account endpoint names a buyer may open during a punchout visit, for example a third-party quick-order page. Empty keeps all of My Account closed in a visit. Every buyer of this connection shares one account, so the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout, the order-pay and order-received pages and the integration tab always stay closed and cannot be listed. A listed page opens only when WooCommerce has account content for it on that request; a name that is not a registered endpoint, or whose plugin shows its content only to some accounts, opens nothing. Inside a visit the account menu shows only the listed pages that open.', 'punchout-woocommerce' )
-			)
-		);
+		$this->form_row( __( 'My Account pages in a visit', 'punchout-woocommerce' ), $this->visit_endpoints_field( $partner ) );
 
 		$this->form_row(
 			__( 'Token TTL / session TTL (s)', 'punchout-woocommerce' ),
@@ -622,6 +617,186 @@ final class Page {
 				echo $this->addresses?->markup( $partner->id ) ?? ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- authorized, escaped Fields producer.
 			}
 		}
+	}
+
+	/**
+	 * The connection's My Account pages as a checkbox list, built live from
+	 * WooCommerce's endpoint map: the dashboard and WooCommerce's own pages
+	 * first, then this plugin's tab, then every page another plugin added,
+	 * then anything the connection lists that is not registered right now.
+	 * Some plugins register a page only for some accounts or only on the
+	 * front end; such an entry keeps a ticked row of its own, so saving the
+	 * form never drops it unseen.
+	 *
+	 * A new connection starts with the dashboard ticked and nothing else. The
+	 * payment-method rows are disabled unless the connection's exit policy
+	 * allows WooCommerce's own checkout, which no connection's does.
+	 */
+	private function visit_endpoints_field( ?Partner $partner ): string {
+		$registered = self::registered_account_endpoints();
+		$native     = null !== $partner && $partner->allows_native_checkout();
+		$ticked     = null === $partner ? [ VisitEndpoints::NEW_CONNECTION ] : VisitEndpoints::listed( $partner->visit_endpoints, $native );
+		$stored     = null === $partner ? $ticked : VisitEndpoints::listed( $partner->visit_endpoints, true );
+		$groups     = VisitEndpoints::groups( array_keys( $registered ), $stored );
+		$headings   = [
+			'woocommerce' => __( 'WooCommerce', 'punchout-woocommerce' ),
+			'plugin'      => __( 'This plugin', 'punchout-woocommerce' ),
+			'other'       => __( 'Added by other plugins', 'punchout-woocommerce' ),
+			'stored'      => __( 'Stored, not currently registered', 'punchout-woocommerce' ),
+		];
+
+		$html  = '<fieldset class="pow-visit-endpoints"><legend class="screen-reader-text">' . esc_html__( 'My Account pages in a visit', 'punchout-woocommerce' ) . '</legend>';
+		// Always posted, so a list with nothing ticked still reaches the save handler and clears the column.
+		$html .= '<input type="hidden" name="visit_endpoints[]" value="" />';
+		$html .= '<p class="description">' . esc_html__( 'Tick the My Account pages a buyer may open during a punchout visit. Every buyer of this connection is signed in as the same store account, so these pages are shared by all of them. A direct login to that account keeps every page. A ticked page opens only when WooCommerce has content for it, and the account menu in a visit lists only the ticked pages.', 'punchout-woocommerce' ) . '</p>';
+
+		foreach ( $headings as $group => $heading ) {
+			if ( [] === $groups[ $group ] ) {
+				continue;
+			}
+
+			$html .= '<p><strong>' . esc_html( $heading ) . '</strong></p>';
+
+			if ( 'other' === $group ) {
+				$html .= '<p class="description">' . esc_html__( 'Off by default. Creating users inside a visit is blocked, whatever these pages offer.', 'punchout-woocommerce' ) . '</p>';
+			}
+
+			$html .= '<ul>';
+
+			foreach ( $groups[ $group ] as $name ) {
+				$html .= $this->visit_endpoint_row( $name, $registered[ $name ] ?? null, $group, in_array( $name, $ticked, true ), $native );
+			}
+
+			$html .= '</ul>';
+		}
+
+		return $html . '</fieldset>';
+	}
+
+	/** One checkbox of the My Account list: label, name, and the note that goes with the page. */
+	private function visit_endpoint_row( string $name, ?string $slug, string $group, bool $ticked, bool $native_checkout ): string {
+		$disabled = in_array( $name, VisitEndpoints::PAYMENT, true ) && ! $native_checkout;
+
+		if ( VisitEndpoints::DASHBOARD === $name ) {
+			$label = esc_html__( 'Dashboard', 'punchout-woocommerce' ) . ' <code>' . esc_html( self::account_page_path() ) . '</code>';
+		} else {
+			$title = match ( true ) {
+				'stored' === $group                    => $name,
+				IntegrationTab::ENDPOINT === $name      => __( 'Punchout integration', 'punchout-woocommerce' ),
+				default                                 => self::endpoint_title( $name ),
+			};
+			$label = ( $title !== $name ? esc_html( $title ) . ' ' : '' ) . '<code>' . esc_html( $name ) . '</code>';
+
+			if ( null !== $slug && '' !== $slug && $slug !== $name ) {
+				/* translators: %s: the address slug WooCommerce uses for this page */
+				$label .= ' <span class="description">' . esc_html( sprintf( __( '(address: %s)', 'punchout-woocommerce' ), $slug ) ) . '</span>';
+			}
+		}
+
+		[ $note, $warned ] = self::endpoint_note( $name, $group, $disabled );
+		$note_html = '' === $note ? '' : ( $warned
+			? ' <strong class="pow-endpoint-warning" style="color:#d63638">' . esc_html( $note ) . '</strong>'
+			: ' <span class="description">' . esc_html( $note ) . '</span>' );
+
+		return sprintf(
+			'<li><label><input type="checkbox" name="visit_endpoints[]" value="%s"%s%s /> %s</label>%s</li>',
+			esc_attr( $name ),
+			$ticked && ! $disabled ? ' checked="checked"' : '',
+			$disabled ? ' disabled="disabled"' : '',
+			$label,
+			$note_html
+		);
+	}
+
+	/**
+	 * What the form says beside a page, and whether it says it in red.
+	 *
+	 * @return array{0: string, 1: bool}
+	 */
+	private static function endpoint_note( string $name, string $group, bool $disabled ): array {
+		if ( 'stored' === $group ) {
+			return [ __( 'Listed on this connection, but not registered with WooCommerce right now. Some plugins register a page only for some accounts. It stays listed while ticked.', 'punchout-woocommerce' ), false ];
+		}
+
+		if ( 'other' === $group ) {
+			return [ __( 'Added by another plugin.', 'punchout-woocommerce' ), false ];
+		}
+
+		if ( in_array( $name, VisitEndpoints::PAYMENT, true ) ) {
+			return [ $disabled ? __( 'Punchout-only connections never pay on site.', 'punchout-woocommerce' ) : __( 'Saved payment methods belong to the shared login.', 'punchout-woocommerce' ), false ];
+		}
+
+		return match ( $name ) {
+			VisitEndpoints::DASHBOARD                   => [ __( 'Shows only the pages ticked here.', 'punchout-woocommerce' ), false ],
+			'orders', 'view-order'                      => [ __( 'Every buyer of this connection shares one login, so the order history is shared.', 'punchout-woocommerce' ), false ],
+			'downloads'                                 => [ __( 'Shared by every buyer of this connection.', 'punchout-woocommerce' ), false ],
+			'edit-address'                              => [ __( 'The company admin manages addresses from a normal login.', 'punchout-woocommerce' ), false ],
+			'edit-account'                              => [ __( 'Holds the shared login\'s email address and password. Prefer changing them from a normal login.', 'punchout-woocommerce' ), false ],
+			'customer-logout', 'lost-password'          => [ __( 'Opening this page breaks the punchout visit.', 'punchout-woocommerce' ), true ],
+			IntegrationTab::ENDPOINT                    => [ __( 'Exposes this connection\'s settings.', 'punchout-woocommerce' ), true ],
+			'order-pay', 'order-received'               => [ __( 'Checkout pages. A punchout-only connection still refuses checkout.', 'punchout-woocommerce' ), true ],
+			default                                     => [ '', false ],
+		};
+	}
+
+	/**
+	 * WooCommerce's endpoint map as it stands now: name => address slug.
+	 * Names that could not be stored are left out. Without WooCommerce the
+	 * map is empty and the form offers the dashboard and the stored entries.
+	 *
+	 * @return array<string, string>
+	 */
+	private static function registered_account_endpoints(): array {
+		try {
+			$query = function_exists( 'WC' ) ? ( WC()->query ?? null ) : null;
+			$vars  = is_object( $query ) && method_exists( $query, 'get_query_vars' ) ? $query->get_query_vars() : [];
+		} catch ( \Throwable $e ) {
+			$vars = [];
+		}
+
+		$endpoints = [];
+
+		foreach ( is_array( $vars ) ? $vars : [] as $name => $slug ) {
+			if ( is_string( $name ) && VisitEndpoints::is_name( $name ) ) {
+				$endpoints[ $name ] = is_scalar( $slug ) ? (string) $slug : '';
+			}
+		}
+
+		return $endpoints;
+	}
+
+	/**
+	 * The title WooCommerce gives an endpoint, else its name. view-order is
+	 * not asked: WooCommerce builds that title from the order in the current
+	 * request, which an admin screen does not have.
+	 */
+	private static function endpoint_title( string $name ): string {
+		if ( 'view-order' === $name ) {
+			return $name;
+		}
+
+		try {
+			$query = function_exists( 'WC' ) ? ( WC()->query ?? null ) : null;
+			$title = is_object( $query ) && method_exists( $query, 'get_endpoint_title' ) ? $query->get_endpoint_title( $name ) : '';
+		} catch ( \Throwable $e ) {
+			$title = '';
+		}
+
+		$title = is_string( $title ) ? trim( wp_strip_all_tags( $title ) ) : '';
+
+		return '' !== $title ? $title : $name;
+	}
+
+	/** The account page's address on this site, without the host, for the dashboard row; /my-account/ when WooCommerce cannot say. */
+	private static function account_page_path(): string {
+		$url   = function_exists( 'wc_get_page_permalink' ) ? (string) wc_get_page_permalink( 'myaccount' ) : '';
+		$parts = '' !== $url ? wp_parse_url( $url ) : false;
+
+		if ( ! is_array( $parts ) || ( '' === (string) ( $parts['query'] ?? '' ) && strlen( (string) ( $parts['path'] ?? '' ) ) <= 1 ) ) {
+			return '/my-account/';
+		}
+
+		return ( '' !== (string) ( $parts['path'] ?? '' ) ? (string) $parts['path'] : '/' ) . ( '' !== (string) ( $parts['query'] ?? '' ) ? '?' . $parts['query'] : '' );
 	}
 
 	private function form_row( string $label, string $control_html ): void {
