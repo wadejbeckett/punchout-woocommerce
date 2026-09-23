@@ -20,6 +20,11 @@
  * the web server's: an actual HTTP run is still the only thing that shows the
  * 302 reaching a browser.
  *
+ * It also lists one My Account endpoint on that connection (`bulkorder`,
+ * registered with WooCommerce here the way a store's own plugin registers
+ * it, when nothing on the fixture already does), opens a second connection
+ * that lists nothing, and proves that a visit creates no user.
+ *
  * @package POW
  * @license AGPL-3.0-or-later
  */
@@ -220,6 +225,103 @@ final class VisitLockdownNative {
 		}
 	}
 
+	/**
+	 * A connection's My Account list against real WooCommerce endpoints,
+	 * the real account menu and a real second connection.
+	 */
+	private function account_endpoints(): void {
+		global $wp;
+		[ $first, $second ] = $this->visits;
+		$register   = static fn( array $vars ): array => $vars + [ 'bulkorder' => 'bulkorder' ];
+		$registered = ! isset( WC()->query->get_query_vars()['bulkorder'] );
+		$is_account = static fn(): bool => true;
+		$menu_item  = static fn( array $items ): array => $items + [ 'bulkorder' => 'Quick order', 'subaccounts' => 'Subaccounts' ];
+		$vars       = $wp->query_vars;
+		if ( $registered ) { add_filter( 'woocommerce_get_query_vars', $register ); }
+		add_filter( 'woocommerce_is_account_page', $is_account );
+		add_filter( 'woocommerce_account_menu_items', $menu_item );
+		$request = static function ( array $endpoints ) use ( $wp ): void { $wp->query_vars = [ 'pagename' => 'my-account' ] + array_fill_keys( $endpoints, '' ); };
+		try {
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'bulkorder,orders' ] ), 'the connection saves an endpoint list under its lock' );
+			$saved = $this->registry->find( $this->partner->id );
+			$this->check( 'bulkorder' === ( $saved?->visit_endpoints ?? '' ), 'a hard-denied entry never reaches the column, whoever writes it' );
+
+			// A fresh guard: each instance reads a connection's list once.
+			$guard = new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
+			foreach ( [ $first, $second ] as $index => $visit ) {
+				pow_native_enter_visit( $visit );
+				$request( [ 'bulkorder' ] );
+				$this->check( ! $this->redirected( fn() => $guard->guard() ), 'visit ' . ( $index + 1 ) . ' opens the listed bulkorder endpoint' );
+			}
+			pow_native_enter_visit( $first );
+			foreach ( [ 'orders' => [ 'orders' ], 'the dashboard' => [], 'edit-account' => [ 'edit-account' ], 'an unlisted endpoint' => [ 'subaccounts' ], 'bulkorder carrying ?orders' => [ 'bulkorder', 'orders' ] ] as $label => $endpoints ) {
+				$request( $endpoints );
+				$this->check( $this->redirected( fn() => $guard->guard() ), $label . ' stays closed inside a visit of a connection listing bulkorder' );
+			}
+			$menu = wc_get_account_menu_items();
+			$this->check( [ 'bulkorder' ] === array_keys( $menu ), 'the real account menu inside a visit holds only the listed endpoint' );
+
+			pow_native_leave_visit( $this->account );
+			$request( [ 'subaccounts' ] );
+			$this->check( ! $this->redirected( fn() => $guard->guard() ), 'the account holder outside a visit keeps every account page' );
+			$menu = wc_get_account_menu_items();
+			$this->check( isset( $menu['dashboard'], $menu['orders'], $menu['bulkorder'], $menu['customer-logout'] ), 'the account holder outside a visit keeps the whole menu' );
+
+			// Every customer difference is a column: a second connection that lists nothing opens nothing.
+			pow_native_leave_visit( $this->admin );
+			$suffix = bin2hex( random_bytes( 6 ) );
+			$other_account = pow_native_bound_account( 'lockdown-other' );
+			$other_id = $this->registry->insert( [ 'name' => 'Lockdown other ' . $suffix, 'status' => POW\Partners\Partner::STATUS_ACTIVE, 'owner_user_id' => $other_account, 'from_domain' => 'NetworkID', 'from_identity' => 'other-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'other-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier-' . $suffix, 'cxml_version' => '1.2.008', 'deployment_mode' => 'test', 'return_encoding' => 'base64' ], wp_generate_password( 40, false, false ) );
+			$other_visit = pow_native_open_visit( $other_id, $other_account, [ 'buyer_identity' => 'other-' . $suffix . '@example.invalid' ] );
+			pow_native_enter_visit( $other_visit );
+			$request( [ 'bulkorder' ] );
+			$this->check( $this->redirected( fn() => $guard->guard() ), "another connection's visit does not inherit this connection's list" );
+			$this->check( [] === wc_get_account_menu_items(), "that visit's account menu is empty" );
+		} finally {
+			$wp->query_vars = $vars;
+			remove_filter( 'woocommerce_account_menu_items', $menu_item );
+			remove_filter( 'woocommerce_is_account_page', $is_account );
+			if ( $registered ) { remove_filter( 'woocommerce_get_query_vars', $register ); }
+			pow_native_leave_visit( $this->admin );
+		}
+	}
+
+	/**
+	 * A visit creates no user, through the one routine every user-creating
+	 * path ends in, and the refusal is in the audit trail. Updates of the
+	 * shared account still work inside a visit, and users are created
+	 * normally outside one.
+	 */
+	private function user_creation(): void {
+		global $wpdb;
+		[ $first ] = $this->visits;
+		$login = 'visit-created-' . bin2hex( random_bytes( 6 ) );
+		$saved = [ $_SERVER['SCRIPT_FILENAME'] ?? null, $_REQUEST['action'] ?? null ];
+		pow_native_enter_visit( $first );
+		try {
+			$_SERVER['SCRIPT_FILENAME'] = ABSPATH . 'wp-admin/admin-ajax.php';
+			$_REQUEST['action'] = 'fixture_create_subaccount';
+			$result = wp_insert_user( [ 'user_login' => $login, 'user_email' => $login . '@example.invalid', 'user_pass' => wp_generate_password( 32 ), 'role' => 'customer' ] );
+			$this->check( $result instanceof WP_Error && 'empty_data' === $result->get_error_code(), 'creating a user inside a visit returns a WP_Error' );
+			$this->check( false === username_exists( $login ) && false === email_exists( $login . '@example.invalid' ), 'no user row was written' );
+			$row = $wpdb->get_row( $wpdb->prepare( 'SELECT partner_id, session_id, user_id, result, detail FROM ' . POW\Installer::log_table() . ' WHERE event = %s AND session_id = %d ORDER BY id DESC LIMIT 1', 'visit_user_create_refused', $first->id ), ARRAY_A );
+			$detail = is_array( $row ) ? json_decode( (string) $row['detail'], true ) : null;
+			$this->check(
+				is_array( $row ) && (int) $row['partner_id'] === $this->partner->id && (int) $row['user_id'] === $this->account && 'refused' === $row['result']
+					&& [ 'script' => 'admin-ajax.php', 'action' => 'fixture_create_subaccount' ] === $detail && ! str_contains( (string) $row['detail'], $login ),
+				'the refusal is audited with its connection, visit, script and action, and nothing about the refused account'
+			);
+			$updated = wp_update_user( [ 'ID' => $this->account, 'display_name' => (string) get_userdata( $this->account )->display_name ] );
+			$this->check( $updated === $this->account, 'updating the shared account inside a visit is not creation and still works' );
+		} finally {
+			[ $script, $action ] = $saved;
+			if ( null === $script ) { unset( $_SERVER['SCRIPT_FILENAME'] ); } else { $_SERVER['SCRIPT_FILENAME'] = $script; }
+			if ( null === $action ) { unset( $_REQUEST['action'] ); } else { $_REQUEST['action'] = $action; }
+			pow_native_leave_visit( $this->admin );
+		}
+		$this->check( pow_native_bound_account( 'lockdown-outside' ) > 0, 'outside a visit users are created normally' );
+	}
+
 	private function foreign_basket(): void {
 		[ $first, $second ] = $this->visits;
 		$own = POW\Cart\SessionKey::for_session( $first );
@@ -354,9 +456,11 @@ final class VisitLockdownNative {
 			$this->admin_area();
 			$this->rest_routes();
 			$this->account_surfaces();
+			$this->account_endpoints();
 			$this->foreign_basket();
 			$this->foreign_order();
 			$this->checkout();
+			$this->user_creation();
 			$this->logout();
 		} finally {
 			$this->endpoint( [] );

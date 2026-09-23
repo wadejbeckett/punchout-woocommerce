@@ -30,7 +30,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '7';
+	public const DB_VERSION     = '8';
 	public const DB_VERSION_KEY = 'pow_db_version';
 	// Routing changes independently of the table schema.
 	public const REWRITE_VERSION = '1';
@@ -58,6 +58,13 @@ final class Installer {
 	 * @var array<string, bool>
 	 */
 	private const SESSIONS_INDEXES = [ 'wc_session_key' => true, 'partner_buyer' => false, 'login' => false ];
+
+	/**
+	 * The partner column schema eight adds, read back for the same reason:
+	 * the connection form writes it, and a save naming a column that is not
+	 * there fails every time.
+	 */
+	private const PARTNERS_COLUMNS = [ 'visit_endpoints' ];
 
 	public static function partners_table(): string {
 		global $wpdb;
@@ -159,6 +166,8 @@ final class Installer {
 		// without one cannot start a visit. `mode` and `exit_policy` no
 		// longer select behaviour — checkout is blocked inside every visit,
 		// so only requisition_only / punchout_only are ever written.
+		// visit_endpoints (schema 8) lists the My Account endpoints a visit
+		// may open; empty keeps the whole account area closed.
 		$sql_partners = "CREATE TABLE {$partners} (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			name VARCHAR(190) NOT NULL,
@@ -196,6 +205,7 @@ final class Installer {
 			freight_uom VARCHAR(8) NOT NULL DEFAULT 'EA',
 			freight_classification_domain VARCHAR(64) NOT NULL DEFAULT 'supplier',
 			freight_classification VARCHAR(64) NOT NULL DEFAULT 'freight',
+			visit_endpoints VARCHAR(255) NOT NULL DEFAULT '',
 			created DATETIME NULL,
 			updated DATETIME NULL,
 			PRIMARY KEY  (id),
@@ -294,13 +304,17 @@ final class Installer {
 		dbDelta( $sql_log );
 
 		$faults = self::sessions_schema_faults();
+		$faults = array_merge(
+			[] === $faults ? [] : [ $sessions . ': ' . implode( '; ', $faults ) ],
+			array_map( static fn( string $fault ): string => $partners . ': ' . $fault, self::partners_schema_faults() )
+		);
 
 		if ( [] !== $faults ) {
 			// One line, and no exception: this runs on admin_init, where a
 			// throw would take the whole wp-admin page with it. The version
 			// marker stays behind, so the next admin request tries again.
 			( new Logger( new Settings() ) )->error(
-				'Schema ' . self::DB_VERSION . ' did not land on ' . $sessions . ': ' . implode( '; ', $faults )
+				'Schema ' . self::DB_VERSION . ' did not land on ' . implode( '; ', $faults )
 				. '. The recorded schema version stays at ' . $from_version . ' and the migration is retried on the next admin request.'
 			);
 
@@ -363,6 +377,33 @@ final class Installer {
 		}
 
 		return $faults;
+	}
+
+	/**
+	 * What schema eight asked of the partners table and it does not have.
+	 *
+	 * @return list<string>
+	 */
+	private static function partners_schema_faults(): array {
+		global $wpdb;
+
+		$partners = self::partners_table();
+
+		$wpdb->last_error = '';
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$columns = $wpdb->get_results( "SHOW COLUMNS FROM {$partners}", ARRAY_A );
+		if ( ! is_array( $columns ) || [] === $columns || '' !== (string) ( $wpdb->last_error ?? '' ) ) {
+			return [ 'its columns could not be read' ];
+		}
+
+		$present = array_map( 'strval', array_column( $columns, 'Field' ) );
+
+		return array_values(
+			array_map(
+				static fn( string $column ): string => 'column ' . $column . ' is missing',
+				array_filter( self::PARTNERS_COLUMNS, static fn( string $column ): bool => ! in_array( $column, $present, true ) )
+			)
+		);
 	}
 
 	/**

@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Partners;
 
+use POW\Account\VisitEndpoints;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -21,6 +23,11 @@ defined( 'ABSPATH' ) || exit;
  * submitted, awaiting an administrator — never authenticates), then
  * STATUS_ACTIVE or STATUS_DISABLED. Only STATUS_ACTIVE authenticates, so
  * anything unrecognised fails closed.
+ *
+ * `visit_endpoints` is the comma-separated list of My Account endpoints this
+ * connection's visits may open, normalised by Account\VisitEndpoints on the
+ * way in and again here, so a hand-edited row can never list a hard-denied
+ * surface. Empty (the default) keeps the whole account area closed.
  */
 final class Partner {
 
@@ -67,6 +74,7 @@ final class Partner {
 		public readonly string $freight_classification_domain = 'supplier',
 		public readonly string $freight_classification = 'freight',
 		public readonly string $exit_policy = 'punchout_only',
+		public readonly string $visit_endpoints = '',
 	) {}
 
 	/**
@@ -113,6 +121,8 @@ final class Partner {
 			freight_classification: $delivery['freight_classification'] ?? 'freight',
 			// Retired column: punchout is the only exit, whatever the row holds.
 			exit_policy: 'punchout_only',
+			// Absent before schema 8: an older row allows nothing.
+			visit_endpoints: VisitEndpoints::normalise( (string) ( $row['visit_endpoints'] ?? '' ) ),
 		);
 	}
 
@@ -161,6 +171,15 @@ final class Partner {
 	 */
 	public function is_owned_by( int $user_id ): bool {
 		return $user_id > 0 && $user_id === $this->owner_user_id;
+	}
+
+	/**
+	 * The My Account endpoints a visit of this connection may open ([] = none).
+	 *
+	 * @return list<string>
+	 */
+	public function visit_endpoint_list(): array {
+		return VisitEndpoints::listed( $this->visit_endpoints );
 	}
 
 	/**

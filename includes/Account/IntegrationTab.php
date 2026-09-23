@@ -208,7 +208,7 @@ final class IntegrationTab {
 		$vars = $this->base_vars();
 		$vars['state'] = null === $p ? 'none' : ( $p->is_pending() ? 'pending' : ( $p->is_active() ? 'active' : 'disabled' ) );
 		if ( null !== $p ) {
-			$vars['connection'] = [ 'name' => $p->name, 'from' => $p->from_domain . ' / ' . $p->from_identity, 'sender' => $p->sender_domain . ' / ' . $p->sender_identity, 'to' => $p->to_domain . ' / ' . $p->to_identity, 'deployment_mode' => $p->deployment_mode, 'cxml_version' => $p->cxml_version, 'return_encoding' => $p->return_encoding ];
+			$vars['connection'] = [ 'name' => $p->name, 'from' => $p->from_domain . ' / ' . $p->from_identity, 'sender' => $p->sender_domain . ' / ' . $p->sender_identity, 'to' => $p->to_domain . ' / ' . $p->to_identity, 'deployment_mode' => $p->deployment_mode, 'cxml_version' => $p->cxml_version, 'return_encoding' => $p->return_encoding, 'visit_endpoints' => implode( ', ', $p->visit_endpoint_list() ) ];
 			$vars['template_ready'] = $p->is_active() && $this->template_ready( $p );
 			try { $vars['last_setup'] = $this->audit->last_success( $p->id ); } catch ( \Throwable $e ) { $vars['last_setup'] = __( 'Unavailable', 'punchout-woocommerce' ); }
 		}

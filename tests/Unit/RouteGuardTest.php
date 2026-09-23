@@ -1,5 +1,5 @@
 <?php
-/** Visit lockdown: route scoping, the cross-visit order fence and the wp-admin/REST/application-password doors. @package POW */
+/** Visit lockdown: route scoping, the My Account endpoint list, the cross-visit order fence, the wp-admin/REST/application-password doors and the user-creation veto. @package POW */
 declare( strict_types = 1 );
 
 namespace POW {
@@ -25,6 +25,17 @@ namespace {
 	// does not ask it any more; it stays here so a test can set it true and
 	// prove the guard is no longer switched off by it.
 	if ( ! function_exists( 'wp_doing_ajax' ) ) { function wp_doing_ajax(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['ajax'] ?? false ); } }
+
+	// Whether an account-endpoint action would render a query var: the
+	// fixture names the query vars that have one.
+	if ( ! function_exists( 'has_action' ) ) {
+		function has_action( string $hook, mixed $callback = false ): bool {
+			foreach ( $GLOBALS['pow_route_guard_test']['account_actions'] ?? [] as $endpoint ) {
+				if ( 'woocommerce_account_' . $endpoint . '_endpoint' === $hook ) { return true; }
+			}
+			return false;
+		}
+	}
 
 	// The cookie a WordPress request carries its session token in, and the
 	// only place wp_get_session_token() looks. A visit's teardown forgets it.
@@ -99,6 +110,56 @@ namespace {
 		}
 	}
 
+	/**
+	 * WC_Query as far as the guard reads it: the endpoint map (name => slug)
+	 * and WooCommerce's own "current endpoint", which is the first name of
+	 * that map the request's query vars set.
+	 */
+	final class RouteGuardWcQuery {
+		/** @param array<string, string> $vars */
+		public function __construct( private array $vars ) {}
+		/** @return array<string, string> */
+		public function get_query_vars(): array { return $this->vars; }
+		public function get_current_endpoint(): string {
+			foreach ( $this->vars as $key => $slug ) {
+				if ( isset( $GLOBALS['wp']->query_vars[ $key ] ) ) { return $key; }
+			}
+			return '';
+		}
+	}
+
+	/** Enough of $wpdb for Registry::find(): partner rows by id, or a failed lookup. */
+	final class RouteGuardPartnerDatabase {
+		public string $prefix = 'fixture_';
+		public string $last_error = '';
+		public bool $unreachable = false;
+		public int $lookups = 0;
+		/** @var array<int, array<string, mixed>> */
+		public array $rows = [];
+		private array $prepared = [];
+		public function prepare( string $sql, mixed ...$args ): string {
+			$key = 'q' . count( $this->prepared );
+			$this->prepared[ $key ] = [ $sql, $args ];
+			return $key;
+		}
+		public function suppress_errors( bool $suppress = true ): bool { return false; }
+		public function get_row( string $key, mixed $format = null ): ?array {
+			[ $sql, $args ] = $this->prepared[ $key ];
+			if ( ! str_contains( $sql, 'fixture_pow_partners WHERE id =' ) ) { throw new RuntimeException( 'Unexpected SQL' ); }
+			++$this->lookups;
+			$this->last_error = $this->unreachable ? 'Lookup failed.' : '';
+			return $this->unreachable ? null : ( $this->rows[ (int) $args[0] ] ?? null );
+		}
+	}
+
+	/** The audit trail as the guard writes to it. */
+	final class RouteGuardAudit extends POW\Audit\Log {
+		/** @var list<array{0: string, 1: array<string, mixed>}> */
+		public array $events = [];
+		public function __construct() {}
+		public function write_checked( string $event, array $context = [] ): bool { $this->events[] = [ $event, $context ]; return true; }
+	}
+
 	/** A REST request as rest_pre_dispatch hands it over: only its route matters here. */
 	final class RouteGuardRestRequest {
 		public function __construct( private string $route ) {}
@@ -117,13 +178,13 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		// The request itself is fixture too: the wp-admin door reads the
 		// running script, the logout door reads the action, the nonce and the
 		// session-token cookie.
-		$this->saved_request = [ 'request' => $_REQUEST, 'get' => $_GET, 'cookie' => $_COOKIE, 'script' => $_SERVER['SCRIPT_FILENAME'] ?? null ];
+		$this->saved_request = [ 'request' => $_REQUEST, 'get' => $_GET, 'cookie' => $_COOKIE, 'script' => $_SERVER['SCRIPT_FILENAME'] ?? null, 'uri' => $_SERVER['REQUEST_URI'] ?? null ];
 		$_REQUEST = [];
 		$_GET     = [];
 		$_COOKIE  = [];
 		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/index.php';
 
-		foreach ( [ 'wp', 'wpdb', 'pow_route_guard_test', 'pow_test_current_user_id', 'pow_test_options', 'pow_test_users', 'pow_test_roles', 'pow_test_login_token', 'pow_test_login_tokens', 'pow_test_login_token_index', 'pow_test_orders', 'pow_test_filters', 'pow_test_valid_nonce' ] as $key ) {
+		foreach ( [ 'wp', 'wpdb', 'pow_route_guard_test', 'pow_test_current_user_id', 'pow_test_options', 'pow_test_users', 'pow_test_roles', 'pow_test_login_token', 'pow_test_login_tokens', 'pow_test_login_token_index', 'pow_test_orders', 'pow_test_filters', 'pow_test_valid_nonce', 'pow_test_wc' ] as $key ) {
 			$this->saved[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 			unset( $GLOBALS[ $key ] );
 		}
@@ -145,6 +206,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		$_GET     = $this->saved_request['get'];
 		$_COOKIE  = $this->saved_request['cookie'];
 		if ( null === $this->saved_request['script'] ) { unset( $_SERVER['SCRIPT_FILENAME'] ); } else { $_SERVER['SCRIPT_FILENAME'] = $this->saved_request['script']; }
+		if ( null === $this->saved_request['uri'] ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $this->saved_request['uri']; }
 	}
 
 	/** A visit row for the shared customer account. */
@@ -161,7 +223,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/** RouteGuard on a container whose resolved visit is $session. */
-	private function guard( ?POW\Sessions\Session $session, ?RouteGuardStore $store = null ): POW\RouteGuard {
+	private function guard( ?POW\Sessions\Session $session, ?RouteGuardStore $store = null, ?RouteGuardAudit $audit = null ): POW\RouteGuard {
 		$plugin   = ( new ReflectionClass( POW\Plugin::class ) )->newInstanceWithoutConstructor();
 		$registry = new POW\Partners\Registry( new POW\Partners\Secrets( str_repeat( 'r', 32 ) ) );
 		$settings = new POW\Settings();
@@ -172,6 +234,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 			'settings'        => $settings,
 			'current_session' => $store ? null : $session,
 			'session_resolved' => null === $store,
+			'audit'           => $audit,
 		];
 
 		foreach ( $values as $key => $value ) {
@@ -300,6 +363,180 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 			self::assertSame( $this->landing(), $redirect->url );
 			self::assertNull( $this->guarded( $this->guard( null ) ), 'An ordinary shopper keeps My Account' );
 		}
+	}
+
+	/** WooCommerce's endpoint map on this fixture: its own account endpoints, the plugin's tab and three third-party ones. */
+	private const WC_ENDPOINTS = [
+		'order-pay', 'order-received', 'orders', 'view-order', 'downloads', 'edit-account', 'edit-address', 'payment-methods', 'lost-password',
+		'customer-logout', 'add-payment-method', 'delete-payment-method', 'set-default-payment-method', 'punchout-integration',
+		'bulkorder', 'purchase-lists', 'subaccounts',
+	];
+
+	/** Connection 7, active, listing $endpoints exactly as the row would hold them. */
+	private function connection( string $endpoints, string $status = 'active' ): RouteGuardPartnerDatabase {
+		$GLOBALS['wpdb'] = $database = new RouteGuardPartnerDatabase();
+		$database->rows[7] = [ 'id' => 7, 'name' => 'Example', 'status' => $status, 'owner_user_id' => self::ACCOUNT, 'visit_endpoints' => $endpoints ];
+		WC()->query = new RouteGuardWcQuery( array_combine( self::WC_ENDPOINTS, self::WC_ENDPOINTS ) );
+		$GLOBALS['pow_route_guard_test']['account'] = true;
+		return $database;
+	}
+
+	/** An account page request carrying these query vars, as WordPress and WooCommerce leave them. */
+	private function account_request( array $endpoints ): void {
+		$GLOBALS['wp']->query_vars = [ 'pagename' => 'my-account' ] + array_fill_keys( $endpoints, '' );
+	}
+
+	/** Whether guard() let an account page request naming $endpoints through. */
+	private function opens( array $endpoints, ?POW\Sessions\Session $visit ): bool {
+		$this->account_request( $endpoints );
+		$redirect = $this->guarded( $this->guard( $visit ) );
+		if ( null !== $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
+		return null === $redirect;
+	}
+
+	public function test_a_listed_endpoint_opens_inside_a_visit_and_nothing_else_does(): void {
+		$this->connection( 'bulkorder,purchase-lists' );
+
+		self::assertTrue( $this->opens( [ 'bulkorder' ], $this->visit() ), 'A listed third-party endpoint opens inside a visit' );
+		self::assertTrue( $this->opens( [ 'purchase-lists' ], $this->visit() ), 'Every listed endpoint opens' );
+		self::assertFalse( $this->opens( [ 'subaccounts' ], $this->visit() ), 'An endpoint the connection does not list stays closed' );
+		self::assertFalse( $this->opens( [], $this->visit() ), 'The dashboard stays closed' );
+		self::assertFalse( $this->opens( [ 'bulkorder', 'orders' ], $this->visit() ), 'A second endpoint carried alongside a listed one closes the page' );
+		self::assertFalse( $this->opens( [ 'purchase-lists', 'subaccounts' ], $this->visit() ), 'Every endpoint the request names must be listed' );
+
+		foreach ( [ [ 'bulkorder' ], [ 'subaccounts' ], [ 'orders' ], [] ] as $endpoints ) {
+			self::assertTrue( $this->opens( $endpoints, null ), 'Outside a visit My Account is untouched: ' . implode( ',', $endpoints ) );
+		}
+	}
+
+	/**
+	 * The hard-deny list is the guard's, not the row's: a row edited by hand
+	 * to list the shared login's own surfaces still opens none of them.
+	 */
+	public function test_hard_denied_endpoints_stay_closed_even_when_a_row_lists_them(): void {
+		$denied = array_values( array_diff( POW\Account\VisitEndpoints::HARD_DENY, [ '', 'dashboard' ] ) );
+		$this->connection( 'bulkorder,dashboard,' . implode( ',', $denied ) );
+
+		self::assertSame( [ 'bulkorder' ], POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The row reads back without the hard-denied entries' );
+		self::assertContains( POW\Account\IntegrationTab::ENDPOINT, $denied, "The plugin's own tab is on the list by its constant" );
+
+		foreach ( $denied as $endpoint ) {
+			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} never opens inside a visit" );
+		}
+		self::assertFalse( $this->opens( [], $this->visit() ), 'Nor does the dashboard' );
+		self::assertTrue( $this->opens( [ 'bulkorder' ], $this->visit() ), 'The listed endpoint beside them still opens' );
+	}
+
+	public function test_an_empty_disabled_missing_or_unreadable_connection_keeps_my_account_closed(): void {
+		$this->connection( '' );
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit() ), 'The default empty list opens nothing' );
+
+		$this->connection( 'bulkorder', 'disabled' );
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit() ), 'A connection that is not active opens nothing' );
+
+		$this->connection( 'bulkorder' );
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit( self::VISIT, 'active', 8 ) ), "A visit whose connection row is gone opens nothing, and never another connection's list" );
+
+		$database = $this->connection( 'bulkorder' );
+		$database->unreachable = true;
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit() ), 'A connection that cannot be read opens nothing' );
+
+		unset( $GLOBALS['wpdb'] );
+		self::assertFalse( $this->opens( [ 'bulkorder' ], $this->visit() ), 'No database at all opens nothing' );
+	}
+
+	/** WooCommerce renders the first query var with an account-endpoint action, whether or not its own map knows the name. */
+	public function test_a_query_var_an_account_action_would_render_must_be_listed_too(): void {
+		$this->connection( 'bulkorder' );
+		$GLOBALS['pow_route_guard_test']['account_actions'] = [ 'bulkorder', 'unmapped' ];
+
+		self::assertTrue( $this->opens( [ 'bulkorder' ], $this->visit() ) );
+		self::assertFalse( $this->opens( [ 'unmapped', 'bulkorder' ], $this->visit() ), 'An endpoint WooCommerce would render but does not map is still judged' );
+
+		$this->connection( 'unmapped' );
+		self::assertTrue( $this->opens( [ 'unmapped' ], $this->visit() ), 'Listed, it opens like any other' );
+	}
+
+	/** Before WordPress has parsed the request, its path and query string name the endpoint. */
+	public function test_before_the_request_is_parsed_the_path_names_the_endpoint(): void {
+		$this->connection( 'bulkorder' );
+		$request = function ( string $uri, array $get = [] ): bool {
+			$GLOBALS['wp']->query_vars = [];
+			$_SERVER['REQUEST_URI']    = $uri;
+			$_GET                      = $get;
+			return null === $this->guarded( $this->guard( $this->visit() ) );
+		};
+
+		self::assertTrue( $request( '/my-account/bulkorder/' ), 'The listed endpoint opens from its path' );
+		self::assertFalse( $request( '/my-account/' ), 'The dashboard stays closed' );
+		self::assertFalse( $request( '/my-account/orders/' ), 'A hard-denied endpoint stays closed' );
+		self::assertFalse( $request( '/my-account/bulkorder/', [ 'orders' => '1' ] ), 'A query-string endpoint beside it closes the page' );
+		self::assertFalse( $request( '/?page_id=9', [ 'edit-account' => '' ] ), 'Plain permalinks are read the same way' );
+
+		WC()->query = null;
+		self::assertFalse( $request( '/my-account/bulkorder/' ), 'Without WooCommerce\'s endpoint map nothing can be proved, so nothing opens' );
+	}
+
+	public function test_the_account_menu_inside_a_visit_offers_only_listed_endpoints(): void {
+		$items = [
+			'dashboard' => 'Dashboard', 'orders' => 'Orders', 'bulkorder' => 'Quick order', 'purchase-lists' => 'Lists', 'subaccounts' => 'Subaccounts',
+			'edit-address' => 'Addresses', 'edit-account' => 'Account details', 'punchout-integration' => 'Punchout integration', 'customer-logout' => 'Log out',
+		];
+
+		$this->connection( 'bulkorder,purchase-lists' );
+		self::assertSame( [ 'bulkorder' => 'Quick order', 'purchase-lists' => 'Lists' ], $this->guard( $this->visit() )->visit_menu_items( $items ), 'Only listed endpoints stay in a visit\'s menu' );
+		self::assertSame( $items, $this->guard( null )->visit_menu_items( $items ), 'Outside a visit the menu is untouched' );
+		self::assertSame( 'not-a-menu', $this->guard( $this->visit() )->visit_menu_items( 'not-a-menu' ), 'Something that is not a menu is passed on' );
+
+		$this->connection( 'bulkorder,dashboard,orders,customer-logout' );
+		self::assertSame( [ 'bulkorder' => 'Quick order' ], $this->guard( $this->visit() )->visit_menu_items( $items ), 'A hard-denied item never survives, whoever listed it' );
+
+		$this->connection( '' );
+		self::assertSame( [], $this->guard( $this->visit() )->visit_menu_items( $items ), 'An empty list leaves an empty menu' );
+
+		$store = new RouteGuardStore();
+		$store->unreachable = true;
+		$GLOBALS['pow_test_login_token'] = 'visit-a';
+		self::assertSame( [], $this->guard( null, $store )->visit_menu_items( $items ), 'A request whose visit cannot be proved gets an empty menu' );
+	}
+
+	/**
+	 * P2: a visit creates no user. admin-ajax.php stays reachable inside a
+	 * visit so the basket works, which also makes every plugin action behind
+	 * it reachable; a sub-account form there would otherwise hand a buyer a
+	 * password login of its own.
+	 */
+	public function test_no_user_is_created_inside_a_visit_and_the_refusal_is_audited(): void {
+		$audit = new RouteGuardAudit();
+		$data  = [ 'user_login' => 'new-colleague', 'user_email' => 'new-colleague@example.invalid' ];
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/admin-ajax.php';
+		$_REQUEST['action']         = 'example_create_subaccount';
+
+		self::assertSame( [], $this->guard( $this->visit(), null, $audit )->refuse_user_creation( $data, false, null, $data ), 'Creation inside a visit gets an empty row, which core refuses with a WP_Error' );
+		self::assertCount( 1, $audit->events );
+		[ $event, $context ] = $audit->events[0];
+		self::assertSame( 'visit_user_create_refused', $event );
+		self::assertSame( [ 7, self::VISIT, self::ACCOUNT, 'refused' ], [ $context['partner_id'], $context['session_id'], $context['user_id'], $context['result'] ] );
+		self::assertSame( [ 'script' => 'admin-ajax.php', 'action' => 'example_create_subaccount' ], $context['detail'] );
+		self::assertStringNotContainsString( 'new-colleague', (string) json_encode( $audit->events ), 'Nothing about the refused account is recorded' );
+
+		$audit->events = [];
+		self::assertSame( $data, $this->guard( $this->visit(), null, $audit )->refuse_user_creation( $data, true, self::ACCOUNT, $data ), 'Updating an existing user is not creation' );
+		self::assertSame( $data, $this->guard( null, null, $audit )->refuse_user_creation( $data, false, null, $data ), 'Outside a visit users are created normally' );
+		self::assertSame( [], $audit->events, 'Nothing refused, nothing recorded' );
+
+		$store = new RouteGuardStore();
+		$store->unreachable = true;
+		$GLOBALS['pow_test_login_token'] = 'visit-a';
+		self::assertSame( [], $this->guard( null, $store, $audit )->refuse_user_creation( $data, false, null, $data ), 'A request whose visit cannot be proved creates no user' );
+		self::assertSame( [ 0, 0 ], [ $audit->events[0][1]['partner_id'], $audit->events[0][1]['session_id'] ], 'An unproven visit is recorded without one' );
+	}
+
+	/** Both filters run last, so nothing registered after them can undo the decision. */
+	public function test_the_menu_filter_and_the_user_veto_are_registered_last(): void {
+		$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/RouteGuard.php' );
+		self::assertStringContainsString( "add_filter( 'woocommerce_account_menu_items', [ \$this, 'visit_menu_items' ], PHP_INT_MAX );", $source );
+		self::assertStringContainsString( "add_filter( 'wp_pre_insert_user_data', [ \$this, 'refuse_user_creation' ], PHP_INT_MAX, 4 );", $source );
 	}
 
 	public function test_wp_admin_is_refused_inside_a_visit_without_breaking_ajax(): void {
