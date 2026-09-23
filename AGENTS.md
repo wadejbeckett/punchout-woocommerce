@@ -13,7 +13,7 @@ A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `i
 - Keep secrets out of files and logs. The Coke shared secret lives only in `/home/noiz/Projects/Noiz/Clients/lema.co.za/context/meetings/2026-09-10-coke/private/lema-coke-dynamics-template-2026-09-12.xml` (mode 600) — read it at runtime, never print it.
 
 ## Current state (22 Sep 2026)
-- Branch `feature/0.4.0-single-login`, head 7cfdfe7 = **0.4.4, live on lema.co.za since 21 Sep 20:31 SAST** (tag `lema-live-2026-09-21-7cfdfe7`). master is at v0.3.0. Merge to master and tag v0.4.0 only after Coke's re-test.
+- **Live on lema.co.za: 0.4.6 = 97ed427** (branch `feature/0.4.6-endpoint-checkboxes`, tag `v0.4.6`, not pushed or merged), installed 23 Sep 20:27 SAST. Before it: 0.4.5 = 1089f86 (`feature/0.4.5-visit-endpoints`, tag v0.4.5, 23 Sep 17:03) and 0.4.4 = 7cfdfe7 (`feature/0.4.0-single-login`, tag `lema-live-2026-09-21-7cfdfe7`). The 0.4.5/0.4.6 branches sit on top of `feature/0.4.0-single-login`. master is at v0.3.0. Merge to master and tag v0.4.0 only after Coke's re-test.
 - Unit suite: `php tests/run-tests.php` (1009 pass, no Composer). Cart surface suite: `php tests/CartBlocks/surface.php`. Native suites (opt-in, real WP): see "Local fixture".
 - Lema cleanup done: 20 legacy `punchout_buyer` accounts, 6 test quotes and the mu-plugin `lema-punchout-groups.php` deleted (backups under `/var/www/vhosts/lema.co.za/AVADA-OPTION-BACKUPS/punchout-20260921-*`). User 4 `coca-cola-company` is connection 1's account, B2BKing group 10717.
 - Browser-verified as a visit: cart page shows the "Punchout" exit under the totals, no checkout button. Nine smoke visits (132–140) expire ~22 Sep evening; visit 135 still holds 2 test items in its own cart row (the sweep deletes it).
@@ -25,7 +25,7 @@ A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `i
 4. Deferred: fold the guarded cart save into one module.
 
 ## How to deploy to Lema
-Tooling: `/home/noiz/Projects/Noiz/Clients/lema.co.za/punchout/tooling/deploy-live-0.4.0-single-login/` — `config.env` (COMMIT, PACKAGE, PACKAGE_SHA256, BACKUP dir), then `./backup.sh`, `./install.sh`, `./verify-installed.sh`, `./rollback.sh`. Build a package with `bin/build-zip.sh <outdir>` (bump `Version:` header, `const VERSION`, readme `Stable tag` and changelog first). Put builds under `lema.co.za/punchout/context/builds/<date>-<topic>-<sha7>/`.
+Tooling (latest): `/home/noiz/Projects/Noiz/Clients/lema.co.za/punchout/tooling/deploy-live-0.4.6-endpoint-checkboxes/` (copy it for the next release) — `config.env` (COMMIT, PACKAGE, PACKAGE_SHA256, BACKUP dir), then `./backup.sh`, `./install.sh`, `./verify-installed.sh`, `./rollback.sh`. Build a package with `bin/build-zip.sh <outdir>` (bump `Version:` header, `const VERSION`, readme `Stable tag` and changelog first). Put builds under `lema.co.za/punchout/context/builds/<date>-<topic>-<sha7>/`.
 
 ## How to smoke-test live without a browser
 `.remember/single-login-deliberation-20260921/live-smoke.py` (python3, stdlib): fills the private Dynamics template with a payloadID/timestamp/BuyerCookie/dummy BrowserFormPost and a UserEmail extrinsic, POSTs to `https://www.lema.co.za/punchout/setup`, redeems the StartPage URL, loads `/cart/`, checks `/wp-json/wp/v2/users/me` (must be 401) and `/wp-admin/` (must redirect). Never posts a return. Note: `/cart/?add-to-cart=` gets a Plesk 403 on this site; use `/shop/?add-to-cart=ID` or `?wc-ajax=add_to_cart`.
