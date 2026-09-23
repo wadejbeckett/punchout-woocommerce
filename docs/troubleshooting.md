@@ -28,7 +28,7 @@ Use supplier audit records and the Dynamics cart message log. Microsoft document
 2. Launch two employees at once. Verify two visits on the one bound account, with separate baskets and separate delivery selections, and that neither can see the other's basket, quote order, order-received or order-pay page. Then re-launch one of them and verify only that employee's earlier visit is superseded.
 3. Return actual cart lines and compare names, quantities, units, currency and totals in the purchasing system. Verify each quote order carries the right buyer name and e-mail, an order note naming the buyer, a "Bought by" line on the admin order screen, and `customer_id` still the bound account.
 4. Exercise Back to cart, changed addresses/rates, free/pickup/no-rate outcomes and snapshot durability. No checkout or payment control may appear anywhere in a visit.
-5. Confirm the item-7 refusals inside a visit: wp-admin, `/wp/v2/users*`, application passwords, account details and password change are all refused, as is the My Account punchout tab.
+5. Confirm the item-7 refusals inside a visit: wp-admin, `/wp/v2/users*`, application passwords, account details and password change are all refused, as is the My Account punchout tab. If the connection lists My Account pages, confirm each listed page opens, the account menu shows only those pages, the dashboard and orders still send the buyer to the landing page, and nothing on a listed page creates a user.
 6. Verify rotation overlap, closure, disabling, expiry and secret-free subsequent page loads.
 7. Verify the prices and catalogue the buyer sees in both concurrent visits are the bound account's own. That is hand configuration on the store, and the only part of this the plugin cannot guarantee for itself.
 

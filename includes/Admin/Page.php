@@ -576,6 +576,15 @@ final class Page {
 		);
 
 		$this->form_row(
+			__( 'My Account pages in a visit', 'punchout-woocommerce' ),
+			sprintf(
+				'<input type="text" class="regular-text" name="visit_endpoints" value="%s" placeholder="bulkorder" /><p class="description">%s</p>',
+				esc_attr( str_replace( ',', ', ', (string) ( $partner->visit_endpoints ?? '' ) ) ),
+				esc_html__( 'Optional. Comma-separated My Account endpoint names a buyer may open during a punchout visit, for example a third-party quick-order page. Empty keeps all of My Account closed in a visit. Every buyer of this connection shares one account, so the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout and the integration tab always stay closed and cannot be listed. Inside a visit the account menu shows only the listed pages.', 'punchout-woocommerce' )
+			)
+		);
+
+		$this->form_row(
 			__( 'Token TTL / session TTL (s)', 'punchout-woocommerce' ),
 			sprintf(
 				'<input type="number" class="small-text" name="token_ttl" value="%d" min="30" /> / <input type="number" class="small-text" name="session_ttl" value="%d" min="300" />',

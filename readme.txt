@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.4
+Stable tag: 0.4.5
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -24,7 +24,7 @@ PunchOut for WooCommerce lets enterprise buyers "punch out" from their procureme
 
 **Security first.** Constant-time secret comparison, sodium-sealed secrets (wp-config key), single-use hashed StartPage tokens, per-customer rate limiting and IP allowlists, XXE-hardened XML parsing with no runtime DTD fetches, no-store/noindex on every punchout response, a full audit trail with secrets redacted, and session teardown at every exit.
 
-**One visit, one basket.** Every punchout visit gets its own WordPress auth cookie, its own session token and its own WooCommerce session row, so two employees of one customer shopping at the same moment never see each other's basket or delivery selection. Inside a visit the request is also refused at wp-admin, the users REST routes, application passwords, the account-details and password screens, another visit's basket and another visit's quote order.
+**One visit, one basket.** Every punchout visit gets its own WordPress auth cookie, its own session token and its own WooCommerce session row, so two employees of one customer shopping at the same moment never see each other's basket or delivery selection. Inside a visit the request is also refused at wp-admin, the users REST routes, application passwords, My Account (except pages the connection lists, never the account's own), another visit's basket and another visit's quote order, and no user can be created.
 
 **Placement flexibility.** The RFQ exit button is available as the `[punchout_return_button]` shortcode, the `pow_return_button()` PHP helper, and automatic cart-page injection — with theme-overridable templates and filters for every string.
 
@@ -57,6 +57,12 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.5 =
+* New: a connection can list My Account pages its punchout visits may open, for example a third-party quick-order page. Set it in "My Account pages in a visit" on the connection screen at WooCommerce > PunchOut > Customers. It is empty by default, which keeps all of My Account closed in a visit as before. Inside a visit the account menu shows only the listed pages, and the account holder sees the list on My Account > Punchout integration.
+* Security: the account's own pages can never be listed and stay closed in every visit: the dashboard, orders and order view, downloads, addresses, account details, payment methods, password reset, logout and the Punchout integration tab. Every buyer of a connection shares that account.
+* Security: a punchout visit can no longer create a WordPress user by any route, including another plugin's admin-ajax action such as a sub-account form. The refusal is recorded in the audit log as visit_user_create_refused.
+* Upgrade: schema 8 adds one column, visit_endpoints, to the connections table. It runs on the next wp-admin page load and leaves open visits alone.
 
 = 0.4.4 =
 * Fix: the return control on the classic cart page now renders after the cart totals instead of inside the proceed-to-checkout container, which a theme or page-builder cart element may hide wholesale while drawing its own button; on such a layout the visit had no visible exit.

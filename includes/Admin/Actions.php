@@ -12,6 +12,7 @@ namespace POW\Admin;
 
 use POW\Support\Transport;
 
+use POW\Account\VisitEndpoints;
 use POW\Audit\Log;
 use POW\Partners\Registry;
 use POW\Partners\Registration;
@@ -70,6 +71,29 @@ final class Actions {
 			$this->finish( 'partners', __( 'Name and Sender credential are required.', 'punchout-woocommerce' ), 'error' );
 		}
 
+		// Only when the form sent the field, so a form without it never
+		// clears a connection's list. A list with any bad entry is refused
+		// whole, and the notice names each one.
+		if ( array_key_exists( 'visit_endpoints', $posted ) ) {
+			$endpoints = VisitEndpoints::parse( sanitize_text_field( (string) $posted['visit_endpoints'] ) );
+			if ( [] !== $endpoints['rejected'] ) {
+				$this->finish(
+					'partners',
+					sprintf(
+						/* translators: %s: comma-separated endpoint names that were refused */
+						__( 'Not saved. These cannot open in a punchout visit: %s. List lowercase My Account endpoint names only; the dashboard, orders, addresses, downloads, account details, payment methods, password reset, logout and the integration tab always stay closed.', 'punchout-woocommerce' ),
+						implode( ', ', $endpoints['rejected'] )
+					),
+					'error'
+				);
+			}
+			if ( $endpoints['too_long'] ) {
+				/* translators: %d: maximum length of the endpoint list */
+				$this->finish( 'partners', sprintf( __( 'Not saved. The My Account endpoint list must fit in %d characters.', 'punchout-woocommerce' ), VisitEndpoints::MAX_LENGTH ), 'error' );
+			}
+			$data['visit_endpoints'] = implode( ',', $endpoints['endpoints'] );
+		}
+
 		$issued = '';
 		$ok = false;
 		try {
@@ -94,7 +118,8 @@ final class Actions {
 		} catch ( \Throwable $e ) { /* A confirmed write still needs its direct credential handover. */ }
 
 		if ( $ok ) {
-			$this->record( 'partner_saved', $partner_id );
+			// The endpoint list is what a visit may open, so the trail keeps each saved value.
+			$this->record( 'partner_saved', $partner_id, array_key_exists( 'visit_endpoints', $data ) ? [ 'visit_endpoints' => $data['visit_endpoints'] ] : [] );
 			if ( '' !== $issued ) { $this->secret_response( __( 'Customer saved.', 'punchout-woocommerce' ), $issued ); }
 		}
 		$this->finish( 'partners', $ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : __( 'Saving failed — is the Sender identity unique?', 'punchout-woocommerce' ), $ok ? 'success' : 'error' );
