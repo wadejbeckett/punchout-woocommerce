@@ -514,3 +514,9 @@ if ( ! function_exists( 'is_ssl' ) ) {
 if ( ! function_exists( 'set_url_scheme' ) ) {
 	function set_url_scheme( string $url, ?string $scheme = null ): string { return preg_replace( '#^\w+://#', ( $scheme ?? ( is_ssl() ? 'https' : 'http' ) ) . '://', trim( $url ) ); }
 }
+
+if ( ! function_exists( 'wp_timezone' ) ) {
+	function wp_timezone(): DateTimeZone {
+		return new DateTimeZone( $GLOBALS['pow_test_timezone'] ?? 'UTC' );
+	}
+}

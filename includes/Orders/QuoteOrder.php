@@ -87,6 +87,8 @@ final class QuoteOrder {
 	public const META_DELIVERY_NOTES = '_pow_delivery_notes';
 	public const META_DELIVERY_CHOICE = '_pow_delivery_choice';
 	public const META_DELIVERY_CONFIRMATION = '_pow_delivery_confirmation';
+	/** The buyer's optional preferred delivery date (Y-m-d), copied from a schema-2 confirmation. Written only when set; never sent in the PunchOutOrderMessage. */
+	public const META_PREFERRED_DELIVERY_DATE = '_pow_preferred_delivery_date';
 
 	/**
 	 * The order-screen action key. It has to survive sanitize_title()
@@ -290,16 +292,20 @@ final class QuoteOrder {
 		}
 
 		try {
-			$noted = $order->add_order_note(
-				sprintf(
-					/* translators: 1: session id, 2: customer connection name, 3: address source, 4: the "Bought by ..." attribution sentence */
-					__( 'Punchout Quote created from punchout session #%1$d (%2$s). Delivery address source: %3$s. %4$s.', 'punchout-woocommerce' ),
-					$session->id,
-					$partner->name,
-					$shipping['source'],
-					self::bought_by( (string) $session->buyer_name, (string) $session->buyer_identity, self::connection_label( $partner->name, $partner->id ) )
-				)
+			$note = sprintf(
+				/* translators: 1: session id, 2: customer connection name, 3: address source, 4: the "Bought by ..." attribution sentence */
+				__( 'Punchout Quote created from punchout session #%1$d (%2$s). Delivery address source: %3$s. %4$s.', 'punchout-woocommerce' ),
+				$session->id,
+				$partner->name,
+				$shipping['source'],
+				self::bought_by( (string) $session->buyer_name, (string) $session->buyer_identity, self::connection_label( $partner->name, $partner->id ) )
 			);
+			// Still one internal note: the selected method (with any delivery period in its title) and the preferred date follow the attribution.
+			$summary = self::delivery_summary( $delivery, null !== $provenance ? ( $provenance[ self::META_PREFERRED_DELIVERY_DATE ] ?? null ) : null );
+			if ( '' !== $summary ) {
+				$note .= ' ' . $summary;
+			}
+			$noted = $order->add_order_note( $note );
 
 			if ( ! $noted ) {
 				throw new \RuntimeException( 'quote_note_failed' );
@@ -406,6 +412,8 @@ final class QuoteOrder {
 			// names a different account belongs to a different connection.
 			$confirmation = DeliveryData::confirmation( $provenance[ self::META_DELIVERY_CONFIRMATION ], (int) $meta[ self::META_SESSION_ID ], (int) $order->get_customer_id( 'edit' ), $choice );
 			if ( $confirmation['notes'] !== $provenance[ self::META_DELIVERY_NOTES ] || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $delivery ) ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
+			// A schema-2 date is verified against its stored meta like the notes; schema 1 adds nothing.
+			if ( null !== ( $confirmation['preferred_delivery_date'] ?? null ) ) { $provenance[ self::META_PREFERRED_DELIVERY_DATE ] = $confirmation['preferred_delivery_date']; }
 			$shipping = QuoteAddress::payload( $choice )['address'] ?? array_fill_keys( self::SHIPPING_FIELDS, '' );
 		} else { $provenance = null; }
 		return [
@@ -469,7 +477,32 @@ final class QuoteOrder {
 			return;
 		}
 
-		echo '<p class="pow-bought-by"><strong>' . esc_html__( 'PunchOut', 'punchout-woocommerce' ) . '</strong><br />' . esc_html( $this->bought_by_for( $order ) ) . '</p>';
+		$date = (string) $order->get_meta( self::META_PREFERRED_DELIVERY_DATE );
+		/* translators: %s: the buyer's preferred delivery date, Y-m-d */
+		echo '<p class="pow-bought-by"><strong>' . esc_html__( 'PunchOut', 'punchout-woocommerce' ) . '</strong><br />' . esc_html( $this->bought_by_for( $order ) ) . ( '' !== $date ? '<br />' . esc_html( sprintf( __( 'Preferred delivery date: %s', 'punchout-woocommerce' ), $date ) ) : '' ) . '</p>';
+	}
+
+	/**
+	 * The Quote note's delivery sentence, unescaped: the selected method title(s) as plain text, called Collection when every
+	 * selected rate is native Local Pickup, then the optional preferred date. '' when there is neither.
+	 */
+	public static function delivery_summary( ?array $delivery, ?string $preferred_date ): string {
+		$parts = [];
+		if ( null !== $delivery && [] !== ( $delivery['rates'] ?? [] ) && '' !== ( $label = DeliveryData::method_label( $delivery ) ) ) {
+			$parts[] = sprintf(
+				DeliveryData::is_collection( $delivery )
+					/* translators: %s: selected shipping method title(s) */
+					? __( 'Collection: %s.', 'punchout-woocommerce' )
+					/* translators: %s: selected shipping method title(s) */
+					: __( 'Delivery method: %s.', 'punchout-woocommerce' ),
+				$label
+			);
+		}
+		if ( null !== $preferred_date ) {
+			/* translators: %s: the buyer's preferred delivery date, Y-m-d */
+			$parts[] = sprintf( __( 'Preferred delivery date: %s.', 'punchout-woocommerce' ), $preferred_date );
+		}
+		return implode( ' ', $parts );
 	}
 
 	/** The attribution sentence for one order, unescaped: the rule, separate from its markup. */
@@ -908,11 +941,14 @@ final class QuoteOrder {
 		// to this destination is answered by the buyer attribution meta, not
 		// by buyer_user_id.
 		$confirmation = DeliveryData::confirmation( $confirmation_json, $session->id, $session->user_id, $choice );
+		$date = $confirmation['preferred_delivery_date'] ?? null;
 		$notes = $mapped['delivery_notes'];
 		// Decoding must not silently upgrade/rewrite this winner's payload, and neither the native note nor its metadata may contain a different instruction.
-		if ( DeliveryData::fingerprint( $choice ) !== DeliveryData::fingerprint( $mapped['delivery_choice'] ) || DeliveryData::fingerprint( QuoteAddress::payload( $choice ) ) !== DeliveryData::fingerprint( QuoteAddress::payload( $mapped['delivery_destination'] ) ) || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $mapped['delivery'] ) || $confirmation['notes'] !== $notes || sanitize_textarea_field( $notes ) !== $notes ) { throw new \RuntimeException( 'quote_confirmation_invalid' ); }
+		if ( DeliveryData::fingerprint( $choice ) !== DeliveryData::fingerprint( $mapped['delivery_choice'] ) || DeliveryData::fingerprint( QuoteAddress::payload( $choice ) ) !== DeliveryData::fingerprint( QuoteAddress::payload( $mapped['delivery_destination'] ) ) || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $mapped['delivery'] ) || $confirmation['notes'] !== $notes || sanitize_textarea_field( $notes ) !== $notes || ( array_key_exists( 'delivery_preferred_date', $mapped ) && $mapped['delivery_preferred_date'] !== $date ) ) { throw new \RuntimeException( 'quote_confirmation_invalid' ); }
 		// JSON preserves an explicit null choice across both Woo stores, where a null metadata value would otherwise read back as an empty string.
 		$values = [ self::META_DELIVERY_CHOICE => $choice_json, self::META_DELIVERY_CONFIRMATION => $confirmation_json, self::META_DELIVERY_NOTES => $notes ];
+		// Written only when set, so verify_confirmation() reads it back and schema-1 or dateless quotes carry no key.
+		if ( null !== $date ) { $values[ self::META_PREFERRED_DELIVERY_DATE ] = $date; }
 		foreach ( $values as $key => $value ) { $order->update_meta_data( $key, $value ); }
 		$order->set_customer_note( $notes );
 		return $values;

@@ -159,6 +159,65 @@ final class DeliverySnapshotTest extends TestCase {
 		$data['notes'] = [ 'bad' ]; $this->confirmation_rejected( $data );
 	}
 
+	public function test_schema_two_confirmation_carries_an_optional_preferred_date(): void {
+		foreach ( [ '2026-10-07', null ] as $date ) {
+			$data = $this->confirmation(); $data['schema'] = 2;
+			$confirmed_at = $data['confirmed_at']; unset( $data['confirmed_at'] );
+			$data['preferred_delivery_date'] = $date; $data['confirmed_at'] = $confirmed_at;
+			self::assertSame( $data, $this->confirmed_session( $data )->delivery_confirmation() );
+		}
+		self::assertSame( 2, DeliveryData::CONFIRMATION_SCHEMA );
+	}
+
+	public function test_schema_one_confirmation_is_read_unchanged(): void {
+		$decoded = $this->confirmed_session( $this->confirmation() )->delivery_confirmation();
+		self::assertFalse( array_key_exists( 'preferred_delivery_date', $decoded ) );
+		self::assertSame( DeliveryData::fingerprint( $this->confirmation() ), DeliveryData::fingerprint( $decoded ) );
+	}
+
+	public function test_confirmation_field_set_is_exact_per_schema(): void {
+		$data = $this->confirmation(); $data['preferred_delivery_date'] = '2026-10-07';
+		$this->confirmation_rejected( $data );
+		$data = $this->confirmation(); $data['preferred_delivery_date'] = null;
+		$this->confirmation_rejected( $data );
+		$data = $this->confirmation(); $data['schema'] = 2;
+		$this->confirmation_rejected( $data );
+		$data = $this->confirmation(); $data['schema'] = 3; $data['preferred_delivery_date'] = null;
+		$this->confirmation_rejected( $data );
+		$data['schema'] = 3; unset( $data['preferred_delivery_date'] );
+		$this->confirmation_rejected( $data );
+	}
+
+	public function test_preferred_date_must_be_a_real_calendar_date(): void {
+		foreach ( [ '2026-02-30', '2026-9-1', '', 20261007, '2026-10-07T00:00', '1999-12-31', [ '2026-10-07' ], "2026-10-07\n" ] as $bad ) {
+			self::assertFalse( DeliveryData::date( $bad ) );
+			$data = $this->confirmation(); $data['schema'] = 2; $data['preferred_delivery_date'] = $bad;
+			$this->confirmation_rejected( $data );
+		}
+		self::assertTrue( DeliveryData::date( '2028-02-29' ) );
+		self::assertTrue( DeliveryData::date( '2000-01-01' ) );
+	}
+
+	private static function rate( string $method, string $label = 'Rate', int $package = 0 ): array {
+		return [ 'package_key' => $package, 'rate_id' => $method . ':' . $package, 'method_id' => $method, 'instance_id' => 1, 'label' => $label, 'amount_cents' => 0, 'taxes' => [] ];
+	}
+
+	public function test_collection_is_derived_from_native_pickup_method_ids(): void {
+		self::assertTrue( DeliveryData::is_collection( [ 'rates' => [ self::rate( 'local_pickup' ) ] ] ) );
+		self::assertTrue( DeliveryData::is_collection( [ 'rates' => [ self::rate( 'pickup_location' ), self::rate( 'legacy_local_pickup', 'Rate', 1 ) ] ] ) );
+		self::assertFalse( DeliveryData::is_collection( [ 'rates' => [ self::rate( 'flat_rate' ), self::rate( 'local_pickup', 'Rate', 1 ) ] ] ) );
+		self::assertFalse( DeliveryData::is_collection( [ 'rates' => [] ] ) );
+		self::assertFalse( DeliveryData::is_collection( [] ) );
+		self::assertFalse( DeliveryData::is_collection( null ) );
+	}
+
+	public function test_method_label_is_plain_text_joined_in_package_order(): void {
+		$delivery = [ 'rates' => [ self::rate( 'flat_rate', '<b>Courier</b> &amp; co (3–5 working days)' ), self::rate( 'local_pickup', 'Local pickup', 1 ) ] ];
+		self::assertSame( 'Courier & co (3–5 working days); Local pickup', DeliveryData::method_label( $delivery ) );
+		self::assertSame( 'Road', DeliveryData::method_label( [ 'rates' => [ self::rate( 'flat_rate', "<i> </i>\n" ), self::rate( 'flat_rate', "  Road \t", 1 ) ] ] ) );
+		self::assertSame( '', DeliveryData::method_label( [ 'rates' => [] ] ) );
+	}
+
 	public function test_fingerprints_ignore_object_key_order_but_retain_list_order(): void {
 		self::assertSame( '43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777', DeliveryData::fingerprint( [ 'b' => 2, 'a' => 1 ] ) );
 		self::assertNotSame( DeliveryData::fingerprint( [ 'rates' => [ 'first', 'second' ] ] ), DeliveryData::fingerprint( [ 'rates' => [ 'second', 'first' ] ] ) );

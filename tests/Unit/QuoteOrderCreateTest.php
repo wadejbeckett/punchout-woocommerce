@@ -583,6 +583,74 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( 'confirmed', end( QuoteOrderTestLog::$written )[1]['detail']['cancellation'] );
 	}
 
+	/** A schema-2 confirmation with a preferred date, as Confirmation::for_return prepares it. */
+	private function dated_lines( ?string $date = '2026-10-07' ): array {
+		$lines = $this->confirmed_lines();
+		$confirmation = $lines['delivery_confirmation']; $confirmed_at = $confirmation['confirmed_at']; unset( $confirmation['confirmed_at'] );
+		$lines['delivery_confirmation'] = array_replace( $confirmation, [ 'schema' => 2 ] ) + [ 'preferred_delivery_date' => $date, 'confirmed_at' => $confirmed_at ];
+		$lines['delivery_preferred_date'] = $date;
+		return $lines;
+	}
+
+	public function test_single_creation_note_names_the_delivery_method_and_preferred_date(): void {
+		$quotes = $this->shipping_quotes();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() );
+		self::assertGreaterThan( 0, $id ); $order = wc_get_order( $id );
+		self::assertCount( 1, $order->notes, 'One creation note; an emitted charge adds no estimate note.' );
+		self::assertStringContainsString( 'Delivery address source: company_book.', $order->notes[0] );
+		self::assertStringContainsString( 'via PunchOut (Example Buyer Company). Delivery method: Express; Collect second parcel. Preferred delivery date: 2026-10-07.', $order->notes[0] );
+	}
+
+	public function test_collection_quote_note_says_collection(): void {
+		$quotes = $this->shipping_quotes(); $lines = $this->shipping_lines();
+		$lines['delivery']['rates'] = [ $lines['delivery']['rates'][1] ]; $lines['delivery']['amount_cents'] = 2250; $lines['total_cents'] = 37533 + 2250;
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $id ); $notes = wc_get_order( $id )->notes;
+		self::assertCount( 1, $notes );
+		self::assertStringContainsString( 'Collection: Collect second parcel.', $notes[0] );
+		self::assertStringNotContainsString( 'Preferred delivery date', $notes[0] );
+	}
+
+	public function test_preferred_date_meta_is_stamped_and_verified(): void {
+		$quotes = $this->shipping_quotes();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() );
+		self::assertGreaterThan( 0, $id );
+		self::assertSame( '2026-10-07', wc_get_order( $id )->get_meta( QuoteOrder::META_PREFERRED_DELIVERY_DATE ) );
+		$this->shipping_quotes()->attach_poom( $id, '<cXML/>' );
+		self::assertSame( Status::SLUG, wc_get_order( $id )->get_status(), 'Legacy attach verifies the stored date against the confirmation.' );
+		wc_get_order( $id )->update_meta_data( QuoteOrder::META_PREFERRED_DELIVERY_DATE, '2026-10-08' );
+		$this->shipping_quotes()->attach_poom( $id, '<cXML>retry</cXML>' );
+		self::assertSame( 'cancelled', wc_get_order( $id )->get_status() );
+		$bad = $this->dated_lines(); $bad['delivery_preferred_date'] = '2026-10-08';
+		self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $bad ) );
+		$bad = $this->dated_lines(); $bad['delivery_preferred_date'] = null;
+		self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $bad ) );
+		$none = $this->dated_lines( null );
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $none );
+		self::assertGreaterThan( 0, $id );
+		self::assertFalse( wc_get_order( $id )->meta_exists( QuoteOrder::META_PREFERRED_DELIVERY_DATE ) );
+	}
+
+	public function test_schema_one_confirmation_quote_has_no_date_meta(): void {
+		$quotes = $this->shipping_quotes();
+		$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->confirmed_lines() );
+		self::assertGreaterThan( 0, $id ); $order = wc_get_order( $id );
+		self::assertFalse( $order->meta_exists( QuoteOrder::META_PREFERRED_DELIVERY_DATE ) );
+		self::assertCount( 1, $order->notes );
+		self::assertStringNotContainsString( 'Preferred delivery date', $order->notes[0] );
+		self::assertStringContainsString( 'Delivery method: Express; Collect second parcel.', $order->notes[0] );
+	}
+
+	public function test_bought_by_line_shows_the_preferred_delivery_date(): void {
+		$quotes = $this->shipping_quotes();
+		$order = wc_get_order( $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() ) );
+		$markup = $this->rendered( $order );
+		self::assertStringContainsString( 'via PunchOut (Example Buyer Company)<br />Preferred delivery date: 2026-10-07</p>', $markup );
+		$plain = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
+		self::assertStringNotContainsString( 'Preferred delivery date', $this->rendered( $plain ) );
+		self::assertTrue( str_ends_with( $this->rendered( $plain ), 'via PunchOut (Example Buyer Company)</p>' ) );
+	}
+
 	public function test_attachment_keeps_cross_request_legacy_api_and_validates_stored_provenance(): void {
 		$quotes = $this->shipping_quotes(); $lines = $this->confirmed_lines();
 		$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
