@@ -337,5 +337,110 @@ final class CompanyBookTest extends TestCase {
 			catch ( \DomainException $error ) { self::assertStringNotContainsString( 'PRIVATE', $error->getMessage() ); }
 		}
 	}
+
+	// ------------------------------------------------ buyer-added addresses
+
+	/** A live visit carrying a buyer's attribution, as SetupEndpoint stores it. */
+	private function buyer_visit( array $changes = [] ): Session {
+		return Session::from_row( array_replace( [ 'id' => 81, 'partner_id' => 12, 'user_id' => 20, 'status' => Session::ACTIVE, 'wc_session_key' => 'pow_1a2b3c4d5e6f708192a3b4c5d6e7', 'buyer_identity' => 'thys@buyer.example', 'buyer_name' => 'Thys', 'buyer_identity_hash' => str_repeat( 'ab', 32 ) ], $changes ) );
+	}
+	private function buyer_add( ?Session $visit = null, string $label = 'Site B', ?array $address = null ): array|WP_Error {
+		return $this->book->add_for_visit( $visit ?? $this->buyer_visit(), $label, $address ?? $this->fields()['address'] );
+	}
+	public function test_a_buyer_adds_one_enabled_coded_entry_inside_its_own_visit(): void {
+		$first = $this->add(); $before = count( $this->audit->events );
+		$this->db->row['buyer_addresses'] = 1;
+		$visit = $this->buyer_visit(); $this->visits->live = $visit;
+		$result = $this->buyer_add( $visit );
+		self::assertTrue( is_array( $result ), $result instanceof WP_Error ? $result->get_error_message() : '' );
+		self::assertMatchesRegularExpression( '/\A[0-9a-f]{32}\z/', $result['key'] );
+		self::assertNotSame( $first['key'], $result['key'] );
+		self::assertTrue( $result['entry']['use_for_punchout'] );
+		self::assertSame( 'BUYER-002', $result['entry']['code'] );
+		self::assertSame( 'Site B', $result['entry']['label'] );
+		self::assertSame( 2, $result['revision'] );
+		$state = $this->state();
+		self::assertSame( [ 'schema', 'revision', 'addresses', 'claims', 'next_sequence' ], array_keys( $state ) );
+		self::assertSame( [ 'label', 'address', 'code', 'use_for_punchout' ], array_keys( $state['addresses'][$result['key']] ) );
+		self::assertSame( [ 'key' => $result['key'], 'retired' => false ], $state['claims']['BUYER-002'] );
+		self::assertSame( $first['entry'], $state['addresses'][$first['key']], 'The existing entry is untouched.' );
+		self::assertCount( $before + 1, $this->audit->events );
+		[ $event, $context ] = end( $this->audit->events );
+		self::assertSame( 'address_book_buyer_added', $event );
+		self::assertSame( 81, $context['session_id'] );
+		self::assertSame( 20, $context['user_id'] );
+		self::assertSame( 12, $context['partner_id'] );
+		self::assertSame( [ 'revision' => 2, 'key' => $result['key'], 'buyer_hash' => str_repeat( 'ab', 6 ), 'buyer_name' => 'Thys' ], $context['detail'] );
+		self::assertStringNotContainsString( 'thys@buyer.example', (string) json_encode( $this->audit->events ) );
+		// The fingerprint the selection read relies on still works for the new entry.
+		self::assertSame( 64, strlen( CompanyBook::entry_fingerprint( $result['key'], $state['addresses'][$result['key']] ) ) );
+		// An anonymous visit's add records no name.
+		$anonymous = $this->buyer_visit( [ 'buyer_name' => '', 'buyer_identity' => '' ] ); $this->visits->live = $anonymous;
+		$second = $this->buyer_add( $anonymous, 'Site C' );
+		self::assertTrue( is_array( $second ) );
+		self::assertFalse( array_key_exists( 'buyer_name', end( $this->audit->events )[1]['detail'] ) );
+	}
+	public function test_buyer_add_is_refused_without_the_flag_or_outside_this_visit(): void {
+		$cases = [
+			'flag off' => function (): void { $this->db->row['buyer_addresses'] = 0; },
+			'another live visit' => function (): void { $this->visits->live = $this->buyer_visit( [ 'id' => 82 ] ); },
+			'another basket' => function (): void { $this->visits->live = $this->buyer_visit( [ 'wc_session_key' => 'pow_00112233445566778899aabbccdd' ] ); },
+			'not a visit key' => function (): void { $this->visits->live = $this->buyer_visit( [ 'wc_session_key' => '20' ] ); },
+			'ordered' => function (): void { $this->visits->live = $this->buyer_visit( [ 'status' => Session::ORDERED ] ); },
+			'no live visit' => function (): void { $this->visits->live = null; },
+			'another current user' => function (): void { $GLOBALS['pow_test_current_user_id'] = 21; },
+			'inactive partner' => function (): void { $this->db->row['status'] = 'disabled'; },
+			'another account' => function (): void { $this->db->row['owner_user_id'] = 21; },
+			'another partner' => function (): void { $this->visits->live = $this->buyer_visit( [ 'partner_id' => 13 ] ); },
+		];
+		foreach ( $cases as $name => $arrange ) {
+			$this->tearDown(); $this->setUp();
+			$this->db->row['buyer_addresses'] = 1; $this->visits->live = $this->buyer_visit();
+			$arrange();
+			$result = $this->buyer_add();
+			self::assertInstanceOf( WP_Error::class, $result, $name );
+			self::assertSame( 'address_add_forbidden', $result->get_error_code(), $name );
+			self::assertSame( [], $this->db->writes, $name );
+			self::assertSame( [], $this->audit->events, $name );
+		}
+	}
+	public function test_buyer_add_uses_the_editor_validation(): void {
+		$this->db->row['buyer_addresses'] = 1; $this->visits->live = $this->buyer_visit();
+		foreach ( [ 'first_name' => '', 'country' => 'ZZ', 'postcode' => 'wrong', 'city' => str_repeat( 'x', 191 ) ] as $field => $value ) {
+			$address = $this->fields()['address']; $address[$field] = $value;
+			$this->error( $this->buyer_add( null, 'Site B', $address ) );
+		}
+		$this->error( $this->buyer_add( null, '' ), 'address_book_invalid' );
+		$this->error( $this->buyer_add( null, str_repeat( 'x', 191 ) ), 'address_book_invalid' );
+		$this->error( $this->buyer_add( null, 'Site B', $this->fields()['address'] + [ 'code' => 'MINE' ] ) );
+		self::assertSame( [], $this->db->writes );
+		self::assertSame( [], $this->audit->events );
+	}
+	public function test_buyer_add_stops_at_the_book_limit(): void {
+		$template = $this->add()['entry']; $template['code'] = '';
+		$addresses = [];
+		for ( $i = 0; $i < 99; ++$i ) { $addresses[ bin2hex( random_bytes( 16 ) ) ] = $template; }
+		$this->db->meta[20]['_pow_delivery_book_12'] = [ [ 'schema' => 1, 'revision' => 7, 'addresses' => $addresses, 'claims' => [], 'next_sequence' => 100 ] ];
+		$this->db->row['buyer_addresses'] = 1; $this->visits->live = $this->buyer_visit();
+		$hundredth = $this->buyer_add();
+		self::assertTrue( is_array( $hundredth ), 'The hundredth entry still fits.' );
+		self::assertCount( 100, $this->state()['addresses'] );
+		$writes = count( $this->db->writes ); $events = count( $this->audit->events );
+		$this->error( $this->buyer_add(), 'address_book_full' );
+		self::assertCount( $writes, $this->db->writes ); self::assertCount( $events, $this->audit->events );
+		// The limit is the buyer's; the owner's editor is not bound by it.
+		$this->visits->live = null;
+		self::assertTrue( is_array( $this->book->save( 12, 20, 8, null, $this->fields() ) ) );
+	}
+	public function test_the_book_stays_read_only_for_edit_and_remove_inside_a_visit_even_with_the_flag(): void {
+		$a = $this->add();
+		$this->db->row['buyer_addresses'] = 1; $this->visits->live = $this->buyer_visit();
+		$this->error( $this->book->read( 12, 20 ), 'address_forbidden' );
+		$this->error( $this->book->save( 12, 20, 1, $a['key'], $this->fields( [ 'label' => 'Changed' ] ) ), 'address_forbidden' );
+		$this->error( $this->book->save( 12, 20, 1, null, $this->fields() ), 'address_forbidden' );
+		$this->error( $this->book->remove( 12, 20, 1, $a['key'] ), 'address_forbidden' );
+		self::assertCount( 1, $this->db->writes );
+		self::assertSame( $a['entry'], $this->state()['addresses'][$a['key']] );
+	}
 }
 }

@@ -48,7 +48,7 @@ namespace {
    }return null;
   }
   /** @var list<string> The partners table's columns, as SHOW COLUMNS reports them. */
-  public array $columns=['id','name','status','visit_endpoints'];
+  public array $columns=['id','name','status','visit_endpoints','buyer_addresses','owner_settings'];
   public function get_results(string $key,string $format): array {
    [$sql,$args]=$this->queries[$key]??[$key,[]];$this->last_error='';
    if(str_starts_with($sql,'SHOW COLUMNS'))return array_map(fn($c)=>['Field'=>$c],$this->columns);

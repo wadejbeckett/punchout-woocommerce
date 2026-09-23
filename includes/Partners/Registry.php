@@ -361,6 +361,8 @@ final class Registry {
 		// other My Account page until an administrator ticks more. The
 		// column's own default stays '', so no existing row changes.
 		if ( ! array_key_exists( 'visit_endpoints', $data ) ) { $data['visit_endpoints'] = VisitEndpoints::NEW_CONNECTION; }
+		// Buyer-added delivery addresses stay off until an administrator ticks them.
+		if ( ! array_key_exists( 'buyer_addresses', $data ) ) { $data['buyer_addresses'] = 0; }
 		// Nothing chooses an entitlement: every connection is punchout-only,
 		// which is the retired column's database default.
 		$data = $this->sanitise( $data );
@@ -513,6 +515,8 @@ final class Registry {
 			'session_ttl',
 			'token_ttl',
 			'visit_endpoints',
+			'buyer_addresses',
+			'owner_settings',
 		];
 
 		$data = array_intersect_key( $data, array_flip( $allowed ) );
@@ -538,7 +542,7 @@ final class Registry {
 			$data['cxml_version'] = '1.2.008';
 		}
 
-		foreach ( [ 'allow_reentry', 'allcaps_transform' ] as $flag ) {
+		foreach ( [ 'allow_reentry', 'allcaps_transform', 'buyer_addresses' ] as $flag ) {
 			if ( isset( $data[ $flag ] ) ) {
 				$data[ $flag ] = empty( $data[ $flag ] ) ? 0 : 1;
 			}
@@ -555,6 +559,11 @@ final class Registry {
 		// reaches the column.
 		if ( array_key_exists( 'visit_endpoints', $data ) ) {
 			$data['visit_endpoints'] = VisitEndpoints::normalise( is_string( $data['visit_endpoints'] ) ? $data['visit_endpoints'] : '' );
+		}
+
+		// Only known owner actions ever reach the column, whoever writes it.
+		if ( array_key_exists( 'owner_settings', $data ) ) {
+			$data['owner_settings'] = Partner::normalise_owner_settings( is_string( $data['owner_settings'] ) ? $data['owner_settings'] : '' );
 		}
 
 		// Leave lifecycle fields on their existing path; delivery flags reach wpdb as explicit 0/1.

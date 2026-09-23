@@ -127,6 +127,18 @@ final class Fields {
 	}
 
 	private function native_fields( int $partner_id, string $country, array $address ): string {
+		return self::address_inputs( 'pow_address_' . $partner_id . '_', $country, $address );
+	}
+
+	/**
+	 * WooCommerce's own shipping fields for $country, filled from $address, with ids under $id_prefix.
+	 *
+	 * The one field set both address forms use: the administrator's editor here and a buyer's add form on the delivery review page. Their input names are always shipping_*, so both post the same keys and CompanyBook validates both the same way.
+	 *
+	 * @param array<string, string> $address The ten address keys.
+	 * @throws \RuntimeException When WooCommerce offers no usable field set for the country.
+	 */
+	public static function address_inputs( string $id_prefix, string $country, array $address ): string {
 		$fields = WC()->countries->get_address_fields( $country, 'shipping_' );
 		if ( ! is_array( $fields ) || [] === $fields ) { throw new \RuntimeException(); }
 		// Woo's normal shipping definition may omit phone, but the canonical shipping address can retain it.
@@ -136,10 +148,10 @@ final class Fields {
 			if ( ! is_string( $name ) || ! is_array( $args ) ) { throw new \RuntimeException(); }
 			$field = str_starts_with( $name, 'shipping_' ) ? substr( $name, 9 ) : '';
 			if ( ! in_array( $field, self::ADDRESS_KEYS, true ) ) { if ( ! empty( $args['required'] ) ) { throw new \RuntimeException(); } continue; }
-			$args['id'] = 'pow_address_' . $partner_id . '_' . $name;
+			$args['id'] = $id_prefix . $name;
 			$args['return'] = true;
-			if ( 'state' === $field ) { $args['country'] = $country; $args['country_field'] = 'pow_address_' . $partner_id . '_shipping_country'; }
-			$html .= woocommerce_form_field( $name, $args, 'country' === $field ? $country : $address[$field] );
+			if ( 'state' === $field ) { $args['country'] = $country; $args['country_field'] = $id_prefix . 'shipping_country'; }
+			$html .= woocommerce_form_field( $name, $args, 'country' === $field ? $country : (string) ( $address[$field] ?? '' ) );
 		}
 		return $html;
 	}
@@ -153,6 +165,28 @@ final class Fields {
 		foreach ( $post as $value ) { if ( ! is_string( $value ) ) { return false; } }
 		return ! isset( $post['pow_address_refresh'] ) || '1' === $post['pow_address_refresh'];
 	}
+	/**
+	 * The strict schema of a buyer's add-address POST on the delivery review page.
+	 *
+	 * Only the review nonce, the add nonce, the action, a label, the ten shipping fields and an optional country refresh; every value a string. There is no code field, so a buyer never picks a delivery code, and nothing names a key, revision or enablement.
+	 */
+	public static function buyer_post_allowed( array $post ): bool {
+		$allowed = array_merge( [ 'pow_nonce', 'pow_address_nonce', 'pow_delivery_action', 'pow_address_label', 'pow_address_refresh' ], array_map( static fn( $key ) => 'shipping_' . $key, self::ADDRESS_KEYS ) );
+		if ( array_diff_key( $post, array_flip( $allowed ) ) ) { return false; }
+		foreach ( $post as $value ) { if ( ! is_string( $value ) ) { return false; } }
+		return ! isset( $post['pow_address_refresh'] ) || '1' === $post['pow_address_refresh'];
+	}
+
+	/**
+	 * A buyer's label and address as posted; anything missing or not a string reads as ''.
+	 *
+	 * @return array{label: string, address: array<string, string>}
+	 */
+	public static function buyer_draft( array $post ): array {
+		$draft = self::draft( $post );
+		return [ 'label' => $draft['label'], 'address' => $draft['address'] ];
+	}
+
 	private static function draft( array $post ): array {
 		$address = [];
 		foreach ( self::ADDRESS_KEYS as $field ) { $value = $post['shipping_' . $field] ?? ''; $address[$field] = is_string( $value ) ? $value : ''; }
