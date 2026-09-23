@@ -153,7 +153,7 @@ final class VisitEndpointsTest extends TestCase {
 	public function test_the_list_is_a_column_with_no_hook_and_no_plugin_branch(): void {
 		$root = dirname( __DIR__, 2 );
 		self::assertStringNotContainsString( 'apply_filters', (string) file_get_contents( $root . '/includes/Account/VisitEndpoints.php' ) );
-		foreach ( [ 'includes/Account/VisitEndpoints.php', 'includes/RouteGuard.php', 'includes/Admin/Page.php', 'includes/Admin/Actions.php' ] as $file ) {
+		foreach ( [ 'includes/Account/VisitEndpoints.php', 'includes/Account/VisitDashboard.php', 'templates/account/dashboard.php', 'includes/RouteGuard.php', 'includes/Admin/Page.php', 'includes/Admin/Actions.php' ] as $file ) {
 			$source = (string) file_get_contents( $root . '/' . $file );
 			foreach ( [ "apply_filters( 'pow_visit", "do_action( 'pow_", 'is_plugin_active', 'pow_route_guard', 'bulkorder', 'subaccount', 'purchase-list' ] as $needle ) {
 				self::assertStringNotContainsString( $needle, $source, $file . ' names ' . $needle );
