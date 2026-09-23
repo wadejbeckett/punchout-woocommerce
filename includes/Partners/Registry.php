@@ -357,6 +357,10 @@ final class Registry {
 		global $wpdb;
 
 		if ( array_key_exists( 'exit_policy', $data ) && ! self::shop_administrator() ) { return 0; }
+		// A new connection's visits may open the account dashboard and no
+		// other My Account page until an administrator ticks more. The
+		// column's own default stays '', so no existing row changes.
+		if ( ! array_key_exists( 'visit_endpoints', $data ) ) { $data['visit_endpoints'] = VisitEndpoints::NEW_CONNECTION; }
 		// Nothing chooses an entitlement: every connection is punchout-only,
 		// which is the retired column's database default.
 		$data = $this->sanitise( $data );
@@ -547,8 +551,8 @@ final class Registry {
 		}
 
 		// The admin form refuses a list with a bad entry and says which one;
-		// this is the floor under every other writer: a hard-denied or
-		// malformed entry never reaches the column.
+		// this is the floor under every other writer: a malformed entry never
+		// reaches the column.
 		if ( array_key_exists( 'visit_endpoints', $data ) ) {
 			$data['visit_endpoints'] = VisitEndpoints::normalise( is_string( $data['visit_endpoints'] ) ? $data['visit_endpoints'] : '' );
 		}
