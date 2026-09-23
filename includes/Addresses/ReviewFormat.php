@@ -8,11 +8,12 @@ use POW\Cxml\Money;
 defined( 'ABSPATH' ) || exit;
 
 final class ReviewFormat {
-	/** Store-formatted plain text (separators, symbol and position from the store settings), always two decimals so it matches the cXML cents. */
+	/** Plain text from the integer cents and the store's display settings (separators, symbol and position), always two decimals so it matches the cXML cents; wc_price's value filters never run. */
 	public static function money( int $cents, string $currency ): string {
 		try {
-			$html = wc_price( $cents / 100, [ 'currency' => $currency, 'decimals' => 2 ] );
-			$text = trim( html_entity_decode( wp_strip_all_tags( (string) $html ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
+			$abs = abs( $cents );
+			$number = ( $cents < 0 ? '-' : '' ) . number_format( intdiv( $abs, 100 ), 0, '', (string) wc_get_price_thousand_separator() ) . (string) wc_get_price_decimal_separator() . str_pad( (string) ( $abs % 100 ), 2, '0', STR_PAD_LEFT );
+			$text = trim( html_entity_decode( wp_strip_all_tags( sprintf( (string) get_woocommerce_price_format(), (string) get_woocommerce_currency_symbol( $currency ), $number ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
 			if ( '' !== $text ) { return $text; }
 		} catch ( \Throwable ) {
 			// Fall through to the cXML amount.

@@ -262,7 +262,7 @@ final class QuoteOrder {
 			if ( null !== $provenance ) { $this->verify_confirmation( $saved, $provenance ); }
 			if ( null !== $prepared_shipping ) {
 				$this->prepared_quotes[ $order_id ] = [
-					'lines' => $prepared_lines, 'shipping' => $prepared_shipping, 'delivery' => $delivery, 'provenance' => $provenance,
+					'lines' => $prepared_lines, 'shipping' => $prepared_shipping, 'delivery' => $delivery, 'provenance' => null === $provenance ? null : $provenance + [ self::META_PREFERRED_DELIVERY_DATE => '' ],
 					'currency' => $currency, 'total' => (int) ( $poom_lines['total_cents'] ?? array_sum( array_column( $prepared_lines, 'total' ) ) ),
 					'shipping_total' => null !== $delivery && $delivery['emit'] ? $delivery['amount_cents'] : 0,
 					'note' => null !== $provenance ? $provenance[ self::META_DELIVERY_NOTES ] : $saved->get_customer_note( 'edit' ),
@@ -412,8 +412,8 @@ final class QuoteOrder {
 			// names a different account belongs to a different connection.
 			$confirmation = DeliveryData::confirmation( $provenance[ self::META_DELIVERY_CONFIRMATION ], (int) $meta[ self::META_SESSION_ID ], (int) $order->get_customer_id( 'edit' ), $choice );
 			if ( $confirmation['notes'] !== $provenance[ self::META_DELIVERY_NOTES ] || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $delivery ) ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
-			// A schema-2 date is verified against its stored meta like the notes; schema 1 adds nothing.
-			if ( null !== ( $confirmation['preferred_delivery_date'] ?? null ) ) { $provenance[ self::META_PREFERRED_DELIVERY_DATE ] = $confirmation['preferred_delivery_date']; }
+			// The date is always compared: '' matches an absent meta, so a stray date on a dateless Quote fails.
+			$provenance[ self::META_PREFERRED_DELIVERY_DATE ] = $confirmation['preferred_delivery_date'] ?? '';
 			$shipping = QuoteAddress::payload( $choice )['address'] ?? array_fill_keys( self::SHIPPING_FIELDS, '' );
 		} else { $provenance = null; }
 		return [
