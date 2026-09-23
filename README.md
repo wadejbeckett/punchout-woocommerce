@@ -92,6 +92,7 @@ punchout-woocommerce/
 │   ├── return-button.php           The "send for approval" cart button
 │   ├── abandon-button.php          The "return without a cart" control
 │   ├── handoff.php                 The auto-submitting cart-return page
+│   ├── account/dashboard.php       The My Account dashboard inside a visit (no logout link)
 │   └── docs/                       The integration documentation page
 │       ├── page.php                The page itself
 │       └── self-test.php           The paste-a-document self-test box
@@ -125,6 +126,7 @@ punchout-woocommerce/
     │                               mandatory per-visit delivery review
     ├── Account/IntegrationTab.php  My Account: the read-only setup-XML download
     ├── Account/VisitEndpoints.php  The My Account pages a visit may open: the form's groups, the dashboard entry, the payment rule, the pages that never open
+    ├── Account/VisitDashboard.php  Inside a visit, swaps WooCommerce's dashboard template for the plugin's copy without the logout link
     ├── Audit/Log.php               Compliance trail (wp_pow_log)
     ├── Support/                    Ip (CIDR), Templates (theme-overridable rendering),
     │                               Transport (HTTPS policy)
@@ -179,7 +181,7 @@ The notes say what sharing a page means:
 
 **Storage.** The ticked pages are one column, `visit_endpoints` (`VARCHAR(255)`, comma-separated endpoint names), and `dashboard` stands for the account page itself. A save is refused whole, with a notice, when an entry is not a lowercase endpoint name, when a payment-method page is ticked on a punchout-only connection, or when the ticked pages do not fit the column. A page that never opens in a visit is left out of the list a visit reads whatever the row holds. Saves run under the connection lock and are audited as `partner_saved` with the list saved. The account holder sees the list, read-only, on **My Account → Punchout integration**.
 
-**What opens.** Inside a visit an account page opens only when every endpoint the request names is ticked and has account content of its own (a `woocommerce_account_<endpoint>_endpoint` action) on that request. The account page naming no endpoint opens when the dashboard is ticked. Without content WooCommerce would show the dashboard in the page's place, so such a page stays closed and leaves the menu, even when the dashboard is ticked. Log out, lost password, order-pay, order-received and the Punchout integration tab never open in a visit, whatever the row holds, and neither does a page another plugin registers under the name `dashboard`, which this list uses for the account page itself. A name that is not registered opens nothing, and neither does an endpoint whose plugin shows its content only to some accounts until the bound account is one of them. The check runs at the start of `template_redirect` and again at its end. The account menu in a visit shows the dashboard when it is ticked and the other ticked pages that open, and nothing else. The dashboard's own text links to other account pages; those stay closed unless ticked. Anything another plugin prints on the dashboard itself shows with it, so check the dashboard as the bound account before ticking it.
+**What opens.** Inside a visit an account page opens only when every endpoint the request names is ticked and has account content of its own (a `woocommerce_account_<endpoint>_endpoint` action) on that request. The account page naming no endpoint opens when the dashboard is ticked. Without content WooCommerce would show the dashboard in the page's place, so such a page stays closed and leaves the menu, even when the dashboard is ticked. Log out, lost password, order-pay, order-received and the Punchout integration tab never open in a visit, whatever the row holds, and neither does a page another plugin registers under the name `dashboard`, which this list uses for the account page itself. A name that is not registered opens nothing, and neither does an endpoint whose plugin shows its content only to some accounts until the bound account is one of them. The check runs at the start of `template_redirect` and again at its end. The account menu in a visit shows the dashboard when it is ticked and the other ticked pages that open, and nothing else. The dashboard's own text links to other account pages; those stay closed unless ticked. Its "not you? Log out" link does not show in a visit (since 0.4.7): logging out would end the visit and delete its basket, so inside a visit the dashboard is the plugin's `templates/account/dashboard.php`, WooCommerce's dashboard without that sentence, with the same dashboard hooks. Outside a visit WooCommerce's or the theme's dashboard renders as usual. Anything another plugin prints on the dashboard itself shows with it, so check the dashboard as the bound account before ticking it.
 
 WooCommerce shows "Your account is using a temporary password" on the dashboard and on account details for an account whose password it generated (the `default_password_nag` user option, which WordPress also sets on self-registered accounts), with a Resend link that mails the account a new password-reset link. Inside a visit that option reads false, so neither the notice nor the link renders, and a request carrying WooCommerce's Resend action (`?wc-resend-set-password`) is refused before WooCommerce handles it. The account holder's own login keeps the notice.
 
@@ -399,7 +401,7 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 | `pow_return_button_label` | filter | RFQ button text (applied after the setting) |
 | `pow_abandon_button_label` | filter | "Return without a cart" text (applied after the setting) |
 | `pow_button_classes` | filter | Class list of either exit control (`$classes, $base, $themed`) |
-| `pow_template_{return-button,abandon-button,handoff,docs/page,docs/self-test}` | filter | Replace any buyer-facing template |
+| `pow_template_{return-button,abandon-button,handoff,docs/page,docs/self-test,account/dashboard}` | filter | Replace any buyer-facing template |
 | `pow_delivery_codes_enabled` | filter | Legacy custom-docs-template display hint; the bundled docs show all delivery settings, and this filter does not control emission |
 | `pow_handoff_copy` / `pow_expired_token_message` | filter | Buyer-facing strings |
 | `pow_start_redirect` | filter | Post-login destination |

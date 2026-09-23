@@ -60,6 +60,7 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 		}
 		self::assertTrue( in_array( 'woocommerce_add_to_cart_validation', $result['filters'], true ), 'A surviving visit still refuses products outside its range' );
 		self::assertTrue( in_array( 'wp_loaded', $result['actions'], true ), 'A surviving create-visit still gets its one-shot seed' );
+		self::assertTrue( in_array( 'wc_get_template', $result['filters'], true ), 'A surviving visit\'s dashboard still has no logout link' );
 	}
 
 	/**
