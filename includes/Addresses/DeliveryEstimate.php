@@ -9,6 +9,7 @@ declare( strict_types = 1 );
 
 namespace POW\Addresses;
 
+use POW\Cart\SessionKey;
 use POW\Cxml\Money;
 use POW\Partners\Partner;
 use POW\Sessions\Session;
@@ -30,8 +31,10 @@ final class DeliveryEstimate {
 		$rollback = null;
 		try {
 			$wc = WC();
-			if ( $session->partner_id !== $partner->id || ! $partner->is_active() || Session::ACTIVE !== $session->status || $session->user_id <= 0 || get_current_user_id() !== $session->user_id || ! $wc->cart || ! $wc->customer || ! $wc->session || (int) $wc->customer->get_id() !== $session->user_id || (string) $wc->session->get_customer_id() !== (string) $session->user_id ) { throw self::invalid(); }
-			$context = self::native_context();
+			// Every visit of a connection is signed in as the same customer, so the visit's own cart key is the only thing that says this live basket is the one being quoted.
+			$visit_key = SessionKey::for_session( $session );
+			if ( $session->partner_id !== $partner->id || ! $partner->is_active() || Session::ACTIVE !== $session->status || $session->user_id <= 0 || get_current_user_id() !== $session->user_id || ! $wc->cart || ! $wc->customer || ! $wc->session || (int) $wc->customer->get_id() !== $session->user_id || ! hash_equals( $visit_key, self::live_cart_key() ) ) { throw self::invalid(); }
+			$context = self::native_context( $session->id );
 			$currency = get_woocommerce_currency();
 			if ( ! is_string( $currency ) || 1 !== preg_match( '/\A[A-Z]{3}\z/', $currency ) ) { throw self::invalid(); }
 			$freight = [ 'supplier_part_id' => $partner->freight_supplier_part_id, 'uom' => $partner->freight_uom, 'classification_domain' => $partner->freight_classification_domain, 'classification' => $partner->freight_classification ];
@@ -43,7 +46,7 @@ final class DeliveryEstimate {
 				if ( $item['data']->needs_shipping() ) { $physical = true; }
 			}
 			if ( ! $physical ) {
-				if ( $currency !== get_woocommerce_currency() || $context !== self::native_context() ) { throw self::invalid(); }
+				if ( $currency !== get_woocommerce_currency() || $context !== self::native_context( $session->id ) ) { throw self::invalid(); }
 				return self::result( $delivery, [], $partner );
 			}
 
@@ -58,11 +61,12 @@ final class DeliveryEstimate {
 			$rollback = [ 'address' => $wc->customer->get_shipping( 'edit' ), 'calculated' => $wc->customer->has_calculated_shipping(), 'customer' => $wc->session->get( 'customer' ), 'chosen' => $before_chosen, 'counts' => $wc->session->get( 'shipping_method_counts' ), 'previous' => $wc->session->get( 'previous_shipping_methods' ), 'totals' => $wc->cart->get_totals() ];
 			self::set_address( $wc->customer, $address );
 			$wc->customer->set_calculated_shipping( true );
+			// WC_Customer::save() returns the WP user id and, with the session data store asserted above, writes only into this visit's own session row.
 			if ( (int) $wc->customer->save() !== $session->user_id || DeliveryData::fingerprint( $wc->customer->get_shipping( 'edit' ) ) !== DeliveryData::fingerprint( $address ) ) { throw self::invalid(); }
 			$saved_customer = $wc->session->get( 'customer' );
 			foreach ( $address as $field => $value ) { if ( ! is_array( $saved_customer ) || ( $saved_customer[ 'shipping_' . $field ] ?? null ) !== $value ) { throw self::invalid(); } }
 
-			// Clear only this buyer's native package caches as well as in-memory packages. A changed carrier offer must be recalculated even if the package hash is unchanged.
+			// Clear only this visit's native package caches as well as in-memory packages. A changed carrier offer must be recalculated even if the package hash is unchanged. The get_session_data() read below must answer from the row this visit's key names, which is what the plugin's session handler guarantees; core's own key would hand every visit of this login the same cached packages.
 			$wc->shipping()->reset_shipping();
 			foreach ( $wc->session->get_session_data() as $key => $value ) { if ( is_string( $key ) && str_starts_with( $key, 'shipping_for_package_' ) ) { $wc->session->set( $key, false ); } }
 			// get_session_data() rereads storage, so also clear current packages created earlier in this request but not yet persisted.
@@ -71,7 +75,7 @@ final class DeliveryEstimate {
 			$wc->cart->calculate_totals();
 			$packages = $wc->cart->needs_shipping() ? $wc->shipping()->get_packages() : [];
 			if ( ! is_array( $packages ) ) { throw self::invalid(); }
-			$before_defaults = self::native_offer_state( $packages );
+			$before_defaults = self::native_offer_state( $session->id, $packages );
 			$chosen = [];
 			foreach ( $packages as $key => $package ) {
 				self::package( $key, $package, $currency );
@@ -82,7 +86,7 @@ final class DeliveryEstimate {
 				if ( ! is_string( $selected ) ) { throw self::invalid(); }
 				$chosen[ $key ] = isset( $package['rates'][ $selected ] ) ? $selected : '';
 			}
-			if ( $before_defaults !== self::native_offer_state() ) { throw self::invalid(); }
+			if ( $before_defaults !== self::native_offer_state( $session->id ) ) { throw self::invalid(); }
 			if ( $chosen !== $wc->session->get( 'chosen_shipping_methods', [] ) ) {
 				$wc->session->set( 'chosen_shipping_methods', $chosen );
 				$wc->cart->calculate_totals();
@@ -91,8 +95,8 @@ final class DeliveryEstimate {
 				$packages = $fresh;
 			}
 			// Bind this exact package array before any option callback can replace the live objects behind it.
-			$native_before = self::native_offer_state( $packages );
-			if ( $currency !== get_woocommerce_currency() || get_current_user_id() !== $session->user_id || (int) $wc->customer->get_id() !== $session->user_id || (string) $wc->session->get_customer_id() !== (string) $session->user_id || DeliveryData::fingerprint( $wc->customer->get_shipping( 'edit' ) ) !== DeliveryData::fingerprint( $address ) ) { throw self::invalid(); }
+			$native_before = self::native_offer_state( $session->id, $packages );
+			if ( $currency !== get_woocommerce_currency() || get_current_user_id() !== $session->user_id || (int) $wc->customer->get_id() !== $session->user_id || ! hash_equals( $visit_key, self::live_cart_key() ) || DeliveryData::fingerprint( $wc->customer->get_shipping( 'edit' ) ) !== DeliveryData::fingerprint( $address ) ) { throw self::invalid(); }
 			$current = $wc->session->get( 'chosen_shipping_methods', [] );
 			$options = []; $rates = []; $sum = 0; $complete = [] !== $packages;
 			foreach ( $packages as $key => $package ) {
@@ -116,7 +120,7 @@ final class DeliveryEstimate {
 				$options[] = [ 'package_key' => $key, 'label' => $label, 'selected_rate_id' => '' === $selected ? null : $selected, 'rates' => $offered ];
 			}
 			// Rate getters, labels and the final currency read can invoke extensions. Compare live raw state only after all such reads; filtered amounts may legitimately differ from raw costs.
-			if ( $currency !== get_woocommerce_currency() || $context !== self::native_context() || $native_before !== self::native_offer_state() ) { throw self::invalid(); }
+			if ( $currency !== get_woocommerce_currency() || $context !== self::native_context( $session->id ) || $native_before !== self::native_offer_state( $session->id ) ) { throw self::invalid(); }
 			$delivery['status'] = ! $partner->emit_delivery_line ? 'disabled' : ( $complete ? 'quoted' : 'unknown' );
 			$delivery['amount_cents'] = $complete ? $sum : null;
 			$delivery['code'] = $destination['code'];
@@ -159,18 +163,29 @@ final class DeliveryEstimate {
 		return [ 'delivery' => $delivery, 'packages' => $packages, 'can_confirm' => ! $unknown || 'quote_separately' === $partner->delivery_unknown_policy, 'requires_unknown_acknowledgement' => $unknown && 'quote_separately' === $partner->delivery_unknown_policy ];
 	}
 
+	/**
+	 * Writes the destination onto the live customer only. With WooCommerce's session data store this never reaches the bound account's profile, which matters because that profile is shared by every concurrent visit.
+	 *
+	 * Core hazard worth knowing here: WC_Customer::__construct reads the profile's user meta BEFORE the session store overlays this visit's snapshot, and the overlay applies only while the stored date_modified still equals the profile's `last_update` meta. That meta is bumped by any billing_*, shipping_*, first_name or last_name write and by profile_update, so an administrator editing the bound account's address discards every live visit's destination and rate snapshot mid-flow, silently. The refusals in quote() then surface it as "review the delivery again", which is the safe outcome but not an obvious one.
+	 */
 	private static function set_address( object $customer, array $address ): void { foreach ( $address as $field => $value ) { $customer->{ 'set_shipping_' . $field }( $value ); } }
 
-	/** The WP actor is already initialized by quote's entry check. These native identity reads do not run rate or formatting filters. */
-	private static function native_context(): array {
+	/** The key of the basket this request is actually holding, '' when WooCommerce has no session yet. */
+	private static function live_cart_key(): string { $session = WC()->session ?? null; return $session ? (string) $session->get_customer_id() : ''; }
+
+	/** The WP actor is already initialized by quote's entry check. These native identity reads do not run rate or formatting filters. The visit id and the handler's own cart key are in the tuple, so a callback cannot hand the rest of the request another visit's basket while the account id stays the same. */
+	private static function native_context( int $visit ): array {
 		$actor = get_current_user_id();
 		$wc = WC();
-		return [ $actor, spl_object_id( $wc ), spl_object_id( $wc->cart ), spl_object_id( $wc->customer ), spl_object_id( $wc->session ), $wc->customer->get_id(), $wc->session->get_customer_id() ];
+		$objects = [ spl_object_id( $wc ), spl_object_id( $wc->cart ), spl_object_id( $wc->customer ), spl_object_id( $wc->session ) ];
+		$customer = $wc->customer->get_id();
+		$key = $wc->session->get_customer_id();
+		return array_merge( [ $visit, $actor ], $objects, [ $customer, $key ] );
 	}
 
 	/** Copy live native values, never filtered rate getters or the earlier package array. Object identity also detects replacement by a callback. */
-	private static function native_offer_state( ?array $expected_packages = null ): string {
-		$context = self::native_context();
+	private static function native_offer_state( int $visit, ?array $expected_packages = null ): string {
+		$context = self::native_context( $visit );
 		$wc = WC();
 		$shipping = $wc->shipping();
 		$packages = self::native_packages( $shipping->get_packages() );

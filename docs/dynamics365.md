@@ -2,7 +2,7 @@
 
 Use Microsoft's [external catalog setup instructions](https://learn.microsoft.com/en-us/dynamics365/supply-chain/procurement/set-up-external-catalog-for-punchout). Configure vendor/category access, units and currency; validate and activate the catalog. Validation alone is not a requisition-to-cart-return test.
 
-Download the company setup XML from **My Account → Punchout integration**. Paste its complete cXML document over the automatically generated cXML setup request message on the external catalog's **Message format** FastTab, then put the privately issued credential in place of `REPLACE-WITH-ISSUED-SHARED-SECRET` inside that pasted text. Dynamics has no separate credential field for PunchOut; the `SHARED_SECRET` row under Order properties belongs to purchase-order sending, not to the setup request. The file contains the company's exact static From, Sender, To, `deploymentMode` and HTTPS `SupplierSetup/URL`; it never contains a stored secret.
+Download the company setup XML from **My Account → Punchout integration**, or ask the store for it: an administrator can copy the same document from **WooCommerce → PunchOut → Integration docs**. Paste its complete cXML document over the automatically generated cXML setup request message on the external catalog's **Message format** FastTab, then put the privately issued credential in place of `REPLACE-WITH-ISSUED-SHARED-SECRET` inside that pasted text. Dynamics has no separate credential field for PunchOut; the `SHARED_SECRET` row under Order properties belongs to purchase-order sending, not to the setup request. The file contains the company's exact static From, Sender, To, `deploymentMode` and HTTPS `SupplierSetup/URL`; it never contains a stored secret.
 
 The downloaded `payloadID`, `timestamp`, `BuyerCookie` and `BrowserFormPost/URL` fields are blank by design. Leave them blank: Dynamics fills them itself when a user punches out from a requisition, and the External catalogs page has no setting for them. Configure the initiating user's `UserEmail` separately through the catalog's extrinsics grid described below; the downloaded XML does not duplicate that element. The download contains no invented Dynamics substitution syntax. `BrowserFormPost/URL` is the Dynamics cart-return receiver and must not be replaced with the supplier setup URL.
 
@@ -48,7 +48,9 @@ The example fragment below illustrates the resulting value, not a complete setup
 <Extrinsic name="UserEmail">buyer.one@example.com</Extrinsic>
 ```
 
-Company credentials authenticate the connection. The trusted purchasing system authorizes employees; each stable identity maps to a separate supplier buyer. Do not use random values or a shared mailbox for returning-buyer continuity. `BuyerEmail` is not a default alias. A changed email may create a new buyer; changing the supplier profile does not alter incoming XML.
+Company credentials authenticate the connection. The trusted purchasing system authorizes employees; every employee shops as the one store account the supplier bound to your connection. The identity extrinsic is therefore not a login and does not create or select a store account: it is recorded against that shopping visit, stamped on the resulting quote, and used to match a second punchout by the same person so it supersedes their earlier visit. Two employees punching out at the same time get two independent baskets and two independent delivery selections on that one account.
+
+A changed email consequently creates no new account. It changes the recorded attribution on the quote and breaks supersede matching, so that person's older visit stays open until it expires. Do not use random values or a shared mailbox for returning-buyer continuity: a shared value makes two colleagues supersede each other's baskets. `BuyerEmail` is not a default alias. Changing the supplier profile does not alter incoming XML.
 
 ## Returning and later ordering
 

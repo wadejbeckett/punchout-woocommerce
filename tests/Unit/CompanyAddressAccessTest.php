@@ -6,7 +6,7 @@ namespace {
 if ( realpath( $_SERVER['SCRIPT_FILENAME'] ?? '' ) === __FILE__ ) { require_once dirname( __DIR__ ) . '/bootstrap.php'; }
 require_once __DIR__ . '/NativeAddressImportTest.php';
 require_once __DIR__ . '/AccountIntegrationTest.php';
-require_once __DIR__ . '/ExitPolicyAdminTest.php';
+require_once dirname( __DIR__ ) . '/Admin/doubles.php';
 }
 
 namespace POW\Tests\Fields {
@@ -24,7 +24,7 @@ function load_wiring(): void {
 	$root = dirname( __DIR__, 2 ) . '/includes/';
 	foreach ( [
 		[ 'Account/IntegrationTab.php', 'POW\\Account', 'POW\\Tests\\FieldsAccount', [ 'is_account_page', 'is_wc_endpoint_url', 'wp_create_nonce', 'wc_get_page_permalink', 'wc_get_endpoint_url', 'get_posts', 'has_shortcode', 'get_permalink', 'header' ] ],
-		[ 'Admin/Page.php', 'POW\\Admin', 'POW\\Tests\\FieldsAdmin', [ 'current_user_can', 'absint', 'sanitize_key', 'delete_transient', 'add_query_arg', 'selected', 'checked', 'submit_button', 'get_users' ] ],
+		[ 'Admin/Page.php', 'POW\\Admin', 'POW\\Tests\\FieldsAdmin', [ 'current_user_can', 'absint', 'sanitize_key', 'delete_transient', 'add_query_arg', 'selected', 'checked', 'submit_button' ] ],
 	] as [ $file, $original, $target, $functions ] ) {
 		$bindings = ''; foreach ( $functions as $function ) { $bindings .= ' use function ' . $original . '\\' . $function . ';'; }
 		$source = str_replace( 'namespace ' . $original . ';', 'namespace ' . $target . ';' . $bindings, file_get_contents( $root . $file ) );
@@ -41,9 +41,13 @@ final class OwnerLookupDatabase {
 	public function __call( string $method, array $args ): mixed { return $this->inner->$method( ...$args ); }
 	public function prepare( string $sql, mixed ...$args ): string { $key = $this->inner->prepare( $sql, ...$args ); $this->prepared[$key] = [ $sql, $args ]; return $key; }
 	public function get_row( string $query, string $format ): ?array {
-		[ $sql, $args ] = $this->prepared[$query];
-		if ( str_contains( $sql, 'WHERE owner_user_id' ) ) { return $this->inner->row['owner_user_id'] === $args[0] ? $this->inner->row : null; }
 		return $this->inner->get_row( $query, $format );
+	}
+	/** Two rows are asked for: a second connection sharing the account is an ambiguity the registry refuses. */
+	public function get_results( string $query, string $format ): ?array {
+		[ $sql, $args ] = $this->prepared[$query];
+		if ( str_contains( $sql, 'WHERE owner_user_id' ) ) { return $this->inner->row['owner_user_id'] === $args[0] ? [ $this->inner->row ] : []; }
+		return $this->inner->get_results( $query, $format );
 	}
 }
 function add_action( string $hook, callable $callback, int $priority = 10, int $args = 1 ): void { $GLOBALS['pow_fields_test']['hooks'][$hook] = $callback; }
@@ -80,13 +84,14 @@ function woocommerce_form_field( string $key, array $args, mixed $value = null )
 namespace {
 use PHPUnit\Framework\TestCase;
 use POW\Tests\Fields\Fields;
-use POW\Tests\CompanyBook\{CompanyBook, Database, Audit, Countries};
+use POW\Tests\CompanyBook\{CompanyBook, Current, Database, Audit, Countries};
 use POW\Tests\NativeImport\{NativeImport, Customer};
 use POW\Partners\{Registry, Secrets};
 
 final class CompanyAddressAccessTest extends TestCase {
 	private Fields $fields;
 	private CompanyBook $book;
+	private Current $visits;
 	private Database $db;
 	private array $saved = [];
 	protected function setUp(): void {
@@ -97,14 +102,18 @@ final class CompanyAddressAccessTest extends TestCase {
 			20 => (object) [ 'ID' => 20, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			21 => (object) [ 'ID' => 21, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			30 => (object) [ 'ID' => 30, 'roles' => [ 'shop_manager' ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
-			40 => (object) [ 'ID' => 40, 'roles' => [ \POW\Installer::ROLE ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
+			// A privileged account that can no longer read the shop: still neither an editor nor a connection's login.
+			40 => (object) [ 'ID' => 40, 'roles' => [ 'shop_manager' ], 'allcaps' => [ 'read' => false, 'manage_woocommerce' => true ] ],
 		];
-		$GLOBALS['pow_test_user_meta'] = []; $GLOBALS['pow_test_current_user_id'] = 20;
-		$GLOBALS['pow_fields_test'] = [ 'account' => true, 'endpoint' => 'punchout-integration', 'admin' => false, 'hooks' => [], 'private' => 0, 'countries' => [], 'fields' => [], 'fields_fail' => false ];
-		$_POST = []; $_GET = []; $_SERVER['REQUEST_METHOD'] = 'GET';
+		$GLOBALS['pow_test_user_meta'] = []; $GLOBALS['pow_test_current_user_id'] = 30;
+		// The delivery book is an administrator surface now, so the editor's
+		// own route is the admin connection screen and the suite's default
+		// actor is the shop manager who reaches it.
+		$GLOBALS['pow_fields_test'] = [ 'account' => false, 'endpoint' => 'punchout-integration', 'admin' => true, 'hooks' => [], 'private' => 0, 'countries' => [], 'fields' => [], 'fields_fail' => false ];
+		$_POST = []; $_GET = [ 'page' => 'punchout-woocommerce' ]; $_SERVER['REQUEST_METHOD'] = 'GET';
 		Countries::$unavailable = false; Countries::$country_removed = false; Countries::$company_required = false;
 		Customer::$data = [ 20 => [ 'shipping' => $this->address(), 'billing' => $this->address() + [ 'email' => 'private@example.test' ] ] ]; Customer::$loaded = []; Customer::$fail = false; Customer::$missing = false; Customer::$on_read = null;
-		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->book = new CompanyBook( $registry, new Audit() );
+		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->visits = new Current(); $this->book = new CompanyBook( $registry, new Audit(), $this->visits );
 		$this->fields = new Fields( $registry, $this->book, new NativeImport( $registry, $this->book ) );
 	}
 	protected function tearDown(): void {
@@ -121,12 +130,12 @@ final class CompanyAddressAccessTest extends TestCase {
 	}
 	private function submit( string $action = 'save', int $revision = 0, string $key = '', string $type = '', array $changes = [] ): string { $this->post( $action, $revision, $key, $type, $changes ); $this->fields->handle(); return $this->fields->markup( 12 ); }
 	private function state(): array { $state = $this->book->read( 12, get_current_user_id() ); self::assertTrue( is_array( $state ) ); return $state; }
-	private function seed(): array { $result = $this->book->save( 12, 20, 0, null, [ 'label' => 'Private depot', 'address' => $this->address(), 'code' => 'PRIVATE-DEPOT', 'use_for_punchout' => false ] ); self::assertTrue( is_array( $result ) ); return $result; }
-	public function test_register_connects_only_scoped_handlers_and_no_shipping_filters(): void {
-		$this->fields->register(); self::assertSame( [ 'template_redirect', 'admin_init' ], array_keys( $GLOBALS['pow_fields_test']['hooks'] ) );
-		$this->post(); ( $GLOBALS['pow_fields_test']['hooks']['template_redirect'] )(); self::assertSame( 1, $this->state()['revision'] );
+	private function seed(): array { $result = $this->book->save( 12, get_current_user_id(), 0, null, [ 'label' => 'Private depot', 'address' => $this->address(), 'code' => 'PRIVATE-DEPOT', 'use_for_punchout' => false ] ); self::assertTrue( is_array( $result ) ); return $result; }
+	public function test_register_connects_only_the_admin_handler_and_no_shipping_filters(): void {
+		$this->fields->register(); self::assertSame( [ 'admin_init' ], array_keys( $GLOBALS['pow_fields_test']['hooks'] ) );
+		$this->post(); ( $GLOBALS['pow_fields_test']['hooks']['admin_init'] )(); self::assertSame( 1, $this->state()['revision'] );
 	}
-	public function test_private_markup_owner_and_admin_only_buyer_unrelated_and_guest_denied(): void {
+	public function test_private_markup_owner_and_admin_only_blocked_unrelated_and_guest_denied(): void {
 		$this->seed();
 		foreach ( [ 20, 30 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; self::assertStringContainsString( 'PRIVATE-DEPOT', $this->fields->markup( 12 ) ); }
 		foreach ( [ 0, 21, 40 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; $html = $this->fields->markup( 12 ); self::assertStringNotContainsString( 'PRIVATE-DEPOT', $html ); self::assertStringNotContainsString( '<form', $html ); }
@@ -139,24 +148,35 @@ final class CompanyAddressAccessTest extends TestCase {
 		$this->submit( 'disable', 4, $a ); self::assertFalse( $this->state()['addresses'][$a]['use_for_punchout'] );
 		$this->submit( 'remove', 5, $a ); self::assertSame( 6, $this->state()['revision'] ); self::assertFalse( isset( $this->state()['addresses'][$a] ) ); self::assertTrue( $this->state()['claims']['NEW-CODE']['retired'] );
 	}
-	public function test_actual_admin_can_use_existing_admin_partner_page(): void {
-		$GLOBALS['pow_test_current_user_id'] = 30; $GLOBALS['pow_fields_test']['account'] = false; $GLOBALS['pow_fields_test']['admin'] = true; $_GET = [ 'page' => 'punchout-woocommerce' ];
+	public function test_the_admin_connection_screen_is_the_editor_route(): void {
 		$this->submit(); self::assertSame( 1, $this->state()['revision'] );
 	}
-	public function test_unrelated_actor_buyer_meta_provisioned_and_forged_owner_cannot_mutate(): void {
-		foreach ( [ 21, 40 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; $this->submit(); }
-		$GLOBALS['pow_test_current_user_id'] = 20; $GLOBALS['pow_test_user_meta'][20]['_pow_partner_id'] = 12; $this->submit(); $GLOBALS['pow_test_user_meta'] = [];
+	/** The My Account tab keeps only its read-only download, so its route accepts no editor POST from anyone. */
+	public function test_the_my_account_route_can_no_longer_reach_the_editor(): void {
+		$GLOBALS['pow_fields_test']['account'] = true; $GLOBALS['pow_fields_test']['admin'] = false; $_GET = [];
+		foreach ( [ 30, 20 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; $this->submit(); }
+		self::assertSame( [], $this->db->writes );
+	}
+	public function test_unrelated_actor_blocked_account_live_visit_and_forged_owner_cannot_mutate(): void {
+		foreach ( [ 20, 21, 40 ] as $actor ) { $GLOBALS['pow_test_current_user_id'] = $actor; $this->submit(); }
+		// The editor is unreachable during a visit, whoever is signed in: the
+		// visit carries an employee of the buying company, and the master book
+		// is read-only for the whole of it.
+		$GLOBALS['pow_test_current_user_id'] = 30;
+		$this->visits->live = \POW\Sessions\Session::from_row( [ 'id' => 81, 'partner_id' => 12, 'user_id' => 20, 'status' => \POW\Sessions\Session::ACTIVE, 'wc_session_key' => 'pow_1a2b3c4d5e6f708192a3b4c5d6e7' ] );
+		self::assertStringNotContainsString( '<form', $this->submit() );
+		$this->visits->live = null;
 		$this->submit( 'save', 0, '', '', [ 'owner_user_id' => '30' ] ); self::assertSame( [], $this->db->writes );
 	}
 	public function test_forged_partner_nonce_binding_and_foreign_key_cannot_mutate(): void {
 		$this->submit( 'save', 0, '', '', [ 'pow_address_partner' => '99' ] );
 		$this->submit( 'save', 0, 'foreign' ); $this->submit( 'remove', 0, 'foreign' ); $this->submit( 'enable', 0, 'foreign' ); self::assertSame( [], $this->db->writes );
 	}
-	public function test_get_and_unrelated_routes_and_ordinary_admin_access_cannot_write(): void {
+	public function test_get_and_unrelated_routes_and_ordinary_account_access_cannot_write(): void {
 		$this->post(); $_SERVER['REQUEST_METHOD'] = 'GET'; $this->fields->handle();
-		$_SERVER['REQUEST_METHOD'] = 'POST'; $GLOBALS['pow_fields_test']['endpoint'] = 'edit-address'; $this->fields->handle();
-		$GLOBALS['pow_fields_test']['account'] = false; $GLOBALS['pow_fields_test']['admin'] = true; $_GET['page'] = 'other'; $this->fields->handle();
-		$_GET['page'] = 'punchout-woocommerce'; $this->fields->handle(); self::assertSame( [], $this->db->writes );
+		$_SERVER['REQUEST_METHOD'] = 'POST'; $GLOBALS['pow_fields_test']['admin'] = false; $GLOBALS['pow_fields_test']['account'] = true; $this->fields->handle();
+		$GLOBALS['pow_fields_test']['admin'] = true; $GLOBALS['pow_fields_test']['account'] = false; $_GET['page'] = 'other'; $this->fields->handle();
+		$_GET['page'] = 'punchout-woocommerce'; $GLOBALS['pow_test_current_user_id'] = 20; $this->fields->handle(); self::assertSame( [], $this->db->writes );
 	}
 	public function test_nonce_binds_action_partner_key_and_type_for_every_mutation(): void {
 		$a = $this->seed();
@@ -269,30 +289,47 @@ final class CompanyAddressAccessTest extends TestCase {
 		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $audit = new Audit();
 		$registration = new \POW\Partners\Registration( $registry, new \POW\Sessions\Store(), $audit );
 		$plugin = ( new ReflectionClass( \POW\Plugin::class ) )->newInstanceWithoutConstructor();
-		return [ new \POW\Tests\FieldsAccount\IntegrationTab( $plugin, $registry, $registration, $audit, new \POW\Http\RateLimiter( 5 ), $this->fields ), new \POW\Tests\FieldsAdmin\Page( new \POW\Settings(), $registry, $audit, $this->fields ), new \POW\Admin\Actions( $registry, $audit, $registration ) ];
+		return [ new \POW\Tests\FieldsAccount\IntegrationTab( $plugin, $registry, $audit ), new \POW\Tests\FieldsAdmin\Page( new \POW\Settings(), $registry, $audit, $this->fields ), new \POW\Admin\Actions( $registry, $audit, $registration ) ];
 	}
 	private function assert_no_nested_forms( string $html ): void {
 		preg_match_all( '/<form\b|<\/form>/i', $html, $tokens ); $depth = 0;
 		foreach ( $tokens[0] as $token ) { $depth += str_starts_with( strtolower( $token ), '</' ) ? -1 : 1; self::assertTrue( $depth >= 0 && $depth <= 1, 'Address forms must be outside connection and policy forms.' ); }
 		self::assertSame( 0, $depth );
 	}
-	public function test_account_wiring_renders_server_owned_book_and_preserves_policy_outside_forms(): void {
-		$this->seed(); [ $tab ] = $this->wiring(); $_POST = [ 'pow_address_partner' => '99', 'owner_user_id' => '21' ];
+	/** The wired tab is one control: the setup-XML download, with no book, no secret and no editable field. */
+	public function test_account_wiring_renders_only_the_setup_download(): void {
+		$this->seed(); $this->db->row += [ 'name' => 'Example Company', 'from_domain' => 'NetworkID', 'from_identity' => 'EXAMPLE', 'sender_domain' => 'NetworkID', 'sender_identity' => 'EXAMPLE', 'to_domain' => 'NetworkID', 'to_identity' => 'STORE' ];
+		[ $tab ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 20; $_POST = [ 'pow_address_partner' => '99', 'owner_user_id' => '21' ];
 		ob_start(); try { $tab->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
-		self::assertStringContainsString( 'PRIVATE-DEPOT', $html ); self::assertStringContainsString( 'Company exit policy', $html ); self::assertStringContainsString( 'Rotate secret', $html ); self::assertStringContainsString( 'name="pow_address_partner" value="12"', $html ); $this->assert_no_nested_forms( $html );
+		self::assertStringContainsString( 'value="download_setup_template"', $html );
+		self::assertSame( 1, substr_count( $html, '<form' ) );
+		foreach ( [ 'PRIVATE-DEPOT', 'pow_address_partner', 'Rotate secret', 'Company exit policy', 'Company permission', 'punchout_and_checkout', 'Shared secret', '<input type="text"', 'Deactivate' ] as $text ) { self::assertStringNotContainsString( $text, $html ); }
+		$this->assert_no_nested_forms( $html );
 	}
-	public function test_account_credential_handler_ignores_address_post_and_same_fields_instance_retains_failure(): void {
-		[ $tab ] = $this->wiring(); $this->post( 'save', 0, '', '', [ 'shipping_postcode' => 'BAD', 'pow_address_label' => 'Wired failed draft' ] );
-		self::assertNull( ( new ReflectionMethod( $tab, 'post_result' ) )->invoke( $tab ) );
+	/** An address POST aimed at the account route reaches neither the editor nor the download. */
+	public function test_account_route_ignores_an_address_post_entirely(): void {
+		[ $tab ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 20;
+		$GLOBALS['pow_fields_test']['admin'] = false; $GLOBALS['pow_fields_test']['account'] = true; $_GET = [];
+		$this->post( 'save', 0, '', '', [ 'shipping_postcode' => 'BAD', 'pow_address_label' => 'Wired failed draft' ] );
+		$tab->handle_post();
 		$this->fields->handle(); ob_start(); try { $tab->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
-		self::assertStringContainsString( 'Wired failed draft', $html ); self::assertStringContainsString( 'woocommerce-error', $html ); self::assertSame( [], $this->db->writes );
+		self::assertStringNotContainsString( 'Wired failed draft', $html ); self::assertSame( [], $this->db->writes );
 	}
-	public function test_admin_wiring_renders_editor_and_exit_policy_forms_without_nesting(): void {
+	public function test_admin_wiring_renders_editor_and_connection_forms_without_nesting(): void {
 		$this->seed(); [ , $page ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 30;
 		$_GET = [ 'page' => 'punchout-woocommerce', 'tab' => 'partners', 'action' => 'edit', 'partner' => '12' ];
 		ob_start(); try { $page->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
-		foreach ( [ 'PRIVATE-DEPOT', 'name="exit_policy"', 'Buyer restrictions', 'value="pow_save_partner"', 'name="pow_address_partner" value="12"' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		// The bound store account, its book and the identity form are three siblings.
+		foreach ( [ 'PRIVATE-DEPOT', 'value="pow_save_partner"', 'name="pow_address_partner" value="12"', 'Store account buyers shop as', 'Store account: #20', 'delivery book' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		// The per-buyer restriction screen and the checkout switch went with the dual exit.
+		foreach ( [ 'name="exit_policy"', 'Buyer restrictions', 'Checkout access', 'value="pow_save_buyer_exit"' ] as $text ) { self::assertStringNotContainsString( $text, $html ); }
 		$this->assert_no_nested_forms( $html );
+		// Unbound: the binding POST is a sibling of the identity form, and there is no book yet.
+		$this->db->row['owner_user_id'] = 0;
+		ob_start(); try { $page->render(); $unbound = ob_get_contents(); } finally { ob_end_clean(); }
+		foreach ( [ 'value="pow_associate_partner"', 'name="owner_user_id"', 'Bind store account' ] as $text ) { self::assertStringContainsString( $text, $unbound ); }
+		self::assertStringNotContainsString( 'PRIVATE-DEPOT', $unbound, 'The book belongs to the bound account' );
+		$this->assert_no_nested_forms( $unbound );
 	}
 	public function test_admin_credential_actions_refuse_mixed_address_form_even_with_valid_admin_nonce(): void {
 		[ , , $actions ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 30; $GLOBALS['pow_test_valid_nonce'] = 'valid';

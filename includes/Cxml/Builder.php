@@ -108,8 +108,16 @@ final class Builder {
 
 	/**
 	 * PunchOutOrderMessage — the cart return (full) or the cancel/close-out
-	 * (empty item list, optionally carrying SupplierOrderInfo with the paid
-	 * Woo order reference — scope §5.4).
+	 * (empty item list, optionally carrying SupplierOrderInfo with a paid
+	 * order reference — scope §5.4).
+	 *
+	 * No production path supplies supplier_order_info any more: checkout is
+	 * blocked inside a visit, so no order of ours exists for a POOM to name,
+	 * and the return endpoint passes null. The emission is kept because it is
+	 * a verified 1.2.071 dialect feature that a purchasing system may still
+	 * require of us, and the documentation samples exercise its argument
+	 * shape; treat a caller that supplies it as a new capability, not as a
+	 * revival of the paid exit.
 	 *
 	 * @param array{
 	 *   version: string,
@@ -200,6 +208,8 @@ final class Builder {
 			$address_code = true === ( $args['emit_delivery_code'] ?? false ) ? $code : '';
 			$this->ship_to( $doc, $poom_header, $args['ship_to'], $address_code, $extended, $lang );
 		}
+		// A Builder capability with no production producer: the return endpoint
+		// always passes null (see the method docblock).
 		if ( $extended && ! empty( $args['supplier_order_info'] ) ) {
 			$info = $this->el( $doc, $poom_header, 'SupplierOrderInfo' );
 			$info->setAttribute( 'orderID', $args['supplier_order_info']['order_id'] );

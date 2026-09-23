@@ -10,17 +10,41 @@ declare( strict_types = 1 );
 
 namespace POW;
 
+use POW\Orders\QuoteOrder;
 use POW\Partners\Registry;
-use POW\Checkout\ExitPolicy;
 use POW\Sessions\Session;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Keeps punchout logins on permitted surfaces and enforces fresh company entitlement at native order/payment boundaries. Unrelated shoppers retain native behavior; paid-order information remains separate from permission to make another payment.
+ * Keeps a punchout visit on the surfaces it is entitled to and keeps every
+ * other visit's basket, order and account out of its reach.
+ *
+ * The login is the customer's own WooCommerce account, so nothing about
+ * the *user* distinguishes a buyer punched in from a purchasing system
+ * from the same company signing in with its password: the only proof is
+ * the visit row for this request's WP session token. Every decision here
+ * therefore asks one question — is this request inside a visit, and is
+ * the thing it is reaching for that same visit's? Ordinary shoppers,
+ * including the bound account outside a visit, keep native behaviour.
+ *
+ * A request whose visit cannot be proved (the session store could not
+ * answer) is refused rather than treated as an ordinary shopper.
  */
 final class RouteGuard {
 
+	/** Whether this request's visit has already been torn down, once and for all. */
+	private bool $visit_ended = false;
+
+	/**
+	 * @param Plugin   $plugin   Container, asked for the request's visit.
+	 * @param Registry $registry Connection registry. No decision here reads
+	 *                           it — the visit row is the whole proof — but
+	 *                           it holds the connection lock every writer of
+	 *                           the account's shared session_tokens row runs
+	 *                           under, which is what ends a visit on logout.
+	 * @param Settings $settings Operator settings: landing page and labels.
+	 */
 	public function __construct(
 		private Plugin $plugin,
 		private Registry $registry,
@@ -29,6 +53,14 @@ final class RouteGuard {
 
 	public function register(): void {
 		add_action( 'template_redirect', [ $this, 'guard' ], 1 );
+
+		// template_redirect runs for front-end page requests only. wp-admin,
+		// admin-ajax.php and the REST API never reach it, so the shared
+		// login's three remaining doors need their own guards.
+		add_action( 'admin_init', [ $this, 'guard_admin' ], 1 );
+		add_filter( 'rest_pre_dispatch', [ $this, 'guard_rest' ], -99, 3 );
+		add_filter( 'wp_is_application_passwords_available_for_user', [ $this, 'deny_application_passwords' ], PHP_INT_MAX, 2 );
+
 		add_action( 'woocommerce_checkout_process', [ $this, 'block_checkout_process' ] );
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'block_store_api_checkout' ] );
 		add_action( 'woocommerce_checkout_create_order', [ $this, 'enforce_order' ], PHP_INT_MAX );
@@ -38,68 +70,149 @@ final class RouteGuard {
 		add_action( 'woocommerce_rest_checkout_process_payment_with_context', [ $this, 'enforce_payment_context' ], -9999 );
 		add_action( 'woocommerce_before_pay_action', [ $this, 'enforce_pay_action' ], -9999 );
 		add_action( 'login_init', [ $this, 'guard_login_screen' ] );
+		add_action( 'wp_logout', [ $this, 'end_visit_on_logout' ], 0 );
 	}
 
 	public function guard(): void {
-		$session = $this->plugin->current_session();
+		$visit = $this->plugin->current_session();
 
-		// Account surfaces (order history, addresses, downloads, password
-		// changes) are outside a punchout session's remit. A direct company
-		// owner has no PunchOut session and retains ordinary account access.
-		if ( null !== $session && function_exists( 'is_account_page' ) && is_account_page() ) {
+		// Account surfaces (order history, addresses, downloads, account
+		// details, password changes, the integration tab) are outside a
+		// visit's remit. This fires on template_redirect only, so it never
+		// sees admin-ajax.php, the REST API or wp-admin — guard_admin() and
+		// guard_rest() hold those. The bound account outside a visit keeps
+		// its whole account area.
+		if ( null !== $visit && function_exists( 'is_account_page' ) && is_account_page() ) {
 			$this->redirect_to_landing();
 			return;
 		}
 
-		// PunchOut sessions may inspect only their own orders. Ordinary order
-		// keys, login prompts and email verification remain WooCommerce's;
-		// direct owners are subject to their company cap on payment only.
+		// A visit may inspect only the quote order it created. Ordinary
+		// order keys, login prompts and email verification remain
+		// WooCommerce's.
 		$endpoint_order_id = $this->endpoint_order_id();
 
 		if ( $endpoint_order_id > 0 && function_exists( 'wc_get_order' ) ) {
 			$order = wc_get_order( $endpoint_order_id );
+			$order = $order instanceof \WC_Order ? $order : null;
 
-			$wrong_session_order = null !== $session && ( ! $order || (int) $order->get_customer_id() !== get_current_user_id() );
-			$payment_denied = is_wc_endpoint_url( 'order-pay' ) && ! $this->checkout_allowed( $order instanceof \WC_Order ? $order : null );
-			if ( $wrong_session_order || $payment_denied ) {
+			$wrong_visit_order = null !== $visit && ! $this->order_belongs_to_visit( $order, $visit );
+			$payment_denied    = is_wc_endpoint_url( 'order-pay' ) && $this->checkout_blocked_for_visit( $order );
+
+			if ( $wrong_visit_order || $payment_denied ) {
 				$this->redirect_to_landing();
 				return;
 			}
 		}
 
-		// Ordinary checkout follows current entitlement; order-pay has its own payment check above, while owned order-received information remains reachable.
-		if ( function_exists( 'is_checkout' ) && is_checkout() && 0 === $endpoint_order_id && $this->requisition_only() ) {
+		// The visible checkout block. It runs for every request, not only
+		// inside a visit, so an ordinary shopper — and the bound account on
+		// its own password login — still reaches /checkout.
+		if ( function_exists( 'is_checkout' ) && is_checkout() && 0 === $endpoint_order_id && $this->checkout_blocked_for_visit() ) {
 			$target = function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : $this->settings->landing_url();
 			wp_safe_redirect( $target, 302 );
 			exit;
 		}
-
-		if ( null === $session ) {
-			return;
-		}
-
-		/**
-		 * Fires after the built-in route checks pass, so sites can extend
-		 * the blocked surface (e.g. plugin-specific endpoints) without
-		 * forking the guard. Callbacks redirect+exit themselves.
-		 *
-		 * @param \POW\Sessions\Session $session Active punchout session.
-		 */
-		do_action( 'pow_route_guard', $session );
 	}
 
 	/**
-	 * Second layer of the requisition_only block: even a crafted POST to
-	 * the checkout processor hard-fails (scope §5.4).
+	 * wp-admin during a visit: the shared login is an ordinary customer
+	 * account, so WordPress would happily serve it the profile screen — and
+	 * profile.php asks only for `edit_user` on one's own id, i.e. the account
+	 * password and e-mail address every colleague shares.
+	 *
+	 * admin_init also fires for admin-ajax.php, which a front-end cart can
+	 * legitimately call inside a visit; redirecting that would break the
+	 * basket, so that one entry point is exempt and left to the guards that
+	 * do apply to it.
 	 */
+	public function guard_admin(): void {
+		if ( self::is_admin_ajax() ) {
+			return;
+		}
+
+		if ( ! $this->inside_visit() ) {
+			return;
+		}
+
+		$this->redirect_to_landing();
+	}
+
 	/**
+	 * Whether this request really is admin-ajax.php, proved by the script
+	 * WordPress is running.
+	 *
+	 * wp_doing_ajax() cannot answer this. It reports the DOING_AJAX constant,
+	 * and WooCommerce defines that constant from a query parameter — its
+	 * `wc-ajax` endpoint is picked up at `init` priority 0 on every request,
+	 * wp-admin page loads included, long before `admin_init` runs. Trusting
+	 * it therefore let a buyer switch this refusal off with a query string of
+	 * her own (`/wp-admin/profile.php?wc-ajax=1`) and take over the shared
+	 * account's password. The script name is not hers to set.
+	 *
+	 * A request whose script cannot be read is not provably admin-ajax.php,
+	 * so it keeps the refusal: this door fails closed like every other.
+	 */
+	private static function is_admin_ajax(): bool {
+		$script = (string) ( $_SERVER['SCRIPT_FILENAME'] ?? '' ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- compared as a basename, never used as a path.
+
+		return 'admin-ajax.php' === basename( $script );
+	}
+
+	/**
+	 * The user and application-password REST routes during a visit.
+	 *
+	 * @param mixed $result  Pre-dispatch result; returned untouched unless this request is refused.
+	 * @param mixed $server  REST server, unused.
+	 * @param mixed $request The request being dispatched.
+	 */
+	public function guard_rest( mixed $result, mixed $server = null, mixed $request = null ): mixed {
+		$route = is_object( $request ) && method_exists( $request, 'get_route' ) ? (string) $request->get_route() : '';
+
+		if ( ! self::locked_route( $route ) || ! $this->inside_visit() ) {
+			return $result;
+		}
+
+		return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
+	}
+
+	/**
+	 * Application passwords would outlive the visit that minted them and
+	 * belong to the account, not the buyer who happened to be in it.
+	 *
+	 * @param mixed $available Native answer.
+	 * @param mixed $user      User the question is about, unused: the visit is the request's, not the row's.
+	 */
+	public function deny_application_passwords( mixed $available, mixed $user = null ): bool {
+		return (bool) $available && ! $this->inside_visit();
+	}
+
+	/**
+	 * Only the routes the shared-login lockdown names, so a plugin or theme
+	 * route a visit legitimately uses is never caught by accident.
+	 */
+	private static function locked_route( string $route ): bool {
+		$route = '/' . ltrim( $route, '/' );
+
+		foreach ( [ '/wp/v2/users', '/wp/v2/application-passwords' ] as $locked ) {
+			if ( $route === $locked || str_starts_with( $route, $locked . '/' ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Second layer of the checkout block: even a crafted POST hard-fails.
+	 *
 	 * The blocks checkout never runs woocommerce_checkout_process — it
 	 * posts to the Store API. Same policy, that route's own veto point.
 	 *
-	 * @throws \Automattic\WooCommerce\StoreApi\Exceptions\RouteException When a requisition_only session tries to check out.
+	 * @throws \Automattic\WooCommerce\StoreApi\Exceptions\RouteException When a visit tries to check out.
 	 */
 	public function block_store_api_checkout( $order = null ): void {
-		if ( $this->checkout_allowed( $order instanceof \WC_Order ? $order : null ) ) {
+		if ( ! $this->checkout_blocked_for_visit( $order instanceof \WC_Order ? $order : null ) ) {
 			return;
 		}
 
@@ -109,26 +222,24 @@ final class RouteGuard {
 			throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', esc_html( $message ), 403 );
 		}
 
-		wp_die( esc_html( $message ), 403 ); // Unreachable on any Woo new enough to serve the Store API.
+		wp_die( esc_html( $message ), '', [ 'response' => 403 ] ); // Unreachable on any Woo new enough to serve the Store API.
 	}
 
 	public function block_checkout_process(): void {
-		if ( $this->requisition_only() && function_exists( 'wc_add_notice' ) ) {
+		if ( $this->checkout_blocked_for_visit() && function_exists( 'wc_add_notice' ) ) {
 			wc_add_notice( $this->checkout_blocked_message(), 'error' );
 		}
 	}
 
 	/**
-	 * Direct owners retain My Account guidance. Session buyers receive the
-	 * operator's configured and filtered PunchOut return-button label.
+	 * Two cases, two strings: a buyer inside a visit is pointed at the
+	 * operator's configured and filtered return control, and anyone
+	 * holding a punchout quote order outside its visit is told that order
+	 * is not payable here.
 	 */
 	private function checkout_blocked_message(): string {
-		if ( null === $this->plugin->current_session() ) {
-			$actor = get_current_user_id();
-			$owner_policy = ( new ExitPolicy( $this->settings, $this->registry ) )->effective_for_owner( $actor );
-			if ( ExitPolicy::ONLY === $owner_policy ) {
-				return __( 'Checkout is not available for this PunchOut-only company. My Account remains available for company configuration.', 'punchout-woocommerce' );
-			}
+		if ( ! $this->inside_visit() ) {
+			return __( 'This order belongs to a PunchOut catalog session and cannot be paid here.', 'punchout-woocommerce' );
 		}
 
 		$label = (string) apply_filters(
@@ -146,56 +257,196 @@ final class RouteGuard {
 		);
 	}
 
+	private function locked_message(): string {
+		return __( 'This surface is not available in a PunchOut catalog session.', 'punchout-woocommerce' );
+	}
+
 	/**
 	 * wp-login.php inside a punchout session: logout is allowed, anything
-	 * else goes back to the landing page (scope §5.5).
+	 * else goes back to the landing page.
+	 *
+	 * Logout ends the one visit that asked for it and leaves a colleague
+	 * signed in to the same account with her own visit and her own basket —
+	 * but only because this guard ends it here, under the connection lock,
+	 * before core's own unlocked teardown can run. See end_visit().
 	 */
 	public function guard_login_screen(): void {
-		if ( null === $this->plugin->current_session() ) {
+		if ( ! $this->inside_visit() ) {
 			return;
 		}
 
-		$action = isset( $_REQUEST['action'] ) ? sanitize_key( wp_unslash( $_REQUEST['action'] ) ) : 'login'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing decision.
+		// Anything that is not a plain string (?action[]=logout) is not the
+		// one action a visit is allowed, so it reads as 'login' and 302s.
+		$requested = $_REQUEST['action'] ?? 'login'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing decision.
+		$action    = sanitize_key( is_string( $requested ) ? wp_unslash( $requested ) : 'login' );
 
 		if ( 'logout' !== $action ) {
 			wp_safe_redirect( $this->settings->landing_url(), 302 );
 			exit;
 		}
+
+		// A logout wp-login.php will actually perform. Its own gate is
+		// check_admin_referer( 'log-out' ), which runs after this hook, and
+		// without a valid nonce core only offers its confirmation screen — a
+		// visit that is not being ended must not be torn down, or any page
+		// able to make this browser request a URL could empty a buyer's
+		// basket. The nonce is minted against the request's own session
+		// token, so it is this visit's and no colleague's.
+		$nonce = $_REQUEST['_wpnonce'] ?? ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- verified on the next line, and core verifies it again.
+
+		if ( is_string( $nonce ) && wp_verify_nonce( wp_unslash( $nonce ), 'log-out' ) ) {
+			$this->end_visit();
+		}
 	}
 
-	private function requisition_only(): bool { return ! $this->checkout_allowed(); }
+	/**
+	 * Any other way out of a visit: WooCommerce's account logout, an admin-bar
+	 * logout, wp_logout() called by something else.
+	 *
+	 * wp_logout() destroys the request's token before it fires this action and
+	 * offers no earlier hook, so this cannot serialize that one write. What it
+	 * does do is end the visit row and delete its basket, which nothing else
+	 * does until the row's own expiry — and the open-visit cap is counted from
+	 * those rows. It can only act on a visit this request already resolved:
+	 * by now the cookie is cleared and the current user is 0, so there is
+	 * nothing left to resolve from. The wp-login.php door above, which is the
+	 * only logout a visit can actually reach, never depends on it.
+	 */
+	public function end_visit_on_logout(): void {
+		$this->end_visit();
+	}
 
-	/** Fresh authorization at every order/payment boundary, including orphaned buyer logins. */
-	public function checkout_allowed( ?\WC_Order $order = null ): bool {
-		try {
-			$actor = get_current_user_id();
-			$user = $actor > 0 ? get_userdata( $actor ) : false;
-			$session = $this->plugin->current_session();
-			$buyer = $user && ( in_array( Installer::ROLE, (array) $user->roles, true ) || get_user_meta( $actor, '_pow_partner_id', true ) );
-			$tagged = $order && ( $order->get_meta( '_pow_session' ) || $order->get_meta( '_pow_partner' ) );
-			if ( ! $buyer && ! $session && ! $tagged ) {
-				if ( ! $this->plugin->enabled() ) { return true; }
-				$owner_policy = ( new ExitPolicy( $this->settings, $this->registry ) )->effective_for_owner( $actor );
-				return null === $owner_policy || ExitPolicy::CHECKOUT === $owner_policy;
-			}
-			if ( ! $this->plugin->enabled() || ! $session || $session->user_id !== $actor ) { return false; }
-			$fresh = $this->plugin->sessions()?->find_for_login( $actor, wp_get_session_token(), [ Session::ACTIVE ] );
-			if ( ! $fresh || $fresh->id !== $session->id || $fresh->partner_id !== $session->partner_id || ! $fresh->expires || strtotime( $fresh->expires . ' UTC' ) <= time() ) { return false; }
-			$partner = $this->registry->find( $fresh->partner_id );
-			if ( ! $partner || ExitPolicy::CHECKOUT !== ( new ExitPolicy( $this->settings, $this->registry ) )->effective( $partner, $actor ) ) { return false; }
-			if ( $order ) {
-				if ( (int) $order->get_customer_id() !== $actor || $order->is_paid() ) { return false; }
-				if ( $order->get_meta( '_pow_session' ) && (int) $order->get_meta( '_pow_session' ) !== $fresh->id ) { return false; }
-				if ( $order->get_meta( '_pow_partner' ) && (int) $order->get_meta( '_pow_partner' ) !== $partner->id ) { return false; }
-			}
+	/**
+	 * End this request's visit under the connection lock.
+	 *
+	 * `session_tokens` is ONE user-meta row that holds every concurrent
+	 * visit's login token for the shared account, so every writer of it must
+	 * be serialized on the connection lock or a colleague's token is lost:
+	 * Http\StartEndpoint states the same invariant on the redeem side, and
+	 * Store::expire_and_destroy() is the writer that obeys it here — it
+	 * expires this row, destroys this login and deletes this visit's own
+	 * basket row inside Registry::with_partner_lock().
+	 *
+	 * Core's wp_destroy_current_session() is the unlocked read-modify-write
+	 * of that same row this exists to get in front of. It is skipped entirely
+	 * when the request carries no token, because wp_get_session_token() reads
+	 * the logged-in cookie and nothing else — so once the teardown above has
+	 * confirmed this login is gone, forgetting that cookie costs this request
+	 * nothing it still has and keeps core's write off a colleague's token. An
+	 * unconfirmed teardown deliberately keeps the cookie: a logout must still
+	 * reach core's best effort rather than leave a live token behind.
+	 *
+	 * A confirmed teardown is remembered, because wp_logout() fires its action
+	 * after this has already run on the wp-login.php door and there is nothing
+	 * left to do; an unconfirmed one is retried, in case the second attempt can
+	 * reach the lock the first could not.
+	 */
+	private function end_visit(): bool {
+		if ( $this->visit_ended ) {
 			return true;
-		} catch ( \Throwable $e ) { return false; }
+		}
+
+		try {
+			$visit = $this->plugin->current_session();
+			$store = $this->plugin->sessions();
+
+			if ( null === $visit || null === $store ) {
+				return false;
+			}
+
+			if ( ! $store->expire_and_destroy( $visit, $this->registry ) ) {
+				return false;
+			}
+
+			if ( defined( 'LOGGED_IN_COOKIE' ) ) {
+				unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+			}
+
+			$this->visit_ended = true;
+
+			return true;
+		} catch ( \Throwable $e ) {
+			// A visit that could not be resolved or torn down is core's to
+			// finish; nothing here may stop a logout.
+			return false;
+		}
+	}
+
+	/**
+	 * Whether checkout must be refused for this request.
+	 *
+	 * Punchout is the only exit: a visit returns its basket to the
+	 * purchasing system and never pays, so a live visit is refused
+	 * unconditionally — no company setting, no per-buyer setting, nothing
+	 * a request can carry makes it payable. Outside a visit this is an
+	 * ordinary shopper (the bound customer account included) and the only
+	 * refusal left is a punchout quote order, which belongs to the visit
+	 * that created it and is not payable anywhere.
+	 *
+	 * There is deliberately no second session read at this boundary. The
+	 * old one existed to re-prove a company's exit entitlement and the
+	 * row's expiry before a payment; with punchout the only exit, neither
+	 * can make a visit payable, and asking twice would only give the two
+	 * answers a chance to disagree. The one resolver, memoised per request
+	 * by Plugin::current_session(), caches nothing but a conclusive answer.
+	 */
+	public function checkout_blocked_for_visit( ?\WC_Order $order = null ): bool {
+		try {
+			if ( $this->inside_visit() ) {
+				return true;
+			}
+
+			return null !== $order && '' !== $this->order_meta( $order, QuoteOrder::META_SESSION_ID ) . $this->order_meta( $order, QuoteOrder::META_PARTNER_ID );
+		} catch ( \Throwable $e ) {
+			// An order whose meta could not be read is not provably ordinary.
+			return true;
+		}
+	}
+
+	/**
+	 * Whether the order the request is reaching for is this visit's own.
+	 *
+	 * The visit row id is the per-visit discriminator here: one setup
+	 * request makes one row, one basket and one quote order, and
+	 * QuoteOrder stamps that row's id on the order. customer_id cannot
+	 * answer this — every visit of a connection shares one account.
+	 */
+	private function order_belongs_to_visit( ?\WC_Order $order, Session $visit ): bool {
+		if ( null === $order ) {
+			return false;
+		}
+
+		$stamped = $this->order_meta( $order, QuoteOrder::META_SESSION_ID );
+
+		// An order with no punchout session on it was not made by this
+		// visit, so it is not this visit's to read.
+		return '' !== $stamped && (int) $stamped === $visit->id;
+	}
+
+	private function order_meta( \WC_Order $order, string $key ): string {
+		return trim( (string) $order->get_meta( $key ) );
+	}
+
+	/**
+	 * True when this request is inside a live visit — and also when that
+	 * could not be established.
+	 *
+	 * A session store that cannot answer has not proved the request is an
+	 * ordinary shopper's, and the resolver deliberately throws rather than
+	 * reporting "no visit", so every door here fails closed.
+	 */
+	private function inside_visit(): bool {
+		try {
+			return null !== $this->plugin->current_session();
+		} catch ( \Throwable $e ) {
+			return true;
+		}
 	}
 
 	/** Woo catches this exception in classic creation and both Store API submission paths, including zero totals. */
 	public function enforce_order( $order ): void {
 		if ( is_numeric( $order ) ) { $order = wc_get_order( (int) $order ); }
-		if ( ! $this->checkout_allowed( $order instanceof \WC_Order ? $order : null ) ) {
+		if ( $this->checkout_blocked_for_visit( $order instanceof \WC_Order ? $order : null ) ) {
 			if ( class_exists( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class ) ) {
 				throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', $this->checkout_blocked_message(), 403 );
 			}
@@ -205,7 +456,7 @@ final class RouteGuard {
 
 	/** This native hook is outside Woo's try/catch: terminate before any customer or gateway mutation. */
 	public function enforce_pay_action( $order ): void {
-		if ( ! $this->checkout_allowed( $order instanceof \WC_Order ? $order : null ) ) {
+		if ( $this->checkout_blocked_for_visit( $order instanceof \WC_Order ? $order : null ) ) {
 			wp_die( esc_html( $this->checkout_blocked_message() ), '', [ 'response' => 403 ] );
 		}
 	}
@@ -213,6 +464,11 @@ final class RouteGuard {
 	/** Store API payment integrations run after this early veto, without changing payment-complete callbacks. */
 	public function enforce_payment_context( $context ): void { $this->enforce_order( $context->order ); }
 
+	/**
+	 * view-order is listed explicitly rather than left to the My Account
+	 * redirect: the order fence must not depend on is_account_page()
+	 * surviving a theme or a WooCommerce change.
+	 */
 	private function endpoint_order_id(): int {
 		if ( ! function_exists( 'is_wc_endpoint_url' ) ) {
 			return 0;
@@ -220,12 +476,10 @@ final class RouteGuard {
 
 		global $wp;
 
-		if ( is_wc_endpoint_url( 'order-pay' ) ) {
-			return absint( $wp->query_vars['order-pay'] ?? 0 );
-		}
-
-		if ( is_wc_endpoint_url( 'order-received' ) ) {
-			return absint( $wp->query_vars['order-received'] ?? 0 );
+		foreach ( [ 'order-pay', 'order-received', 'view-order' ] as $endpoint ) {
+			if ( is_wc_endpoint_url( $endpoint ) ) {
+				return absint( $wp->query_vars[ $endpoint ] ?? 0 );
+			}
 		}
 
 		return 0;

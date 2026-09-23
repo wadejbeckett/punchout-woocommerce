@@ -13,10 +13,17 @@ function load_book(): void {
 	foreach ( [ 'Shape', 'CompanyBook' ] as $name ) {
 		$source = str_replace( 'namespace POW\\Addresses;', 'namespace POW\\Tests\\CompanyBook; use POW\\Addresses\\Codes; use POW\\Addresses\\DeliveryData;', file_get_contents( $root . $name . '.php' ) );
 		$source = str_replace( 'use WC_Validation;', 'use POW\\Tests\\CompanyBook\\Validation as WC_Validation;', $source );
+		$source = str_replace( 'use POW\\Sessions\\Current;', '', $source );
 		eval( substr( $source, 5 ) ); // phpcs:ignore Squiz.PHP.Eval.Discouraged -- native dependency binding only; unchanged method bodies.
 	}
 }
 
+/** Sessions\Current's whole surface: which visit, if any, this request is inside. */
+final class Current {
+	public ?\POW\Sessions\Session $live = null;
+	public bool $unreachable = false;
+	public function visit( array $statuses = [] ): ?\POW\Sessions\Session { if ( $this->unreachable ) { throw new \RuntimeException( 'PRIVATE session lookup error' ); } return $this->live; }
+}
 final class Database {
 	public string $prefix = 'fixture_';
 	public string $usermeta = 'fixture_usermeta';
@@ -33,7 +40,6 @@ final class Database {
 	public array $previous = [];
 	public mixed $hook = null;
 	public array $user_cache = [];
-	public array $mapping_rows = [];
 	public bool $user_read_fail = false;
 	private array $prepared = [];
 	public function prepare( string $sql, mixed ...$args ): string { $key = $sql . ' /*' . count( $this->prepared ) . '*/'; $this->prepared[$key] = [ $sql, $args ]; return $key; }
@@ -82,11 +88,6 @@ function get_userdata( int $id ): object|false {
 	if ( isset($db->user_cache[$id]) ) { return $db->user_cache[$id]; }
 	$user=\get_userdata($id); if($user){$db->user_cache[$id]=clone $user;} return $user;
 }
-function get_user_meta( int $id, string $key = '', bool $single = false ): mixed {
-	$db=$GLOBALS['wpdb']; if ( $db->user_read_fail ) { $db->last_error='PRIVATE mapping read failure'; return $single ? '' : []; }
-	if ( '_pow_partner_id' === $key && array_key_exists($id,$db->mapping_rows) ) { return $single ? ($db->mapping_rows[$id][0]??'') : $db->mapping_rows[$id]; }
-	return \get_user_meta($id,$key,$single);
-}
 function WC(): object { return (object) [ 'countries' => new Countries() ]; }
 function wc_strtoupper( string $value ): string { return strtoupper( $value ); }
 function wc_format_postcode( string $value, string $country ): string { return strtoupper( $value ); }
@@ -118,13 +119,15 @@ final class Audit extends \POW\Audit\Log {
 
 namespace {
 use PHPUnit\Framework\TestCase;
-use POW\Tests\CompanyBook\{CompanyBook, Database, Audit, Countries};
+use POW\Tests\CompanyBook\{CompanyBook, Current, Database, Audit, Countries};
 use POW\Partners\{Registry, Secrets};
+use POW\Sessions\Session;
 
 final class CompanyBookTest extends TestCase {
 	private Database $db;
 	private Audit $audit;
 	private CompanyBook $book;
+	private Current $visits;
 	private Registry $registry;
 	private array $saved;
 	protected function setUp(): void {
@@ -136,13 +139,15 @@ final class CompanyBookTest extends TestCase {
 			20 => (object) [ 'ID' => 20, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			21 => (object) [ 'ID' => 21, 'roles' => [ 'customer' ], 'allcaps' => [ 'read' => true ] ],
 			30 => (object) [ 'ID' => 30, 'roles' => [ 'administrator' ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
-			40 => (object) [ 'ID' => 40, 'roles' => [ \POW\Installer::ROLE ], 'allcaps' => [ 'read' => true, 'manage_woocommerce' => true ] ],
+			// A privileged account that can no longer read the shop: neither an editor nor a connection's login,
+			// whatever else it holds. It is the only account-shaped refusal left now that no role marks a buyer.
+			40 => (object) [ 'ID' => 40, 'roles' => [ 'shop_manager' ], 'allcaps' => [ 'read' => false, 'manage_woocommerce' => true ] ],
 		];
 		$GLOBALS['pow_test_user_meta'] = []; $GLOBALS['pow_test_current_user_id'] = 20;
 		Countries::$unavailable = false;
 		Countries::$country_removed = false; Countries::$company_required = false;
-		$this->registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->audit = new Audit();
-		$this->book = new CompanyBook( $this->registry, $this->audit );
+		$this->registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->audit = new Audit(); $this->visits = new Current();
+		$this->book = new CompanyBook( $this->registry, $this->audit, $this->visits );
 	}
 	protected function tearDown(): void { foreach ( $this->saved as $key => $value ) { if ( null === $value ) { unset( $GLOBALS[$key] ); } else { $GLOBALS[$key] = $value; } } }
 	private function fields( array $changes = [] ): array {
@@ -150,6 +155,8 @@ final class CompanyBookTest extends TestCase {
 	}
 	private function add( array $changes = [], int $revision = 0 ): array { $result = $this->book->save( 12, 20, $revision, null, $this->fields( $changes ) ); self::assertTrue( is_array( $result ), $result instanceof WP_Error ? $result->get_error_message() : '' ); return $result; }
 	private function state(): array { return $this->db->meta[20]['_pow_delivery_book_12'][0]; }
+	/** A live visit of the connection's own bound account — the only account any visit of partner 12 ever signs in as. */
+	private function visit(): Session { return Session::from_row( [ 'id' => 81, 'partner_id' => 12, 'user_id' => 20, 'status' => Session::ACTIVE, 'wc_session_key' => 'pow_1a2b3c4d5e6f708192a3b4c5d6e7' ] ); }
 	private function error( mixed $result, ?string $code = null ): void { self::assertInstanceOf( WP_Error::class, $result ); if ( null !== $code ) { self::assertSame( $code, $result->get_error_code() ); } self::assertTrue( strlen( $result->get_error_message() ) < 256 ); self::assertStringNotContainsString( 'PRIVATE', $result->get_error_message() ); }
 	public function test_first_create_exact_aggregate_two_codes_and_disabled_default(): void {
 		self::assertSame( [ 'schema' => 1, 'revision' => 0, 'addresses' => [], 'claims' => [], 'next_sequence' => 1 ], $this->book->read( 12, 20 ) );
@@ -211,7 +218,7 @@ final class CompanyBookTest extends TestCase {
 		$fields['use_for_punchout'] = true; $b = $this->book->save( 12, 20, 1, $a['key'], $fields );
 		self::assertSame( $before, $this->db->previous[1] ); self::assertSame( $fields['address']['address_1'], $this->state()['addresses'][$a['key']]['address']['address_1'] ); self::assertTrue( $b['entry']['use_for_punchout'] );
 	}
-	public function test_actual_actor_owner_or_admin_never_buyer_or_forged_actor(): void {
+	public function test_actual_actor_owner_or_admin_never_a_blocked_account_or_forged_actor(): void {
 		foreach ( [ 0, 21, 30, 40 ] as $actor ) { $this->error( $this->book->read( 12, $actor ) ); }
 		$GLOBALS['pow_test_current_user_id'] = 21; $this->error( $this->book->save( 12, 20, 0, null, $this->fields() ) );
 		$GLOBALS['pow_test_current_user_id'] = 40; $this->error( $this->book->save( 12, 40, 0, null, $this->fields() ) );
@@ -223,24 +230,38 @@ final class CompanyBookTest extends TestCase {
 		$this->error($this->book->read(12,30),'address_forbidden');
 		$this->error($this->book->save(12,30,0,null,$this->fields()),'address_forbidden'); self::assertSame([],$this->db->writes);
 	}
-	public function test_cached_owner_role_change_cannot_hide_a_provisioned_buyer(): void {
-		\POW\Tests\CompanyBook\get_userdata(20); $GLOBALS['pow_test_users'][20]->roles=[\POW\Installer::ROLE];
+	public function test_cached_owner_capability_loss_is_seen_before_book_access(): void {
+		\POW\Tests\CompanyBook\get_userdata(20); $GLOBALS['pow_test_users'][20]->allcaps['read']=false;
 		$GLOBALS['pow_test_current_user_id']=30;
 		$this->error($this->book->read(12,30),'address_forbidden'); self::assertSame([],$this->db->writes);
 	}
-	public function test_empty_first_mapping_cannot_hide_duplicate_or_malformed_owner_association(): void {
-		foreach ([['',12],[0],[false],['0']] as $rows) {
-			$this->db->mapping_rows[20]=$rows; $this->error($this->book->read(12,20),'address_forbidden');
-		}
-		self::assertSame([],$this->db->writes);
+	public function test_the_book_is_read_only_inside_a_live_visit_while_selection_still_reads(): void {
+		$a = $this->add();
+		$GLOBALS['pow_test_current_user_id'] = 30; self::assertTrue( is_array( $this->book->read( 12, 30 ) ) );
+		$GLOBALS['pow_test_current_user_id'] = 20; $this->visits->live = $this->visit();
+		// The visit is signed in as user 20, the account that owns this book. Only the visit itself can refuse it.
+		$this->error( $this->book->read( 12, 20 ), 'address_forbidden' );
+		$this->error( $this->book->save( 12, 20, 1, $a['key'], $this->fields() ), 'address_forbidden' );
+		$this->error( $this->book->remove( 12, 20, 1, $a['key'] ), 'address_forbidden' );
+		$GLOBALS['pow_test_current_user_id'] = 30; $this->error( $this->book->read( 12, 30 ), 'address_forbidden' );
+		self::assertCount( 1, $this->db->writes );
+		// Choosing a delivery address is a read, and it is what the visit exists to do.
+		$partner = $this->registry->find( 12 );
+		self::assertSame( $this->state(), $this->registry->with_partner_lock( 12, fn() => $this->book->read_for_partner_locked( $partner ) ) );
+	}
+	public function test_an_unreachable_visit_lookup_refuses_management_instead_of_allowing_it(): void {
+		$this->visits->unreachable = true;
+		$this->error( $this->book->read( 12, 20 ), 'address_state_unavailable' );
+		$this->error( $this->book->save( 12, 20, 0, null, $this->fields() ), 'address_state_unavailable' );
+		self::assertSame( [], $this->db->writes );
 	}
 	public function test_native_user_read_failure_is_unavailable_and_cannot_create_a_book(): void {
 		$this->db->user_read_fail=true; $this->error($this->book->read(12,20),'address_state_unavailable');
 		$this->error($this->book->save(12,20,0,null,$this->fields()),'address_state_unavailable'); self::assertSame([],$this->db->writes);
 	}
-	public function test_fresh_owner_resolution_and_missing_or_provisioned_owner_refuse(): void {
+	public function test_fresh_owner_resolution_and_a_missing_or_unreadable_owner_refuse(): void {
 		foreach ( [ 0, 999, 40, 21 ] as $owner ) { $this->db->row['owner_user_id'] = $owner; $this->error( $this->book->save( 12, 20, 0, null, $this->fields() ) ); }
-		$this->db->row['owner_user_id'] = 20; $GLOBALS['pow_test_user_meta'][20]['_pow_partner_id'] = 12; $this->error( $this->book->read( 12, 20 ) ); self::assertSame( [], $this->db->writes );
+		self::assertSame( [], $this->db->writes );
 	}
 	public function test_read_error_distinct_from_missing_and_duplicates_refuse(): void {
 		$this->db->read_fail = true; $this->error( $this->book->read( 12, 20 ), 'address_state_unavailable' ); $this->error( $this->book->save( 12, 20, 0, null, $this->fields() ) ); self::assertSame( [], $this->db->writes );

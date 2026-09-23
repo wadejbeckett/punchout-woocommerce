@@ -1,6 +1,6 @@
 <?php
 /**
- * The additive cart-exit surface.
+ * The cart-exit surface.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -12,37 +12,45 @@ namespace POW\Cart;
 
 use POW\Support\Transport;
 
-use POW\Checkout\ExitPolicy;
 use POW\Partners\Registry;
 use POW\Plugin;
-use POW\RouteGuard;
 use POW\Sessions\Session;
 use POW\Support\Templates;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Renders the "send to your purchasing system" button — an ADDITIVE
- * element beside WooCommerce's own checkout button, shown only to active
- * punchout sessions. The stock checkout flow is never overridden,
- * replaced or filtered for dual_exit partners.
+ * Renders the "send to your purchasing system" button — the one exit a
+ * punchout visit has. Checkout is blocked inside every visit (RouteGuard
+ * owns the block and the confirmation endpoint owns the return), so inside
+ * a visit this surface shows the return control and nothing else.
  *
- * For requisition_only partners the checkout button is unhooked for that
- * partner's punchout sessions only (their sanctioned single exit); the
- * hard block behind it lives in RouteGuard.
+ * Outside a visit nothing here applies. Ordinary shoppers — including the
+ * connection's own bound account on a password login — keep WooCommerce's
+ * cart exactly as WooCommerce renders it.
+ *
+ * The two cart templates need opposite treatment:
+ *
+ * - Classic cart: Woo's proceed-to-checkout button is unhooked for the
+ *   visit and the return control renders in its place.
+ * - Block cart: the native wrapper is left untouched, because Cart's React
+ *   render recreates its button whatever PHP does to the markup. Woo's
+ *   public label/link filters (assets/js/cart-blocks.js, configured by
+ *   enqueue_cart_blocks_filters()) turn that one native button into the
+ *   return control instead.
  *
  * Two controls, one endpoint: the cart return (mode=cart) and the
  * mid-session abandon (mode=empty, the cXML cancel semantic — "return
  * without a cart"). Both are presentation only; ReturnEndpoint owns
  * every authorisation check.
  *
- * Five placement paths for the return button, most flexible first:
- * - [punchout_cart_exits] complete policy-aware cart control;
+ * Four placement paths for the return button, most flexible first:
+ * - [punchout_cart_exits] complete cart control;
  * - [punchout_return_button] shortcode (builders, widgets);
  * - pow_return_button() PHP helper (theme code);
- * - automatic injection on the classic cart page (woocommerce_proceed_to_checkout);
- * - automatic injection on the blocks cart (render_block on the
- *   proceed-to-checkout block).
+ * - automatic injection on the classic cart page (woocommerce_after_cart_totals,
+ *   deliberately outside the proceed-to-checkout container, which themes and
+ *   page-builder cart elements hide or replace wholesale).
  *
  * The abandon control has one placement path — [punchout_abandon_button]
  * — because there is no core hook that means "the session chrome".
@@ -68,10 +76,10 @@ final class Surface {
 	public function register_runtime(): void {
 		add_shortcode( 'punchout_return_button', [ $this, 'shortcode' ] );
 		add_shortcode( 'punchout_abandon_button', [ $this, 'abandon_shortcode' ] );
-		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_cart_button' ], 30 );
-		add_filter( 'render_block_woocommerce/proceed-to-checkout-block', [ $this, 'filter_blocks_proceed' ] );
+		add_action( 'woocommerce_after_cart_totals', [ $this, 'render_cart_button' ], 5 );
 		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
+		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_visit_styles' ] );
 	}
 
 	/**
@@ -193,29 +201,30 @@ final class Surface {
 	 * A complete classic-cart exit control independent of theme callbacks.
 	 *
 	 * Sites using this shortcode can hide their theme's native cart button.
-	 * The plugin then owns both authorized choices without identifying or
-	 * removing callbacks installed by WooCommerce, a theme, or another plugin.
+	 * The plugin then owns the authorized exit without identifying or
+	 * removing callbacks installed by WooCommerce or a theme.
+	 *
+	 * Inside a visit that is the return control alone. Outside one it is the
+	 * native checkout link, for every shopper: a connection's bound account
+	 * shopping on its own password login is an ordinary customer here.
 	 */
 	public function cart_exits_shortcode(): string {
-		if ( null === $this->plugin->current_session() ) {
-			$ordinary_checkout = ( new RouteGuard( $this->plugin, $this->registry, $this->plugin->settings() ) )->checkout_allowed();
-			return $ordinary_checkout ? '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>' : '';
+		$session = $this->plugin->current_session();
+
+		if ( null === $session ) {
+			// No RouteGuard consultation: outside a visit the guard refuses
+			// checkout for nothing a cart page can carry, so asking it here
+			// would only add a second answer that could disagree.
+			return '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>';
 		}
 
-		$policy = $this->current_cart_policy();
-
-		if ( null === $policy ) {
+		if ( ! $this->visit_is_live( $session ) ) {
 			return '';
 		}
 
 		$return = $this->markup();
-		if ( '' === $return ) {
-			return '';
-		}
 
-		$checkout = ExitPolicy::CHECKOUT === $policy ? $this->checkout_button_markup() : '';
-
-		return '<div class="pow-cart-exits">' . $checkout . $return . '</div>';
+		return '' === $return ? '' : '<div class="pow-cart-exits">' . $return . '</div>';
 	}
 
 	/** Native WooCommerce checkout link used by the complete cart control. */
@@ -237,61 +246,41 @@ final class Surface {
 	}
 
 	/**
-	 * Preserve the native wrapper: Cart's React render recreates its button
-	 * even if PHP replaces the wrapper. Restricted sessions use Woo's public
-	 * button label/link filters; dual exit retains the additive control.
-	 * RouteGuard and the confirmation endpoint remain the authorities.
+	 * Configure the Cart block's own button for every visit.
+	 *
+	 * Cart registers its frontend assets after its inner blocks have
+	 * rendered, so this is where the restricted configuration can still be
+	 * added. Every visit is restricted — there is no second exit to choose
+	 * between — so the only question is whether a visit is present.
 	 */
-	public function filter_blocks_proceed( string $block_content ): string {
-		$session = $this->plugin->current_session();
-
-		if ( null === $session ) {
-			return $block_content;
-		}
-
-		if ( ! $this->checkout_allowed( $session->partner_id ) ) {
-			return $block_content;
-		}
-
-		return $block_content . $this->markup();
-	}
-
-	/** Cart registers its frontend assets after its inner blocks have rendered. */
 	public function enqueue_cart_blocks_filters(): void {
-		$session = $this->plugin->current_session();
-		if ( null !== $session && ! $this->checkout_allowed( $session->partner_id ) ) {
+		if ( null !== $this->plugin->current_session() ) {
 			$this->enqueue_blocks_filters();
 		}
 	}
 
-	/** Resolve current policy; an unavailable initial Registry read is also restricted. */
-	private function checkout_allowed( int $partner_id ): bool {
-		try {
-			$partner = $this->registry->find( $partner_id );
-			return null !== $partner && ExitPolicy::CHECKOUT === ( new ExitPolicy( $this->plugin->settings(), $this->registry ) )->effective( $partner, get_current_user_id() );
-		} catch ( \Throwable $error ) {
+	/**
+	 * Whether the resolved visit may still render an exit.
+	 *
+	 * Which visit this is, is not in question: Sessions\Current resolved the
+	 * row from this request's own login token, so it is this visit's row and
+	 * no colleague's — the account id would answer nothing, since every
+	 * buyer of the connection shares it. What is in question is whether the
+	 * visit is still live at render time: a row that has left `active`, a
+	 * connection that has been switched off or a registry read that cannot
+	 * be trusted renders no exit at all, not a checkout link.
+	 */
+	private function visit_is_live( Session $session ): bool {
+		if ( Session::ACTIVE !== $session->status ) {
 			return false;
 		}
-	}
-
-	/** Return the current valid cart session's effective policy, or null. */
-	private function current_cart_policy(): ?string {
-		$session = $this->plugin->current_session();
-
-		if ( null === $session || Session::ACTIVE !== $session->status || $session->user_id !== get_current_user_id() ) {
-			return null;
-		}
 
 		try {
-			$policy  = new ExitPolicy( $this->plugin->settings(), $this->registry );
 			$partner = $this->registry->find( $session->partner_id );
-			if ( null === $partner || ! $partner->is_active() || ! $policy->member( $partner->id, $session->user_id ) ) {
-				return null;
-			}
 
-			return $policy->effective( $partner, $session->user_id );
+			return null !== $partner && $partner->is_active();
 		} catch ( \Throwable $error ) {
-			return null;
+			return false;
 		}
 	}
 
@@ -327,19 +316,63 @@ final class Surface {
 	}
 
 	/**
-	 * requisition_only partners: hide Woo's proceed-to-checkout button for
-	 * that partner's punchout sessions. Presentation only — RouteGuard
-	 * owns the actual block.
+	 * Inside a visit the cart page and the mini-cart show no checkout button
+	 * at all: PunchOut is the visit's only exit and the return control takes
+	 * the button's place.
+	 *
+	 * Whatever the theme or another plugin hung on these two hooks is
+	 * presentation for a shopper who can check out. Naming Woo's own
+	 * callback and priority would only ever remove Woo's button, and the
+	 * plugin knows nothing about who else replaced it or at what priority,
+	 * so the hooks are cleared whole and only what a visit may show is put
+	 * back: "View cart" in the mini-cart. The return control is not put
+	 * back here: it renders at woocommerce_after_cart_totals, outside the
+	 * proceed-to-checkout container, because a theme or page-builder cart
+	 * element that hides that container (to draw its own button) would
+	 * otherwise hide the visit's only exit with it. Presentation only —
+	 * RouteGuard owns the actual block.
 	 */
 	public function maybe_unhook_checkout_button(): void {
-		$session = $this->plugin->current_session();
-
-		if ( null === $session ) {
+		if ( null === $this->plugin->current_session() ) {
 			return;
 		}
 
-		if ( ! $this->checkout_allowed( $session->partner_id ) ) {
-			remove_action( 'woocommerce_proceed_to_checkout', 'woocommerce_button_proceed_to_checkout', 20 );
+		remove_all_actions( 'woocommerce_proceed_to_checkout' );
+
+		remove_all_actions( 'woocommerce_widget_shopping_cart_buttons' );
+		if ( function_exists( 'woocommerce_widget_shopping_cart_button_view_cart' ) ) {
+			add_action( 'woocommerce_widget_shopping_cart_buttons', 'woocommerce_widget_shopping_cart_button_view_cart', 10 );
 		}
+	}
+
+	/**
+	 * Hide every link to the checkout page inside a visit, wherever it came
+	 * from: a page-builder button in the site's own cart layout, a theme
+	 * mini-cart, a widget. None of those pass through a hook this plugin
+	 * can clear, and the plugin is not allowed to know which theme or
+	 * builder drew them, so the one thing they all share — the checkout
+	 * URL — is what the stylesheet keys on. Presentation only; RouteGuard
+	 * still refuses the page itself.
+	 */
+	public function enqueue_visit_styles(): void {
+		$session = $this->plugin->current_session();
+		if ( null === $session || ! $this->visit_is_live( $session ) ) {
+			return;
+		}
+
+		$checkout = rtrim( (string) wc_get_checkout_url(), '/' );
+		$checkout = str_replace( [ '\\', '"' ], [ '\\\\', '\\"' ], $checkout );
+		// Never the wc-proceed-to-checkout wrapper itself: with its hooks
+		// cleared it holds exactly one thing, this plugin's return control.
+		$selectors = [
+			'a[href^="' . $checkout . '"]',
+			'.checkout-button',
+			'.widget_shopping_cart .buttons .checkout',
+			'.wc-block-mini-cart__footer-checkout',
+		];
+
+		wp_register_style( 'pow-visit', false, [], defined( 'POW\\VERSION' ) ? \POW\VERSION : false );
+		wp_enqueue_style( 'pow-visit' );
+		wp_add_inline_style( 'pow-visit', implode( ',', $selectors ) . '{display:none !important;}' );
 	}
 }

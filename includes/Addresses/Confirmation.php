@@ -8,8 +8,8 @@ use POW\Partners\Registry;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
 use POW\Sessions\ConsentFence;
-use POW\Checkout\ExitPolicy;
 use POW\Cart\PoomMapper;
+use POW\Cart\SessionKey;
 use POW\Cart\NativeSessionGuard;
 use POW\Settings;
 use POW\Logger;
@@ -25,8 +25,8 @@ final class Confirmation implements ReturnConfirmation {
 	/** Chooser's external mutation hooks use this same instance; internal quote refresh still undergoes the complete locked guard. */
 	public function is_refreshing(): bool { return $this->refresh_depth > 0; }
 
-	/** The optional mapper shares Plugin's configured instance; six-argument callers need no booted global plugin. */
-	public function __construct( private Registry $registry, private Store $sessions, private QuoteAddress $addresses, private DeliveryEstimate $estimate, private ExitPolicy $policy, private Resolver $resolver, ?PoomMapper $mapper = null, ?NativeSessionGuard $native = null ) {
+	/** The optional mapper shares Plugin's configured instance; five-argument callers need no booted global plugin. */
+	public function __construct( private Registry $registry, private Store $sessions, private QuoteAddress $addresses, private DeliveryEstimate $estimate, private Resolver $resolver, ?PoomMapper $mapper = null, ?NativeSessionGuard $native = null ) {
 		$settings = new Settings();
 		$this->mapper = $mapper ?? new PoomMapper( $settings, new Logger( $settings ) );
 		$this->native = $native ?? new NativeSessionGuard( $registry, $sessions );
@@ -53,6 +53,7 @@ final class Confirmation implements ReturnConfirmation {
 			if ( $view['error'] instanceof \WP_Error ) { return $view['error']; }
 			if ( ! $view['can_confirm'] || ! hash_equals( $view['review_digest'], $input['review_digest'] ) ) { return self::error( 'delivery_review_required' ); }
 			if ( $view['requires_unknown_acknowledgement'] && ! in_array( $input['acknowledge_unknown'] ?? null, [ true, '1' ], true ) ) { return self::error( 'delivery_acknowledgement_required' ); }
+			// buyer_user_id is the connection's bound login, identical for every concurrent visit of this company: session_id is the only discriminator left in the record. Naming the person who agreed belongs to the visit's stored buyer identity, not here, because this JSON's field set is validated exactly.
 			$confirmation = [ 'schema' => 1, 'session_id' => $session->id, 'buyer_user_id' => $session->user_id, 'choice_hash' => DeliveryData::fingerprint( $view['selected_choice'] ), 'cart_fingerprint' => $view['_confirmation_fingerprint'], 'policy_fingerprint' => $view['_guard']['policy'], 'delivery' => $view['delivery'], 'notes' => $view['notes'], 'confirmed_at' => time() ];
 			// Decode our own candidate before any write; virtual alone uses a NULL choice.
 			$confirmation = DeliveryData::confirmation( json_encode( $confirmation, JSON_THROW_ON_ERROR ), $session->id, $session->user_id, $view['selected_choice'] );
@@ -130,7 +131,7 @@ final class Confirmation implements ReturnConfirmation {
 		return self::native_cart_fingerprint( get_option( 'woocommerce_currency' ) );
 	}
 
-	/** Resolved currency is passed in so the final snapshot cannot invoke an option callback after protected comparisons. */
+	/** Resolved currency is passed in so the final snapshot cannot invoke an option callback after protected comparisons. The live handler's cart key is part of the snapshot, so a fingerprint taken in one visit can never match another visit's basket. */
 	private static function native_cart_fingerprint( mixed $currency ): string {
 		$wc = WC();
 		if ( ! $wc->cart || ! $wc->customer || ! $wc->session || ! is_array( $wc->cart->cart_contents ) ) { throw new \DomainException( 'Cart unavailable.' ); }
@@ -151,10 +152,13 @@ final class Confirmation implements ReturnConfirmation {
 			foreach ( $package['rates'] as $id => $rate ) { $rates[$id] = $rate->jsonSerialize()['data']; }
 			$packages[$key] = [ 'destination' => $package['destination'] ?? null, 'rates' => $rates ];
 		}
-		$state = [ 'lines' => $lines, 'totals' => $wc->cart->get_totals(), 'coupons' => $wc->cart->applied_coupons, 'shipping' => $wc->customer->get_shipping( 'edit' ), 'chosen' => $wc->session->get( 'chosen_shipping_methods', [] ), 'packages' => $packages, 'currency' => $currency ];
+		$state = [ 'visit' => self::live_cart_key(), 'lines' => $lines, 'totals' => $wc->cart->get_totals(), 'coupons' => $wc->cart->applied_coupons, 'shipping' => $wc->customer->get_shipping( 'edit' ), 'chosen' => $wc->session->get( 'chosen_shipping_methods', [] ), 'packages' => $packages, 'currency' => $currency ];
 		self::scalar_tree( $state );
 		return DeliveryData::fingerprint( $state );
 	}
+
+	/** The key of the basket this request is actually holding, which is what a visit's consent has to be about. */
+	private static function live_cart_key(): string { return (string) WC()->session->get_customer_id(); }
 
 	private function build( Session $session, Partner $partner, array $input, bool $invalidate ): array|\WP_Error {
 		++$this->refresh_depth;
@@ -186,7 +190,7 @@ final class Confirmation implements ReturnConfirmation {
 			if ( $state instanceof \WP_Error ) { return $state; }
 			if ( null !== $candidate ) {
 				$provider = match ( $candidate['source'] ) { 'ship_to' => 'inbound', 'customer' => 'customer', 'filter' => 'filter', default => throw new \DomainException() };
-				$choices[] = [ 'schema' => 1, 'partner_id' => $company->id, 'storage_user_id' => $company->owner_user_id, 'provider' => $provider, 'key' => 'candidate', 'code' => $candidate['code'], 'address' => $candidate['address'], 'label' => match ( $provider ) { 'inbound' => __( 'Purchasing system destination', 'punchout-woocommerce' ), 'customer' => __( 'Your current delivery address', 'punchout-woocommerce' ), default => __( 'Suggested delivery address', 'punchout-woocommerce' ) }, 'source' => $candidate['source'], 'book_revision' => null, 'entry_fingerprint' => null ];
+				$choices[] = [ 'schema' => 1, 'partner_id' => $company->id, 'storage_user_id' => $company->owner_user_id, 'provider' => $provider, 'key' => 'candidate', 'code' => $candidate['code'], 'address' => $candidate['address'], 'label' => match ( $provider ) { 'inbound' => __( 'Purchasing system destination', 'punchout-woocommerce' ), 'customer' => __( 'Company address', 'punchout-woocommerce' ), default => __( 'Suggested delivery address', 'punchout-woocommerce' ) }, 'source' => $candidate['source'], 'book_revision' => null, 'entry_fingerprint' => null ];
 			}
 			$physical = false;
 			foreach ( WC()->cart->get_cart() as $line ) { if ( ! isset( $line['data'] ) || ! is_callable( [ $line['data'], 'needs_shipping' ] ) ) { throw new \DomainException(); } if ( $line['data']->needs_shipping() ) { $physical = true; } }
@@ -251,28 +255,29 @@ final class Confirmation implements ReturnConfirmation {
 	private function authorized_locked( Session $session, Partner $partner ): array|\WP_Error {
 		try {
 			$fresh = $this->sessions->find( $session->id ); $company = $this->registry->find( $partner->id );
-			if ( ! $fresh || ! $company || ! $company->is_active() || $company->owner_user_id <= 0 || $company->owner_user_id !== $partner->owner_user_id || $fresh->partner_id !== $company->id || $session->partner_id !== $company->id || $session->user_id !== $fresh->user_id || get_current_user_id() !== $fresh->user_id || Session::ACTIVE !== $fresh->status || ! $fresh->expires || $fresh->expires <= gmdate( 'Y-m-d H:i:s' ) || '' === $fresh->wp_session_token || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) || ! hash_equals( $fresh->wp_session_token, $session->wp_session_token ) || ! $this->sessions->login_valid_checked( $fresh ) ) { return self::error( 'delivery_forbidden' ); }
+			// The visit is proved by its own WP session token and its own cart key. Comparing account ids proves nothing: every visit of this connection is signed in as the same customer.
+			if ( ! $fresh || ! $company || ! $company->is_active() || $company->owner_user_id <= 0 || $company->owner_user_id !== $partner->owner_user_id || $fresh->partner_id !== $company->id || $session->partner_id !== $company->id || Session::ACTIVE !== $fresh->status || ! $fresh->expires || $fresh->expires <= gmdate( 'Y-m-d H:i:s' ) || '' === $fresh->wp_session_token || ! hash_equals( $fresh->wp_session_token, wp_get_session_token() ) || ! hash_equals( $fresh->wp_session_token, $session->wp_session_token ) || ! $this->sessions->login_valid_checked( $fresh ) ) { return self::error( 'delivery_forbidden' ); }
+			$key = SessionKey::for_session( $fresh );
 			$associated = $this->resolver->partner_for_user( $fresh->user_id );
-			if ( ! $associated || $associated->id !== $company->id || $associated->owner_user_id !== $company->owner_user_id || ! $this->policy->member( $company->id, $fresh->user_id ) || ! WC()->cart || ! WC()->customer || ! WC()->session || (int) WC()->customer->get_id() !== $fresh->user_id || (string) WC()->session->get_customer_id() !== (string) $fresh->user_id ) { return self::error( 'delivery_forbidden' ); }
+			if ( ! $associated || $associated->id !== $company->id || $associated->owner_user_id !== $company->owner_user_id || $fresh->user_id !== $company->owner_user_id || ! hash_equals( $key, (string) ( $session->wc_session_key ?? '' ) ) || ! WC()->cart || ! WC()->customer || ! WC()->session || (int) WC()->customer->get_id() !== $fresh->user_id || ! hash_equals( $key, self::live_cart_key() ) ) { return self::error( 'delivery_forbidden' ); }
 			return [ $fresh, $company ];
 		} catch ( \Throwable $error ) { return self::error( 'delivery_forbidden' ); }
 	}
 
 	private function validate_view_locked( Session $fresh, Partner $company, array $view ): bool|\WP_Error {
 		$guard = $view['_guard'];
-		// Complete currency/effective-policy callbacks before the last native snapshot and fresh protected reads. The raw policy inputs below also detect changes made by later choice/membership callbacks without rerunning filtered options.
+		// Complete the currency callback before the last native snapshot and fresh protected reads. The raw policy inputs below also detect changes made by later choice callbacks without rerunning filtered options.
 		$currency = get_option( 'woocommerce_currency' );
-		$effective = $this->policy->effective( $company, $fresh->user_id );
 		$choice_valid = $this->choice_valid_locked( $fresh, $company, $view['selected_choice'] );
 		if ( true !== $choice_valid ) { return $choice_valid; }
 		// Resolver applies today's country validation. Recheck authorization, persisted consent and native facts AFTER that boundary too.
 		$state = $this->authorized_locked( $fresh, $company );
 		if ( $state instanceof \WP_Error ) { return $state; }
 		[ $fresh, $company ] = $state;
-		// Membership checks can themselves apply native capability callbacks. Reload protected rows after those callbacks, without another filtered policy read.
+		// Choice validation can itself apply native capability callbacks. Reload protected rows after those callbacks.
 		$current = $this->sessions->find( $fresh->id ); $current_company = $this->registry->find( $company->id );
 		if ( ! $current || ! $current_company || DeliveryData::fingerprint( get_object_vars( $current ) ) !== DeliveryData::fingerprint( get_object_vars( $fresh ) ) || DeliveryData::fingerprint( get_object_vars( $current_company ) ) !== DeliveryData::fingerprint( get_object_vars( $company ) ) ) { return self::error(); }
-		if ( $fresh->delivery_choice_json !== $guard['choice_json'] || $fresh->delivery_confirmation_json !== $guard['confirmation_json'] || $guard['policy'] !== $this->policy_fingerprint( $fresh, $company, $effective ) || $guard['cart'] !== self::native_cart_fingerprint( $currency ) ) { return self::error( 'delivery_review_required' ); }
+		if ( $fresh->delivery_choice_json !== $guard['choice_json'] || $fresh->delivery_confirmation_json !== $guard['confirmation_json'] || $guard['policy'] !== $this->policy_fingerprint( $fresh, $company ) || $guard['cart'] !== self::native_cart_fingerprint( $currency ) ) { return self::error( 'delivery_review_required' ); }
 		if ( ! isset( $guard['native'] ) || ! $this->native->check_locked( $fresh, $guard['native'] ) ) { return self::error( 'delivery_review_required' ); }
 		return true;
 	}
@@ -286,14 +291,14 @@ final class Confirmation implements ReturnConfirmation {
 		return true;
 	}
 
-	private function policy_fingerprint( Session $session, Partner $partner, ?string $effective = null ): string {
-		$effective ??= $this->policy->effective( $partner, $session->user_id );
-		$fields = [ 'id', 'owner_user_id', 'exit_policy', 'cxml_version', 'deployment_mode', 'return_encoding', 'allcaps_transform', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'delivery_code_extrinsic_name', 'delivery_unknown_policy', 'delivery_notes_policy', 'freight_supplier_part_id', 'freight_uom', 'freight_classification_domain', 'freight_classification', 'from_domain', 'from_identity', 'to_domain', 'to_identity' ];
-		return DeliveryData::fingerprint( [ 'partner' => array_intersect_key( get_object_vars( $partner ), array_flip( $fields ) ), 'effective_exit' => $effective, 'raw_inputs' => $this->raw_policy_inputs( $session, $partner ), 'session_dialect' => $session->cxml_version, 'session_mode' => $session->deployment_mode ] );
+	/** Exit policy is not an input: there is one exit, so including it would make every stored confirmation depend on a value that cannot change the review. */
+	private function policy_fingerprint( Session $session, Partner $partner ): string {
+		$fields = [ 'id', 'owner_user_id', 'cxml_version', 'deployment_mode', 'return_encoding', 'allcaps_transform', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'delivery_code_extrinsic_name', 'delivery_unknown_policy', 'delivery_notes_policy', 'freight_supplier_part_id', 'freight_uom', 'freight_classification_domain', 'freight_classification', 'from_domain', 'from_identity', 'to_domain', 'to_identity' ];
+		return DeliveryData::fingerprint( [ 'partner' => array_intersect_key( get_object_vars( $partner ), array_flip( $fields ) ), 'raw_inputs' => $this->raw_policy_inputs(), 'session_dialect' => $session->cxml_version, 'session_mode' => $session->deployment_mode ] );
 	}
 
 	/** Bound database reads bypass option caches/filters. Hash raw settings rather than unserializing arbitrary extension objects; a settings change conservatively requires review again. */
-	private function raw_policy_inputs( Session $session, Partner $partner ): array {
+	private function raw_policy_inputs(): array {
 		global $wpdb;
 		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT option_name, option_value FROM ' . $wpdb->options . ' WHERE option_name IN (%s,%s) LIMIT 3', Settings::OPTION_KEY, 'woocommerce_currency' ), ARRAY_A );
 		if ( ! is_array( $rows ) || count( $rows ) > 2 || '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Policy state unavailable.' ); }
@@ -303,7 +308,7 @@ final class Confirmation implements ReturnConfirmation {
 			if ( ! is_string( $key ) || ! array_key_exists( $key, $values ) || isset( $seen[$key] ) || ! is_string( $row['option_value'] ?? null ) ) { throw new \RuntimeException( 'Policy state unavailable.' ); }
 			$seen[$key] = true; $values[$key] = hash( 'sha256', $row['option_value'] );
 		}
-		return [ 'options' => $values, 'buyer' => $this->policy->buyer_value( $partner->id, $session->user_id ) ];
+		return [ 'options' => $values ];
 	}
 
 	/** Native package filters may split contents, but this confirmation accepts exactly one postal destination. */

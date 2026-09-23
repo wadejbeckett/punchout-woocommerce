@@ -68,7 +68,7 @@ final class Reference {
 			SetupEndpoint::STATUS_INVALID      => [ __( 'The document could not be parsed, was not cXML, was over 2 MB, was not sent as POST with an XML content type, declared XML entities, or was missing a required element (Header, Sender credential, Request, BuyerCookie, BrowserFormPost URL).', 'punchout-woocommerce' ), __( 'Compare the document with the annotated sample above.', 'punchout-woocommerce' ) ],
 			SetupEndpoint::STATUS_DUPLICATE    => [ __( 'A different document reused a payloadID we have already seen for your connection, or the same payloadID arrived after its session had already started.', 'punchout-woocommerce' ), __( 'Issue a fresh payloadID per request. An identical retry of an unredeemed request is replayed, not rejected.', 'punchout-woocommerce' ) ],
 			SetupEndpoint::STATUS_UNSUPPORTED  => [ __( 'The request type or operation is not one we service: only PunchOutSetupRequest with operation="create" and ProfileRequest are. Inbound purchase orders at /punchout/order also answer 450.', 'punchout-woocommerce' ), __( 'Send operation="create". Send purchase orders through the agreed ordering channel instead.', 'punchout-woocommerce' ) ],
-			SetupEndpoint::STATUS_INTERNAL     => [ __( 'Something failed on our side.', 'punchout-woocommerce' ), __( 'Retry once, then send us the payloadID and timestamp.', 'punchout-woocommerce' ) ],
+			SetupEndpoint::STATUS_INTERNAL     => [ __( 'Something failed on our side, or your connection is not finished being configured here: no store account is bound to it yet, or too many of your shopping visits are still open.', 'punchout-woocommerce' ), __( 'Retry once. If it repeats it is a configuration fault on our side and retrying will not clear it — contact the store with the payloadID and timestamp.', 'punchout-woocommerce' ) ],
 			SetupEndpoint::STATUS_RATE_LIMITED => [ __( 'Too many setup requests from one connection and address within a rolling minute.', 'punchout-woocommerce' ), __( 'Back off and retry. Tell us if you need the limit raised for a load test.', 'punchout-woocommerce' ) ],
 		];
 
@@ -93,9 +93,9 @@ final class Reference {
 			__( 'PunchOutSetupRequest with operation="create".', 'punchout-woocommerce' ),
 			__( 'ProfileRequest.', 'punchout-woocommerce' ),
 			__( 'PunchOutOrderMessage returned over your BrowserFormPost URL as cxml-base64 (default) or cxml-urlencoded (per-connection switch).', 'punchout-woocommerce' ),
-			__( 'Identity extrinsics UserEmail and UniqueName on the setup request.', 'punchout-woocommerce' ),
-			__( 'An inbound ShipTo on the setup request, stored against the session.', 'punchout-woocommerce' ),
-			__( 'A company-owned delivery book in WordPress/WooCommerce, automatic separate buyer accounts, and mandatory delivery review before physical cart return.', 'punchout-woocommerce' ),
+			__( 'Identity extrinsics on the setup request: UserEmail, UniqueUsername, UniqueName or Contact/Email name the buyer, and UserPrintableName, UserFullName or User supply their display name. They are read as attribution and to separate one buyer\'s basket from another\'s; they never create or select a store account.', 'punchout-woocommerce' ),
+			__( 'An inbound ShipTo on the setup request, stored against the visit.', 'punchout-woocommerce' ),
+			__( 'A company-owned delivery book in WordPress/WooCommerce, one store account per connection with a separate basket and delivery selection per punchout visit, and mandatory delivery review before physical cart return.', 'punchout-woocommerce' ),
 			__( 'Native WooCommerce shipping estimates, optional freight and destination export, and an optional non-payable Punchout Quote recording the accepted return.', 'punchout-woocommerce' ),
 		];
 	}
@@ -134,12 +134,12 @@ final class Reference {
 			[
 				'field'  => 'ShipTo',
 				'source' => __( 'PunchOutOrderMessageHeader (outbound); PunchOutSetupRequest (inbound)', 'punchout-woocommerce' ),
-				'note'   => __( 'Inbound ShipTo is session context for explicit buyer confirmation. Outbound full postal address is separately enabled and does not require an address code. Verified in cXML 1.2.008 and 1.2.071.', 'punchout-woocommerce' ),
+				'note'   => __( 'Inbound ShipTo is context for the visit, for explicit buyer confirmation. Outbound full postal address is separately enabled and does not require an address code. Verified in cXML 1.2.008 and 1.2.071.', 'punchout-woocommerce' ),
 			],
 			[
 				'field'  => 'Address/@addressID',
 				'source' => __( 'the delivery code on the chosen address', 'punchout-woocommerce' ),
-				'note'   => __( 'Optional company address identifier, for example BUYER-001. The company owner or shop administrator manages it. Issued codes are unique per company and never reassigned to another address.', 'punchout-woocommerce' ),
+				'note'   => __( 'Optional company address identifier, for example BUYER-001. A shop administrator manages it. Issued codes are unique per company and never reassigned to another address.', 'punchout-woocommerce' ),
 			],
 			[
 				'field'  => 'Address/@addressIDDomain',
@@ -172,13 +172,13 @@ final class Reference {
 	/** @return list<string> */
 	public function delivery_workflow(): array {
 		return [
-			__( 'The company owner and authorised shop administrators manage Company delivery addresses on the account integration or customer administration screen. Each company has its own private book. Automatically provisioned buyers select all enabled entries from that company using their own login and cart; they do not edit the master book.', 'punchout-woocommerce' ),
-			__( 'Add an address manually, or preview and explicitly copy the owner’s normal WooCommerce billing or shipping address. New entries and imports start disabled; review and enable them separately with use_for_punchout. Normal address saves do not synchronise this book. Inbound ShipTo and a buyer’s saved shipping address can be reviewed as session candidates; neither silently overwrites the company book.', 'punchout-woocommerce' ),
-			__( 'Every physical cart return requires the same signed-in buyer to review and confirm the full destination, native shipping method for each package and optional notes. This applies to pickup, a single available address or method, and all export flags being off. Open /punchout/confirm from the cart control, or place [punchout_delivery_confirmation] on a page; both use the same review and protected POST route. A direct /punchout/return POST cannot bypass confirmation. Virtual-only baskets record delivery as not_required.', 'punchout-woocommerce' ),
+			__( 'Authorised shop administrators manage Company delivery addresses on the customer administration screen. Each connection has its own private book. Every punchout visit selects from that connection’s enabled entries; a visit cannot edit the book.', 'punchout-woocommerce' ),
+			__( 'Add an address manually, or preview and explicitly copy the connection’s store account’s normal WooCommerce billing or shipping address. New entries and imports start disabled; review and enable them separately with use_for_punchout. Normal address saves do not synchronise this book. Inbound ShipTo and the account’s saved shipping address can be reviewed as candidates for one visit; neither silently overwrites the company book.', 'punchout-woocommerce' ),
+			__( 'Every physical cart return requires the same punchout visit to review and confirm the full destination, native shipping method for each package and optional notes. This applies to pickup, a single available address or method, and all export flags being off. Open /punchout/confirm from the cart control, or place [punchout_delivery_confirmation] on a page; both use the same review and protected POST route. A direct /punchout/return POST cannot bypass confirmation. Virtual-only baskets record delivery as not_required.', 'punchout-woocommerce' ),
 			__( 'A valid existing native shipping choice is preserved. Otherwise WooCommerce chooses its configured native default in the current cart context; the plugin adds no cheapest-rate or pickup preference. When emit_delivery_line is enabled, require_rate refuses unavailable rates. quote_separately permits return only after the buyer acknowledges the missing estimate; neither a freight line nor a Quote shipping charge is added. With charge export off, the available estimate or unavailable state is still reviewed and stored locally. A quoted zero is a real rate; unavailable is null, never zero.', 'punchout-woocommerce' ),
-			__( 'Confirmation binds the current cart, destination, rates, configuration and notes to that buyer’s session. Changing those facts requires a fresh review. A selected company entry must still exist and be enabled at confirmation and final return: removal or disablement requires reselection, and changes to its address, label or code require reconfirmation. An unrelated book revision does not invalidate an unchanged selected entry. Completed return and Quote snapshots remain unchanged by later master edits.', 'punchout-woocommerce' ),
+			__( 'Confirmation binds the current cart, destination, rates, configuration and notes to that visit. Changing those facts requires a fresh review. A selected company entry must still exist and be enabled at confirmation and final return: removal or disablement requires reselection, and changes to its address, label or code require reconfirmation. An unrelated book revision does not invalidate an unchanged selected entry. Completed return and Quote snapshots remain unchanged by later master edits.', 'punchout-woocommerce' ),
 			__( 'Notes are sanitised plain text, limited to 2,000 characters and 8,000 bytes. They default to local confirmation storage. delivery_notes_policy=item_detail_extrinsic additionally copies the basket note to DeliveryInstructions on every merchandise ItemDetail, excluding freight, for the exact supported DTDs. Agree this repetition with the receiver before enabling it.', 'punchout-woocommerce' ),
-			__( 'If enabled and available, delivery is one quantity-one freight ItemIn equal to the sum of the selected native package rates. The optional winner Quote uses native shipping items per package with the same sum, once. Prices and totals use ex-tax integer cents; merchandise stays separate. With export off or an acknowledged unavailable estimate, the Quote retains delivery metadata and an estimate note without a shipping charge. Empty and paid-order closeouts add no freight.', 'punchout-woocommerce' ),
+			__( 'If enabled and available, delivery is one quantity-one freight ItemIn equal to the sum of the selected native package rates. The optional winner Quote uses native shipping items per package with the same sum, once. Prices and totals use ex-tax integer cents; merchandise stays separate. With export off or an acknowledged unavailable estimate, the Quote retains delivery metadata and an estimate note without a shipping charge. An empty close-out adds no freight.', 'punchout-woocommerce' ),
 			__( 'Codes are company-scoped references, not URLs, registered receiver records or an address-list API. Codes allow A–Z, 0–9, underscore and hyphen, up to 32 characters; an optional prefix is limited to 24, and labels to 190 characters. Changed or removed issued codes retain their claims permanently. No external address-book plugin, additional credential store or directory integration is required.', 'punchout-woocommerce' ),
 		];
 	}
@@ -197,14 +197,6 @@ final class Reference {
 			'freight_uom' => [ 'default' => 'EA', 'note' => __( 'UnitOfMeasure of the quantity-one freight line.', 'punchout-woocommerce' ) ],
 			'freight_classification_domain' => [ 'default' => 'supplier', 'note' => __( 'Classification domain for freight, independent of merchandise classification.', 'punchout-woocommerce' ) ],
 			'freight_classification' => [ 'default' => 'freight', 'note' => __( 'Classification value for freight.', 'punchout-woocommerce' ) ],
-		];
-	}
-
-	/** @return list<string> */
-	public function exit_policy(): array {
-		return [
-			__( 'Shop administrators set exit_policy globally and per company, then may restrict an existing company buyer. The values are inherit, punchout_only and punchout_and_checkout. A company inherits the global default unless explicitly configured; global inherit resolves to punchout_only. The resulting company entitlement is the buyer’s upper bound: a buyer restriction can remove checkout, but cannot grant it when the company does not allow it.', 'punchout-woocommerce' ),
-			__( 'Company owners and buyers cannot grant themselves checkout entitlement. Punchout only blocks classic, Blocks and direct payment entry points within the punchout session. Punchout and checkout permits the native WooCommerce checkout alongside the reviewed cart return. Ordinary shoppers are unaffected. A changed or unavailable entitlement is checked again before return or payment.', 'punchout-woocommerce' ),
 		];
 	}
 

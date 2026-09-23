@@ -345,6 +345,54 @@ XML;
 	}
 
 	/**
+	 * The diagnostic that replaced "which buyer account did we create": what
+	 * Buyers\Identity read off the document, and nothing more — no account
+	 * is created by a visit, let alone by this page.
+	 *
+	 * @return array{label: string, result: string, detail: string}
+	 */
+	private function buyer_row( string $xml ): array {
+		$report = $this->parsing_self_test()->run( $xml );
+
+		foreach ( $report['checks'] as $check ) {
+			if ( 'Buyer read from them' === $check['label'] ) {
+				self::assertSame( SelfTest::RESULT_INFO, $check['result'] );
+
+				return $check;
+			}
+		}
+
+		self::fail( 'no buyer row in the report' );
+	}
+
+	public function test_the_report_names_the_buyer_the_extrinsics_carried(): void {
+		self::assertSame( 'buyer.user@example.invalid', $this->buyer_row( Samples::setup_request() )['detail'] );
+
+		$named = str_replace(
+			'<Extrinsic name="UniqueName">buyer.user@example.invalid</Extrinsic>',
+			'<Extrinsic name="UserPrintableName">A Buyer</Extrinsic>',
+			Samples::setup_request()
+		);
+		self::assertSame( 'A Buyer <buyer.user@example.invalid>', $this->buyer_row( $named )['detail'] );
+	}
+
+	/** An unidentified buyer is legal: the row says so instead of failing, and the verdict is untouched. */
+	public function test_a_document_naming_nobody_reports_an_unidentified_buyer(): void {
+		$anonymous = str_replace(
+			[
+				'<Extrinsic name="UserEmail">buyer.user@example.invalid</Extrinsic>',
+				'<Extrinsic name="UniqueName">buyer.user@example.invalid</Extrinsic>',
+				'<Email>buyer.user@example.invalid</Email>',
+			],
+			'',
+			Samples::setup_request()
+		);
+
+		self::assertStringContainsString( 'none supplied', $this->buyer_row( $anonymous )['detail'] );
+		self::assertSame( SetupEndpoint::STATUS_OK, $this->parsing_self_test()->run( $anonymous )['verdict'] );
+	}
+
+	/**
 	 * A page of green ticks must not imply a check the self-test cannot
 	 * make.
 	 */

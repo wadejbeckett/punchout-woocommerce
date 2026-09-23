@@ -51,10 +51,13 @@ final class QuoteOrderCreateTest extends TestCase {
 		return Session::from_row(
 			array_merge(
 				[
-					'id'         => 42,
-					'partner_id' => 7,
-					'user_id'    => 99,
-					'ship_to'    => '<ShipTo><Address addressID="BUYER-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name></Address></ShipTo>',
+					'id'             => 42,
+					'partner_id'     => 7,
+					'user_id'        => 99,
+					'buyer_identity' => 'zoe@buyer.example.test',
+					'buyer_name'     => 'Zoë Buyer',
+					'buyer_cookie'   => 'basket-reference',
+					'ship_to'        => '<ShipTo><Address addressID="BUYER-001" addressIDDomain="supplier"><Name xml:lang="en">Head office</Name></Address></ShipTo>',
 				],
 				$overrides
 			)
@@ -312,7 +315,7 @@ final class QuoteOrderCreateTest extends TestCase {
 	}
 
 	public function test_invalid_mapped_destination_fails_safely_without_legacy_fallback(): void {
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static fn() => [ 'address' => [ 'city' => 'Legacy valid' ], 'code' => 'LEGACY' ];
+		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Legacy valid' ] );
 		foreach ( [ false, 'invalid', [], [ 'address' => [] ], array_replace( $this->destination(), [ 'address' => [ 'country' => 'ZA' ] ] ) ] as $bad ) {
 			self::assertSame( 0, $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() + [ 'delivery_destination' => $bad ] ) );
 		}
@@ -725,11 +728,9 @@ final class QuoteOrderCreateTest extends TestCase {
 		} finally { unset( $GLOBALS['pow_test_after_create_order'], $GLOBALS['pow_test_order_save'] ); }
 	}
 
-	/** Make the address step throw, part-way through a saved order. */
+	/** Make the address step throw, part-way through a saved order: the saved-customer candidate is the last mutable legacy source left. */
 	private function break_creation(): void {
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static function ( $value ): array {
-			throw new \RuntimeException( 'address lookup exploded' );
-		};
+		$GLOBALS['pow_test_wc']->customer = new QuoteOrderExplodingCustomer();
 	}
 
 	public function test_order_is_created_and_linked_to_the_session(): void {
@@ -748,10 +749,154 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( 375.33, $order->items[0]['total'] );
 		self::assertSame( 42, (int) $order->get_meta( QuoteOrder::META_SESSION_ID ) );
 		self::assertSame( 7, (int) $order->get_meta( QuoteOrder::META_PARTNER_ID ) );
+		self::assertSame( 'Example Buyer Company', $order->get_meta( QuoteOrder::META_PARTNER_NAME ) );
+		self::assertSame( 'zoe@buyer.example.test', $order->get_meta( QuoteOrder::META_BUYER_IDENTITY ) );
+		self::assertSame( 'Zoë Buyer', $order->get_meta( QuoteOrder::META_BUYER_NAME ) );
+		self::assertSame( 'basket-reference', $order->get_meta( QuoteOrder::META_BUYER_COOKIE ) );
 		self::assertSame( '', $order->get_meta( QuoteOrder::META_POOM_XML ), 'the document does not exist until the build has run' );
 		self::assertCount( 1, $order->notes );
 		self::assertStringContainsString( '42', $order->notes[0] );
 		self::assertStringContainsString( 'Example Buyer Company', $order->notes[0] );
+		self::assertStringContainsString( 'Bought by Zoë Buyer (zoe@buyer.example.test) via PunchOut (Example Buyer Company)', $order->notes[0] );
+		// An order note is rendered through kses, so the stored sentence must carry nothing shaped like a tag.
+		self::assertStringNotContainsString( '<', $order->notes[0] );
+		// The buyer is evidence on the order, never in the log.
+		self::assertStringNotContainsString( 'zoe@buyer.example.test', (string) json_encode( QuoteOrderTestLog::$written ) );
+	}
+
+	/**
+	 * The shared login means the order's customer is the connection's own
+	 * account on every visit. It is evidence of which company bought, never
+	 * of which person, and nothing may key a per-visit decision on it.
+	 */
+	public function test_the_quote_customer_stays_the_bound_account_for_every_visit(): void {
+		$first  = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
+		$second = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'id' => 43, 'buyer_identity' => 'sam@buyer.example.test', 'buyer_name' => 'Sam Buyer' ] ), $this->partner(), $this->lines() ) );
+
+		self::assertSame( 99, $first->customer_id );
+		self::assertSame( 99, $second->customer_id );
+		self::assertSame( [ 99 ], array_unique( [ $first->customer_id, $second->customer_id ] ) );
+		self::assertSame( 'zoe@buyer.example.test', $first->get_meta( QuoteOrder::META_BUYER_IDENTITY ) );
+		self::assertSame( 'sam@buyer.example.test', $second->get_meta( QuoteOrder::META_BUYER_IDENTITY ) );
+		self::assertNotSame( $first->get_meta( QuoteOrder::META_SESSION_ID ), $second->get_meta( QuoteOrder::META_SESSION_ID ) );
+	}
+
+	/**
+	 * An unidentified buyer is a legitimate, audited outcome: the meta is
+	 * written as an empty string rather than left off, and the note says so
+	 * instead of printing a blank name.
+	 */
+	public function test_an_unidentified_buyer_is_stamped_and_named_explicitly(): void {
+		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_identity' => null, 'buyer_name' => '' ] ), $this->partner(), $this->lines() ) );
+
+		self::assertSame( '', $order->get_meta( QuoteOrder::META_BUYER_IDENTITY ) );
+		self::assertSame( '', $order->get_meta( QuoteOrder::META_BUYER_NAME ) );
+		self::assertSame( 'basket-reference', $order->get_meta( QuoteOrder::META_BUYER_COOKIE ) );
+		self::assertStringContainsString( 'Bought by an unnamed buyer via PunchOut (Example Buyer Company); the purchasing system sent no name or e-mail', $order->notes[0] );
+	}
+
+	/** The e-mail alone when the purchasing system named nobody. */
+	public function test_a_nameless_buyer_is_named_by_e_mail_alone(): void {
+		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_name' => null ] ), $this->partner(), $this->lines() ) );
+
+		self::assertStringContainsString( 'Bought by zoe@buyer.example.test via PunchOut (Example Buyer Company)', $order->notes[0] );
+		self::assertStringNotContainsString( '()', $order->notes[0] );
+	}
+
+	/** A note failure must not cost the quote its attribution meta. */
+	public function test_a_refused_note_still_leaves_the_attribution_on_the_order(): void {
+		$GLOBALS['pow_test_order_note'] = static fn() => false;
+		try {
+			$order = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
+			self::assertSame( 'zoe@buyer.example.test', $order->get_meta( QuoteOrder::META_BUYER_IDENTITY ) );
+			self::assertSame( Status::SLUG, $order->get_status() );
+		} finally { unset( $GLOBALS['pow_test_order_note'] ); }
+	}
+
+	/**
+	 * Two visits of one bound account: the order's customer id is the same
+	 * on both, so the accepted delivery confirmation binds through the
+	 * session id alone. Visit A's confirmation cannot validate against
+	 * visit B's order.
+	 */
+	public function test_one_visits_confirmation_cannot_validate_against_anothers_order(): void {
+		$quotes = $this->shipping_quotes();
+		$lines  = $this->confirmed_lines();
+
+		$first = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+		self::assertGreaterThan( 0, $first );
+
+		// The colleague's visit, on the same login, with visit 42's accepted confirmation.
+		self::assertSame( 0, $quotes->create_for_session( $this->session( [ 'id' => 43 ] ), $this->partner(), $lines ) );
+
+		$theirs = $lines;
+		$theirs['delivery_confirmation']['session_id'] = 43;
+		$second = $quotes->create_for_session( $this->session( [ 'id' => 43 ] ), $this->partner(), $theirs );
+		self::assertGreaterThan( 0, $second );
+		self::assertSame( 99, wc_get_order( $first )->get_customer_id() );
+		self::assertSame( 99, wc_get_order( $second )->get_customer_id() );
+		self::assertSame( 43, (int) wc_get_order( $second )->get_meta( QuoteOrder::META_SESSION_ID ) );
+		self::assertNotSame( wc_get_order( $first )->get_meta( QuoteOrder::META_DELIVERY_CONFIRMATION ), wc_get_order( $second )->get_meta( QuoteOrder::META_DELIVERY_CONFIRMATION ) );
+	}
+
+	public function test_the_bought_by_admin_line_names_the_buyer_and_escapes_both_values(): void {
+		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_name' => 'Zoë <b>Buyer</b>', 'buyer_identity' => 'zoe+"one"@buyer.example.test' ] ), $this->partner(), $this->lines() ) );
+
+		self::assertSame( 'Bought by Zoë <b>Buyer</b> (zoe+"one"@buyer.example.test) via PunchOut (Example Buyer Company)', $this->quotes->bought_by_for( $order ) );
+
+		$markup = $this->rendered( $order );
+		self::assertStringContainsString( 'Zoë &lt;b&gt;Buyer&lt;/b&gt;', $markup );
+		self::assertStringContainsString( '&quot;one&quot;@buyer.example.test', $markup );
+		// Whatever a buyer's own name contains is the buyer's; the wording the plugin supplies adds no markup of its own.
+		self::assertStringContainsString( '(zoe+&quot;one&quot;@buyer.example.test) via PunchOut', $markup );
+		self::assertStringNotContainsString( '<b>Buyer</b>', $markup );
+	}
+
+	public function test_the_bought_by_admin_line_names_the_anonymous_case_and_an_unnamed_connection(): void {
+		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_identity' => '', 'buyer_name' => '' ] ), Partner::from_row( [ 'id' => 7, 'status' => 'active' ] ), $this->lines() ) );
+
+		self::assertStringContainsString( 'Bought by an unnamed buyer via PunchOut (connection #7); the purchasing system sent no name or e-mail', $this->rendered( $order ) );
+	}
+
+	/** An order that is not ours carries no session meta and prints nothing at all. */
+	public function test_the_bought_by_admin_line_is_silent_on_an_ordinary_order(): void {
+		self::assertSame( '', $this->rendered( new WC_Order( 4242 ) ) );
+		self::assertSame( '', $this->rendered( null ) );
+	}
+
+	/**
+	 * A quote taken before this release carries `_pow_session_id` and no
+	 * buyer meta at all, because the buyer was then the order's own
+	 * customer. "Absent" and "present but empty" are different facts: the
+	 * anonymous sentence asserts that the purchasing system named nobody,
+	 * which is false for a historical quote and contradicts the evidence
+	 * still on it. Such an order gets no line rather than a false one.
+	 */
+	public function test_the_bought_by_admin_line_says_nothing_about_a_quote_taken_before_the_attribution_existed(): void {
+		$historical = new WC_Order( 4343 );
+		$historical->update_meta_data( QuoteOrder::META_SESSION_ID, '17' );
+		$historical->update_meta_data( QuoteOrder::META_PARTNER_ID, '7' );
+
+		self::assertSame( '', $this->rendered( $historical ), 'a pre-0.4.0 quote must not be told it named nobody' );
+
+		// A genuinely anonymous visit of this release writes both keys as empty strings, and still gets the sentence.
+		$anonymous = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'buyer_identity' => '', 'buyer_name' => '' ] ), $this->partner(), $this->lines() ) );
+		self::assertStringContainsString( 'the purchasing system sent no name or e-mail', $this->rendered( $anonymous ) );
+	}
+
+	public function test_the_admin_order_screen_registers_the_bought_by_line_outside_the_master_switch(): void {
+		$quotes = $this->shipping_quotes();
+		POW\Tests\QuoteShipping\Boundary::$hooks = [];
+		$quotes->register_admin();
+
+		self::assertContains( [ 'action', 'woocommerce_admin_order_data_after_billing_address' ], POW\Tests\QuoteShipping\Boundary::$hooks );
+		self::assertContains( [ 'filter', 'woocommerce_order_actions' ], POW\Tests\QuoteShipping\Boundary::$hooks );
+	}
+
+	private function rendered( mixed $order ): string {
+		ob_start();
+		$this->quotes->render_bought_by( $order );
+		return (string) ob_get_clean();
 	}
 
 	/**
@@ -800,17 +945,24 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertSame( 'Head office', $order->props['shipping_company'] );
 	}
 
-	public function test_the_filter_wins_over_the_inbound_ship_to(): void {
-		$GLOBALS['pow_test_filters']['pow_quote_shipping_address'] = static fn ( $value ): array => [
-			'address' => [ 'city' => 'Cape Town', 'company' => 'Example Buyer Company' ],
-			'code'    => 'BUYER-002',
-		];
+	public function test_the_inbound_ship_to_wins_over_the_saved_customer_address(): void {
+		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Cape Town', 'company' => 'Saved company' ] );
 
 		$order = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
 
-		self::assertSame( 'BUYER-002', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
+		self::assertSame( 'BUYER-001', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
+		self::assertSame( [ 'shipping_company' ], array_keys( $order->props ), 'only known shipping props are written' );
+		self::assertSame( 'Head office', $order->props['shipping_company'] );
+	}
+
+	public function test_the_saved_customer_address_is_the_last_legacy_candidate(): void {
+		$GLOBALS['pow_test_wc']->customer = new WC_Customer( [ 'city' => 'Cape Town', 'company' => 'Saved company' ] );
+
+		$order = wc_get_order( $this->quotes->create_for_session( $this->session( [ 'ship_to' => null ] ), $this->partner(), $this->lines() ) );
+
+		self::assertSame( '', $order->get_meta( QuoteOrder::META_DELIVERY_CODE ) );
+		self::assertSame( [ 'shipping_company', 'shipping_city' ], array_keys( $order->props ) );
 		self::assertSame( 'Cape Town', $order->props['shipping_city'] );
-		self::assertSame( [ 'shipping_company', 'shipping_city' ], array_keys( $order->props ), 'only known shipping props are written' );
 	}
 
 	/**
@@ -918,10 +1070,11 @@ final class QuoteOrderCreateTest extends TestCase {
 	}
 
 	/**
-	 * PayExit owns sessions.order_id for a paid checkout and leaves the
-	 * session active until payment confirms; a quote must not overwrite
-	 * that link. The order it does not recognise is not one of ours
-	 * either, so a quote is still created — just not written back.
+	 * link_quote_if_empty() is now the only writer of sessions.order_id, and
+	 * it never overwrites one: a row that already names an order was linked
+	 * by an earlier return, or carries a historical paid-exit link. The
+	 * order it does not recognise is not one of ours either, so a quote is
+	 * still created — just not written back.
 	 */
 	public function test_an_existing_order_link_is_not_overwritten(): void {
 		$order_id = $this->quotes->create_for_session( $this->session( [ 'order_id' => 777 ] ), $this->partner(), $this->lines() );
@@ -984,7 +1137,7 @@ final class QuoteOrderCreateTest extends TestCase {
 
 namespace POW\Tests\QuoteShipping {
 
-final class Boundary { public static string $failure = ''; public static array $note_filters = []; }
+final class Boundary { public static string $failure = ''; public static array $note_filters = []; public static array $hooks = []; }
 
 /** Native shipping API double, private to these tests. No global Woo stub changes. */
 final class ShippingItem {
@@ -1127,8 +1280,13 @@ function get_mangled_object_vars( object $order ): array {
 
 function sanitize_textarea_field( string $value ): string { return trim( strip_tags( $value ) ); }
 function wp_slash( string $value ): string { return addslashes( $value ); }
-function add_filter( string $hook, callable $callback, int $priority = 10, int $args = 1 ): void { Boundary::$note_filters[spl_object_id( $callback )] = $callback; }
+function add_filter( string $hook, callable $callback, int $priority = 10, int $args = 1 ): void {
+	Boundary::$hooks[] = [ 'filter', $hook ];
+	// Only the note boundary is replayed on save; an admin registration must never be mistaken for one.
+	if ( 'wp_insert_post_data' === $hook ) { Boundary::$note_filters[spl_object_id( $callback )] = $callback; }
+}
 function remove_filter( string $hook, callable $callback, int $priority = 10 ): void { unset( Boundary::$note_filters[spl_object_id( $callback )] ); }
+function add_action( string $hook, callable $callback, int $priority = 10, int $args = 1 ): void { Boundary::$hooks[] = [ 'action', $hook ]; }
 }
 
 namespace POW\Tests\ReturnShipping {

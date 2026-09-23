@@ -17,6 +17,14 @@ final class Plugin {
 	public function enabled(): bool { return true; }
 }
 
+/** Stands in for POW\Sessions\Current so the Chooser resolves its visit through this namespace's actor, token and store doubles. */
+final class Current {
+	public function __construct( private mixed $sessions ) {}
+	public function visit( array $statuses = [ Session::ACTIVE, Session::ORDERED ] ): ?Session {
+		return is_user_logged_in() ? $this->sessions->find_for_login( get_current_user_id(), wp_get_session_token(), $statuses ) : null;
+	}
+}
+
 final class ReturnEndpoint {
 	public int $handoffs = 0;
 	public function handle(): void { ++$this->handoffs; }
@@ -79,7 +87,7 @@ DEFAULTS
 
 	$source = file_get_contents( dirname( __DIR__, 2 ) . '/includes/Addresses/Chooser.php' );
 	$source = replace_once( $source, 'namespace POW\\Addresses;', 'namespace ' . __NAMESPACE__ . ';' );
-	foreach ( [ 'use POW\\Http\\ReturnEndpoint;', 'use POW\\Plugin;', 'use POW\\Support\\Templates;', 'use POW\\Sessions\\ConsentFence;' ] as $import ) { $source = replace_once( $source, $import, '' ); }
+	foreach ( [ 'use POW\\Http\\ReturnEndpoint;', 'use POW\\Plugin;', 'use POW\\Support\\Templates;', 'use POW\\Sessions\\ConsentFence;', 'use POW\\Sessions\\Current;' ] as $import ) { $source = replace_once( $source, $import, '' ); }
 	$source = replace_once( $source, 'use POW\\Partners\\Registry;', '' );
 	$source = replace_once( $source, 'use POW\\Sessions\\{Session, Store};', 'use POW\\Sessions\\Session;' );
 	eval( substr( $source, 5 ) );
@@ -95,6 +103,9 @@ use POW\Sessions\Session;
 use POW\Tests\DeliveryChooserFlow\{Chooser, Confirmation, Plugin, PolicyDatabase, ReturnEndpoint, State, Templates};
 
 final class DeliveryChooserFlowTest extends TestCase {
+	/** The same two keys the reused fixture declares as VISIT_KEY and SIBLING_KEY; they are literals here because that namespace's constants only exist once load_flow_source() has run. */
+	private const KEY = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
+	private const OTHER_KEY = 'pow_00112233445566778899aabbccdd';
 	private State $state;
 	private Confirmation $model;
 	private Chooser $chooser;
@@ -109,14 +120,14 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$GLOBALS['wpdb'] = new PolicyDatabase();
 		$this->state = new State();
 		$GLOBALS['delivery_chooser_flow_state'] = $this->state;
-		$this->state->registry->partner = Partner::from_row( [ 'id' => 7, 'owner_user_id' => 20, 'status' => 'active', 'emit_delivery_line' => true ] );
-		$this->state->store->session = Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 99, 'wp_session_token' => 'exact-token', 'status' => 'active', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] );
+		$this->state->registry->partner = Partner::from_row( [ 'id' => 7, 'owner_user_id' => 99, 'status' => 'active', 'emit_delivery_line' => true ] );
+		$this->state->store->session = Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 99, 'wp_session_token' => 'exact-token', 'status' => 'active', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ), 'wc_session_key' => self::KEY ] );
 		$address = [ 'first_name' => 'Ada', 'last_name' => 'Buyer', 'company' => 'Company', 'address_1' => '1 Main St', 'address_2' => '', 'city' => 'Pretoria', 'state' => 'GP', 'postcode' => '0001', 'country' => 'ZA', 'phone' => '' ];
-		$depot = [ 'schema' => 1, 'partner_id' => 7, 'storage_user_id' => 20, 'provider' => 'native', 'key' => 'depot', 'code' => 'DEPOT', 'address' => $address, 'label' => 'Depot', 'source' => 'company_book', 'book_revision' => 1, 'entry_fingerprint' => str_repeat( 'a', 64 ) ];
+		$depot = [ 'schema' => 1, 'partner_id' => 7, 'storage_user_id' => 99, 'provider' => 'native', 'key' => 'depot', 'code' => 'DEPOT', 'address' => $address, 'label' => 'Depot', 'source' => 'company_book', 'book_revision' => 1, 'entry_fingerprint' => str_repeat( 'a', 64 ) ];
 		$coast = array_replace( $depot, [ 'key' => 'coast', 'code' => 'COAST', 'label' => 'Coast', 'address' => array_replace( $address, [ 'city' => 'Durban' ] ), 'entry_fingerprint' => str_repeat( 'b', 64 ) ] );
 		$this->state->resolver->choices = [ $depot, $coast ];
 		$s = $this->state;
-		$this->model = new Confirmation( $s->registry, $s->store, $s->address, $s->estimate, $s->policy, $s->resolver, $s->mapper );
+		$this->model = new Confirmation( $s->registry, $s->store, $s->address, $s->estimate, $s->resolver, $s->mapper );
 		$this->return_endpoint = new ReturnEndpoint();
 		$this->chooser = new Chooser( new Plugin(), $s->registry, $s->store, $this->model, $this->return_endpoint );
 		Templates::$view = null;
@@ -267,6 +278,24 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$refused = $this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:coast', 'review_digest' => $view['review_digest'] ] );
 		self::assertSame( 'delivery_acknowledgement_required', $refused['error']->get_error_code() );
 		$this->assert_no_consent_or_handoff();
+	}
+
+	/** Two employees punch in on one login, so a cart mutation carrying another visit's key must leave this visit's consent alone. */
+	public function test_a_cart_mutation_in_another_visit_does_not_clear_this_visits_consent(): void {
+		$view = $this->initial_review();
+		$this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:depot', 'rates' => [ 0 => 'flat:1' ], 'review_digest' => $view['review_digest'] ] );
+		$accepted = $this->state->store->session->delivery_confirmation_json;
+		self::assertNotNull( $accepted, 'The submitted review must have stored consent.' );
+
+		$this->state->session->key = self::OTHER_KEY;
+		$this->chooser->invalidate_changed_cart();
+		self::assertSame( $accepted, $this->state->store->session->delivery_confirmation_json );
+		self::assertSame( 0, $this->state->store->invalidations );
+
+		$this->state->session->key = self::KEY;
+		$this->chooser->invalidate_changed_cart();
+		self::assertNull( $this->state->store->session->delivery_confirmation_json );
+		self::assertSame( 1, $this->state->store->invalidations );
 	}
 
 	/** Runs the real Store expiry SQL; only database I/O and native token cleanup are replaced. */
