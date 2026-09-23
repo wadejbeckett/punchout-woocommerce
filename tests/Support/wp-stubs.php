@@ -229,6 +229,25 @@ if ( ! function_exists( 'wp_strip_all_tags' ) ) {
 	}
 }
 
+if ( ! function_exists( 'get_custom_logo' ) ) {
+	/** The site logo markup a test declared in pow_test_custom_logo; none by default. */
+	function get_custom_logo(): string { // phpcs:ignore
+		return (string) ( $GLOBALS['pow_test_custom_logo'] ?? '' );
+	}
+}
+
+if ( ! function_exists( 'wp_kses_post' ) ) {
+	function wp_kses_post( $html ): string { // phpcs:ignore
+		return strip_tags( (string) $html, '<a><img><span><bdi><strong><br>' );
+	}
+}
+
+if ( ! function_exists( 'language_attributes' ) ) {
+	function language_attributes(): void { // phpcs:ignore
+		echo 'lang="en-ZA"';
+	}
+}
+
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 	define( 'HOUR_IN_SECONDS', 3600 );
 }

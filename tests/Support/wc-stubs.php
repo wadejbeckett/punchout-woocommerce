@@ -11,7 +11,7 @@
  * files claiming one symbol makes the winning body depend on require
  * order): this file owns the WooCommerce surface only —
  * get_woocommerce_currency, WC, wc_create_order, wc_get_order, wc_get_orders,
- * wc_get_product and the classes WC_Order, WC_Order_Item_Product,
+ * wc_get_product, wc_price and the classes WC_Order, WC_Order_Item_Product,
  * WC_Product, WC_Customer and the WC() container. The WordPress surface,
  * apply_filters and WP_Error included, belongs to Support/wp-stubs.php,
  * which loads first. Check the other file before adding anything to
@@ -26,6 +26,30 @@ declare( strict_types = 1 );
 if ( ! function_exists( 'get_woocommerce_currency' ) ) {
 	function get_woocommerce_currency(): string { // phpcs:ignore
 		return 'ZAR';
+	}
+}
+
+if ( ! function_exists( 'wc_price' ) ) {
+	/**
+	 * The markup WooCommerce 11.1 produces for the ZA locale (left_space).
+	 * Separators and format come from pow_test_price_* globals; the last
+	 * call's arguments are recorded in pow_test_wc_price_args.
+	 */
+	function wc_price( $price, array $args = [] ): string { // phpcs:ignore
+		$GLOBALS['pow_test_wc_price_args'] = $args;
+		$args   = array_merge(
+			[
+				'currency'           => 'ZAR',
+				'decimal_separator'  => $GLOBALS['pow_test_price_decimal_sep'] ?? ',',
+				'thousand_separator' => $GLOBALS['pow_test_price_thousand_sep'] ?? ' ',
+				'decimals'           => 2,
+				'price_format'       => $GLOBALS['pow_test_price_format'] ?? '%1$s&nbsp;%2$s',
+			],
+			$args
+		);
+		$symbol = 'ZAR' === $args['currency'] ? '&#82;' : (string) $args['currency'];
+		$number = number_format( (float) $price, (int) $args['decimals'], (string) $args['decimal_separator'], (string) $args['thousand_separator'] );
+		return '<span class="woocommerce-Price-amount amount"><bdi>' . sprintf( (string) $args['price_format'], '<span class="woocommerce-Price-currencySymbol">' . $symbol . '</span>', $number ) . '</bdi></span>';
 	}
 }
 
