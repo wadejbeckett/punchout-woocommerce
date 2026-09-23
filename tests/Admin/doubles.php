@@ -47,8 +47,11 @@ namespace {
     if(str_contains($sql,'WHERE sender_domain') && $row['sender_domain']===$args[0] && $row['sender_identity']===$args[1])return $row;
    }return null;
   }
+  /** @var list<string> The partners table's columns, as SHOW COLUMNS reports them. */
+  public array $columns=['id','name','status','visit_endpoints'];
   public function get_results(string $key,string $format): array {
    [$sql,$args]=$this->queries[$key]??[$key,[]];$this->last_error='';
+   if(str_starts_with($sql,'SHOW COLUMNS'))return array_map(fn($c)=>['Field'=>$c],$this->columns);
    if(str_contains($sql,'WHERE partner_id')) {if(!$this->locks)throw new LogicException('Unlocked sweep');$this->last_error=$this->fail_sessions?'Injected session failure':'';return [];}
    // The owner lookup reads two rows on purpose: a second connection sharing the account is an ambiguity the registry refuses.
    if(str_contains($sql,'WHERE owner_user_id'))return array_slice(array_values(array_filter($this->rows,fn($r)=>$r['owner_user_id']===$args[0])),0,2);

@@ -291,6 +291,16 @@ namespace {
 			self::assertSame(1,$GLOBALS['pow_test_nocache_headers']);
 			self::assertSame(['Cache-Control: no-store, private, max-age=0','Referrer-Policy: no-referrer'],$GLOBALS['pow_account_test']['headers']);
 		}
+		/** The owner reads which My Account pages the store opened for its visits; it cannot change them here. */
+		public function test_summary_names_the_account_pages_a_visit_may_open(): void {
+			$this->seed(['visit_endpoints'=>'bulkorder,purchase-lists']); $view=$this->invoke('view_vars');
+			self::assertSame('bulkorder, purchase-lists',$view['connection']['visit_endpoints']);
+			$html=Templates::render('account/integration',$view);
+			self::assertStringContainsString('My Account pages open during a visit',$html); self::assertStringContainsString('<code>bulkorder, purchase-lists</code>',$html);
+			self::assertStringNotContainsString('name="visit_endpoints"',$html);
+			$this->seed(); $html=Templates::render('account/integration',$this->invoke('view_vars'));
+			self::assertStringContainsString('My Account pages open during a visit</th><td><code>None</code>',$html);
+		}
 		public function test_another_owners_connection_is_not_in_view(): void {
 			$this->seed(['owner_user_id'=>8]); $view=$this->invoke('view_vars');
 			self::assertSame('none',$view['state']); self::assertSame([],$view['connection']);

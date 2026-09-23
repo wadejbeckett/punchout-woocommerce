@@ -152,6 +152,25 @@ final class AdminActionsNative {
 				$r = $this->call( 'associate_partner', $f['id'], [ 'owner_user_id' => $existing['owner'] ], 'POST', $existing['owner'] );
 				$this->check( 403 === $r->args['response'] );
 			} );
+			$this->case( 'the My Account list saves from real checkboxes and the name box, refuses payment pages and malformed names, and a new connection starts with the dashboard', function () {
+				$f = $this->fixture();
+				$this->check( 'dashboard' === $this->registry->find( $f['id'] )->visit_endpoints );
+				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '', 'dashboard', 'orders', 'late-page' ] ] );
+				$this->check( 'dashboard,orders,late-page' === $this->registry->find( $f['id'] )->visit_endpoints );
+				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '', 'dashboard', 'payment-methods' ] ] );
+				$this->check( 'dashboard,orders,late-page' === $this->registry->find( $f['id'] )->visit_endpoints );
+				$this->check( str_contains( (string) wp_json_encode( get_transient( 'pow_notice_' . $this->admin ) ), 'never pays on site' ) );
+				$r = $this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ 'x' => [ 'dashboard' ] ] ] );
+				$this->check( 400 === ( $r->args['response'] ?? 0 ) );
+				// The form's name box posts one more entry of the same list.
+				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '', 'dashboard', 'orders', 'typed-page' ] ] );
+				$this->check( 'dashboard,orders,typed-page' === $this->registry->find( $f['id'] )->visit_endpoints );
+				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '', 'dashboard', 'Typed Page' ] ] );
+				$this->check( 'dashboard,orders,typed-page' === $this->registry->find( $f['id'] )->visit_endpoints );
+				$this->check( str_contains( (string) wp_json_encode( get_transient( 'pow_notice_' . $this->admin ) ), 'lowercase letters, digits and hyphens' ) );
+				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '' ] ] );
+				$this->check( '' === $this->registry->find( $f['id'] )->visit_endpoints );
+			} );
 			$this->case( 'reset removes both slots and every live visit login while preserving the bound account and its book', function () {
 				$f = $this->fixture(); $old = $this->secret( $this->call( 'approve_partner', $f['id'] ) ); $overlap = $this->secret( $this->call( 'rotate_partner', $f['id'] ) );
 				// Two employees, one bound account: two visits, two login tokens, two cart keys.

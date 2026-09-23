@@ -10,17 +10,25 @@ declare( strict_types = 1 );
 
 namespace POW\Partners;
 
+use POW\Account\VisitEndpoints;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
  * One configured customer connection (buyer-side tenant).
  *
- * Immutable snapshot of a registry row; all persistence goes through Registry. `exit_policy` and `mode` are retired columns: punchout is the only exit a visit has, so `exit_policy` always reads `punchout_only` whatever the row holds, `mode` always reads the requisition default, neither is written any more, and no runtime authorization consults either.
+ * Immutable snapshot of a registry row; all persistence goes through Registry. `exit_policy` and `mode` are retired columns: punchout is the only exit a visit has, so `exit_policy` always reads `punchout_only` whatever the row holds, `mode` always reads the requisition default, neither is written any more, and no checkout decision consults either. The one reader of `exit_policy` is allows_native_checkout(), for the payment-method pages of the My Account list, and it therefore answers false for every connection.
  *
  * `status` is the lifecycle: STATUS_PENDING (self-service registration
  * submitted, awaiting an administrator — never authenticates), then
  * STATUS_ACTIVE or STATUS_DISABLED. Only STATUS_ACTIVE authenticates, so
  * anything unrecognised fails closed.
+ *
+ * `visit_endpoints` is the comma-separated list of My Account pages this
+ * connection's visits may open (`dashboard` is the account page itself),
+ * normalised by Account\VisitEndpoints on the way in and again here, so a
+ * hand-edited row holds only well-formed names. Empty keeps the whole
+ * account area closed; a new connection starts with `dashboard`.
  */
 final class Partner {
 
@@ -67,6 +75,7 @@ final class Partner {
 		public readonly string $freight_classification_domain = 'supplier',
 		public readonly string $freight_classification = 'freight',
 		public readonly string $exit_policy = 'punchout_only',
+		public readonly string $visit_endpoints = '',
 	) {}
 
 	/**
@@ -113,6 +122,8 @@ final class Partner {
 			freight_classification: $delivery['freight_classification'] ?? 'freight',
 			// Retired column: punchout is the only exit, whatever the row holds.
 			exit_policy: 'punchout_only',
+			// Absent before schema 8: an older row allows nothing.
+			visit_endpoints: VisitEndpoints::normalise( (string) ( $row['visit_endpoints'] ?? '' ) ),
 		);
 	}
 
@@ -161,6 +172,30 @@ final class Partner {
 	 */
 	public function is_owned_by( int $user_id ): bool {
 		return $user_id > 0 && $user_id === $this->owner_user_id;
+	}
+
+	/**
+	 * The My Account pages a visit of this connection may open ([] = none).
+	 * The pages that never open in a visit are left out, and so are the
+	 * payment-method pages unless the exit policy allows WooCommerce's own
+	 * checkout.
+	 *
+	 * @return list<string>
+	 */
+	public function visit_endpoint_list(): array {
+		return VisitEndpoints::listed( $this->visit_endpoints, $this->allows_native_checkout() );
+	}
+
+	/**
+	 * Whether this connection's exit policy lets a visit pay through
+	 * WooCommerce's own checkout. `exit_policy` always reads punchout_only
+	 * (see the class note), so this is false for every connection in this
+	 * release. It is asked by the My Account list only, so the payment-method
+	 * pages follow the exit policy rather than a rule of their own; checkout
+	 * itself is refused inside every visit by RouteGuard, whatever this says.
+	 */
+	public function allows_native_checkout(): bool {
+		return 'punchout_only' !== $this->exit_policy;
 	}
 
 	/**

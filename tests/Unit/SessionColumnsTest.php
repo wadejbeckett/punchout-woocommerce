@@ -14,7 +14,9 @@
  * every failed ALTER, so the only evidence a migration landed is reading the
  * table back: `Installer` must refuse to record `pow_db_version` when the
  * four columns or the three indexes are not there, and must say so once in
- * the operational log rather than fataling an admin_init.
+ * the operational log rather than fataling an admin_init. Schema eight adds
+ * one partners column, `visit_endpoints`, under the same read-back, and must
+ * not repeat schema seven's close-out of open visits.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -105,6 +107,9 @@ namespace {
 			'created', 'expires',
 		];
 
+		/** The partners columns schema eight needs; the rest of that table is not under test. */
+		public const PARTNER_COLUMNS = [ 'id', 'name', 'status', 'owner_user_id', 'sender_domain', 'sender_identity', 'visit_endpoints' ];
+
 		/** Key name => Non_unique, as SHOW INDEX answers it. */
 		public const INDEXES = [
 			'PRIMARY'         => 0,
@@ -124,6 +129,10 @@ namespace {
 		public array $columns = self::COLUMNS;
 		/** @var array<string, int> */
 		public array $indexes = self::INDEXES;
+		/** @var list<string> */
+		public array $partner_columns = self::PARTNER_COLUMNS;
+		/** How many times schema seven's open-visit close-out read the sessions table. */
+		public int $closeout_reads = 0;
 		/** @var list<string> Statements whose answer is an error rather than rows. */
 		public array $unreadable = [];
 
@@ -149,6 +158,10 @@ namespace {
 				return array_map( static fn( string $column ): array => [ 'Field' => $column, 'Type' => 'varchar(190)' ], $this->columns );
 			}
 
+			if ( str_contains( $sql, 'SHOW COLUMNS FROM fixture_pow_partners' ) ) {
+				return array_map( static fn( string $column ): array => [ 'Field' => $column, 'Type' => 'varchar(190)' ], $this->partner_columns );
+			}
+
 			if ( str_contains( $sql, 'SHOW INDEX FROM fixture_pow_sessions' ) ) {
 				$rows = [];
 				foreach ( $this->indexes as $name => $non_unique ) {
@@ -159,7 +172,7 @@ namespace {
 			}
 
 			// The v7 close-out reads the open visits; this fixture has none.
-			if ( str_contains( $sql, 'SELECT id, user_id, wp_session_token FROM fixture_pow_sessions' ) ) { return []; }
+			if ( str_contains( $sql, 'SELECT id, user_id, wp_session_token FROM fixture_pow_sessions' ) ) { ++$this->closeout_reads; return []; }
 
 			throw new LogicException( 'Unexpected read: ' . $sql );
 		}
@@ -265,7 +278,7 @@ namespace {
 		public function test_a_migration_that_landed_records_the_schema_version(): void {
 			$this->upgrade();
 
-			self::assertSame( '7', $this->recorded_version() );
+			self::assertSame( '8', $this->recorded_version() );
 			self::assertSame( [], $GLOBALS['pow_installer_log'], 'A clean upgrade says nothing.' );
 			self::assertCount( 3, $GLOBALS['pow_installer_ddl'], 'One statement per table.' );
 		}
@@ -349,19 +362,42 @@ namespace {
 			$this->db->columns = InstallerSchemaDatabase::COLUMNS;
 			$this->upgrade();
 
-			self::assertSame( '7', $this->recorded_version(), 'The retry is what a stuck version marker would have prevented.' );
+			self::assertSame( '8', $this->recorded_version(), 'The retry is what a stuck version marker would have prevented.' );
 			self::assertCount( 6, $GLOBALS['pow_installer_ddl'], 'The second run really did re-issue the schema.' );
 			self::assertCount( 1, $GLOBALS['pow_installer_log'], 'The successful retry adds no line of its own.' );
 		}
 
 		/** A recorded version is never re-migrated: the upgrade is idempotent by marker. */
 		public function test_a_current_version_marker_issues_no_schema_statement(): void {
-			$GLOBALS['pow_installer_options']['pow_db_version'] = '7';
+			$GLOBALS['pow_installer_options']['pow_db_version'] = '8';
 
 			$this->upgrade();
 
 			self::assertSame( [], $GLOBALS['pow_installer_ddl'] );
 			self::assertSame( [], $GLOBALS['pow_installer_log'] );
+		}
+
+		/**
+		 * Schema eight over a live schema-seven site: the partners column is
+		 * read back like the session columns, and the open visits schema
+		 * seven closed are left alone — a site at seven has live baskets.
+		 */
+		public function test_schema_eight_over_seven_reads_back_the_partner_column_and_keeps_open_visits(): void {
+			$GLOBALS['pow_installer_options']['pow_db_version'] = '7';
+			$this->db->partner_columns = array_values( array_diff( InstallerSchemaDatabase::PARTNER_COLUMNS, [ 'visit_endpoints' ] ) );
+
+			$this->upgrade();
+
+			self::assertSame( '7', $this->recorded_version(), 'visit_endpoints is missing, so the migration is not done' );
+			self::assertCount( 1, $GLOBALS['pow_installer_log'] );
+			self::assertStringContainsString( 'fixture_pow_partners: column visit_endpoints is missing', $GLOBALS['pow_installer_log'][0] );
+			self::assertStringContainsString( 'visit_endpoints VARCHAR(255) NOT NULL DEFAULT \'\'', $GLOBALS['pow_installer_ddl'][0] );
+
+			$this->db->partner_columns = InstallerSchemaDatabase::PARTNER_COLUMNS;
+			$this->upgrade();
+
+			self::assertSame( '8', $this->recorded_version() );
+			self::assertSame( 0, $this->db->closeout_reads, 'Schema seven\'s close-out never runs over a site already at seven' );
 		}
 
 		/** Activation answers to the same read-back as the upgrade path. */

@@ -196,17 +196,17 @@ final class CartGuardTest extends TestCase {
 	/** Simulated native boundaries; the separate native HTTP regression uses actual Woo callbacks. */
 	private function request( array $restored, ?string $add = null, int $visit = self::VISIT_A ): void {
 		$basket = $this->carts[ $visit ];
-		$this->run( $visit, static function() use ( $basket, $restored ): void { $basket->items = $restored; }, $add );
+		$this->run_request( $visit, static function() use ( $basket, $restored ): void { $basket->items = $restored; }, $add );
 	}
 
 	/** A request whose restore runs core's own saved-cart path for this visit's row. */
 	private function native_request( int $visit, ?array $session_cart = null, ?string $add = null ): void {
 		$basket = $this->carts[ $visit ];
-		$this->run( $visit, fn() => $this->hydrate( $basket, $session_cart ), $add );
+		$this->run_request( $visit, fn() => $this->hydrate( $basket, $session_cart ), $add );
 	}
 
 	/** wp_loaded: Woo restores at 10, the guard seeds at 15, Woo's form handler adds at 20. */
-	private function run( int $visit, callable $restore, ?string $add ): void {
+	private function run_request( int $visit, callable $restore, ?string $add ): void {
 		$basket = $this->carts[ $visit ];
 		$GLOBALS['pow_test_wc']->cart = $basket;
 		$actions = $GLOBALS['pow_test_cart_actions']['wp_loaded'];

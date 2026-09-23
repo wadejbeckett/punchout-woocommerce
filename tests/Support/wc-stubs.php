@@ -351,15 +351,17 @@ if ( ! class_exists( 'WC_Customer' ) ) {
 
 if ( ! class_exists( 'POW_Test_WC' ) ) {
 	/**
-	 * Stand-in for the WooCommerce singleton. Both properties are null
+	 * Stand-in for the WooCommerce singleton. Every property is null
 	 * until a test sets one, which is what a request outside the shop
-	 * context looks like.
+	 * context looks like. `query` stands for WC_Query, the endpoint map.
 	 */
 	class POW_Test_WC { // phpcs:ignore
 
 		public ?WC_Customer $customer = null;
 
 		public mixed $cart = null;
+
+		public mixed $query = null;
 	}
 }
 
