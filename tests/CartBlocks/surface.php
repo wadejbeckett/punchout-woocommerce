@@ -134,7 +134,7 @@ namespace {
 
 		public function test_restricted_keeps_native_wrapper_without_an_extra_button(): void {
 			self::assertSame( self::BLOCK, $this->render() );
-			self::assertSame( [], $GLOBALS['pow_blocks_hooks']['filter'] ?? [], 'Cart recreates its button in React: no PHP filter may rewrite the wrapper' );
+			self::assertFalse( isset( $GLOBALS['pow_blocks_hooks']['filter']['render_block_woocommerce/proceed-to-checkout-block'] ), 'Cart recreates its button in React: no PHP filter may rewrite the wrapper' );
 			self::assertSame( [ 'restricted' => true, 'label' => 'Send requisition', 'confirmUrl' => 'https://shop.example.test/punchout/confirm' ], $this->config() );
 		}
 		public function test_dependency_graph_places_filters_after_api_before_cart_hydration(): void {
@@ -205,6 +205,16 @@ namespace {
 			self::assertStringNotContainsString( 'punchout/confirm', $css, 'The return control is never hidden' );
 			self::assertStringNotContainsString( 'wc-proceed-to-checkout', $css, 'Woo wraps the return control in that container; hiding it hides the visit\'s only exit' );
 			self::assertStringNotContainsString( 'pow-return', $css );
+		}
+		public function test_a_visit_adds_the_pow_visit_body_class_for_themes_and_builders(): void {
+			self::assertContains( [ $this->surface, 'visit_body_class' ], $GLOBALS['pow_blocks_hooks']['filter']['body_class'] ?? [] );
+			self::assertSame( [ 'woocommerce-cart', 'pow-visit' ], $this->surface->visit_body_class( [ 'woocommerce-cart' ] ) );
+			$this->db->partners[ self::PARTNER_A ]['status'] = 'inactive';
+			self::assertSame( [ 'woocommerce-cart' ], $this->surface->visit_body_class( [ 'woocommerce-cart' ] ), 'A visit whose connection is switched off is not a visit to the theme either' );
+		}
+		public function test_an_ordinary_shopper_gets_no_body_class(): void {
+			$this->set_session( null );
+			self::assertSame( [ 'home' ], $this->surface->visit_body_class( [ 'home' ] ) );
 		}
 		public function test_an_ordinary_shopper_gets_no_visit_stylesheet(): void {
 			$this->set_session( null );
