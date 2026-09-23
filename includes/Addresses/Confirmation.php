@@ -44,17 +44,22 @@ final class Confirmation implements ReturnConfirmation {
 		return $this->build( $session, $partner, $input, true );
 	}
 
-	/** Only identity, offered rate IDs, notes, the optional preferred delivery date, an explicit unknown acknowledgement and the shown digest are input. review_digest covers authoritative facts, excluding buyer-authored notes and date; the stored cart_fingerprint additionally binds the sanitized submitted notes and a non-null date. */
+	/** Only identity, offered rate IDs, notes, the optional preferred delivery date, an explicit unknown acknowledgement and the shown digest are input. review_digest covers authoritative facts, excluding buyer-authored notes and date; the stored cart_fingerprint additionally binds the sanitized submitted notes and a non-null date. A missing preferred_delivery_date field means no preference; the 14-day default is display-only. */
 	public function confirm( Session $session, Partner $partner, array $input ): array|\WP_Error {
 		try {
 			if ( ! isset( $input['review_digest'] ) || ! is_string( $input['review_digest'] ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', $input['review_digest'] ) ) { return self::error( 'delivery_review_required' ); }
-			$view = $this->build( $session, $partner, $input, true );
+			$input += [ 'preferred_delivery_date' => null ];
+			$view = $this->build( $session, $partner, $input, true, true );
 			if ( $view instanceof \WP_Error ) { return $view; }
 			if ( $view['error'] instanceof \WP_Error ) { return $view['error']; }
 			if ( ! $view['can_confirm'] || ! hash_equals( $view['review_digest'], $input['review_digest'] ) ) { return self::error( 'delivery_review_required' ); }
 			if ( $view['requires_unknown_acknowledgement'] && ! in_array( $input['acknowledge_unknown'] ?? null, [ true, '1' ], true ) ) { return self::error( 'delivery_acknowledgement_required' ); }
 			// buyer_user_id is the connection's bound login, identical for every concurrent visit of this company: session_id is the only discriminator left in the record. Naming the person who agreed belongs to the visit's stored buyer identity, not here, because this JSON's field set is validated exactly.
-			$confirmation = [ 'schema' => DeliveryData::CONFIRMATION_SCHEMA, 'session_id' => $session->id, 'buyer_user_id' => $session->user_id, 'choice_hash' => DeliveryData::fingerprint( $view['selected_choice'] ), 'cart_fingerprint' => $view['_confirmation_fingerprint'], 'policy_fingerprint' => $view['_guard']['policy'], 'delivery' => $view['delivery'], 'notes' => $view['notes'], 'preferred_delivery_date' => $view['preferred_delivery_date'], 'confirmed_at' => time() ];
+			// Schema 2 only when a date was chosen: a dateless consent stays schema 1, which 0.4.7 and earlier can still read after a rollback.
+			$date = $view['preferred_delivery_date'];
+			$confirmation = [ 'schema' => null === $date ? 1 : DeliveryData::CONFIRMATION_SCHEMA, 'session_id' => $session->id, 'buyer_user_id' => $session->user_id, 'choice_hash' => DeliveryData::fingerprint( $view['selected_choice'] ), 'cart_fingerprint' => $view['_confirmation_fingerprint'], 'policy_fingerprint' => $view['_guard']['policy'], 'delivery' => $view['delivery'], 'notes' => $view['notes'] ];
+			if ( null !== $date ) { $confirmation['preferred_delivery_date'] = $date; }
+			$confirmation['confirmed_at'] = time();
 			// Decode our own candidate before any write; virtual alone uses a NULL choice.
 			$confirmation = DeliveryData::confirmation( json_encode( $confirmation, JSON_THROW_ON_ERROR ), $session->id, $session->user_id, $view['selected_choice'] );
 			return $this->registry->with_partner_lock( $partner->id, function () use ( $session, $partner, $view, $confirmation ) {
@@ -160,18 +165,19 @@ final class Confirmation implements ReturnConfirmation {
 	/** The key of the basket this request is actually holding, which is what a visit's consent has to be about. */
 	private static function live_cart_key(): string { return (string) WC()->session->get_customer_id(); }
 
-	private function build( Session $session, Partner $partner, array $input, bool $invalidate ): array|\WP_Error {
+	/** $consent is true only for confirm(): an invalid date then refuses outright, while a review still applies the posted address and rates and shows the date error. */
+	private function build( Session $session, Partner $partner, array $input, bool $invalidate, bool $consent = false ): array|\WP_Error {
 		++$this->refresh_depth;
 		try {
 			$previous_notes = '';
-			// false: no usable previous value. null: the buyer left the date empty.
+			// false: no previous confirmation. null: none chosen (schema 1 or cleared).
 			$previous_date = false;
 			$native_before = $this->native->prepare( $session );
 			$state = $this->registry->with_partner_lock( $partner->id, function () use ( $session, $partner, $invalidate, $native_before, &$previous_notes, &$previous_date ) {
 				$state = $this->authorized_locked( $session, $partner );
 				if ( $state instanceof \WP_Error ) { return $state; }
 				if ( ! $this->native->check_locked( $state[0], $native_before ) ) { return self::error( 'delivery_review_required' ); }
-				try { $previous = $state[0]->delivery_confirmation(); $previous_notes = $previous['notes'] ?? ''; if ( null !== $previous ) { $previous_date = array_key_exists( 'preferred_delivery_date', $previous ) ? $previous['preferred_delivery_date'] : false; } } catch ( \Throwable $error ) { /* Corrupt prior consent grants nothing; explicit review can replace it. */ }
+				try { $previous = $state[0]->delivery_confirmation(); $previous_notes = $previous['notes'] ?? ''; if ( null !== $previous ) { $previous_date = $previous['preferred_delivery_date'] ?? null; } } catch ( \Throwable $error ) { /* Corrupt prior consent grants nothing; explicit review can replace it. */ }
 				if ( $invalidate && null !== $state[0]->delivery_confirmation_json ) {
 					if ( ! $this->clear_locked( $state[0] ) ) { return self::error( 'delivery_recovery_failed' ); }
 					return $this->authorized_locked( $state[0], $state[1] );
@@ -202,7 +208,12 @@ final class Confirmation implements ReturnConfirmation {
 			elseif ( false !== $previous_date && ( null === $previous_date || $previous_date >= self::date_from_today( 1 ) ) ) { $date_input = $previous_date; }
 			else { $date_input = self::date_from_today( 14 ); }
 			$date = self::preferred_date( $date_input, $invalidate );
-			if ( $date instanceof \WP_Error ) { return $date; }
+			// A review ('Update delivery options') keeps the posted address and rates and reports the date on the view; consent and a return refuse outright.
+			$date_error = null;
+			if ( $date instanceof \WP_Error ) {
+				if ( $consent || ! $invalidate ) { return $date; }
+				$date_error = $date; $date = null;
+			}
 			if ( ! $physical ) { $date = null; }
 			$view = self::empty_view(); $view['choices'] = $choices; $view['notes'] = $notes; $view['preferred_delivery_date'] = $date; $view['preferred_delivery_date_min'] = self::date_from_today( 1 );
 			$choice = null;
@@ -249,6 +260,8 @@ final class Confirmation implements ReturnConfirmation {
 			if ( $before_map !== $guard['cart'] || 'ZAR' !== $quote['delivery']['currency'] ) { return self::error(); }
 			$view = array_replace( $view, $mapped, $quote, [ 'merchandise_total_cents' => $mapped['total_cents'], 'total_cents' => self::total( $mapped['total_cents'], $quote['delivery'] ), '_guard' => $guard ] );
 			$view['collection'] = DeliveryData::is_collection( $quote['delivery'] );
+			// After the rate block: set before the selection-error return above, it would skip the rates.
+			if ( null !== $date_error ) { $view['error'] = $date_error; $view['can_confirm'] = false; }
 			// The date stays out of the review digest, so changing it needs no 'Update delivery options'; the stored fingerprint binds it.
 			$view['review_digest'] = self::digest( $mapped, $choice, $quote['delivery'], null, $guard );
 			$view['_confirmation_fingerprint'] = self::digest( $mapped, $choice, $quote['delivery'], $notes, $guard, $date );

@@ -641,6 +641,35 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertStringContainsString( 'Delivery method: Express; Collect second parcel.', $order->notes[0] );
 	}
 
+	/** A dateless Quote (schema 1, or schema 2 with no date) must not gain a preferred date between creation and attach, in either attach path. */
+	public function test_stray_date_meta_on_a_dateless_quote_fails_attach(): void {
+		foreach ( [ 'schema 1' => $this->confirmed_lines(), 'schema 2 without a date' => $this->dated_lines( null ) ] as $case => $lines ) {
+			// (a) Same instance: the prepared_quotes cache from creation.
+			$quotes = $this->shipping_quotes();
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+			self::assertGreaterThan( 0, $id, $case );
+			wc_get_order( $id )->update_meta_data( QuoteOrder::META_PREFERRED_DELIVERY_DATE, '2026-12-25' );
+			$quotes->attach_poom( $id, '<cXML/>' );
+			self::assertSame( 'cancelled', wc_get_order( $id )->get_status(), $case . ': prepared path' );
+			// (b) A fresh instance: the snapshot rebuilt from the stored confirmation.
+			$id = $this->shipping_quotes()->create_for_session( $this->session(), $this->partner(), $lines );
+			self::assertGreaterThan( 0, $id, $case );
+			wc_get_order( $id )->update_meta_data( QuoteOrder::META_PREFERRED_DELIVERY_DATE, '2026-12-25' );
+			$this->shipping_quotes()->attach_poom( $id, '<cXML/>' );
+			self::assertSame( 'cancelled', wc_get_order( $id )->get_status(), $case . ': snapshot path' );
+			// Controls: without the stray meta both paths still attach, and no empty date meta is ever written.
+			$quotes = $this->shipping_quotes();
+			$id = $quotes->create_for_session( $this->session(), $this->partner(), $lines );
+			$quotes->attach_poom( $id, '<cXML/>' );
+			self::assertSame( Status::SLUG, wc_get_order( $id )->get_status(), $case . ': prepared control' );
+			self::assertFalse( wc_get_order( $id )->meta_exists( QuoteOrder::META_PREFERRED_DELIVERY_DATE ), $case );
+			$id = $this->shipping_quotes()->create_for_session( $this->session(), $this->partner(), $lines );
+			$this->shipping_quotes()->attach_poom( $id, '<cXML/>' );
+			self::assertSame( Status::SLUG, wc_get_order( $id )->get_status(), $case . ': snapshot control' );
+			self::assertFalse( wc_get_order( $id )->meta_exists( QuoteOrder::META_PREFERRED_DELIVERY_DATE ), $case );
+		}
+	}
+
 	public function test_bought_by_line_shows_the_preferred_delivery_date(): void {
 		$quotes = $this->shipping_quotes();
 		$order = wc_get_order( $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() ) );
