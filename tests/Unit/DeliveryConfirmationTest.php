@@ -63,7 +63,9 @@ final class QuoteAddress {
 final class PoomMapper {
 	public mixed $callback = null;
 	public int $price = 1000;
-	public function from_cart(Partner $p):array{\PHPUnit\Framework\TestCase::assertFalse(state()->registry->locked);if($this->callback){($this->callback)();}return ['items'=>[['supplier_part_id'=>'SKU','quantity'=>2.0,'unit_price_cents'=>$this->price,'description'=>'Goods','uom'=>'EA']],'total_cents'=>$this->price*2,'currency'=>state()->currency,'skipped'=>[]];}
+	public ?array $items = null;
+	public ?int $total = null;
+	public function from_cart(Partner $p):array{\PHPUnit\Framework\TestCase::assertFalse(state()->registry->locked);if($this->callback){($this->callback)();}return ['items'=>$this->items??[['supplier_part_id'=>'SKU','quantity'=>2.0,'unit_price_cents'=>$this->price,'description'=>'Goods','uom'=>'EA']],'total_cents'=>$this->total??$this->price*2,'currency'=>state()->currency,'skipped'=>[]];}
 }
 final class Product {
 	public bool $physical = true;
@@ -365,8 +367,8 @@ final class DeliveryConfirmationTest extends TestCase {
 	}
 	public function test_preferred_date_before_tomorrow_is_refused_on_review_and_submit():void{
 		foreach([self::day(0),'2020-01-01','2026-02-30','07/10/2026',['2026-10-07']] as $date){
-			$result=$this->preview(['preferred_delivery_date'=>$date]);
-			self::assertInstanceOf(WP_Error::class,$result);self::assertSame('delivery_date_invalid',$result->get_error_code());
+			$view=$this->preview(['preferred_delivery_date'=>$date]);
+			self::assertTrue(is_array($view));self::assertSame('delivery_date_invalid',$view['error']->get_error_code());self::assertFalse($view['can_confirm']);
 			$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>$date]));
 			self::assertInstanceOf(WP_Error::class,$result);self::assertSame('delivery_date_invalid',$result->get_error_code());
 		}
@@ -397,8 +399,8 @@ final class DeliveryConfirmationTest extends TestCase {
 	public function test_cleared_date_confirms_as_null():void{
 		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>'']));
 		self::assertTrue(is_array($result));
-		self::assertTrue(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
-		self::assertNull($result['delivery_confirmation']['preferred_delivery_date']);
+		self::assertSame(1,$result['delivery_confirmation']['schema']);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
 		$returned=$this->returned();self::assertTrue(is_array($returned));self::assertNull($returned['delivery_preferred_date']);
 		// A cleared date stays cleared on the next review instead of returning to the default.
 		self::assertNull($this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
@@ -429,12 +431,17 @@ final class DeliveryConfirmationTest extends TestCase {
 		self::assertTrue(is_array($returned));
 		self::assertSame($date,$returned['delivery_preferred_date']);
 		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
-		// A new review of the same stale date is refused; the default replaces it.
-		self::assertInstanceOf(WP_Error::class,$this->preview(['preferred_delivery_date'=>$date]));
+		// The next review drops the stale stored date and offers the default instead.
 		self::assertSame(self::day(14,'Pacific/Kiritimati'),$this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
+		// Posting the same stale date is refused on the review itself, with Submit disabled and no date carried.
+		$v=$this->preview(['preferred_delivery_date'=>$date]);
+		self::assertTrue(is_array($v));
+		self::assertSame('delivery_date_invalid',$v['error']->get_error_code());
+		self::assertFalse($v['can_confirm']);
+		self::assertNull($v['preferred_delivery_date']);
 	}
 	public function test_tampered_prepared_date_fails_the_final_guard():void{
-		$this->confirm($this->input());$r=$this->returned();self::assertTrue(is_array($r));
+		$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(3)]));$r=$this->returned();self::assertTrue(is_array($r));
 		$r['delivery_preferred_date']='2099-01-01';
 		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
 		unset($r['delivery_preferred_date']);
@@ -447,8 +454,58 @@ final class DeliveryConfirmationTest extends TestCase {
 		$result=$this->confirm($i);
 		self::assertTrue(is_array($result));
 		self::assertNull($this->s->store->session->delivery_choice_json);
-		self::assertNull($result['delivery_confirmation']['preferred_delivery_date']);
+		self::assertSame(1,$result['delivery_confirmation']['schema']);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
 		self::assertNull($this->returned()['delivery_preferred_date']);
+	}
+	/** An older template override posts no date field: that is no preference, never the 14-day default the review only displays. */
+	public function test_confirm_without_the_date_field_stores_no_preference():void{
+		$i=$this->input();
+		self::assertFalse(array_key_exists('preferred_delivery_date',$i));
+		$result=$this->confirm($i);
+		self::assertTrue(is_array($result));
+		self::assertSame(1,$result['delivery_confirmation']['schema']);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
+		$stored=json_decode($this->s->store->session->delivery_confirmation_json,true);
+		self::assertSame(1,$stored['schema']);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$stored));
+		$returned=$this->returned();self::assertTrue(is_array($returned));
+		self::assertNull($returned['delivery_preferred_date']);
+	}
+	public function test_the_fourteen_day_default_is_display_only():void{
+		self::assertSame(self::day(14),$this->preview()['preferred_delivery_date']);
+		self::assertSame(0,$this->s->store->writes);
+	}
+	/** 'Update delivery options' with an invalid date still applies the posted address and rate, and only withholds Submit. */
+	public function test_invalid_date_on_update_keeps_the_new_address_and_rate():void{
+		$second=$this->s->resolver->choices[0];
+		$second['key']='depot2';$second['label']='Depot 2';$second['code']='DEPOT2';$second['address']['address_1']='2 Side St';$second['entry_fingerprint']=str_repeat('c',64);
+		$this->s->resolver->choices[]=$second;
+		$pk=$this->preview()['packages'][0]['package_key'];
+		$v=$this->preview(['provider'=>'native','key'=>'depot2','rates'=>[$pk=>'flat:2'],'preferred_delivery_date'=>self::day(0)]);
+		self::assertTrue(is_array($v));
+		self::assertSame('delivery_date_invalid',$v['error']->get_error_code());
+		self::assertSame('depot2',$v['selected_choice']['key']);
+		self::assertSame('flat:2',$v['packages'][0]['selected_rate_id']);
+		self::assertFalse($v['can_confirm']);
+		self::assertSame(0,$this->s->store->writes);
+		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(0)]));
+		self::assertInstanceOf(WP_Error::class,$result);
+		self::assertSame('delivery_date_invalid',$result->get_error_code());
+	}
+	/** The review template's per-line totals must add up to the merchandise total the view (and the cXML) carries. */
+	public function test_line_totals_add_up_to_the_merchandise_total():void{
+		$this->s->mapper->items=[
+			['supplier_part_id'=>'A','quantity'=>3,'unit_price_cents'=>53995,'description'=>'A','uom'=>'EA'],
+			['supplier_part_id'=>'B','quantity'=>'1.5','unit_price_cents'=>333,'description'=>'B','uom'=>'EA'],
+			['supplier_part_id'=>'C','quantity'=>1,'unit_price_cents'=>1,'description'=>'C','uom'=>'EA'],
+		];
+		// A literal: Confirmation::map throws if its own rounding disagrees.
+		$this->s->mapper->total=162486;
+		$v=$this->preview();
+		self::assertTrue(is_array($v));self::assertNull($v['error']);
+		self::assertSame($v['merchandise_total_cents'],array_sum(array_map([\POW\Addresses\ReviewFormat::class,'line_total_cents'],$v['items'])));
+		self::assertSame(162486,$v['merchandise_total_cents']);
 	}
 	public function test_collection_follows_the_selected_native_pickup_rate():void{
 		self::assertFalse($this->preview()['collection']);
