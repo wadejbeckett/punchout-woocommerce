@@ -150,11 +150,16 @@ final class DeliveryEstimate {
 		} catch ( \Throwable $error ) { throw self::invalid(); }
 	}
 
-	/** One typed, quantity-one freight line; never a product or native fee. Quote item integration consumes the same rates separately. */
+	/**
+	 * One typed, quantity-one freight line; never a product or native fee. Quote item integration consumes the same rates separately.
+	 *
+	 * The Description is the selected shipping method title(s) as the store owner wrote them, including any delivery period, as plain text joined with '; ' in package order; 'Delivery' when that is empty.
+	 */
 	public static function poom_line( array $delivery ): ?array {
 		self::validate_delivery( $delivery );
 		if ( ! $delivery['emit'] ) { return null; }
-		return [ 'line_type' => 'freight', 'quantity' => 1, 'supplier_part_id' => $delivery['freight']['supplier_part_id'], 'aux_id' => '', 'unit_price_cents' => $delivery['amount_cents'], 'description' => __( 'Delivery', 'punchout-woocommerce' ), 'uom' => $delivery['freight']['uom'], 'classification_domain' => $delivery['freight']['classification_domain'], 'classification' => $delivery['freight']['classification'] ];
+		$label = DeliveryData::method_label( $delivery );
+		return [ 'line_type' => 'freight', 'quantity' => 1, 'supplier_part_id' => $delivery['freight']['supplier_part_id'], 'aux_id' => '', 'unit_price_cents' => $delivery['amount_cents'], 'description' => '' !== $label ? $label : __( 'Delivery', 'punchout-woocommerce' ), 'uom' => $delivery['freight']['uom'], 'classification_domain' => $delivery['freight']['classification_domain'], 'classification' => $delivery['freight']['classification'] ];
 	}
 
 	private static function result( array $delivery, array $packages, Partner $partner ): array {

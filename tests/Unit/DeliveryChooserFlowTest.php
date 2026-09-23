@@ -86,7 +86,7 @@ DEFAULTS
 	load_source(); // Existing loader now binds the actual Confirmation to this namespace.
 
 	$source = file_get_contents( dirname( __DIR__, 2 ) . '/includes/Addresses/Chooser.php' );
-	$source = replace_once( $source, 'namespace POW\\Addresses;', 'namespace ' . __NAMESPACE__ . ';' );
+	$source = replace_once( $source, 'namespace POW\\Addresses;', 'namespace ' . __NAMESPACE__ . '; use POW\\Addresses\\DeliveryData;' );
 	foreach ( [ 'use POW\\Http\\ReturnEndpoint;', 'use POW\\Plugin;', 'use POW\\Support\\Templates;', 'use POW\\Sessions\\ConsentFence;', 'use POW\\Sessions\\Current;' ] as $import ) { $source = replace_once( $source, $import, '' ); }
 	$source = replace_once( $source, 'use POW\\Partners\\Registry;', '' );
 	$source = replace_once( $source, 'use POW\\Sessions\\{Session, Store};', 'use POW\\Sessions\\Session;' );
@@ -296,6 +296,30 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$this->chooser->invalidate_changed_cart();
 		self::assertNull( $this->state->store->session->delivery_confirmation_json );
 		self::assertSame( 1, $this->state->store->invalidations );
+	}
+
+	public function test_preferred_date_is_posted_through_and_kept_on_a_refused_form(): void {
+		$first = $this->initial_review();
+		$date = ( new DateTimeImmutable( 'today', wp_timezone() ) )->modify( '+5 days' )->format( 'Y-m-d' );
+		$view = $this->request( [ 'choice' => 'native:depot', 'preferred_delivery_date' => $date ] );
+		self::assertNull( $view['error'] );
+		self::assertSame( $date, $view['preferred_delivery_date'] );
+		self::assertSame( $first['review_digest'], $view['review_digest'], 'The date is not part of the review digest.' );
+		$refused = $this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:depot', 'preferred_delivery_date' => $date, 'review_digest' => str_repeat( '0', 64 ) ] );
+		self::assertInstanceOf( WP_Error::class, $refused['error'] );
+		self::assertSame( $date, $refused['preferred_delivery_date'], 'A well-formed date survives a refused form.' );
+		$this->assert_no_consent_or_handoff();
+		$cleared = $this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:depot', 'preferred_delivery_date' => '', 'review_digest' => str_repeat( '0', 64 ) ] );
+		self::assertNull( $cleared['preferred_delivery_date'] );
+		foreach ( [ '2026-13-40', '<b>2026-10-07</b>', [ $date ] ] as $bad ) {
+			$malformed = $this->request( [ 'choice' => 'native:depot', 'preferred_delivery_date' => $bad ] );
+			self::assertSame( 'delivery_date_invalid', $malformed['error']->get_error_code() );
+			self::assertNotSame( $bad, $malformed['preferred_delivery_date'] );
+			self::assertFalse( $malformed['can_confirm'] );
+		}
+		$this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:depot', 'preferred_delivery_date' => $date, 'review_digest' => $first['review_digest'] ] );
+		self::assertSame( 1, $this->return_endpoint->handoffs );
+		self::assertSame( $date, $this->state->store->session->delivery_confirmation()['preferred_delivery_date'] );
 	}
 
 	/** Runs the real Store expiry SQL; only database I/O and native token cleanup are replaced. */

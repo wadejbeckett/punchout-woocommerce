@@ -69,7 +69,7 @@ final class Chooser {
 				wp_safe_redirect( wc_get_cart_url(), 303 ); return;
 			}
 			$input = [];
-			foreach ( [ 'rates', 'notes', 'review_digest', 'acknowledge_unknown' ] as $field ) { if ( array_key_exists( $field, $_POST ) ) { $input[$field] = wp_unslash( $_POST[$field] ); } }
+			foreach ( [ 'rates', 'notes', 'review_digest', 'acknowledge_unknown', 'preferred_delivery_date' ] as $field ) { if ( array_key_exists( $field, $_POST ) ) { $input[$field] = wp_unslash( $_POST[$field] ); } }
 			if ( isset( $_POST['choice'] ) ) {
 				if ( ! is_string( $_POST['choice'] ) ) { throw new \DomainException(); }
 				$parts = explode( ':', wp_unslash( $_POST['choice'] ), 2 );
@@ -96,8 +96,10 @@ final class Chooser {
 			}
 			if ( $view instanceof \WP_Error ) {
 				$error = $view; $view = $this->confirmation->prepare( $session, $partner ); $view['error'] = $error;
-				// Only valid bounded plain notes survive a refused form; no document/cents/address POST is reflected.
+				// Only valid bounded plain notes and a well-formed date survive a refused form; no document/cents/address POST is reflected.
 				if ( isset( $input['notes'] ) && is_string( $input['notes'] ) && strlen( $input['notes'] ) <= 8000 && 1 === preg_match( '//u', $input['notes'] ) ) { $view['notes'] = sanitize_textarea_field( $input['notes'] ); }
+				// A well-formed date (or an emptied field) survives too; anything else falls back to the review's own value.
+				if ( isset( $input['preferred_delivery_date'] ) && is_string( $input['preferred_delivery_date'] ) && ( '' === $input['preferred_delivery_date'] || DeliveryData::date( $input['preferred_delivery_date'] ) ) ) { $view['preferred_delivery_date'] = '' === $input['preferred_delivery_date'] ? null : $input['preferred_delivery_date']; }
 				$view['can_confirm'] = false;
 			}
 			echo $this->render( $view, true );
