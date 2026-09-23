@@ -75,9 +75,10 @@ final class Actions {
 		// Only when the form sent the field, so a form without it never
 		// clears a connection's list. The form's checkboxes arrive as one
 		// entry each, behind an empty hidden entry that makes an all-unticked
-		// list arrive too. A list with any bad entry is refused whole, before
-		// anything is written, and the notice names each one and says the
-		// rest of the form was not kept either.
+		// list arrive too, and the form's name box arrives as one more entry,
+		// empty unless something was typed. A list with any bad entry is
+		// refused whole, before anything is written, and the notice names
+		// each one and says the rest of the form was not kept either.
 		if ( array_key_exists( 'visit_endpoints', $posted ) ) {
 			$endpoints = VisitEndpoints::parse( self::posted_endpoints( $posted['visit_endpoints'] ) );
 			if ( [] !== $endpoints['rejected'] ) {
@@ -85,7 +86,7 @@ final class Actions {
 					'partners',
 					sprintf(
 						/* translators: %s: comma-separated entries that were refused */
-						__( 'Not saved, and no other change on the form was kept either. These are not My Account page names: %s. Tick pages from the list on the form.', 'punchout-woocommerce' ),
+						__( 'Not saved, and no other change on the form was kept either. These are not My Account page names: %s. Tick pages from the list, or type one page name in lowercase letters, digits and hyphens.', 'punchout-woocommerce' ),
 						implode( ', ', $endpoints['rejected'] )
 					),
 					'error'

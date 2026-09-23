@@ -20,16 +20,20 @@ defined( 'ABSPATH' ) || exit;
  * name WooCommerce's account menu gives that page. Empty opens nothing.
  *
  * An administrator ticks the pages on the connection form, which lists what
- * WooCommerce has registered at that moment. Every buyer of a connection is
+ * the site has registered at that moment. Every buyer of a connection is
  * signed in as the same account, so some pages belong to that one account
  * rather than to the visit — its order history, addresses, account details
  * and payment methods are every colleague's at once — and the form says so
- * beside them. What is ticked is the connection's decision, with two rules
+ * beside them. What is ticked is the connection's decision, with three rules
  * no setting changes:
  *
  * - the payment-method pages open only for a connection whose exit policy
  *   allows WooCommerce's own checkout, and every connection is punchout-only
  *   in this release, so they never open (listed() leaves them out);
+ * - logout, lost password, order-pay, order-received and the plugin's own
+ *   integration tab never open in a visit (listed() leaves them out too):
+ *   the first four have no account content, and the tab shows nothing to
+ *   a visit, so ticking them could only mislead;
  * - RouteGuard opens a ticked page only when WooCommerce has account content
  *   for it on that request, so a ticked name never shows another page.
  *
@@ -49,8 +53,10 @@ final class VisitEndpoints {
 	public const NEW_CONNECTION = self::DASHBOARD;
 
 	/**
-	 * WooCommerce's own endpoint set, in the order the connection form shows
-	 * it. Anything else in WooCommerce's endpoint map was added by a plugin.
+	 * WooCommerce's standard endpoint set (WC_Query::init_query_vars()), in
+	 * the order the connection form shows it. A WooCommerce feature can add
+	 * more at run time; the form recognises those by their content (see
+	 * groups()). Anything else was added by another plugin.
 	 *
 	 * @var list<string>
 	 */
@@ -84,18 +90,32 @@ final class VisitEndpoints {
 	];
 
 	/**
-	 * Pages the form marks with a red warning: logging out and password reset
-	 * break the visit, the plugin's own tab exposes the connection, and
-	 * order-pay and order-received are checkout pages.
+	 * Pages that never open in a visit, ticked or not. WooCommerce has no
+	 * account content for logout, lost password, order-pay and
+	 * order-received (the last two are checkout pages, and checkout is refused
+	 * in every visit), and the plugin's own integration tab shows nothing to a
+	 * visit. The form shows them disabled, and listed() leaves them out.
 	 *
 	 * @var list<string>
 	 */
-	public const WARNED = [
+	public const NEVER_OPEN = [
 		'customer-logout',
 		'lost-password',
-		IntegrationTab::ENDPOINT,
 		'order-pay',
 		'order-received',
+		IntegrationTab::ENDPOINT,
+	];
+
+	/**
+	 * WooCommerce pages the form does not show as a row of their own. A
+	 * single order's page belongs with the order list: the form's Orders row
+	 * stands for both, and in a visit a single order opens only when it is
+	 * that visit's own quote order (RouteGuard's order fence).
+	 *
+	 * @var list<string>
+	 */
+	public const FOLDED = [
+		'view-order',
 	];
 
 	/** The column is VARCHAR(255). */
@@ -175,9 +195,9 @@ final class VisitEndpoints {
 	}
 
 	/**
-	 * The column as a list, after the same normalisation as a write. Without
-	 * native checkout the payment-method pages are left out: they can never
-	 * open, whatever the row holds.
+	 * The column as a list, after the same normalisation as a write. The
+	 * pages that never open are left out, and so are the payment-method pages
+	 * without native checkout: whatever the row holds, they cannot open.
 	 *
 	 * @return list<string>
 	 */
@@ -185,7 +205,7 @@ final class VisitEndpoints {
 		$normalised = self::normalise( $stored );
 		$listed     = '' === $normalised ? [] : explode( ',', $normalised );
 
-		return $native_checkout ? $listed : array_values( array_diff( $listed, self::PAYMENT ) );
+		return array_values( array_diff( $listed, self::NEVER_OPEN, $native_checkout ? [] : self::PAYMENT ) );
 	}
 
 	/**
@@ -200,24 +220,31 @@ final class VisitEndpoints {
 
 	/**
 	 * The connection form's rows, in four groups: WooCommerce's own pages
-	 * (the dashboard first), the plugin's own tab, pages added by other
-	 * plugins (alphabetical), and entries the connection lists that are not
-	 * registered right now. The last group exists because some plugins
-	 * register a page only for some accounts or only on the front end: such
-	 * an entry keeps a ticked row, so saving the form never drops it unseen.
-	 * A registered name that could not be stored is left out.
+	 * (the dashboard first, then its standard set in a fixed order, then
+	 * pages a WooCommerce feature added), the plugin's own tab, pages added by
+	 * other plugins (alphabetical), and entries the connection lists that the
+	 * site does not register right now. The last group exists because some
+	 * plugins register a page only for some accounts: such an entry keeps a
+	 * ticked row, so saving the form never drops it unseen.
 	 *
-	 * @param list<string> $registered Endpoint names in WooCommerce's endpoint map now.
-	 * @param list<string> $stored     The connection's list.
+	 * A registered name that could not be stored is left out, and so is a
+	 * third-party page registered as `dashboard`, a name the account page
+	 * itself holds here. view-order is folded into the Orders row.
+	 *
+	 * @param list<string> $registered  Account page names the site registers now.
+	 * @param list<string> $stored      The connection's list.
+	 * @param list<string> $woocommerce Registered names beyond the standard set whose content WooCommerce itself provides.
 	 * @return array{woocommerce: list<string>, plugin: list<string>, other: list<string>, stored: list<string>}
 	 */
-	public static function groups( array $registered, array $stored ): array {
+	public static function groups( array $registered, array $stored, array $woocommerce = [] ): array {
 		$registered = array_values( array_unique( array_filter( array_map( 'strval', $registered ), [ self::class, 'is_name' ] ) ) );
-		$other      = array_values( array_diff( $registered, self::WOOCOMMERCE, [ IntegrationTab::ENDPOINT, self::DASHBOARD ] ) );
+		$features   = array_values( array_intersect( array_diff( array_unique( array_map( 'strval', $woocommerce ) ), self::WOOCOMMERCE, [ IntegrationTab::ENDPOINT, self::DASHBOARD ] ), $registered ) );
+		$other      = array_values( array_diff( $registered, self::WOOCOMMERCE, $features, [ IntegrationTab::ENDPOINT, self::DASHBOARD ] ) );
+		sort( $features, SORT_STRING );
 		sort( $other, SORT_STRING );
 
 		return [
-			'woocommerce' => array_merge( [ self::DASHBOARD ], array_values( array_intersect( self::WOOCOMMERCE, $registered ) ) ),
+			'woocommerce' => array_merge( [ self::DASHBOARD ], array_values( array_diff( array_intersect( self::WOOCOMMERCE, $registered ), self::FOLDED ) ), $features ),
 			'plugin'      => in_array( IntegrationTab::ENDPOINT, $registered, true ) ? [ IntegrationTab::ENDPOINT ] : [],
 			'other'       => $other,
 			'stored'      => array_values( array_diff( array_map( 'strval', $stored ), $registered, [ self::DASHBOARD ] ) ),

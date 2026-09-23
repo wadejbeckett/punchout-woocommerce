@@ -437,31 +437,37 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 
 	/**
 	 * The shared login's own pages open when the connection ticks them; the
-	 * form warns about each. What never opens, ticked or not: a page
-	 * WooCommerce has no account content for (logout, lost password,
-	 * order-pay, order-received), because it would render another page, and
-	 * the payment-method pages, because every connection is punchout-only.
+	 * form says what sharing each means. What never opens, ticked or not:
+	 * logout, lost password, order-pay, order-received and the plugin's own
+	 * tab, which the list a visit reads leaves out (the first four have no
+	 * account content, and the tab shows nothing to a visit), and the
+	 * payment-method pages, because every connection is punchout-only.
 	 */
 	public function test_the_shared_login_pages_open_only_when_ticked_and_payment_pages_never(): void {
-		$with_content = [ 'orders', 'view-order', 'downloads', 'edit-address', 'edit-account', 'punchout-integration' ];
-		$no_content   = [ 'customer-logout', 'lost-password', 'order-pay', 'order-received' ];
+		$with_content = [ 'orders', 'view-order', 'downloads', 'edit-address', 'edit-account' ];
+		$never_open   = [ 'customer-logout', 'lost-password', 'order-pay', 'order-received', 'punchout-integration' ];
 		$this->connection( 'bulkorder' );
-		foreach ( array_merge( $with_content, $no_content, POW\Account\VisitEndpoints::PAYMENT ) as $endpoint ) {
+		foreach ( array_merge( $with_content, $never_open, POW\Account\VisitEndpoints::PAYMENT ) as $endpoint ) {
 			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} stays closed while it is not ticked" );
 		}
 
-		$this->connection( 'bulkorder,' . implode( ',', array_merge( $with_content, $no_content, POW\Account\VisitEndpoints::PAYMENT ) ) );
-		self::assertSame( array_merge( [ 'bulkorder' ], $with_content, $no_content ), POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The row reads back without the payment pages' );
+		$this->connection( 'bulkorder,' . implode( ',', array_merge( $with_content, $never_open, POW\Account\VisitEndpoints::PAYMENT ) ) );
+		self::assertSame( array_merge( [ 'bulkorder' ], $with_content ), POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The row reads back without the payment pages and without the pages that never open' );
 		foreach ( $with_content as $endpoint ) {
 			self::assertTrue( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} opens once ticked" );
 		}
-		foreach ( $no_content as $endpoint ) {
-			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} has no account content, so it stays closed even when ticked" );
+		foreach ( $never_open as $endpoint ) {
+			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} stays closed even when ticked" );
 		}
 		foreach ( POW\Account\VisitEndpoints::PAYMENT as $endpoint ) {
 			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} never opens for a punchout-only connection, even when the row names it" );
 		}
 		self::assertFalse( $this->opens( [], $this->visit() ), 'The dashboard stays closed unless it is ticked' );
+		self::assertSame(
+			[ 'orders' => 'Orders', 'bulkorder' => 'Quick order' ],
+			$this->guard( $this->visit() )->visit_menu_items( [ 'orders' => 'Orders', 'bulkorder' => 'Quick order', 'punchout-integration' => 'Punchout integration', 'customer-logout' => 'Log out' ] ),
+			'Neither the tab nor logout reaches the menu, although both are ticked'
+		);
 	}
 
 	/** The dashboard flag opens /my-account/ itself and nothing it links to. */
@@ -485,6 +491,45 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 
 		$this->connection( 'dashboard', 'disabled' );
 		self::assertFalse( $this->opens( [], $this->visit() ), 'A connection that is not active opens nothing, the dashboard included' );
+	}
+
+	/** `dashboard` names the account page itself, so a page another plugin registers under that name never opens by the dashboard's tick. */
+	public function test_a_page_registered_as_dashboard_never_opens(): void {
+		$this->connection( 'dashboard,bulkorder' );
+		$GLOBALS['pow_route_guard_test']['account_actions'] = array_merge( self::WITH_CONTENT, [ 'dashboard' ] );
+
+		self::assertFalse( $this->opens( [ 'dashboard' ], $this->visit() ), 'A query var named dashboard with account content of its own stays closed' );
+		self::assertFalse( $this->opens( [ 'bulkorder', 'dashboard' ], $this->visit() ), 'and closes a listed page it rides along with' );
+		self::assertTrue( $this->opens( [], $this->visit() ), 'The account page itself still opens' );
+		self::assertTrue( $this->opens( [ 'bulkorder' ], $this->visit() ) );
+	}
+
+	/**
+	 * WooCommerce's temporary-password notice offers a Resend link that mails
+	 * the account a new password-reset link. Inside a visit the option behind
+	 * the notice reads false, so neither renders, and a request carrying the
+	 * Resend action is refused before WooCommerce's handler runs.
+	 */
+	public function test_a_visit_never_sees_the_temporary_password_notice_or_resends_its_link(): void {
+		self::assertFalse( $this->guard( $this->visit() )->hide_temporary_password( true ), 'Inside a visit the option reads false' );
+		self::assertFalse( $this->guard( $this->visit() )->hide_temporary_password( '1' ) );
+		self::assertTrue( $this->guard( null )->hide_temporary_password( true ), 'The account holder outside a visit keeps the notice' );
+
+		$store = new RouteGuardStore();
+		$store->unreachable = true;
+		$GLOBALS['pow_test_login_token'] = 'visit-a';
+		self::assertSame( '', $this->guard( null, $store )->hide_temporary_password( '' ), 'An unset option is passed on without asking for the visit' );
+		self::assertSame( 0, $store->lookups );
+		self::assertFalse( $this->guard( null, $store )->hide_temporary_password( true ), 'A request whose visit cannot be proved reads false' );
+
+		$_GET = [ 'wc-resend-set-password' => '1', '_wpnonce' => 'nonce' ];
+		$redirect = $this->guarded( $this->guard( $this->visit() ) );
+		self::assertNotNull( $redirect, 'The Resend action is refused inside a visit, on any page' );
+		self::assertSame( $this->landing(), $redirect->url );
+		self::assertNull( $this->guarded( $this->guard( null ) ), 'Outside a visit WooCommerce handles it as usual' );
+
+		$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/RouteGuard.php' );
+		self::assertStringContainsString( "add_filter( 'get_user_option_default_password_nag', [ \$this, 'hide_temporary_password' ], PHP_INT_MAX );", $source );
 	}
 
 	public function test_an_empty_disabled_missing_or_unreadable_connection_keeps_my_account_closed(): void {
@@ -597,7 +642,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		);
 
 		$this->connection( 'dashboard,bulkorder,order-pay,order-received' );
-		self::assertSame( [ 'dashboard', 'bulkorder', 'order-pay', 'order-received' ], POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The checkout endpoints can be ticked' );
+		self::assertSame( [ 'dashboard', 'bulkorder' ], POW\Partners\Partner::from_row( $GLOBALS['wpdb']->rows[7] )->visit_endpoint_list(), 'The checkout endpoints never reach the list a visit reads, even when the row names them' );
 		foreach ( [ 'order-pay', 'order-received' ] as $endpoint ) {
 			self::assertFalse( $this->opens( [ $endpoint ], $this->visit() ), "{$endpoint} on the account page never opens inside a visit, even with the dashboard ticked" );
 			self::assertFalse( $this->opens( [ 'bulkorder', $endpoint ], $this->visit() ), "{$endpoint} beside a listed endpoint closes the page" );

@@ -279,8 +279,8 @@ final class VisitLockdownNative {
 
 			// The form an administrator ticks, rendered from WooCommerce's live endpoint map.
 			$form = $this->connection_form();
-			$this->check( 1 === preg_match( '#<strong>WooCommerce</strong>.*value="dashboard" checked="checked".*value="orders" />.*<strong>This plugin</strong>.*value="punchout-integration" />.*<strong>Added by other plugins</strong>.*value="bulkorder" />#s', $form ), 'the connection form lists WooCommerce\'s pages first, the dashboard ticked, then this plugin\'s tab, then the registered third-party page, unticked' );
-			$this->check( 4 === substr_count( $form, ' disabled="disabled"' ) && str_contains( $form, 'Orders <code>orders</code>' ), 'the four payment-method rows are disabled on a punchout-only connection, and WooCommerce\'s own titles label the rows' );
+			$this->check( 1 === preg_match( '#<strong>WooCommerce</strong>.*value="dashboard" checked="checked".*value="orders" />.*<strong>This plugin</strong>.*value="punchout-integration" disabled="disabled" />.*<strong>Added by other plugins</strong>.*value="bulkorder" />#s', $form ), 'the connection form lists WooCommerce\'s pages first, the dashboard ticked, then this plugin\'s tab, then the registered third-party page, unticked' );
+			$this->check( 9 === substr_count( $form, ' disabled="disabled"' ) && 5 === substr_count( $form, 'Stays closed in a visit.' ) && str_contains( $form, 'Orders <code>orders</code>' ) && ! str_contains( $form, 'value="view-order"' ), 'the four payment-method rows and the five pages that never open are disabled on a punchout-only connection, a single order has no row of its own, and WooCommerce\'s own titles label the rows' );
 
 			$guard = $set( 'dashboard,bulkorder' );
 			$form  = $this->connection_form();
@@ -311,14 +311,17 @@ final class VisitLockdownNative {
 			// The shared login's own pages open once ticked; a page WooCommerce
 			// has no account content for stays closed even when ticked, and a
 			// payment page never opens for a punchout-only connection.
-			$edited = $set( 'dashboard,bulkorder,orders,order-pay,order-received,customer-logout,lost-password' );
+			$edited = $set( 'dashboard,bulkorder,orders,order-pay,order-received,customer-logout,lost-password,punchout-integration' );
 			pow_native_enter_visit( $first );
 			$orders = $this->account_page( $edited, [ 'orders' => '' ] );
 			$this->check( is_string( $orders ) && ! str_contains( $orders, self::DASHBOARD_MARK ), 'a ticked orders page opens with its own content' );
-			foreach ( [ 'order-pay', 'order-received', 'customer-logout', 'lost-password' ] as $endpoint ) {
-				$this->check( null === $this->account_page( $edited, [ $endpoint => '' ] ), $endpoint . ' on the account page stays closed although ticked: WooCommerce has no account content for it' );
+			foreach ( [ 'order-pay', 'order-received', 'customer-logout', 'lost-password', 'punchout-integration' ] as $endpoint ) {
+				$this->check( null === $this->account_page( $edited, [ $endpoint => '' ] ), $endpoint . ' on the account page stays closed although the row names it' );
 			}
 			$this->check( [ 'bulkorder', 'dashboard', 'orders' ] === $this->sorted_keys( $this->menu() ), 'the menu shows the ticked pages that open, and no logout item' );
+			$single = $set( 'dashboard,orders,view-order' );
+			pow_native_enter_visit( $first );
+			$this->check( null === $this->account_page( $single, [ 'view-order' => (string) $this->ordinary_order ] ), 'a single order of the shared account stays closed in a visit, even with orders and view-order in the row' );
 			pow_native_leave_visit( $this->admin );
 			$wpdb->update( POW\Installer::partners_table(), [ 'visit_endpoints' => 'dashboard,payment-methods,add-payment-method' ], [ 'id' => $this->partner->id ] );
 			$this->check( [ 'dashboard' ] === ( $this->registry->find( $this->partner->id )?->visit_endpoint_list() ?? [] ), 'a hand-edited row naming payment pages reads back without them for a punchout-only connection' );
@@ -462,6 +465,145 @@ final class VisitLockdownNative {
 			if ( null === $uri ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $uri; }
 			if ( null === $query_string ) { unset( $_SERVER['QUERY_STRING'] ); } else { $_SERVER['QUERY_STRING'] = $query_string; }
 		}
+	}
+
+	/**
+	 * The connection form as wp-admin renders it, on a store whose other
+	 * plugin adds its account pages to WooCommerce's endpoint map only on the
+	 * front end and only for flagged accounts, and registers one page only
+	 * as a WordPress rewrite endpoint with account content. That plugin
+	 * still registers every page's rewrite endpoint on every request, as it
+	 * must for its addresses to survive a permalink save from wp-admin, so
+	 * the form offers all of them there, ticked or not: a page unticked once
+	 * can be ticked again. In a visit the rewrite-only page opens like any
+	 * other ticked page.
+	 */
+	private function wp_admin_form(): void {
+		global $wp, $wp_rewrite;
+		[ $first ] = $this->visits;
+		$pages     = [ 'pow-fixture-orderform', 'pow-fixture-lists', 'pow-fixture-new-list' ];
+		$flag      = 'pow_fixture_flagged';
+		$map       = static function ( array $vars ) use ( $flag ): array {
+			if ( ! is_admin() && 'yes' === get_user_meta( get_current_user_id(), $flag, true ) ) {
+				$vars += [ 'pow-fixture-orderform' => 'pow-fixture-orderform', 'pow-fixture-lists' => 'pow-fixture-lists' ];
+			}
+			return $vars;
+		};
+		$content   = static function (): void { echo '<p>pow-fixture-new-list-content</p>'; };
+		$endpoints = $wp_rewrite->endpoints;
+		$public    = $wp->public_query_vars;
+		$vars      = $wp->query_vars;
+		$main      = [ $GLOBALS['wp_the_query'] ?? null, $GLOBALS['wp_query'] ?? null ];
+		$screen    = $GLOBALS['current_screen'] ?? null;
+		add_filter( 'woocommerce_get_query_vars', $map );
+		add_action( 'woocommerce_account_pow-fixture-new-list_endpoint', $content );
+		foreach ( $pages as $page ) { add_rewrite_endpoint( $page, EP_ROOT | EP_PAGES | EP_PERMALINK ); }
+		update_user_meta( $this->account, $flag, 'yes' );
+		try {
+			pow_native_leave_visit( $this->admin );
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'dashboard,' . implode( ',', $pages ) ] ), 'the connection lists the three pages' );
+			$GLOBALS['current_screen'] = new class() { public string $id = 'toplevel_page_pow_fixture'; public function in_admin( mixed $admin = null ): bool { return true; } };
+			$this->check( is_admin() && ! isset( WC()->query->get_query_vars()['pow-fixture-orderform'] ), 'in wp-admin the pages are not in WooCommerce\'s endpoint map' );
+			$form = $this->connection_form();
+			$this->check( 1 === preg_match( '#<strong>Added by other plugins</strong>.*value="pow-fixture-lists" checked="checked".*value="pow-fixture-new-list" checked="checked".*value="pow-fixture-orderform" checked="checked"#s', $form ) && ! str_contains( $form, 'not found on this site' ), 'wp-admin offers all three under Added by other plugins, ticked, and calls none of them missing' );
+			$this->check( 1 === preg_match( '#name="visit_endpoints\[\]" value="" class="regular-text"#', $form ), 'the form has a box to add a page by name' );
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'dashboard,pow-fixture-orderform,pow-fixture-lists' ] ), 'the new-list page is unticked and saved' );
+			$form = $this->connection_form();
+			$this->check( 1 === preg_match( '#value="pow-fixture-new-list" />#', $form ), 'wp-admin still offers the unticked page, so it can be ticked again' );
+			unset( $GLOBALS['current_screen'] );
+			if ( null !== $screen ) { $GLOBALS['current_screen'] = $screen; }
+
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'dashboard,pow-fixture-new-list' ] ), 'the new-list page is ticked again' );
+			$guard = new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
+			pow_native_enter_visit( $first );
+			$html = $this->account_page( $guard, [ 'pow-fixture-new-list' => '' ] );
+			$this->check( is_string( $html ) && str_contains( $html, 'pow-fixture-new-list-content' ), 'in a visit the ticked page WooCommerce does not map opens with its own content' );
+			$this->check( null === $this->account_page( $guard, [ 'pow-fixture-orderform' => '' ] ), 'and a page the connection no longer lists stays closed' );
+		} finally {
+			unset( $GLOBALS['current_screen'] );
+			if ( null !== $screen ) { $GLOBALS['current_screen'] = $screen; }
+			delete_user_meta( $this->account, $flag );
+			remove_filter( 'woocommerce_get_query_vars', $map );
+			remove_action( 'woocommerce_account_pow-fixture-new-list_endpoint', $content );
+			$wp_rewrite->endpoints = $endpoints;
+			$wp->public_query_vars = $public;
+			$wp->query_vars        = $vars;
+			[ $GLOBALS['wp_the_query'], $GLOBALS['wp_query'] ] = $main;
+			pow_native_leave_visit( $this->admin );
+		}
+	}
+
+	/**
+	 * WooCommerce's temporary-password notice with the dashboard ticked. An
+	 * account whose password WooCommerce generated carries
+	 * default_password_nag, and WooCommerce's dashboard then offers a Resend
+	 * link that mails the account a new password-reset link. The account
+	 * holder outside a visit keeps the notice; inside a visit the flag reads
+	 * false, the dashboard shows neither notice nor link, and a request
+	 * carrying the Resend action with this visit's own valid nonce is
+	 * refused before WooCommerce's handler runs.
+	 */
+	private function temporary_password(): void {
+		global $wp;
+		[ $first ] = $this->visits;
+		$vars    = $wp->query_vars;
+		$main    = [ $GLOBALS['wp_the_query'] ?? null, $GLOBALS['wp_query'] ?? null ];
+		$session = WC()->session ?? null;
+		$hidden  = null;
+		foreach ( $GLOBALS['wp_filter']['get_user_option_default_password_nag']->callbacks ?? [] as $callbacks ) {
+			foreach ( $callbacks as $callback ) {
+				$function = $callback['function'] ?? null;
+				if ( is_array( $function ) && $function[0] instanceof POW\RouteGuard && 'hide_temporary_password' === $function[1] ) { $hidden = $function; }
+			}
+		}
+		try {
+			$this->check( null !== $hidden, 'the plugin hides the temporary-password flag through WordPress\'s own user-option filter' );
+			pow_native_leave_visit( $this->admin );
+			$this->check( $this->registry->update( $this->partner->id, [ 'visit_endpoints' => 'dashboard' ] ), 'the connection ticks the dashboard' );
+			update_user_option( $this->account, 'default_password_nag', true, true );
+			delete_user_meta( $this->account, WC_Form_Handler::SET_PASSWORD_RESEND_META );
+			pow_native_leave_visit( $this->account );
+			$this->check( (bool) get_user_option( 'default_password_nag' ), 'the account holder outside a visit keeps the temporary-password flag' );
+
+			$guard = new POW\RouteGuard( POW\Plugin::instance(), $this->registry, POW\Plugin::instance()->settings() );
+			pow_native_enter_visit( $first );
+			WC()->session = pow_native_visit_handler( $first );
+			$this->check( false === get_user_option( 'default_password_nag' ), 'inside a visit the flag reads false' );
+			$dashboard = $this->account_shortcode( $guard );
+			$this->check( is_string( $dashboard ) && ! str_contains( $dashboard, 'wc-resend-set-password' ) && ! str_contains( $dashboard, 'temporary password' ), 'the ticked dashboard in a visit shows no temporary-password notice and no Resend link' );
+			if ( null !== $hidden ) {
+				remove_filter( 'get_user_option_default_password_nag', $hidden, PHP_INT_MAX );
+				$control = $this->account_shortcode( $guard );
+				add_filter( 'get_user_option_default_password_nag', $hidden, PHP_INT_MAX );
+				$this->check( is_string( $control ) && str_contains( $control, 'wc-resend-set-password' ), 'control: without the filter the same visit would see WooCommerce\'s Resend link' );
+			}
+			$nonce = wp_create_nonce( 'wc-resend-set-password' );
+			$this->check( null === $this->account_page( $guard, [ 'wc-resend-set-password' => '1', '_wpnonce' => $nonce ] ), 'a request carrying the Resend action with this visit\'s valid nonce is refused before WooCommerce handles it' );
+			$this->check( '' === (string) get_user_meta( $this->account, WC_Form_Handler::SET_PASSWORD_RESEND_META, true ), 'the shared account was not asked for a new password link' );
+		} finally {
+			delete_user_option( $this->account, 'default_password_nag', true );
+			delete_user_meta( $this->account, WC_Form_Handler::SET_PASSWORD_RESEND_META );
+			$wp->query_vars = $vars;
+			[ $GLOBALS['wp_the_query'], $GLOBALS['wp_query'] ] = $main;
+			WC()->session = $session;
+			pow_native_leave_visit( $this->admin );
+		}
+	}
+
+	/**
+	 * The whole account page as WooCommerce's shortcode renders it for a
+	 * request with no endpoint, notices included; null when the guard
+	 * refused it. The empty `page` query var is what a pretty-permalink
+	 * request for /my-account/ carries, and it is how WooCommerce tells that
+	 * the dashboard is the current page.
+	 */
+	private function account_shortcode( POW\RouteGuard $guard ): ?string {
+		$page = $this->account_page( $guard, [ 'page' => '' ] );
+		if ( null === $page ) { return null; }
+		ob_start();
+		echo WC_Shortcode_My_Account::output( [] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- fixture capture.
+		wc_print_notices();
+		return (string) ob_get_clean();
 	}
 
 	/**
@@ -641,6 +783,8 @@ final class VisitLockdownNative {
 			$this->rest_routes();
 			$this->account_surfaces();
 			$this->account_endpoints();
+			$this->wp_admin_form();
+			$this->temporary_password();
 			$this->foreign_basket();
 			$this->foreign_order();
 			$this->checkout();
