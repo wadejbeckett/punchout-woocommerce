@@ -58,7 +58,7 @@ final class ReturnConfirmationFixture implements \POW\Addresses\ReturnConfirmati
 		if(null===$confirmation){return new WP_Error('delivery_review_required','Review delivery before returning.');}
 		$mapped=$this->mapper->from_cart($partner);$choice=$session->delivery_choice();$delivery=$confirmation['delivery'];
 		$mapped['merchandise_total_cents']=$mapped['total_cents'];$mapped['total_cents']+=$delivery['emit']?$delivery['amount_cents']:0;
-		$prepared=$mapped+['delivery_destination'=>\POW\Addresses\QuoteAddress::payload($choice),'delivery_choice'=>$choice,'delivery_confirmation'=>$confirmation,'delivery'=>$delivery,'delivery_notes'=>$confirmation['notes'],'_guard'=>['cart'=>'fixture-cart','policy'=>'fixture-policy','choice_json'=>$session->delivery_choice_json,'confirmation_json'=>$session->delivery_confirmation_json]];
+		$prepared=$mapped+['delivery_destination'=>\POW\Addresses\QuoteAddress::payload($choice),'delivery_choice'=>$choice,'delivery_confirmation'=>$confirmation,'delivery'=>$delivery,'delivery_notes'=>$confirmation['notes'],'delivery_preferred_date'=>$confirmation['preferred_delivery_date']??null,'_guard'=>['cart'=>'fixture-cart','policy'=>'fixture-policy','choice_json'=>$session->delivery_choice_json,'confirmation_json'=>$session->delivery_confirmation_json]];
 		return $this->mutate?($this->mutate)($prepared):$prepared;
 	}
 	public function validate_prepared_locked(\POW\Sessions\Session $session,\POW\Partners\Partner $partner,array $prepared):bool|WP_Error{
@@ -327,6 +327,25 @@ final class ReturnIntegrationTest extends TestCase {
 	public function test_changed_raw_confirmation_after_validation_loses_atomic_transition():void{$this->delivery->on_validate=function(){$this->db->before_transition=function(){$this->db->session['delivery_confirmation']=null;};};$response=$this->response();self::assertSame(1,$this->db->guarded_updates);self::assertSame('active',$this->db->session['status']);self::assertStringNotContainsString('pow-handoff-form',$response);self::assertSame([],$GLOBALS['pow_test_orders']);}
 	private function xml(string $response):DOMXPath{self::assertSame(1,preg_match('/name="cxml-base64" value="([^"]+)"/',$response,$match));$doc=new DOMDocument();self::assertTrue($doc->loadXML(base64_decode(html_entity_decode($match[1]),true),LIBXML_NONET));return new DOMXPath($doc);}
 	public function test_one_wire_freight_matches_two_native_shipping_items_without_double_charge():void{$this->set_delivery(true,true);$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'emit_delivery_code'=>true,'delivery_code_extrinsic_name'=>'DestinationCode','delivery_notes_policy'=>'item_detail_extrinsic','cxml_version'=>'1.2.071'];$response=$this->response();$xml=$this->xml($response);self::assertSame(2,$xml->query('//ItemIn')->length);self::assertSame('35.00',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitPrice/Money)'));self::assertSame('410.33',$xml->evaluate('string(//PunchOutOrderMessageHeader/Total/Money)'));self::assertSame(1,$xml->query('//ShipTo')->length);self::assertSame(1,$xml->query('//ItemDetail/Extrinsic[@name="DeliveryInstructions"]')->length);self::assertSame(2,$xml->query('//ItemIn/Extrinsic[@name="DestinationCode"]')->length);$order=array_values($GLOBALS['pow_test_orders'])[0];self::assertCount(1,$order->items);self::assertCount(2,$order->get_items('shipping'));self::assertSame('410.33',$order->get_total());self::assertSame('35.00',$order->get_shipping_total());self::assertSame('Pretoria',$order->props['shipping_city']);}
+	/** The freight line names the selected method titles; the buyer's preferred date stays in the shop and never reaches the POOM. */
+	public function test_freight_description_carries_the_rate_label_and_the_preferred_date_never_reaches_the_poom():void{
+		$this->set_delivery(true,true);
+		$row=json_decode($this->db->session['delivery_confirmation'],true);$confirmed_at=$row['confirmed_at'];unset($row['confirmed_at']);
+		$row['schema']=2;$row['delivery']['rates'][0]['label']='Courier (3-5 working days)';$row['preferred_delivery_date']='2026-10-07';$row['confirmed_at']=$confirmed_at;
+		$this->db->session['delivery_confirmation']=json_encode($row);
+		$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'emit_delivery_code'=>true,'delivery_notes_policy'=>'item_detail_extrinsic','cxml_version'=>'1.2.071'];
+		$response=$this->response();
+		self::assertStringContainsString('pow-handoff-form',$response);
+		preg_match('/name="cxml-base64" value="([^"]+)"/',$response,$m);
+		$poom=(string)base64_decode(html_entity_decode($m[1]),true);
+		$xml=$this->xml($response);
+		self::assertSame('Courier (3-5 working days); Parcel two',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
+		self::assertStringNotContainsString('2026-10-07',$poom);
+		self::assertStringNotContainsString('Preferred',$poom);
+		$order=array_values($GLOBALS['pow_test_orders'])[0];
+		self::assertSame('2026-10-07',$order->get_meta(QuoteOrder::META_PREFERRED_DELIVERY_DATE));
+		self::assertStringContainsString('Delivery method: Courier (3-5 working days); Parcel two. Preferred delivery date: 2026-10-07.',$order->notes[0]);
+	}
 	public function test_builder_uses_fresh_company_options_after_confirmation_preparation():void{$this->set_delivery(true,true);$this->delivery->mutate=function($prepared){$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'delivery_notes_policy'=>'item_detail_extrinsic'];return $prepared;};$xml=$this->xml($this->response());self::assertSame(1,$xml->query('//ShipTo')->length);self::assertSame(1,$xml->query('//ItemDetail/Extrinsic[@name="DeliveryInstructions"]')->length);}
 }
 }

@@ -192,6 +192,26 @@ final class DeliveryEstimateTest extends TestCase {
 		$this->wc->cart->offers[0]['rates']['flat_rate:1']->cost='2.005';$this->wc->cart->offers[4]['rates']['flat_rate:2']->cost=2.005;
 		self::assertSame(402,$this->quote()['delivery']['amount_cents']);
 	}
+	public function test_freight_description_is_the_selected_rate_label_with_its_estimate():void{
+		$this->wc->cart->offers[0]['rates']['flat_rate:1']->label='Courier (3-5 working days)';
+		$delivery=$this->quote()['delivery'];
+		self::assertSame('Courier (3-5 working days)',$delivery['rates'][0]['label']);
+		self::assertSame('Courier (3-5 working days)',DeliveryEstimate::poom_line($delivery)['description']);
+	}
+	public function test_multi_package_freight_description_joins_labels_in_package_order():void{
+		$this->wc->cart->offers[4]=['package_name'=>'Parcel 2','rates'=>['flat_rate:2'=>new Rate('flat_rate:2','22.50',[],'Express (next day)','flat_rate',2)]];$this->wc->cart->defaults[4]='flat_rate:2';
+		$delivery=$this->quote()['delivery'];
+		self::assertSame('Standard; Express (next day)',DeliveryEstimate::poom_line($delivery)['description']);
+	}
+	public function test_freight_description_is_plain_text_and_falls_back_to_delivery():void{
+		$this->wc->cart->offers[0]['rates']['flat_rate:1']->label='<b>Road</b> &amp; rail (2&ndash;4 days)';
+		$delivery=$this->quote()['delivery'];
+		self::assertSame('Road & rail (2–4 days)',DeliveryEstimate::poom_line($delivery)['description']);
+		// A label that strips to nothing leaves the generic description.
+		$delivery['rates'][0]['label']='<i> </i>';
+		self::assertSame('',DeliveryData::method_label($delivery));
+		self::assertSame('Delivery',DeliveryEstimate::poom_line($delivery)['description']);
+	}
 	public function test_missing_one_package_is_unknown_not_partial_sum_or_zero():void{
 		$this->wc->cart->offers[4]=['package_name'=>'Unserved','rates'=>[]];$result=$this->quote();
 		self::assertSame('unknown',$result['delivery']['status']);self::assertNull($result['delivery']['amount_cents']);self::assertFalse($result['delivery']['emit']);self::assertFalse($result['can_confirm']);self::assertNull(DeliveryEstimate::poom_line($result['delivery']));self::assertCount(2,$result['packages']);

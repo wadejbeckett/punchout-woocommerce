@@ -90,6 +90,18 @@ final class QuoteOrderRulesTest extends TestCase {
 	 * The order line carries the price the basket quoted: unit cents from
 	 * PoomMapper, times quantity, ex-tax.
 	 */
+	/** The Quote note's delivery sentence: the selected method titles (with any delivery period) and the optional preferred date. */
+	public function test_delivery_summary_wording(): void {
+		$rate = static fn( string $method, string $label, int $package = 0 ): array => [ 'package_key' => $package, 'rate_id' => $method . ':1', 'method_id' => $method, 'instance_id' => 1, 'label' => $label, 'amount_cents' => 0, 'taxes' => [] ];
+		self::assertSame( '_pow_preferred_delivery_date', QuoteOrder::META_PREFERRED_DELIVERY_DATE );
+		self::assertSame( 'Delivery method: Courier (3-5 working days). Preferred delivery date: 2026-10-07.', QuoteOrder::delivery_summary( [ 'rates' => [ $rate( 'flat_rate', 'Courier (3-5 working days)' ) ] ], '2026-10-07' ) );
+		self::assertSame( 'Collection: Local pickup (Midrand).', QuoteOrder::delivery_summary( [ 'rates' => [ $rate( 'local_pickup', 'Local pickup (Midrand)' ) ] ], null ) );
+		self::assertSame( 'Delivery method: Road; Collect.', QuoteOrder::delivery_summary( [ 'rates' => [ $rate( 'flat_rate', 'Road' ), $rate( 'local_pickup', 'Collect', 1 ) ] ], null ) );
+		self::assertSame( '', QuoteOrder::delivery_summary( null, null ) );
+		self::assertSame( 'Preferred delivery date: 2026-10-07.', QuoteOrder::delivery_summary( [ 'rates' => [] ], '2026-10-07' ) );
+		self::assertSame( 'Preferred delivery date: 2026-10-07.', QuoteOrder::delivery_summary( null, '2026-10-07' ) );
+	}
+
 	public function test_line_args_carry_the_basket_price(): void {
 		$args = QuoteOrder::line_args(
 			[
