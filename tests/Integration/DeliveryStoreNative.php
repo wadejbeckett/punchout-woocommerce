@@ -1,11 +1,15 @@
 <?php
 /**
- * Opt-in native confirmation compare-and-swap acceptance. POW_DELIVERY_STORE_FIXTURE identifies a private AddressProviderNative fixture; only new session rows and tokens belonging to its invented buyer are written. No chooser/payment/return integration is claimed. Caller holds the existing partner mutex for every store operation.
+ * Opt-in native confirmation compare-and-swap acceptance. POW_DELIVERY_STORE_FIXTURE identifies a private AddressProviderNative fixture; only new visit rows and login tokens belonging to its invented bound account are written. No chooser/payment/return integration is claimed. Caller holds the existing partner mutex for every store operation.
+ *
+ * Every row this suite writes is a VISIT of one customer account, so each one carries its own login token and its own per-visit `wc_session_key` alongside the buyer identity its request named. Those four columns are attribution and addressing, never consent: no delivery write may touch them, and a colleague's visit of the same account may not write this visit's consent.
  * @package POW
  * @license AGPL-3.0-or-later
  */
 declare( strict_types = 1 );
 if ( ! defined( 'WP_CLI' ) || ! WP_CLI || 'disposable' !== getenv( 'POW_NATIVE_TESTS' ) || wp_get_environment_type() !== 'local' || ! current_user_can( 'manage_woocommerce' ) ) { throw new RuntimeException( 'Disposable native fixture administrator required.' ); }
+
+require_once dirname( __DIR__ ) . '/Support/native-visits.php';
 
 final class DeliveryStoreNative {
 	private POW\Sessions\Store $store;
@@ -14,11 +18,19 @@ final class DeliveryStoreNative {
 	private int $passed = 0;
 	public function __construct() { $this->store = POW\Plugin::instance()->sessions(); $this->registry = POW\Plugin::instance()->registry(); $this->fixture = json_decode( file_get_contents( getenv( 'POW_DELIVERY_STORE_FIXTURE' ) ), true, 512, JSON_THROW_ON_ERROR ); }
 	private function check( bool $ok, string $label ): void { if ( ! $ok ) { throw new RuntimeException( 'FAIL ' . $label ); } ++$this->passed; echo 'PASS ' . $label . "\n"; }
+	/** One live visit of the connection's bound account, with its own login token, cart key and buyer attribution. */
 	private function session(): POW\Sessions\Session {
-		$user = $this->fixture['buyers'][0]; $token = WP_Session_Tokens::get_instance( $user )->create( time() + 3600 );
-		$id = $this->store->create( [ 'partner_id' => $this->fixture['id'], 'user_id' => $user, 'status' => POW\Sessions\Session::ACTIVE, 'wp_session_token' => $token, 'one_time_token_hash' => hash( 'sha256', random_bytes( 32 ) ), 'payload_id' => 'delivery-store-' . bin2hex( random_bytes( 10 ) ), 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] );
-		if ( $id <= 0 ) { throw new RuntimeException( 'Native session fixture failed.' ); }
-		return $this->store->find( $id );
+		return pow_native_open_visit(
+			(int) $this->fixture['id'],
+			$this->account(),
+			[ 'payload_id' => 'delivery-store-' . bin2hex( random_bytes( 10 ) ), 'buyer_identity' => 'store-' . bin2hex( random_bytes( 6 ) ) . '@example.invalid', 'buyer_name' => 'Store fixture buyer' ]
+		);
+	}
+	private function account(): int { return (int) ( $this->fixture['account'] ?? 0 ); }
+	/** The attribution and addressing columns a delivery write must never touch. @return array<string,mixed> */
+	private function attribution( POW\Sessions\Session $s ): array {
+		$row = $this->independent( $s );
+		return [ 'wc_session_key' => $row->wc_session_key, 'buyer_identity' => $row->buyer_identity, 'buyer_name' => $row->buyer_name, 'buyer_identity_hash' => $row->buyer_identity_hash, 'wp_session_token' => $row->wp_session_token, 'user_id' => $row->user_id ];
 	}
 	private function confirmation( POW\Sessions\Session $s, ?array $choice = null, string $notes = 'Approved delivery notes' ): array {
 		return [ 'schema' => 1, 'session_id' => $s->id, 'buyer_user_id' => $s->user_id, 'choice_hash' => POW\Addresses\DeliveryData::fingerprint( $choice ), 'cart_fingerprint' => str_repeat( 'a', 64 ), 'policy_fingerprint' => str_repeat( 'b', 64 ), 'notes' => $notes, 'confirmed_at' => time(), 'delivery' => [ 'status' => null === $choice ? 'not_required' : 'unknown', 'amount_cents' => null, 'currency' => 'ZAR', 'code' => $choice['code'] ?? '', 'emit' => false, 'rates' => [], 'freight' => [ 'supplier_part_id' => 'DELIVERY', 'uom' => 'EA', 'classification_domain' => 'supplier', 'classification' => 'freight' ] ] ];
@@ -34,7 +46,7 @@ final class DeliveryStoreNative {
 		try {
 			if ( $db->get_var( 'SELECT CONNECTION_ID()' ) === $wpdb->get_var( 'SELECT CONNECTION_ID()' ) ) { throw new RuntimeException( 'Independent connection required.' ); }
 			$row = $db->get_row( $db->prepare( 'SELECT * FROM ' . POW\Installer::sessions_table() . ' WHERE id = %d AND partner_id = %d', $s->id, $this->fixture['id'] ), ARRAY_A );
-			if ( '' !== $db->last_error || ! $row || (int) $row['user_id'] !== $this->fixture['buyers'][0] ) { throw new RuntimeException( 'Independent fixture read failed.' ); }
+			if ( '' !== $db->last_error || ! $row || (int) $row['user_id'] !== $this->account() ) { throw new RuntimeException( 'Independent fixture read failed.' ); }
 			return POW\Sessions\Session::from_row( $row );
 		} finally { $db->close(); }
 	}
@@ -180,13 +192,32 @@ final class DeliveryStoreNative {
 		$this->check( null === $fresh->delivery_choice_json && $confirmation === $fresh->delivery_confirmation(), 'both persisted columns decode as the exact accepted values' );
 		$this->check( ! $this->save( $s, [], $this->confirmation( $s, null, 'Stale second request' ) ), 'stale NULL confirmation cannot overwrite the winner' );
 		$this->check( $this->save( $s, [], $this->confirmation( $s, null, 'Updated notes' ), null, $fresh->delivery_confirmation_json ), 'known raw previous confirmation can be replaced' );
+		$attribution = $this->attribution( $s );
+		$this->check(
+			POW\Cart\SessionKey::is_visit_key( (string) $attribution['wc_session_key'] ) && $this->account() === $attribution['user_id']
+			&& '' !== (string) $attribution['buyer_identity'] && 64 === strlen( (string) $attribution['buyer_identity_hash'] ),
+			'a visit row carries its own cart key and the buyer identity its request named'
+		);
+		$this->check( $this->save( $s, [], $this->confirmation( $s, null, 'Attribution check' ), null, $this->independent( $s )->delivery_confirmation_json ), 'a further consent write succeeds on the same visit' );
+		$this->check( $attribution === $this->attribution( $s ), 'no delivery write touches the visit cart key, login token or buyer attribution' );
+		// A colleague of the same account is a different visit, and consent belongs to the visit.
+		$sibling = $this->session();
+		$this->check(
+			$sibling->id !== $s->id && ! hash_equals( (string) $sibling->wc_session_key, (string) $s->wc_session_key ) && $sibling->wp_session_token !== $s->wp_session_token,
+			'a second visit of one bound account is a distinct row with its own key and token'
+		);
+		$this->check(
+			! $this->save( $s, [], $this->confirmation( $s, null, 'Colleague notes' ), null, $this->independent( $s )->delivery_confirmation_json, null, $sibling->wp_session_token )
+			&& null === $this->independent( $sibling )->delivery_confirmation_json,
+			'a colleague visit of the same account cannot write this visit consent'
+		);
 		$s = $this->session(); $choice = $this->fixture['choice']; $choice['provider'] = 'customer'; $choice['source'] = 'customer'; $choice['key'] = 'customer'; $choice['book_revision'] = null; $choice['entry_fingerprint'] = null;
 		$confirmation = $this->confirmation( $s, $choice );
 		$this->check( $this->save( $s, $choice, $confirmation ), 'full physical choice and acknowledgement save in one native UPDATE' );
 		$fresh = $this->store->find( $s->id );
 		$this->check( $choice === $fresh->delivery_choice() && $confirmation === $fresh->delivery_confirmation(), 'physical snapshot readback retains Unicode and exact schema' );
 		$this->check( ! $this->save( $s, $choice, $confirmation, '', $fresh->delivery_confirmation_json ), 'SQL empty string never substitutes for NULL or another raw choice' );
-		$this->check( ! $this->save( $s, $choice, $confirmation, $fresh->delivery_choice_json, $fresh->delivery_confirmation_json, $this->fixture['buyers'][1] ), 'another buyer cannot write this session' );
+		$this->check( ! $this->save( $s, $choice, $confirmation, $fresh->delivery_choice_json, $fresh->delivery_confirmation_json, (int) $this->fixture['foreign_account'] ), 'another account cannot write this visit' );
 		$this->check( ! $this->save( $s, $choice, $confirmation, $fresh->delivery_choice_json, $fresh->delivery_confirmation_json, null, 'wrong-token' ), 'different login token cannot write this session' );
 		$invalid = $confirmation; $invalid['choice_hash'] = str_repeat( 'c', 64 );
 		$this->check( ! $this->save( $s, $choice, $invalid, $fresh->delivery_choice_json, $fresh->delivery_confirmation_json ), 'mismatched confirmation cannot be persisted' );
@@ -208,7 +239,7 @@ final class DeliveryStoreNative {
 		$s = $this->session(); $c = $this->confirmation( $s, $choice );
 		$this->check( $this->save( $s, $choice, $c ), 'recovery fixture has a complete accepted pair' );
 		$invalidate = fn( $user, $token ) => $this->registry->with_partner_lock( $s->partner_id, fn() => $this->store->invalidate_delivery( $s->id, $user, $token ) );
-		$this->check( ! $invalidate( $this->fixture['buyers'][1], $s->wp_session_token ) && ! $invalidate( $s->user_id, 'wrong-token' ), 'another login cannot invalidate the current buyer confirmation' );
+		$this->check( ! $invalidate( (int) $this->fixture['foreign_account'], $s->wp_session_token ) && ! $invalidate( $s->user_id, 'wrong-token' ), 'another login cannot invalidate this visit confirmation' );
 		$this->check( $invalidate( $s->user_id, $s->wp_session_token ), 'invalidation clears the exact active login confirmation' );
 		$fresh = $this->store->find( $s->id );
 		$this->check( null === $fresh->delivery_confirmation_json && $fresh->delivery_choice() === $choice, 'invalidation retains the chosen destination and clears only consent' );

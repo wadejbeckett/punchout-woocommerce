@@ -13,16 +13,33 @@ namespace POW\Sessions;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * One punchout session: one row per PunchOutSetupRequest (scope §4.2).
+ * One punchout visit: one row per PunchOutSetupRequest (scope §4.2).
+ *
+ * Many rows share one `user_id` — a connection has a single bound customer
+ * account and every buyer of that customer punches in as it. The visit
+ * identity is therefore the row itself: `wc_session_key` names the visit's
+ * own WooCommerce basket, and `wp_session_token` names the visit's own
+ * WordPress login. Neither `user_id` nor the account's capabilities
+ * distinguish one visit from another, so no ownership question may be
+ * answered with them.
+ *
+ * Buyer identity (`buyer_identity`, `buyer_name`, `buyer_identity_hash`) is
+ * data the purchasing system supplied, not a user: it attributes the visit
+ * and may be entirely absent.
  *
  * State machine (scope §4.2/§5.4/§9.7):
  *
  *   pending  --token redeemed-->  active
  *   active   --RFQ exit-------->  returned
- *   active   --payment_complete-> ordered
  *   active   --empty POOM------->  closed   ("return without ordering")
- *   ordered  --close-out POOM--->  closed
- *   pending|active|ordered --cron/latest-wins--> expired
+ *   pending|active|ordered --cron/supersede--> expired
+ *
+ * ORDERED is inert vocabulary. Checkout is blocked inside every visit, so
+ * no code path writes it any more; the constant and its two transition rows
+ * stay so rows and audit entries written before the paid exit was removed
+ * still parse, and so an ordered row still counts as open (Store defines
+ * "open" as pending|active|ordered in six places, including the
+ * per-connection visit cap).
  *
  * The transition table is pure and unit-tested; Store enforces it in SQL
  * (UPDATE ... WHERE status IN (...)) so concurrent requests cannot race a
@@ -33,12 +50,14 @@ final class Session {
 	public const PENDING  = 'pending';
 	public const ACTIVE   = 'active';
 	public const RETURNED = 'returned';
+	/** Historical only: nothing writes this status since the paid exit was removed. */
 	public const ORDERED  = 'ordered';
 	public const CLOSED   = 'closed';
 	public const EXPIRED  = 'expired';
 
 	private const TRANSITIONS = [
 		self::PENDING => [ self::ACTIVE, self::EXPIRED ],
+		// The two ORDERED terms are unreachable by design; see the class docblock.
 		self::ACTIVE  => [ self::RETURNED, self::ORDERED, self::CLOSED, self::EXPIRED ],
 		self::ORDERED => [ self::CLOSED, self::EXPIRED ],
 	];
@@ -68,6 +87,14 @@ final class Session {
 		public readonly ?string $expires,
 		public readonly ?string $delivery_choice_json = null,
 		public readonly ?string $delivery_confirmation_json = null,
+		// Buyer attribution. Empty is legal: a purchasing system need send
+		// no name and no e-mail, and the visit still buys.
+		public readonly ?string $buyer_identity = null,
+		public readonly ?string $buyer_name = null,
+		public readonly ?string $buyer_identity_hash = null,
+		// This visit's WooCommerce basket. 32 characters, `pow_`-prefixed,
+		// UNIQUE across the table; minted once when the login is bound.
+		public readonly ?string $wc_session_key = null,
 	) {}
 
 	/**
@@ -99,6 +126,12 @@ final class Session {
 			expires: self::nullable( $row, 'expires' ),
 			delivery_choice_json: self::delivery_column( $row, 'delivery_choice' ),
 			delivery_confirmation_json: self::delivery_column( $row, 'delivery_confirmation' ),
+			// An absent column and an empty one both mean "no identity" and
+			// "no basket of its own yet": nothing downstream distinguishes them.
+			buyer_identity: self::nullable( $row, 'buyer_identity' ),
+			buyer_name: self::nullable( $row, 'buyer_name' ),
+			buyer_identity_hash: self::nullable( $row, 'buyer_identity_hash' ),
+			wc_session_key: self::nullable( $row, 'wc_session_key' ),
 		);
 	}
 

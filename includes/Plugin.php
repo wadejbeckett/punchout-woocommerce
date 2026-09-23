@@ -14,11 +14,9 @@ use POW\Admin\Actions as AdminActions;
 use POW\Admin\Details as AdminDetails;
 use POW\Admin\Page as AdminPage;
 use POW\Audit\Log;
-use POW\Buyers\Provisioner;
 use POW\Cart\Guard;
 use POW\Cart\PoomMapper;
 use POW\Cart\Surface;
-use POW\Checkout\PayExit;
 use POW\CLI\Command;
 use POW\Cxml\Builder;
 use POW\Cxml\Parser;
@@ -103,12 +101,16 @@ final class Plugin {
 		$this->audit    = new Log( $this->logger );
 		$registration  = new \POW\Partners\Registration( $this->registry, $this->sessions, $this->audit );
 
-		$provisioner = new Provisioner( $this->sessions, $this->audit, $this->logger );
 		$parser      = new Parser();
 		$builder     = new Builder();
 		$mapper      = new PoomMapper( $this->settings, $this->logger );
-		$address_book = new Addresses\CompanyBook( $this->registry, $this->audit );
-		$address_resolver = new Addresses\Resolver( $this->registry, $address_book );
+		// One resolver for "is this request inside a visit", shared by the
+		// book's editor gate and the address resolver: with a single bound
+		// login, that question is the only thing that still separates the
+		// customer managing their delivery book from an employee shopping.
+		$visits = new Sessions\Current( $this->sessions );
+		$address_book = new Addresses\CompanyBook( $this->registry, $this->audit, $visits );
+		$address_resolver = new Addresses\Resolver( $this->registry, $address_book, $visits );
 		$address_fields = new Addresses\Fields( $this->registry, $address_book, new Addresses\NativeImport( $this->registry, $address_book ) );
 
 		// Built before the master-switch gate because housekeeping needs it:
@@ -120,15 +122,15 @@ final class Plugin {
 
 		// Admin, schema upgrade, CLI and housekeeping run regardless of the
 		// master switch.
-		// One editor instance retains same-request validation feedback across account and admin rendering.
-		if ( $this->enabled() ) {
-			$address_fields->register();
-		} else {
-			add_action( 'admin_init', [ $address_fields, 'handle' ] );
-		}
-		( new AdminPage( $this->settings, $this->registry, $this->audit, $address_fields ) )->register();
+		// One editor instance retains same-request validation feedback across
+		// the admin screen's POST handling and its rendering. It registers the
+		// same way whatever the switch says: the delivery book is an
+		// administrator surface with no front-end route to gate.
+		$address_fields->register();
+		$admin_page = new AdminPage( $this->settings, $this->registry, $this->audit, $address_fields );
+		$admin_page->register();
 		( new AdminActions( $this->registry, $this->audit, $registration ) )->register();
-		( new \POW\Account\IntegrationTab( $this, $this->registry, $registration, $this->audit, new RateLimiter( RateLimiter::public_limit( \POW\Partners\Registration::RATE_LIMIT_PER_HOUR, 5 ), null, null, HOUR_IN_SECONDS ), $address_fields ) )->register();
+		( new \POW\Account\IntegrationTab( $this, $this->registry, $this->audit ) )->register();
 		( new AdminDetails() )->register();
 		( new Cron( $this->sessions, $this->audit, $this->settings, $quotes ) )->register();
 
@@ -151,22 +153,42 @@ final class Plugin {
 
 		add_action( 'admin_init', [ Installer::class, 'maybe_upgrade' ] );
 		add_action( 'admin_notices', [ $this, 'render_key_notice' ] );
+		// Unlike the sealing-key notice, this one is not scoped to the
+		// plugin's own screens: a connection with no usable store account
+		// refuses every setup request, so the operator must meet it wherever
+		// they are in wp-admin rather than only where they went looking.
+		add_action( 'admin_notices', [ $admin_page, 'render_unbound_notice' ] );
 
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			Command::register( $this );
 		}
 
-		// Always-on hardening — deliberately registered BEFORE the master
-		// switch gate so it holds even while punchout is disabled:
-		// punchout_buyer accounts must never gain a standing password login
-		// (their only door is the one-time StartPage token), and flipping
-		// the switch off must tear down live sessions, not strand them
-		// logged in with every guard unhooked.
-		add_filter( 'allow_password_reset', [ $this, 'deny_buyer_password_reset' ], 10, 2 );
-		add_filter( 'wp_authenticate_user', [ $this, 'deny_buyer_password_login' ] );
+		// Always-on teardown — deliberately registered BEFORE the master
+		// switch gate so it holds even while punchout is disabled: flipping
+		// the switch off must end live visits, not strand them logged in
+		// with every guard unhooked.
+		//
+		// Nothing here touches the password door. A connection's buyers
+		// shop as an ordinary WooCommerce customer account, and that same
+		// account signs in with its own password to read its My Account
+		// screens, so it must be able to authenticate and to reset its
+		// password like any other customer. What a visit may reach is
+		// decided per request by the visit row, not by the account.
 		add_action( 'update_option_' . Settings::OPTION_KEY, [ $this, 'on_settings_updated' ], 10, 2 );
 
 		( new RouteGuard( $this, $this->registry, $this->settings ) )->register();
+		// Basket isolation has the same lifetime as visit resolution, and for
+		// the same reason. NativeSessionGuard above keeps resolving visits and
+		// keeps binding each one its own `pow_` session row whatever the switch
+		// says; Cart\Guard is what turns WooCommerce's persistent cart off for
+		// a visit and what hides and keeps the saved-cart merge flag. A visit
+		// that outlived on_settings_updated()'s sweep — one contended
+		// connection lock is enough — would otherwise run with that one shared
+		// user-meta basket fully live: every cart mutation would overwrite the
+		// bound account's own saved basket, and an emptied visit would merge a
+		// colleague's lines into its own on the next hydration. The resolver
+		// and the filters that consume it are registered together or not at all.
+		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
 		$this->surface = new Surface( $this, $this->registry );
 		$this->surface->register_cart_exits_shortcode();
 
@@ -177,9 +199,9 @@ final class Plugin {
 		// Buyer-facing runtime.
 		$rate_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'rate_limit_per_min' ), 30 ) );
 		$edge_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'edge_rate_limit_per_min' ), 120 ) );
-		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $provisioner, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter );
+		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter );
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
-		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), new Checkout\ExitPolicy( $this->settings, $this->registry ), $address_resolver, $mapper, $native_sessions );
+		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), $address_resolver, $mapper, $native_sessions );
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
 		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions );
 
@@ -188,45 +210,43 @@ final class Plugin {
 		$return_endpoint->register();
 
 		$this->surface->register_runtime();
-
-		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
-		( new PayExit( $this, $this->sessions, $this->audit ) )->register();
-
 	}
 
 	/**
-	 * The active punchout session bound to the current login, or null.
+	 * The punchout visit this request is inside, or null.
 	 *
-	 * Bound to the exact WP session token created at auto-login, so a
-	 * stale cookie from a superseded punchout never counts (scope §4.2).
-	 * Resolved once per request.
+	 * Delegates to Sessions\Current — the one resolver — and memoises its
+	 * answer for the request. Kept as a method on the container because
+	 * every guard and surface already asks the question here.
+	 *
+	 * The memo is three-state on purpose: "no visit" is cached only once a
+	 * lookup has actually returned it. The first caller can be WooCommerce
+	 * building its session handler at 'init' priority 0, long before any
+	 * caller of today; a resolution that could not run (no store yet, a
+	 * failed query) must be retried by the next caller, or one early miss
+	 * would silently disarm cart isolation, the route guard and the
+	 * checkout block for the whole request.
+	 *
+	 * Deliberately not gated on the master switch. The guards that ask
+	 * this question are registered before the switch is consulted, so an
+	 * already-authenticated visit must keep resolving after the switch
+	 * flips — otherwise it would get an unguarded cart. Ending live visits
+	 * is on_settings_updated()'s job, not this resolver's.
 	 */
 	public function current_session(): ?Session {
 		if ( $this->session_resolved ) {
 			return $this->current_session;
 		}
 
+		if ( null === $this->sessions ) {
+			return null;
+		}
+
+		// Order is load-bearing: the memo closes only after a lookup
+		// returned an answer, so a throw leaves the request unresolved
+		// rather than remembered as "no visit".
+		$this->current_session  = ( new Sessions\Current( $this->sessions ) )->visit();
 		$this->session_resolved = true;
-		$this->current_session  = null;
-
-		if ( null === $this->sessions || ! $this->enabled() || ! is_user_logged_in() ) {
-			return null;
-		}
-
-		$user = wp_get_current_user();
-
-		if ( ! in_array( Installer::ROLE, (array) $user->roles, true ) ) {
-			return null;
-		}
-
-		// `ordered` still counts as a live session: the login survives
-		// checkout until the close-out (or cron) tears it down, and the
-		// thank-you close-out CTA needs the session resolvable (§9.7).
-		$this->current_session = $this->sessions->find_for_login(
-			$user->ID,
-			wp_get_session_token(),
-			[ Session::ACTIVE, Session::ORDERED ]
-		);
 
 		return $this->current_session;
 	}
@@ -274,32 +294,6 @@ final class Plugin {
 	}
 
 	/**
-	 * @param bool $allow   Whether the reset may proceed.
-	 * @param int  $user_id User requesting the reset.
-	 * @return bool
-	 */
-	public function deny_buyer_password_reset( $allow, $user_id ) {
-		$user = get_userdata( (int) $user_id );
-
-		return $user && in_array( Installer::ROLE, (array) $user->roles, true ) ? false : $allow;
-	}
-
-	/**
-	 * @param \WP_User|\WP_Error $user Authentication candidate.
-	 * @return \WP_User|\WP_Error
-	 */
-	public function deny_buyer_password_login( $user ) {
-		if ( $user instanceof \WP_User && in_array( Installer::ROLE, (array) $user->roles, true ) ) {
-			return new \WP_Error(
-				'pow_no_password_login',
-				__( 'This account can only sign in through its procurement system.', 'punchout-woocommerce' )
-			);
-		}
-
-		return $user;
-	}
-
-	/**
 	 * Master switch turned off: expire every open session and destroy its
 	 * recorded login, so "disabled" means disabled immediately rather than
 	 * at each session's TTL.
@@ -318,18 +312,27 @@ final class Plugin {
 		$ok = null !== $this->registry;
 		try {
 			foreach ( $this->registry?->all() ?? [] as $partner ) {
-				$clean = $this->registry->with_partner_lock( $partner->id, function () use ( $partner ) {
-					$after = 0;
-					$clean = true;
-					while ( $rows = $this->sessions->revocation_batch( $partner->id, $after ) ) {
-						foreach ( $rows as $row ) {
-							if ( $row->id <= $after ) { return false; }
-							$after = $row->id;
-							$clean = $this->sessions->expire_locked( $row ) && $clean;
+				// One try per connection, because the lock is per connection: a
+				// setup request already holding X's lock makes
+				// with_partner_lock() throw for X, and a single try around the
+				// whole loop would let that throw abandon every connection
+				// after it — leaving those visits active and logged in for the
+				// rest of their TTL, none of them swept and none of them even
+				// counted. The incomplete sweep is still recorded below.
+				try {
+					$clean = $this->registry->with_partner_lock( $partner->id, function () use ( $partner ) {
+						$after = 0;
+						$clean = true;
+						while ( $rows = $this->sessions->revocation_batch( $partner->id, $after ) ) {
+							foreach ( $rows as $row ) {
+								if ( $row->id <= $after ) { return false; }
+								$after = $row->id;
+								$clean = $this->sessions->expire_locked( $row ) && $clean;
+							}
 						}
-					}
-					return $clean;
-				} );
+						return $clean;
+					} );
+				} catch ( \Throwable $e ) { $clean = false; }
 				$ok = $clean && $ok;
 			}
 			$ok = [] === $this->sessions->all_open( 1 ) && $ok;

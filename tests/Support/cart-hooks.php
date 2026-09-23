@@ -13,7 +13,9 @@ function add_action( string $hook, callable $callback, int $priority = 10, int $
 }
 
 function add_filter( string $hook, callable $callback, int $priority = 10, int $accepted_args = 1 ): void {
-	// Registration is not executed by the seed-cart unit fixture.
+	// Recorded, not executed: the fixture applies the guard's own filters
+	// where it reproduces the core call site that consults them.
+	$GLOBALS['pow_test_cart_filters'][ $hook ][ $priority ][] = $callback;
 }
 
 function wp_die( $message, $title = '', $args = [] ): void {

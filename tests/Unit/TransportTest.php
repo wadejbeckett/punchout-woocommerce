@@ -9,7 +9,25 @@ namespace POW\Support {
 }
 namespace {
 use PHPUnit\Framework\TestCase;
+use POW\Sessions\Session;
 use POW\Support\Transport;
+
+/** The one partners read protected_actor() makes, without a database: owner_user_id answers or the lookup breaks. */
+final class TransportTestDatabase {
+	public string $prefix = 'wp_';
+	public string $last_error = '';
+	public int $owner = 0;
+	public bool $unreachable = false;
+	public array $queries = [];
+	public function prepare( string $sql, ...$args ): string { return vsprintf( str_replace( [ '%d', '%s' ], '%s', $sql ), $args ); }
+	/** One partners lookup by owner, which the registry reads as a two-row set. */
+	public function get_results( string $sql, string $output = 'OBJECT' ): array {
+		$this->queries[] = $sql;
+		if ( $this->unreachable ) { $this->last_error = 'MySQL server has gone away'; return []; }
+		return $this->owner > 0 && str_contains( $sql, 'owner_user_id = ' . $this->owner ) ? [ [ 'id' => 7, 'name' => 'Example Buyer Company', 'status' => 'active' ] ] : [];
+	}
+}
+
 final class TransportTest extends TestCase {
 	private array $saved;
 	protected function setUp(): void {
@@ -46,24 +64,48 @@ final class TransportTest extends TestCase {
 		}
 		foreach(['javascript:alert(1)','//buyer.example.test','http://','https:///path',"https://buyer.example.test/\r\n",'https://user:pass@buyer.example.test/'] as $url){self::assertFalse(Transport::receiver_allowed($url));}
 	}
-	public function test_early_native_shopping_guard_precedes_woo_and_keeps_ordinary_shoppers_unchanged(): void {
-		$before = [$GLOBALS['pow_test_current_user_id']??null,$GLOBALS['pow_test_users']??null,$GLOBALS['pow_test_user_meta']??null];
+	/**
+	 * The signals are a live visit and the account a connection is bound to.
+	 * Neither the removed buyer role nor the removed _pow_partner_id user
+	 * meta is consulted any more: the bound login is an ordinary customer
+	 * account, so a test of what the USER is would answer "ordinary
+	 * shopper" and switch the policy off for every buyer.
+	 */
+	public function test_early_native_shopping_guard_precedes_woo_and_covers_visits_and_the_bound_account(): void {
+		$plugin = \POW\Plugin::instance();
+		$visit = new \ReflectionProperty(\POW\Plugin::class,'current_session');
+		$resolved = new \ReflectionProperty(\POW\Plugin::class,'session_resolved');
+		$partners = new \ReflectionProperty(\POW\Plugin::class,'registry');
+		$before = [$GLOBALS['pow_test_current_user_id']??null,$GLOBALS['pow_test_users']??null,$GLOBALS['pow_test_user_meta']??null,$GLOBALS['wpdb']??null];
+		$state = [$visit->getValue($plugin),$resolved->getValue($plugin),$partners->getValue($plugin)];
 		try {
+			$GLOBALS['wpdb'] = $database = new TransportTestDatabase();
+			$partners->setValue($plugin,new \POW\Partners\Registry(new \POW\Partners\Secrets(str_repeat('x',32))));
+			$resolved->setValue($plugin,true); $visit->setValue($plugin,null);
 			$GLOBALS['pow_transport_hooks']=[]; Transport::register();
 			$hooks=$GLOBALS['pow_transport_hooks'];
 			self::assertTrue(min(array_keys($hooks['init']))<0); // Installed Woo initialization is init:0; cart POST handling is wp_loaded:20.
 			$guard=$hooks['init'][min(array_keys($hooks['init']))][0];
+
+			$guard(); // Nobody is signed in: no visit lookup, no partners read, no policy.
+			self::assertSame([],$database->queries);
+
 			$GLOBALS['pow_test_current_user_id']=99;
-			$GLOBALS['pow_test_users'][99]=(object)['ID'=>99,'roles'=>[\POW\Installer::ROLE]];
+			$guard(); // Signed in, no visit, no connection bound to this account.
+
+			// The removed signals must not resurrect the policy on their own:
+			// no role at all is consulted now (the buyer role is gone), and
+			// the legacy company association meta is not a signal either.
+			$GLOBALS['pow_test_users'][99]=(object)['ID'=>99,'roles'=>['customer','legacy_buyer_role']];
+			$GLOBALS['pow_test_user_meta'][99]['_pow_partner_id']=7;
+			$guard();
+			unset($GLOBALS['pow_test_user_meta'][99]['_pow_partner_id']);
+
+			// A live visit: buyer catalog, cart and Store API traffic in cleartext is refused.
+			$visit->setValue($plugin,Session::from_row(['id'=>42,'partner_id'=>7,'user_id'=>99,'status'=>Session::ACTIVE]));
 			foreach(['/shop/','/cart/?add-to-cart=12','/?wc-ajax=add_to_cart','/wp-json/wc/store/v1/cart/add-item'] as $path){
 				$_SERVER['REQUEST_URI']=$path; $this->denied($guard);
 			}
-			$GLOBALS['pow_test_users'][99]->roles=['customer'];
-			$GLOBALS['pow_test_user_meta'][99]['_pow_partner_id']=7;
-			$this->denied($guard);
-			unset($GLOBALS['pow_test_user_meta'][99]['_pow_partner_id']);
-			$guard(); // An ordinary Woo user remains outside the policy.
-			$GLOBALS['pow_test_users'][99]->roles=[\POW\Installer::ROLE];
 			$_SERVER['HTTPS']='on'; $guard();
 			$_SERVER['HTTPS']='off'; $GLOBALS['pow_test_environment_type']='local'; $guard();
 			$GLOBALS['pow_test_environment_type']='production';
@@ -71,8 +113,18 @@ final class TransportTest extends TestCase {
 			$error=$rest(null);
 			self::assertInstanceOf(\WP_Error::class,$error);
 			self::assertSame('pow_https_required',$error->get_error_code());
+
+			// Outside every visit the bound account is still covered, because it is the login every buyer of that connection arrives on.
+			$visit->setValue($plugin,null);
+			$guard();
+			$database->owner=99; $this->denied($guard);
+			$GLOBALS['pow_test_current_user_id']=100; $guard(); // Another shopper on the same shop is not.
+
+			// A lookup that cannot run is not proof of an ordinary shopper.
+			$GLOBALS['pow_test_current_user_id']=99; $database->unreachable=true; $this->denied($guard);
 		} finally {
-			foreach(['pow_test_current_user_id','pow_test_users','pow_test_user_meta'] as $i=>$key){if(null===$before[$i]){unset($GLOBALS[$key]);}else{$GLOBALS[$key]=$before[$i];}}
+			foreach(['pow_test_current_user_id','pow_test_users','pow_test_user_meta','wpdb'] as $i=>$key){if(null===$before[$i]){unset($GLOBALS[$key]);}else{$GLOBALS[$key]=$before[$i];}}
+			$visit->setValue($plugin,$state[0]); $resolved->setValue($plugin,$state[1]); $partners->setValue($plugin,$state[2]);
 			unset($GLOBALS['pow_transport_hooks']);
 		}
 	}
@@ -82,7 +134,7 @@ final class TransportTest extends TestCase {
 		$before=$GLOBALS['pow_account_test']??null;
 		try {
 			$GLOBALS['pow_account_test']=['account'=>true,'endpoint'=>\POW\Account\IntegrationTab::ENDPOINT];
-			$_POST=['pow_account_action'=>'rotate','_wpnonce'=>'valid'];
+			$_POST=['pow_account_action'=>'download_setup_template','_wpnonce'=>'valid'];
 			$this->denied(fn()=> $this->unconstructed(\POW\Account\IntegrationTab::class)->handle_post());
 		} finally { if(null===$before){unset($GLOBALS['pow_account_test']);}else{$GLOBALS['pow_account_test']=$before;} }
 	}
@@ -107,7 +159,7 @@ final class TransportTest extends TestCase {
 	public function test_secret_pages_actions_and_docs_refuse_before_dependencies(): void {
 		$this->denied(fn()=> $this->unconstructed(\POW\Account\IntegrationTab::class)->render());
 		$this->denied(fn()=> $this->unconstructed(\POW\Admin\Page::class)->render());
-		foreach(['save_buyer_exit','save_partner','approve_partner','reset_partner','associate_partner','delete_partner','rotate_partner','close_rotation'] as $method){
+		foreach(['save_partner','approve_partner','reset_partner','associate_partner','delete_partner','rotate_partner','close_rotation'] as $method){
 			$this->denied(fn()=> $this->unconstructed(\POW\Admin\Actions::class)->$method());
 		}
 		self::assertStringContainsString('HTTPS',$this->unconstructed(\POW\Docs\Page::class)->render(true));

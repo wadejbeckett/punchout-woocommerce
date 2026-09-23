@@ -7,6 +7,10 @@ use POW\Addresses\DeliveryData;
 use POW\Partners\Partner;
 use POW\Sessions\Session;
 
+/** This visit's WooCommerce session key and a sibling visit's, as Cart\SessionKey mints them: `pow_` + 28 hex, 32 characters. */
+const VISIT_KEY = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
+const SIBLING_KEY = 'pow_00112233445566778899aabbccdd';
+
 final class Registry {
 	public Partner $partner;
 	public bool $locked = false;
@@ -36,15 +40,6 @@ final class Store {
 		++$this->writes;$this->change(['delivery_choice_json'=>[]===$new_choice?null:json_encode($new_choice),'delivery_confirmation_json'=>json_encode($new_confirmation)]);return !$this->fail_save;
 	}
 	public function invalidate_delivery(int $id,int $buyer,string $token):bool{\PHPUnit\Framework\TestCase::assertTrue(state()->registry->locked);++$this->invalidations;if($this->fail_invalidate){return false;}$this->change(['delivery_confirmation_json'=>null]);return true;}
-}
-final class ExitPolicy {
-	public bool $member = true;
-	public string $effective = 'punchout_only';
-	public mixed $callback = null;
-	public string $buyer='inherit';
-	public function buyer_value(int $partner,int $buyer):string{return $this->buyer;}
-	public function member(int $partner,int $buyer):bool{return $this->member;}
-	public function effective(Partner $p,int $buyer):string{if($this->callback){$f=$this->callback;$this->callback=null;$f();}return $this->effective;}
 }
 final class Resolver {
 	public array $choices = [];
@@ -95,7 +90,8 @@ final class Customer {
 }
 final class NativeSession {
 	public array $values=[];
-	public function get_customer_id():string{return '99';}
+	public function __construct(public string $key=VISIT_KEY){}
+	public function get_customer_id():string{return $this->key;}
 	public function get(string $key,mixed $default=null):mixed{return $this->values[$key]??$default;}
 	public function set(string $key,mixed $value):void{$this->values[$key]=$value;}
 }
@@ -131,14 +127,14 @@ final class DeliveryEstimate {
 	}
 }
 final class PolicyDatabase {
-	public string $options='wp_options';public string $last_error='';public array $values=['pow_settings'=>'a:0:{}','woocommerce_currency'=>'ZAR'];
+	public string $options='wp_options';public string $last_error='';public array $values=['pow_settings'=>'a:0:{}','woocommerce_currency'=>'ZAR'];public mixed $callback=null;
 	public function prepare(string $sql,mixed ...$args):string{return $sql;}
-	public function get_results(string $sql,string $format):array{if(!str_contains($sql,'SELECT option_name, option_value FROM wp_options')){throw new \LogicException('Unexpected option query');}$rows=[];foreach($this->values as $key=>$value){$rows[]=['option_name'=>$key,'option_value'=>$value];}return $rows;}
+	public function get_results(string $sql,string $format):array{if(!str_contains($sql,'SELECT option_name, option_value FROM wp_options')){throw new \LogicException('Unexpected option query');}if($this->callback){$f=$this->callback;$this->callback=null;$f();}$rows=[];foreach($this->values as $key=>$value){$rows[]=['option_name'=>$key,'option_value'=>$value];}return $rows;}
 }
 final class State {
 	public string $loaded_native='A';public string $durable_native='A';
-	public Registry $registry;public Store $store;public Resolver $resolver;public ExitPolicy $policy;public QuoteAddress $address;public DeliveryEstimate $estimate;public PoomMapper $mapper;public Cart $cart;public Customer $customer;public NativeSession $session;public Shipping $shipping;public int $actor=99;public string $token='exact-token';public string $currency='ZAR';public mixed $currency_callback=null;
-	public function __construct(){foreach(['registry'=>Registry::class,'store'=>Store::class,'resolver'=>Resolver::class,'policy'=>ExitPolicy::class,'address'=>QuoteAddress::class,'estimate'=>DeliveryEstimate::class,'mapper'=>PoomMapper::class,'cart'=>Cart::class,'customer'=>Customer::class,'session'=>NativeSession::class,'shipping'=>Shipping::class] as $key=>$class){$this->$key=new $class();}}
+	public Registry $registry;public Store $store;public Resolver $resolver;public QuoteAddress $address;public DeliveryEstimate $estimate;public PoomMapper $mapper;public Cart $cart;public Customer $customer;public NativeSession $session;public NativeSession $sibling;public Shipping $shipping;public int $actor=99;public string $token='exact-token';public string $currency='ZAR';public mixed $currency_callback=null;
+	public function __construct(){foreach(['registry'=>Registry::class,'store'=>Store::class,'resolver'=>Resolver::class,'address'=>QuoteAddress::class,'estimate'=>DeliveryEstimate::class,'mapper'=>PoomMapper::class,'cart'=>Cart::class,'customer'=>Customer::class,'session'=>NativeSession::class,'shipping'=>Shipping::class] as $key=>$class){$this->$key=new $class();}$this->sibling=new NativeSession(SIBLING_KEY);}
 	public function shipping():Shipping{return $this->shipping;}
 }
 function state():State{return $GLOBALS['confirmation_test_state'];}
@@ -162,7 +158,7 @@ function load_source():void{
 	\PHPUnit\Framework\TestCase::assertTrue(is_file($path),'Confirmation model must exist');
 	$source=file_get_contents($path);
 	$source=str_replace('namespace POW\\Addresses;','namespace POW\\Tests\\DeliveryConfirmation; use POW\\Addresses\\DeliveryData; use POW\\Addresses\\ReturnConfirmation;', $source);
-	foreach(['POW\\Partners\\Registry','POW\\Sessions\\Store','POW\\Checkout\\ExitPolicy','POW\\Cart\\PoomMapper','POW\\Cart\\NativeSessionGuard','POW\\Sessions\\ConsentFence'] as $import){$source=str_replace('use '.$import.';','',$source);}
+	foreach(['POW\\Partners\\Registry','POW\\Sessions\\Store','POW\\Cart\\PoomMapper','POW\\Cart\\NativeSessionGuard','POW\\Sessions\\ConsentFence'] as $import){$source=str_replace('use '.$import.';','',$source);}
 	eval(substr($source,5));
 	load_fence_source();
 }
@@ -176,16 +172,18 @@ use POW\Sessions\Session;
 use POW\Partners\Partner;
 
 final class DeliveryConfirmationTest extends TestCase {
+	private const KEY = \POW\Tests\DeliveryConfirmation\VISIT_KEY;
+	private const OTHER_KEY = \POW\Tests\DeliveryConfirmation\SIBLING_KEY;
 	private State $s;
 	private Confirmation $model;
 	private mixed $previous_db;
 	protected function setUp():void{
 		$this->previous_db=$GLOBALS['wpdb']??null;$GLOBALS['wpdb']=new \POW\Tests\DeliveryConfirmation\PolicyDatabase();\POW\Tests\DeliveryConfirmation\load_source();$this->s=new State();$GLOBALS['confirmation_test_state']=$this->s;
-		$this->s->registry->partner=Partner::from_row(['id'=>7,'owner_user_id'=>20,'status'=>'active','emit_delivery_line'=>true]);
-		$this->s->store->session=Session::from_row(['id'=>42,'partner_id'=>7,'user_id'=>99,'wp_session_token'=>'exact-token','status'=>'active','expires'=>gmdate('Y-m-d H:i:s',time()+3600)]);
+		$this->s->registry->partner=Partner::from_row(['id'=>7,'owner_user_id'=>99,'status'=>'active','emit_delivery_line'=>true]);
+		$this->s->store->session=Session::from_row(['id'=>42,'partner_id'=>7,'user_id'=>99,'wp_session_token'=>'exact-token','status'=>'active','expires'=>gmdate('Y-m-d H:i:s',time()+3600),'wc_session_key'=>self::KEY]);
 		$address=['first_name'=>'Ada','last_name'=>'Buyer','company'=>'Company','address_1'=>'1 Main St','address_2'=>'','city'=>'Pretoria','state'=>'GP','postcode'=>'0001','country'=>'ZA','phone'=>''];
-		$this->s->resolver->choices=[['schema'=>1,'partner_id'=>7,'storage_user_id'=>20,'provider'=>'native','key'=>'depot','code'=>'DEPOT','address'=>$address,'label'=>'Depot','source'=>'company_book','book_revision'=>1,'entry_fingerprint'=>str_repeat('a',64)]];
-		$this->model=new Confirmation($this->s->registry,$this->s->store,$this->s->address,$this->s->estimate,$this->s->policy,$this->s->resolver,$this->s->mapper);
+		$this->s->resolver->choices=[['schema'=>1,'partner_id'=>7,'storage_user_id'=>99,'provider'=>'native','key'=>'depot','code'=>'DEPOT','address'=>$address,'label'=>'Depot','source'=>'company_book','book_revision'=>1,'entry_fingerprint'=>str_repeat('a',64)]];
+		$this->model=new Confirmation($this->s->registry,$this->s->store,$this->s->address,$this->s->estimate,$this->s->resolver,$this->s->mapper);
 	}
 	protected function tearDown():void{unset($GLOBALS['confirmation_test_state']);if(null===$this->previous_db){unset($GLOBALS['wpdb']);}else{$GLOBALS['wpdb']=$this->previous_db;}}
 	private function preview(array $input=[]):array|WP_Error{return $this->model->preview($this->s->store->session,$this->s->registry->partner,$input);}
@@ -207,15 +205,52 @@ final class DeliveryConfirmationTest extends TestCase {
 	public function test_malformed_recorded_choice_allows_reselection_not_fallback():void{$this->s->store->change(['delivery_choice_json'=>'garbage']);$v=$this->preview();self::assertCount(1,$v['choices']);self::assertFalse($v['can_confirm']);self::assertNull($v['selected_choice']);$v=$this->preview(['provider'=>'native','key'=>'depot']);self::assertNull($v['error']);}
 	public function test_selected_entry_edit_requires_explicit_reselection():void{$this->confirm($this->input());$this->s->resolver->choices[0]['entry_fingerprint']=str_repeat('b',64);$this->s->resolver->choices[0]['address']['city']='Johannesburg';self::assertInstanceOf(WP_Error::class,$this->returned());self::assertFalse($this->preview()['can_confirm']);self::assertNull($this->preview(['provider'=>'native','key'=>'depot'])['error']);}
 	public function test_unrelated_book_revision_preserves_confirmation():void{$this->confirm($this->input());$this->s->resolver->choices[0]['book_revision']=2;self::assertTrue(is_array($this->returned()));}
-	public function test_native_role_login_and_association_rejected():void{foreach(['member','token','valid','associated','actor'] as $case){$this->s->policy->member=true;$this->s->token='exact-token';$this->s->store->valid=true;$this->s->resolver->associated=true;$this->s->actor=99;switch($case){case 'member':$this->s->policy->member=false;break;case 'token':$this->s->token='other';break;case 'valid':$this->s->store->valid=false;break;case 'associated':$this->s->resolver->associated=false;break;case 'actor':$this->s->actor=20;}self::assertInstanceOf(WP_Error::class,$this->preview());}}
+	/** Every visit of a connection shares one login, so the proof is the visit's own WP session token and its own cart key. An account id proves nothing. */
+	public function test_unbound_login_foreign_token_and_foreign_visit_key_rejected():void{
+		foreach(['owner','token','valid','associated','visit_key','unkeyed'] as $case){
+			$this->s->token='exact-token';$this->s->store->valid=true;$this->s->resolver->associated=true;$this->s->session->key=self::KEY;$this->s->store->change(['wc_session_key'=>self::KEY]);$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['owner_user_id'=>99]));
+			switch($case){
+				case 'owner':$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['owner_user_id'=>21]));break;
+				case 'token':$this->s->token='other';break;
+				case 'valid':$this->s->store->valid=false;break;
+				case 'associated':$this->s->resolver->associated=false;break;
+				case 'visit_key':$this->s->session->key=self::OTHER_KEY;break;
+				case 'unkeyed':$this->s->store->change(['wc_session_key'=>null]);
+			}
+			$result=$this->preview();
+			self::assertInstanceOf(WP_Error::class,$result,$case);
+			self::assertSame('delivery_forbidden',$result->get_error_code(),$case);
+		}
+	}
 	public function test_callback_revocation_prevents_save():void{$i=$this->input();$this->s->estimate->callback=function(){$this->s->store->valid=false;};self::assertInstanceOf(WP_Error::class,$this->confirm($i));self::assertSame(0,$this->s->store->writes);}
 	public function test_entry_mutation_during_rates_prevents_save():void{$i=$this->input();$this->s->estimate->callback=function(){$this->s->resolver->choices=[];};self::assertInstanceOf(WP_Error::class,$this->confirm($i));self::assertSame(0,$this->s->store->writes);}
 	public function test_false_after_committed_save_invalidates_candidate():void{$i=$this->input();$this->s->store->fail_save=true;self::assertInstanceOf(WP_Error::class,$this->confirm($i));self::assertSame(1,$this->s->store->writes);self::assertNull($this->s->store->session->delivery_confirmation_json);self::assertGreaterThan(0,$this->s->store->invalidations);}
 	public function test_final_guard_reads_without_map_rate_or_nested_mutex():void{$this->confirm($this->input());$r=$this->returned();self::assertTrue(is_array($r));$this->s->estimate->callback=fn()=>throw new \LogicException('Must not quote');$this->s->mapper->callback=fn()=>throw new \LogicException('Must not map');self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));$this->s->cart->cart_contents['line']['quantity']=3;self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
-	public function test_final_guard_rejects_new_confirmation_and_policy():void{$this->confirm($this->input());$r=$this->returned();$this->s->policy->effective='punchout_and_checkout';self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
+	/** There is one exit, so a changed exit_policy must not force a new review; any other policy input still must. */
+	public function test_exit_policy_change_no_longer_invalidates_consent_while_raw_policy_still_does():void{
+		$this->confirm($this->input());$r=$this->returned();self::assertTrue(is_array($r));
+		$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['exit_policy'=>'punchout_and_checkout']));
+		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
+		$GLOBALS['wpdb']->values['pow_settings']='changed';
+		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
+	}
 	public function test_tax_changes_and_independent_policy_flags_invalidate():void{$this->confirm($this->input());$this->s->estimate->taxes=[1=>'2.00'];self::assertInstanceOf(WP_Error::class,$this->returned());$this->confirm($this->input());$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_ship_to'=>true]));self::assertInstanceOf(WP_Error::class,$this->returned());}
 	public function test_preview_after_confirmation_clears_consent():void{$this->confirm($this->input());$this->preview(['notes'=>'Changed instructions']);self::assertNull($this->s->store->session->delivery_confirmation_json);self::assertInstanceOf(WP_Error::class,$this->returned());}
 	public function test_posted_null_notes_are_not_an_absent_field():void{self::assertInstanceOf(WP_Error::class,$this->preview(['notes'=>null]));}
+	/** Decision 10: the fallback candidate is the bound account's own profile address, shared by every employee of the connection, so it is labelled as the company's and never as this buyer's own. */
+	public function test_bound_account_profile_candidate_is_labelled_as_the_company_address():void{
+		$this->s->resolver->choices=[];
+		$address=['first_name'=>'Ada','last_name'=>'Buyer','company'=>'Company','address_1'=>'1 Main St','address_2'=>'','city'=>'Pretoria','state'=>'GP','postcode'=>'0001','country'=>'ZA','phone'=>''];
+		foreach(['customer'=>'Company address','ship_to'=>'Purchasing system destination','filter'=>'Suggested delivery address'] as $source=>$label){
+			$this->s->address->candidate=['address'=>$address,'code'=>'','source'=>$source];
+			$v=$this->preview();
+			self::assertTrue(is_array($v),$source);
+			self::assertCount(1,$v['choices'],$source);
+			self::assertSame('candidate',$v['choices'][0]['key'],$source);
+			self::assertSame($source,$v['choices'][0]['source'],$source);
+			self::assertSame($label,$v['choices'][0]['label'],$source);
+		}
+	}
 	public function test_readonly_guard_avoids_metadata_loading_product_get_data():void{$this->confirm($this->input());$r=$this->returned();$this->s->cart->cart_contents['line']['data']->forbid_data=true;self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
 	public function test_final_guard_rejects_in_memory_native_rate_mutation():void{$this->confirm($this->input());$r=$this->returned();$this->s->shipping->packages[0]['rates']['flat:1']->data['amount_cents']=999;self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
 	public function test_native_packages_cannot_quote_a_different_physical_destination():void{$this->s->estimate->split_destination=true;self::assertInstanceOf(WP_Error::class,$this->preview());}
@@ -230,7 +265,8 @@ final class DeliveryConfirmationTest extends TestCase {
 	public function test_new_offered_rate_still_requires_review_with_typed_notes():void{$i=$this->input();$i['rates']=[0=>'flat:2'];$i['notes']='Use gate';self::assertInstanceOf(WP_Error::class,$this->confirm($i));self::assertSame(0,$this->s->store->writes);}
 	public function test_explicit_updated_destination_still_requires_review_with_typed_notes():void{$i=$this->input();$this->s->resolver->choices[0]['address']['city']='Johannesburg';$this->s->resolver->choices[0]['entry_fingerprint']=str_repeat('b',64);$i['notes']='Use gate';self::assertInstanceOf(WP_Error::class,$this->confirm($i));self::assertSame(0,$this->s->store->writes);}
 	public function test_notes_accept_exact_unicode_character_and_byte_limits():void{$i=$this->input();$i['notes']=str_repeat('😀',2000);$result=$this->confirm($i);self::assertTrue(is_array($result));self::assertSame($i['notes'],$result['delivery_confirmation']['notes']);}
-	public function test_policy_callback_revoking_exact_native_login_refuses_final_guard():void{$this->confirm($this->input());$r=$this->returned();$this->s->policy->callback=function(){$this->s->store->valid=false;};self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
+	/** The currency option read now holds the position the exit-policy read had: before authorization is proved again. */
+	public function test_currency_callback_revoking_exact_native_login_refuses_final_guard():void{$this->confirm($this->input());$r=$this->returned();$this->s->currency_callback=function(){$this->s->store->valid=false;};self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));}
 
 	public function test_final_currency_callback_cannot_change_company_after_policy_check():void{
 		$this->confirm($this->input());$r=$this->returned();
@@ -240,15 +276,15 @@ final class DeliveryConfirmationTest extends TestCase {
 	}
 	public function test_final_policy_callback_cannot_change_native_cart_after_snapshot():void{
 		$this->confirm($this->input());$r=$this->returned();
-		$this->s->policy->callback=function(){$this->s->cart->cart_contents['line']['quantity']=8;};
+		$GLOBALS['wpdb']->callback=function(){$this->s->cart->cart_contents['line']['quantity']=8;};
 		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
 	}
 	public function test_final_policy_callback_cannot_change_company_or_raw_policy_after_comparison():void{
 		$this->confirm($this->input());$r=$this->returned();
-		$this->s->policy->callback=function(){$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_delivery_code'=>true]));$GLOBALS['wpdb']->values['pow_settings']='changed';};
+		$GLOBALS['wpdb']->callback=function(){$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_delivery_code'=>true]));$GLOBALS['wpdb']->values['pow_settings']='changed';};
 		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
 	}
-	public function test_final_choice_callback_cannot_change_raw_policy_after_effective_read():void{
+	public function test_final_choice_callback_cannot_change_raw_policy_before_its_comparison():void{
 		$this->confirm($this->input());$r=$this->returned();
 		$this->s->resolver->on_validate=function(){$GLOBALS['wpdb']->values['pow_settings']='changed';};
 		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
@@ -270,14 +306,51 @@ final class DeliveryConfirmationTest extends TestCase {
 		try{self::assertInstanceOf(WP_Error::class,$this->confirm($i));self::assertSame('ordered',$db->session['status']);self::assertSame(314,$db->session['order_id']);self::assertSame(0,$recovery->destroyed);self::assertSame(0,$this->s->registry->fences);}finally{if(null===$old){unset($GLOBALS['wpdb']);}else{$GLOBALS['wpdb']=$old;}}
 	}
 
+	/** Two employees punch in on one login, so the live cart must be THIS visit's before its consent can be confirmed. */
+	public function test_a_sibling_visits_live_cart_cannot_confirm_this_visits_consent():void{
+		$input=$this->input();
+		$this->s->session->key=self::OTHER_KEY;
+		$result=$this->confirm($input);
+		self::assertInstanceOf(WP_Error::class,$result);
+		self::assertSame('delivery_forbidden',$result->get_error_code());
+		self::assertSame(0,$this->s->store->writes);
+		self::assertNull($this->s->store->session->delivery_confirmation_json);
+	}
+
+	/** The chosen rates are written to the live handler only; the sibling visit keeps its own selection. */
+	public function test_a_visits_rate_choice_does_not_reach_a_sibling_visits_cart():void{
+		$this->s->sibling->set('chosen_shipping_methods',[0=>'flat:1']);
+		$result=$this->confirm($this->input(['rates'=>[0=>'flat:2']]));
+		self::assertTrue(is_array($result));
+		self::assertSame([0=>'flat:2'],$this->s->session->get('chosen_shipping_methods'));
+		self::assertSame([0=>'flat:1'],$this->s->sibling->get('chosen_shipping_methods'));
+		self::assertSame(900,$result['delivery_confirmation']['delivery']['amount_cents']);
+	}
+
+	/** Pin the stored policy fingerprint's inputs: company fields and raw option state, no exit policy and no per-buyer value. */
+	public function test_policy_fingerprint_inputs_exclude_exit_policy_and_still_move():void{
+		$policy=$this->preview()['_guard']['policy'];
+		$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['exit_policy'=>'punchout_and_checkout']));
+		self::assertSame($policy,$this->preview()['_guard']['policy'],'A changed exit policy cannot move a fingerprint it is not part of.');
+		$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_ship_to'=>true]));
+		self::assertNotSame($policy,$this->preview()['_guard']['policy']);
+		$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_ship_to'=>false]));
+		self::assertSame($policy,$this->preview()['_guard']['policy']);
+		$GLOBALS['wpdb']->values['pow_settings']='changed';
+		self::assertNotSame($policy,$this->preview()['_guard']['policy']);
+	}
+
 	public function test_resolver_produces_full_fresh_choices_from_its_locked_book():void{
 		require_once __DIR__.'/AddressProviderTest.php';\POW\Tests\AddressProvider\load_source();
 		$keys=['wpdb','pow_test_users','pow_test_user_meta','pow_test_current_user_id'];$before=[];foreach($keys as $key){$before[$key]=[array_key_exists($key,$GLOBALS),$GLOBALS[$key]??null];}
 		try{
-			$GLOBALS['wpdb']=(object)['last_error'=>''];$GLOBALS['pow_test_current_user_id']=99;$GLOBALS['pow_test_users']=[99=>(object)['ID'=>99,'roles'=>[\POW\Installer::ROLE],'allcaps'=>['read'=>true]],20=>(object)['ID'=>20,'roles'=>['customer'],'allcaps'=>['read'=>true]]];$GLOBALS['pow_test_user_meta']=[99=>['_pow_partner_id'=>'7']];
+			// The visit signs in as the connection's own bound account, so the row must name it and be this request's.
+			$visit=new Session(...array_replace(get_object_vars($this->s->store->session),['user_id'=>20]));
+			$GLOBALS['wpdb']=(object)['last_error'=>''];$GLOBALS['pow_test_current_user_id']=20;$GLOBALS['pow_test_users']=[20=>(object)['ID'=>20,'roles'=>['customer'],'allcaps'=>['read'=>true]],30=>(object)['ID'=>30,'roles'=>['customer'],'allcaps'=>['read'=>true]]];$GLOBALS['pow_test_user_meta']=[];
 			$r=new \POW\Tests\AddressProvider\Registry();$r->rows=[7=>['id'=>7,'owner_user_id'=>20,'status'=>'active']];$b=new \POW\Tests\AddressProvider\CompanyBook($r);$b->state=['revision'=>9,'addresses'=>['depot'=>['label'=>'Depot','address'=>$this->s->resolver->choices[0]['address'],'code'=>'DEPOT','use_for_punchout'=>true],'disabled'=>['label'=>'Disabled','address'=>$this->s->resolver->choices[0]['address'],'code'=>'OFF','use_for_punchout'=>false]]];
-			$resolver=new \POW\Tests\AddressProvider\Resolver($r,$b);self::assertTrue(method_exists($resolver,'choices_for_session'),'Full choice producer must exist');$choices=$resolver->choices_for_session($this->s->store->session,$r->find(7));self::assertCount(1,$choices);self::assertSame(9,$choices[0]['book_revision']);self::assertSame(20,$choices[0]['storage_user_id']);self::assertSame(\POW\Tests\AddressProvider\CompanyBook::entry_fingerprint('depot',$b->state['addresses']['depot']),$choices[0]['entry_fingerprint']);self::assertSame(1,$b->reads);
-			$r->on_lock=function()use($r){$r->rows[7]['owner_user_id']=30;};self::assertInstanceOf(WP_Error::class,$resolver->choices_for_session($this->s->store->session,$r->find(7)));
+			$visits=new \POW\Tests\AddressProvider\Current();$visits->live=$visit;
+			$resolver=new \POW\Tests\AddressProvider\Resolver($r,$b,$visits);self::assertTrue(method_exists($resolver,'choices_for_session'),'Full choice producer must exist');$choices=$resolver->choices_for_session($visit,$r->find(7));self::assertCount(1,$choices);self::assertSame(9,$choices[0]['book_revision']);self::assertSame(20,$choices[0]['storage_user_id']);self::assertSame(\POW\Tests\AddressProvider\CompanyBook::entry_fingerprint('depot',$b->state['addresses']['depot']),$choices[0]['entry_fingerprint']);self::assertSame(1,$b->reads);
+			$r->on_lock=function()use($r){$r->rows[7]['owner_user_id']=30;};self::assertInstanceOf(WP_Error::class,$resolver->choices_for_session($visit,$r->find(7)));
 		}finally{foreach($before as $key=>[$exists,$value]){if($exists){$GLOBALS[$key]=$value;}else{unset($GLOBALS[$key]);}}}
 	}
 }

@@ -52,7 +52,7 @@ final class ConsentFenceTest extends TestCase {
 		$this->store->session = $this->session;
 	}
 	private function login( array $over = [] ): Session {
-		return new Session( ...array_replace( [ 'id' => 7, 'partner_id' => 3, 'buyer_cookie' => 'c', 'operation' => 'create', 'browser_form_post_url' => 'https://buyer.example/return', 'selected_item' => null, 'ship_to' => null, 'user_id' => 42, 'wp_session_token' => 'tok', 'one_time_token_hash' => 'h', 'status' => Session::ACTIVE, 'order_id' => 0, 'payload_id' => 'p', 'body_hash' => 'b', 'response_xml' => null, 'cxml_version' => '1.2.014', 'deployment_mode' => 'test', 'extrinsics' => null, 'itemout_lines' => null, 'cart_ready' => false, 'created' => null, 'expires' => null ], $over ) );
+		return new Session( ...array_replace( [ 'id' => 7, 'partner_id' => 3, 'buyer_cookie' => 'c', 'operation' => 'create', 'browser_form_post_url' => 'https://buyer.example/return', 'selected_item' => null, 'ship_to' => null, 'user_id' => 42, 'wp_session_token' => 'tok', 'one_time_token_hash' => 'h', 'status' => Session::ACTIVE, 'order_id' => 0, 'payload_id' => 'p', 'body_hash' => 'b', 'response_xml' => null, 'cxml_version' => '1.2.014', 'deployment_mode' => 'test', 'extrinsics' => null, 'itemout_lines' => null, 'cart_ready' => false, 'created' => null, 'expires' => null, 'buyer_identity' => null, 'buyer_name' => null, 'buyer_identity_hash' => null, 'wc_session_key' => null ], $over ) );
 	}
 	private function fence(): \POW\Tests\ConsentFence\ConsentFence { return new \POW\Tests\ConsentFence\ConsentFence( $this->store, $this->registry ); }
 
@@ -83,12 +83,18 @@ final class ConsentFenceTest extends TestCase {
 		self::assertFalse( $this->fence()->clear_locked( $this->session ) );
 		self::assertSame( [ 0, 0 ], [ $this->store->expirations, $this->registry->fences ] );
 	}
+	/**
+	 * ORDERED is inert vocabulary: nothing writes it now that the paid exit
+	 * is gone. The status is still exercised here because rows written
+	 * before the removal must keep being read as a live winner.
+	 */
 	public function test_completed_winner_is_never_expired_or_fenced(): void {
 		$this->store->invalidate = false;
 		$this->store->session = $this->login( [ 'status' => Session::ORDERED ] );
 		self::assertFalse( $this->fence()->clear_locked( $this->session ) );
 		self::assertSame( [ 0, 0 ], [ $this->store->expirations, $this->registry->fences ] );
 	}
+	/** Same inert vocabulary as above: a historical ORDERED row still wins a lost expiry. */
 	public function test_winner_that_beats_a_lost_expiry_is_not_fenced(): void {
 		$this->store->invalidate = false;
 		$this->store->expire = false;

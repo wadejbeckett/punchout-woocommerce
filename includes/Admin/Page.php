@@ -13,7 +13,6 @@ namespace POW\Admin;
 use POW\Support\Transport;
 
 use POW\Addresses\Fields;
-use POW\Checkout\ExitPolicy;
 use POW\Audit\Log;
 use POW\Http\RateLimiter;
 use POW\Partners\Partner;
@@ -27,7 +26,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * - Settings: WordPress Settings API over the single pow_settings option —
  *   master switch plus the handful of genuinely needed knobs.
- * - Customers: the customer-connection registry (write-only secrets).
+ * - Customers: the customer-connection registry (write-only secrets), the
+ *   one WooCommerce customer account bound to each connection — the account
+ *   its buyers shop as — and that account's delivery book. There is no
+ *   front-end surface for any of the three: this tab is where connections,
+ *   credentials and the book are managed, and nowhere else.
  * - Log: the audit trail, filtered and paged.
  * - Integration docs: the buyer-facing documentation page, rendered
  *   privileged — the same page [punchout_docs] publishes, plus the
@@ -57,6 +60,86 @@ final class Page {
 		add_filter( 'option_page_capability_pow_settings_group', static fn() => self::CAP );
 		add_action( 'admin_menu', [ $this, 'add_menu' ] );
 		add_action( 'admin_init', [ $this, 'register_settings' ] );
+	}
+
+	/**
+	 * One error notice per active connection that cannot sign a buyer in.
+	 *
+	 * Hooked from Plugin::boot() beside the sealing-key notice, but
+	 * deliberately NOT scoped to this plugin's screens the way that one is:
+	 * an unbound connection refuses every PunchOutSetupRequest with cXML
+	 * Status 500, and a misconfiguration visible only to an operator who is
+	 * already reading these screens is not a notice — the buyer's
+	 * purchasing system would find it first. It is a registry read on every
+	 * admin page for every user who can see the plugin, which is one small
+	 * SELECT against a table with one row per customer.
+	 *
+	 * There is no stored flag. Nothing would ever clear one, whereas the
+	 * registry answers the question each time it is asked; the
+	 * `setup_no_login` audit row is the evidence a buyer actually hit it.
+	 *
+	 * A registry that cannot be read is silent rather than fatal: this runs
+	 * on every admin page, and a failed list must not take wp-admin with it.
+	 */
+	public function render_unbound_notice(): void {
+		if ( ! current_user_can( self::CAP ) ) {
+			return;
+		}
+
+		try {
+			$connections = $this->registry->all();
+		} catch ( \Throwable $e ) {
+			return;
+		}
+
+		foreach ( $connections as $partner ) {
+			if ( ! $partner->is_active() || $this->bound_account( $partner ) > 0 ) {
+				continue;
+			}
+
+			$unbound = 0 === $partner->owner_user_id;
+
+			printf(
+				'<div class="notice notice-error"><p>%s <a href="%s">%s</a></p></div>',
+				esc_html(
+					sprintf(
+						$unbound
+							/* translators: %s: customer connection name. */
+							? __( 'PunchOut: no store account is bound to the connection “%s”, so it refuses every PunchOutSetupRequest with cXML Status 500. Bind the ordinary WooCommerce customer account its buyers should shop as.', 'punchout-woocommerce' )
+							/* translators: %s: customer connection name. */
+							: __( 'PunchOut: the store account bound to the connection “%s” cannot sign buyers in — it no longer exists, cannot read the shop, or holds administrative capabilities — so the connection refuses every PunchOutSetupRequest with cXML Status 500. A binding cannot be transferred, so restore that account as an ordinary customer or replace the connection.', 'punchout-woocommerce' ),
+						$partner->name
+					)
+				),
+				esc_url( $this->tab_url( 'partners', [ 'action' => 'edit', 'partner' => $partner->id ] ) ),
+				esc_html( $unbound ? __( 'Bind a store account', 'punchout-woocommerce' ) : __( 'Review this connection', 'punchout-woocommerce' ) )
+			);
+		}
+	}
+
+	/**
+	 * The connection's store account, proved usable, or 0.
+	 *
+	 * The same three tests Http\SetupEndpoint::bound_account() makes per
+	 * request — the account exists, can `read`, and holds none of
+	 * Registry::PRIVILEGED_CAPABILITIES — so the notice and the refusal
+	 * cannot disagree about which connections are dead. Reads only: this
+	 * screen never creates, renames or deletes a user.
+	 */
+	private function bound_account( Partner $partner ): int {
+		$user_id = $partner->owner_user_id;
+
+		if ( $user_id <= 0 ) {
+			return 0;
+		}
+
+		$user = get_userdata( $user_id );
+
+		if ( ! $user || (int) $user->ID !== $user_id || ! user_can( $user, 'read' ) || Registry::privileged( $user ) ) {
+			return 0;
+		}
+
+		return $user_id;
 	}
 
 	public function add_menu(): void {
@@ -98,7 +181,6 @@ final class Page {
 			'rate_limit_per_min'   => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 uses the default (30); the public self-test uses 10 when this is 0.', 'punchout-woocommerce' ) ],
 			'edge_rate_limit_per_min' => [ __( 'Setup edge limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per IP on /punchout/setup, counted before the sender is resolved. 0 uses the default (120).', 'punchout-woocommerce' ) ],
 			'log_retention_days'   => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
-			'buyer_inactive_days'  => [ __( 'Buyer inactivity (days)', 'punchout-woocommerce' ), 'number', __( 'Buyers unseen this long are flagged inactive (never deleted).', 'punchout-woocommerce' ) ],
 			'default_unspsc'       => [ __( 'Default UNSPSC code', 'punchout-woocommerce' ), 'text', __( 'UNSPSC commodity classification stamped on every returned cart line; procurement systems use it to route requisition lines to a purchasing category. Agree the value with the buyer.', 'punchout-woocommerce' ) ],
 			'quote_convert_status' => [
 				__( 'Convert quotes to', 'punchout-woocommerce' ),
@@ -221,7 +303,6 @@ final class Page {
 			'rate_limit_per_min'   => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
 			'edge_rate_limit_per_min' => max( 0, (int) ( $input['edge_rate_limit_per_min'] ?? 120 ) ),
 			'log_retention_days'   => max( 1, (int) ( $input['log_retention_days'] ?? 400 ) ),
-			'buyer_inactive_days'  => max( 0, (int) ( $input['buyer_inactive_days'] ?? 90 ) ),
 			'default_unspsc'       => sanitize_text_field( (string) ( $input['default_unspsc'] ?? '' ) ),
 			// A quote converts into a status an operator can still act on;
 			// anything else (completed, refunded, another custom status)
@@ -344,11 +425,14 @@ final class Page {
 		printf( '<p><a href="%s" class="button button-primary">%s</a></p>', esc_url( $this->tab_url( 'partners', [ 'action' => 'new' ] ) ), esc_html__( 'Add customer', 'punchout-woocommerce' ) );
 		$pending = $this->registry->pending();
 		echo '<h2>' . esc_html__( 'Pending requests', 'punchout-woocommerce' ) . '</h2>';
-		echo '<p>' . esc_html__( 'Edit the company identity and entitlements, save them, then approve explicitly. Approval credentials are handed over out of band.', 'punchout-woocommerce' ) . '</p>';
+		// Nothing produces a pending row any more: the front-end application
+		// flow is gone and a connection added here starts active or disabled.
+		// The queue stays because legacy rows must still be approvable.
+		echo '<p>' . esc_html__( 'Pending rows are legacy applications: a connection added here starts active or disabled instead. Edit the company identity, save it, then approve explicitly. Approval credentials are handed over out of band.', 'punchout-woocommerce' ) . '</p>';
 		$this->render_partner_table( $pending );
 		echo '<h2>' . esc_html__( 'Configured connections', 'punchout-woocommerce' ) . '</h2>';
 		$this->render_partner_table( array_values( array_filter( $this->registry->all(), static fn( Partner $p ): bool => ! $p->is_pending() ) ) );
-		echo '<p class="description">' . esc_html__( 'Endpoint for all customers: POST /punchout/setup (raw cXML). Give each customer the setup URL, your To/From identities and their shared secret.', 'punchout-woocommerce' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'Endpoint for all customers: POST /punchout/setup (raw cXML). Give each customer the setup URL, your To/From identities and their shared secret. Each connection also needs one WooCommerce customer account bound to it — the account its buyers shop as, grouped and priced by you — and a connection with none refuses setup with cXML Status 500.', 'punchout-woocommerce' ) . '</p>';
 	}
 
 	/** @param list<Partner> $partners */
@@ -358,14 +442,16 @@ final class Page {
 			return;
 		}
 		echo '<table class="widefat striped"><thead><tr>';
-		foreach ( [ __( 'Name', 'punchout-woocommerce' ), __( 'Status', 'punchout-woocommerce' ), __( 'Sender identity', 'punchout-woocommerce' ), __( 'Mode', 'punchout-woocommerce' ), __( 'cXML', 'punchout-woocommerce' ), __( 'Secret', 'punchout-woocommerce' ), __( 'Actions', 'punchout-woocommerce' ) ] as $head ) {
+		foreach ( [ __( 'Name', 'punchout-woocommerce' ), __( 'Status', 'punchout-woocommerce' ), __( 'Sender identity', 'punchout-woocommerce' ), __( 'Store account', 'punchout-woocommerce' ), __( 'cXML', 'punchout-woocommerce' ), __( 'Secret', 'punchout-woocommerce' ), __( 'Actions', 'punchout-woocommerce' ) ] as $head ) {
 			echo '<th>' . esc_html( $head ) . '</th>';
 		}
 		echo '</tr></thead><tbody>';
 		foreach ( $partners as $partner ) {
 			$secret_state = '' === $partner->secret_current ? __( 'not set', 'punchout-woocommerce' ) : ( '' !== $partner->secret_previous ? __( 'set (rotation window open)', 'punchout-woocommerce' ) : __( 'set', 'punchout-woocommerce' ) );
 			echo '<tr><td>' . esc_html( $partner->name ) . '</td><td>' . esc_html( $partner->status ) . '</td><td><code>' . esc_html( $partner->sender_domain . ' / ' . $partner->sender_identity ) . '</code></td>';
-			echo '<td>' . esc_html( ExitPolicy::labels()[ $partner->exit_policy ] ) . '</td><td>' . esc_html( $partner->cxml_version ) . '</td><td>' . esc_html( $secret_state ) . '</td><td>';
+			// The bound customer account, not an entitlement: an unbound connection refuses every setup request.
+			$account = 0 === $partner->owner_user_id ? __( 'not bound', 'punchout-woocommerce' ) : '#' . $partner->owner_user_id;
+			echo '<td>' . esc_html( $account ) . '</td><td>' . esc_html( $partner->cxml_version ) . '</td><td>' . esc_html( $secret_state ) . '</td><td>';
 			printf( '<p><a href="%s">%s</a></p>', esc_url( $this->tab_url( 'partners', [ 'action' => 'edit', 'partner' => $partner->id ] ) ), esc_html__( 'Edit', 'punchout-woocommerce' ) );
 			if ( $partner->is_pending() ) {
 				$this->action_form( $partner->id, 'approve_partner', 'approve', __( 'Approve company', 'punchout-woocommerce' ) );
@@ -380,28 +466,6 @@ final class Page {
 			echo '</td></tr>';
 		}
 		echo '</tbody></table>';
-	}
-
-	/** Only existing provisioned members appear; this screen cannot create employees. */
-	private function render_buyer_restrictions( Partner $partner ): void {
-		echo '<h3>' . esc_html__( 'Buyer restrictions', 'punchout-woocommerce' ) . '</h3><p>' . esc_html__( 'Existing company buyers are recognised automatically. Restrictions are managed by shop administrators and cannot exceed the company permission.', 'punchout-woocommerce' ) . '</p>';
-		if ( ! $partner->is_active() ) { return; }
-		$policy = new ExitPolicy( $this->settings, $this->registry );
-		$cap = ExitPolicy::resolve( $this->settings->exit_policy(), $partner->exit_policy, ExitPolicy::INHERIT );
-		try {
-			foreach ( get_users( [ 'role' => \POW\Installer::ROLE, 'meta_key' => '_pow_partner_id', 'meta_value' => (string) $partner->id, 'orderby' => 'ID' ] ) as $buyer ) {
-				if ( ! $policy->member( $partner->id, (int) $buyer->ID ) ) { continue; }
-				$value = $policy->buyer_value( $partner->id, (int) $buyer->ID );
-				echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="pow_save_buyer_exit" /><input type="hidden" name="partner" value="' . esc_attr( (string) $partner->id ) . '" /><input type="hidden" name="buyer" value="' . esc_attr( (string) $buyer->ID ) . '" />';
-				wp_nonce_field( 'pow_buyer_exit_' . $partner->id );
-				echo '<p><label>' . esc_html( $buyer->display_name . ' (#' . $buyer->ID . ')' ) . ' <select name="exit_policy">';
-				foreach ( ExitPolicy::labels() as $option => $label ) {
-					$disabled = ExitPolicy::CHECKOUT === $option && ExitPolicy::CHECKOUT !== $cap ? ' disabled' : '';
-					echo '<option value="' . esc_attr( $option ) . '"' . selected( $value, $option, false ) . $disabled . '>' . esc_html( $label ) . '</option>';
-				}
-				echo '</select></label> <button class="button" type="submit">' . esc_html__( 'Save buyer restriction', 'punchout-woocommerce' ) . '</button></p></form>';
-			}
-		} catch ( \Throwable $e ) { echo '<p>' . esc_html__( 'Buyer restrictions could not be loaded. Reload before making changes.', 'punchout-woocommerce' ) . '</p>'; }
 	}
 
 	private function action_form( int $partner_id, string $action, string $nonce, string $label, string $confirm = '' ): void {
@@ -433,11 +497,6 @@ final class Page {
 		$this->form_row(
 			__( 'Status', 'punchout-woocommerce' ),
 			$is_pending ? esc_html__( 'Pending — save configuration, then approve explicitly.', 'punchout-woocommerce' ) : ( null !== $partner && ! $partner->is_active() ? esc_html__( 'Disabled — use Reset connection to recover after checking its configuration.', 'punchout-woocommerce' ) : $this->select( 'status', [ 'active' => __( 'Active', 'punchout-woocommerce' ), 'disabled' => __( 'Disabled', 'punchout-woocommerce' ) ], $partner->status ?? 'active' ) )
-		);
-
-		$this->form_row(
-			__( 'Checkout access', 'punchout-woocommerce' ),
-			'<input type="hidden" name="exit_policy" value="' . esc_attr( ExitPolicy::CHECKOUT ) . '" /><label><input type="checkbox" name="exit_policy" value="' . esc_attr( ExitPolicy::ONLY ) . '" ' . checked( ExitPolicy::ONLY, $partner->exit_policy ?? ExitPolicy::CHECKOUT, false ) . ' /> ' . esc_html__( 'PunchOut only', 'punchout-woocommerce' ) . '</label><p class="description">' . esc_html__( 'Normal checkout is available during a valid PunchOut session when this setting is off. Buyer restrictions may narrow this company permission.', 'punchout-woocommerce' ) . '</p>'
 		);
 
 		$identity_help = '<p class="description">' . esc_html__( 'The Sender credential is the authentication key: it must match what the buyer\'s system sends. From = the buyer; To = this store, as they address it.', 'punchout-woocommerce' ) . '</p>';
@@ -530,25 +589,27 @@ final class Page {
 		echo '</form>';
 
 		if ( null !== $partner ) {
-			$this->render_buyer_restrictions( $partner );
 			if ( $is_pending ) {
 				$this->action_form( $partner->id, 'approve_partner', 'approve', __( 'Approve company', 'punchout-woocommerce' ) );
 			} else {
-				echo '<p>' . esc_html__( 'Save identity changes first. Reset immediately revokes both credentials and recorded sessions before issuing a replacement. The company owner and book stay associated.', 'punchout-woocommerce' ) . '</p>';
+				echo '<p>' . esc_html__( 'Save identity changes first. Reset immediately revokes both credentials and recorded sessions before issuing a replacement. The bound store account and its delivery book survive a reset.', 'punchout-woocommerce' ) . '</p>';
 				$this->action_form( $partner->id, 'reset_partner', 'reset', __( 'Reset connection', 'punchout-woocommerce' ), __( 'Revoke current credentials and sessions, then reset this connection?', 'punchout-woocommerce' ) );
 			}
-			echo '<h2>' . esc_html__( 'Company management account', 'punchout-woocommerce' ) . '</h2>';
+			// Required, not optional: this is the connection's login. Until it
+			// is bound the connection is inert, which is why the copy states
+			// the refusal rather than describing a convenience.
+			echo '<h2>' . esc_html__( 'Store account buyers shop as', 'punchout-woocommerce' ) . '</h2>';
 			if ( 0 === $partner->owner_user_id ) {
-				echo '<p>' . esc_html__( 'Explicitly select an ordinary WordPress account by user ID. It must own no other connection. This does not copy addresses or sign employees in as the company owner.', 'punchout-woocommerce' ) . '</p>';
+				echo '<p>' . esc_html__( 'Select the ordinary WooCommerce customer account this customer\'s buyers will shop as, by user ID. It must exist, be an ordinary customer with no administrative capability, and own no other connection. Group and price it yourself, once, in whatever pricing or visibility plugin you use — the plugin never creates, renames or deletes users and never copies addresses. Until an account is bound, this connection refuses PunchOutSetupRequest with cXML Status 500.', 'punchout-woocommerce' ) . '</p>';
 				echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="pow_associate_partner" />';
 				printf( '<input type="hidden" name="partner" value="%d" />', $partner->id );
 				wp_nonce_field( 'pow_associate_' . $partner->id );
-				echo '<p><label>' . esc_html__( 'Owner user ID', 'punchout-woocommerce' ) . ' <input type="number" name="owner_user_id" min="1" required /></label></p>';
-				submit_button( __( 'Associate company account', 'punchout-woocommerce' ) );
+				echo '<p><label>' . esc_html__( 'Store account user ID', 'punchout-woocommerce' ) . ' <input type="number" name="owner_user_id" min="1" required /></label></p>';
+				submit_button( __( 'Bind store account', 'punchout-woocommerce' ) );
 				echo '</form>';
 			} else {
-				echo '<p>' . esc_html__( 'Associated owner user ID:', 'punchout-woocommerce' ) . ' ' . esc_html( (string) $partner->owner_user_id ) . '. ' . esc_html__( 'This association cannot be transferred or cleared; the company book stays with its owner.', 'punchout-woocommerce' ) . '</p>';
-				// This fragment contains independent same-page POST forms; keep it outside identity, credential and buyer-policy forms.
+				echo '<p>' . esc_html__( 'Store account:', 'punchout-woocommerce' ) . ' #' . esc_html( (string) $partner->owner_user_id ) . '. ' . esc_html__( 'Every buyer of this connection is signed in as this account and sees exactly what it sees. The binding cannot be transferred or cleared, and the delivery book below belongs to this account.', 'punchout-woocommerce' ) . '</p>';
+				// This fragment contains independent same-page POST forms; keep it outside the identity, credential and binding forms.
 				echo $this->addresses?->markup( $partner->id ) ?? ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- authorized, escaped Fields producer.
 			}
 		}

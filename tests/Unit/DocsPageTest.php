@@ -369,9 +369,45 @@ final class DocsPageTest extends TestCase {
 		$vars = $this->page_vars();
 		$vars['delivery_samples'] = [ [ 'version' => '1.2.071', 'xml' => '<cXML>delivery-example</cXML>', 'total' => '123.45', 'freight_total' => '6.78' ] ];
 		$html = Templates::render( 'docs/page', $vars );
-		foreach ( [ '/punchout/confirm', '[punchout_delivery_confirmation]', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'quote_separately', 'punchout_and_checkout', '123.45', '6.78', '&lt;cXML&gt;delivery-example&lt;/cXML&gt;' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		foreach ( [ '/punchout/confirm', '[punchout_delivery_confirmation]', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'quote_separately', '123.45', '6.78', '&lt;cXML&gt;delivery-example&lt;/cXML&gt;' ] as $text ) { self::assertStringContainsString( $text, $html ); }
 		self::assertStringNotContainsString( '<cXML>', $html );
 		self::assertStringNotContainsString( 'Available when delivery codes are enabled', $html );
+		// The dual exit is gone: the public page may not describe a checkout exit or a per-buyer entitlement.
+		foreach ( [ 'punchout_and_checkout', 'Checkout is a separate exit', 'Company and buyer exit permissions', 'punchout_only' ] as $text ) { self::assertStringNotContainsString( $text, $html ); }
+	}
+
+	/**
+	 * The page is read by the buyer's own developers, so it is the last
+	 * place a removed feature may survive as a promise. Nothing on it may
+	 * offer a checkout exit, an account the plugin makes for an employee,
+	 * or a login per person: one bound store account per connection, one
+	 * basket per visit.
+	 */
+	public function test_the_public_page_promises_no_buyer_accounts_and_no_checkout_exit(): void {
+		$html = Templates::render( 'docs/page', $this->page_vars() );
+
+		foreach ( [ 'punchout_and_checkout', 'provisioned', 'provisions', 'temporary buyer account', 'Checkout is a separate exit' ] as $text ) {
+			self::assertStringNotContainsString( $text, $html );
+		}
+
+		foreach ( [ 'the one store account we bound to your connection', 'two independent baskets', 'UserPrintableName', 'UniqueUsername' ] as $text ) {
+			self::assertStringContainsString( $text, $html );
+		}
+	}
+
+	/**
+	 * Reference::exit_policy() is gone. A theme override copy of this
+	 * template that still loops over it fatals, so the shipped template
+	 * must not call it and the page must render with the method absent.
+	 */
+	public function test_the_page_renders_with_the_deleted_exit_policy_accessor_absent(): void {
+		self::assertFalse( method_exists( Reference::class, 'exit_policy' ) );
+		self::assertStringNotContainsString( 'exit_policy', file_get_contents( POW_PLUGIN_DIR . 'templates/docs/page.php' ) );
+
+		$html = Templates::render( 'docs/page', $this->page_vars() );
+
+		self::assertStringContainsString( 'Punchout integration', $html );
+		self::assertStringContainsString( 'Checkout is not available inside a punchout visit.', $html );
 	}
 
 	/**

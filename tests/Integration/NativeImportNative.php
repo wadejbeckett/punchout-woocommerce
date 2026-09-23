@@ -13,6 +13,8 @@ if ( ! defined( 'WP_CLI' ) || ! WP_CLI || 'disposable' !== getenv( 'POW_NATIVE_T
 	throw new RuntimeException( 'Requires opted-in disposable local WordPress/WooCommerce CLI and a capable fixture administrator.' );
 }
 
+require_once dirname( __DIR__ ) . '/Support/native-visits.php';
+
 final class NativeImportNative {
 	private POW\Partners\Registry $registry;
 	private POW\Addresses\CompanyBook $book;
@@ -22,7 +24,7 @@ final class NativeImportNative {
 	private int $failed = 0;
 	public function __construct() {
 		$this->registry = POW\Plugin::instance()->registry();
-		$this->book = new POW\Addresses\CompanyBook( $this->registry, POW\Plugin::instance()->audit() );
+		$this->book = new POW\Addresses\CompanyBook( $this->registry, POW\Plugin::instance()->audit(), new POW\Sessions\Current( POW\Plugin::instance()->sessions() ) );
 		$this->import = new POW\Addresses\NativeImport( $this->registry, $this->book );
 		$this->admin = get_current_user_id();
 	}
@@ -42,7 +44,7 @@ final class NativeImportNative {
 	}
 	private function seed(): array {
 		$owner = $this->user(); $suffix = bin2hex( random_bytes( 8 ) );
-		$id = $this->registry->insert( [ 'name' => 'Example native import company', 'owner_user_id' => $owner, 'status' => 'active', 'from_domain' => 'NetworkID', 'from_identity' => 'import-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'import-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier', 'mode' => 'requisition_only', 'deployment_mode' => 'test', 'return_encoding' => 'base64', 'cxml_version' => '1.2.008', 'delivery_code_prefix' => 'DEPOT' ] );
+		$id = $this->registry->insert( [ 'name' => 'Example native import company', 'owner_user_id' => $owner, 'status' => 'active', 'from_domain' => 'NetworkID', 'from_identity' => 'import-' . $suffix, 'sender_domain' => 'NetworkID', 'sender_identity' => 'import-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier', 'deployment_mode' => 'test', 'return_encoding' => 'base64', 'cxml_version' => '1.2.008', 'delivery_code_prefix' => 'DEPOT' ] );
 		if ( $id <= 0 ) { throw new RuntimeException( 'Native import fixture partner creation failed.' ); }
 		return [ 'id' => $id, 'owner' => $owner ];
 	}
@@ -79,10 +81,15 @@ final class NativeImportNative {
 		$other = $this->user(); wp_set_current_user( $other );
 		$this->refused( $this->import->preview( $id, $other, 'shipping' ), 'cross-company preview refuses', 'address_forbidden' );
 		$this->refused( $this->import->copy( $id, $other, 4, 'shipping', [] ), 'cross-company copy refuses', 'address_forbidden' );
-		wp_set_current_user( $this->admin ); $buyer = $this->user( POW\Installer::ROLE ); update_user_meta( $buyer, '_pow_partner_id', $id ); wp_set_current_user( $buyer );
-		$this->refused( $this->import->preview( $id, $buyer, 'shipping' ), 'provisioned buyer preview refuses', 'address_forbidden' );
-		$this->refused( $this->import->copy( $id, $buyer, 4, 'shipping', [] ), 'provisioned buyer copy refuses', 'address_forbidden' );
-		wp_set_current_user( $owner );
+		// The actor is the bound account itself now, and importing its profile
+		// address into the company book is management: inside a live visit the
+		// book is read-only, whatever the account holds.
+		wp_set_current_user( $this->admin );
+		$visit = pow_native_open_visit( $id, $owner, [ 'buyer_identity' => 'import-' . bin2hex( random_bytes( 5 ) ) . '@example.invalid' ] );
+		pow_native_enter_visit( $visit );
+		$this->refused( $this->import->preview( $id, $owner, 'shipping' ), 'preview inside a live visit refuses', 'address_forbidden' );
+		$this->refused( $this->import->copy( $id, $owner, 4, 'shipping', [] ), 'copy inside a live visit refuses', 'address_forbidden' );
+		pow_native_leave_visit( $owner );
 		$customer = new WC_Customer( $owner ); $customer->set_shipping_postcode( 'INVALID' ); $customer->save();
 		$this->refused( $this->import->copy( $id, $owner, 4, 'shipping', [] ), 'invalid current native postcode refuses despite old valid preview', 'address_invalid' );
 		$customer->set_shipping_postcode( $before['shipping']['postcode'] ); $customer->save();

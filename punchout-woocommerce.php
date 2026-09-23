@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       PunchOut for WooCommerce
  * Plugin URI:        https://github.com/wadejbeckett/punchout-woocommerce
- * Description:       Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first). Multi-tenant customer registry, one-time StartPage login, and an additive "send for approval" cart exit that returns the cart as an RFQ (PunchOutOrderMessage).
- * Version:           0.3.0
+ * Description:       Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first). Multi-tenant customer registry, one bound customer account per connection, one-time StartPage login, and a "send for approval" cart exit that returns the cart as an RFQ (PunchOutOrderMessage).
+ * Version:           0.4.4
  * Requires at least: 6.4
  * Requires PHP:      8.2
  * Author:            Noiz
@@ -11,8 +11,16 @@
  * License URI:       https://www.gnu.org/licenses/agpl-3.0.html
  * Text Domain:       punchout-woocommerce
  * Domain Path:       /languages
- * WC requires at least: 8.0
- * WC tested up to:   9.9
+ * WC requires at least: 11.1
+ * WC tested up to:   11.1
+ *
+ * The WooCommerce minimum is not a guess. One basket per punchout visit is a
+ * bypass of WC_Session_Handler's own keying, and Docs\SelfTest pins the 21
+ * core session methods it stands on, including four that must still be
+ * private or protected. A store whose handler does not have that shape
+ * refuses every visit with a 409, so the minimum is the earliest WooCommerce
+ * the shape was actually verified against — 11.1 — and not an older release
+ * nobody checked.
  *
  * PunchOut for WooCommerce — cXML PunchOut supplier plugin.
  * Copyright (C) 2026 Noiz.
@@ -39,7 +47,7 @@ namespace POW;
 
 defined( 'ABSPATH' ) || exit;
 
-const VERSION     = '0.3.0';
+const VERSION     = '0.4.4';
 const PLUGIN_FILE = __FILE__;
 
 define( 'POW_PLUGIN_FILE', __FILE__ );
@@ -70,8 +78,9 @@ register_activation_hook( __FILE__, [ Installer::class, 'activate' ] );
 register_deactivation_hook( __FILE__, [ Installer::class, 'deactivate' ] );
 
 /**
- * Boot once all plugins are loaded so WooCommerce, B2BKing (optional) and
- * the Action Scheduler library WooCommerce bundles are present before wiring.
+ * Boot once all plugins are loaded so WooCommerce, the Action Scheduler
+ * library it bundles and any pricing or visibility plugin the store runs
+ * are present before wiring.
  */
 add_action(
 	'plugins_loaded',

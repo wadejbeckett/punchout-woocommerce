@@ -17,6 +17,9 @@ if ( ! defined( 'WP_CLI' ) || ! WP_CLI || 'disposable' !== getenv( 'POW_NATIVE_T
 final class AddressSchemaNative {
 	private int $passed = 0;
 	private const CONFIG = [ 'delivery_code_prefix' => 'varchar(24)', 'delivery_code_extrinsic_name' => 'varchar(64)', 'emit_ship_to' => 'tinyint', 'emit_delivery_code' => 'tinyint', 'emit_delivery_line' => 'tinyint', 'delivery_unknown_policy' => 'varchar(24)', 'delivery_notes_policy' => 'varchar(32)', 'freight_supplier_part_id' => 'varchar(190)', 'freight_uom' => 'varchar(8)', 'freight_classification_domain' => 'varchar(64)', 'freight_classification' => 'varchar(64)' ];
+	// Schema seven: the per-visit key and the buyer identity carried as data on the row. Every one nullable — a claim row has no key yet and identity is optional.
+	private const VISIT = [ 'wc_session_key' => 'varchar(32)', 'buyer_identity' => 'varchar(190)', 'buyer_name' => 'varchar(190)', 'buyer_identity_hash' => 'char(64)' ];
+	private const VISIT_INDEXES = [ 'wc_session_key' => [ 'wc_session_key' ], 'partner_buyer' => [ 'partner_id', 'buyer_identity_hash' ], 'login' => [ 'user_id', 'wp_session_token' ] ];
 	private function check( bool $ok, string $label ): void {
 		if ( ! $ok ) { throw new RuntimeException( $label ); }
 		++$this->passed; echo 'PASS ' . $label . "\n";
@@ -30,6 +33,20 @@ final class AddressSchemaNative {
 		$rows = $wpdb->get_results( "SHOW COLUMNS FROM `$table`", ARRAY_A );
 		if ( ! $rows || '' !== $wpdb->last_error ) { throw new RuntimeException( 'Column readback failed.' ); }
 		return array_column( $rows, null, 'Field' );
+	}
+	/** @return array<string, array{unique: bool, columns: list<string>}> */
+	private function indexes( string $table ): array {
+		global $wpdb;
+		$rows = $wpdb->get_results( "SHOW INDEX FROM `$table`", ARRAY_A );
+		if ( ! $rows || '' !== $wpdb->last_error ) { throw new RuntimeException( 'Index readback failed.' ); }
+		$indexes = [];
+		foreach ( $rows as $row ) {
+			$name = (string) $row['Key_name'];
+			$indexes[ $name ]['unique'] = '0' === (string) $row['Non_unique'];
+			$indexes[ $name ]['columns'][ (int) $row['Seq_in_index'] ] = (string) $row['Column_name'];
+		}
+		foreach ( $indexes as &$index ) { ksort( $index['columns'] ); $index['columns'] = array_values( $index['columns'] ); }
+		return $indexes;
 	}
 	private function row( string $table, int $id ): array {
 		global $wpdb;
@@ -51,24 +68,24 @@ final class AddressSchemaNative {
 			foreach ( [ 'partners', 'sessions', 'log' ] as $name ) { $this->sql( "CREATE TABLE `{$fixture}pow_{$name}` LIKE `{$prefix}pow_{$name}`" ); }
 			$wpdb->prefix = $fixture;
 			$partners = POW\Installer::partners_table(); $sessions = POW\Installer::sessions_table();
-			foreach ( [ $partners => array_keys( self::CONFIG ), $sessions => [ 'delivery_choice', 'delivery_confirmation' ] ] as $table => $new_columns ) {
+			foreach ( array_keys( self::VISIT_INDEXES ) as $index ) {
+				if ( isset( $this->indexes( $sessions )[ $index ] ) ) { $this->sql( "ALTER TABLE `$sessions` DROP INDEX `$index`" ); }
+			}
+			foreach ( [ $partners => array_keys( self::CONFIG ), $sessions => array_merge( [ 'delivery_choice', 'delivery_confirmation' ], array_keys( self::VISIT ) ) ] as $table => $new_columns ) {
 				$columns = $this->columns( $table );
 				foreach ( $new_columns as $column ) { if ( isset( $columns[ $column ] ) ) { $this->sql( "ALTER TABLE `$table` DROP COLUMN `$column`" ); } }
 			}
-			foreach ( [ 'b2bking_company_user_id', 'b2bking_group_id' ] as $column ) {
-				if ( ! isset( $this->columns( $partners )[ $column ] ) ) { $this->sql( "ALTER TABLE `$partners` ADD `$column` BIGINT NOT NULL DEFAULT 0" ); }
-			}
-			$this->sql( "CREATE TABLE `{$fixture}pow_skumap` (id BIGINT NOT NULL)" );
 			$secrets = new POW\Partners\Secrets( str_repeat( 'k', 32 ) );
 			$before_partner = [ 'id' => 12, 'name' => 'Example schema fixture', 'sender_domain' => 'NetworkID', 'sender_identity' => 'BUYER', 'owner_user_id' => get_current_user_id(), 'status' => 'active', 'mode' => 'dual_exit', 'secret_current' => $secrets->seal( 'old-current' ), 'secret_previous' => $secrets->seal( 'old-previous' ), 'secret_rotated_at' => '2026-01-01 00:00:00', 'company_profile' => '{"book":"preserve"}' ];
 			$this->check( 1 === $wpdb->insert( $partners, $before_partner ), 'seed legacy partner' );
-			$before_session = [ 'id' => 21, 'partner_id' => 12, 'user_id' => get_current_user_id(), 'status' => 'ordered', 'order_id' => 987, 'payload_id' => 'schema-fixture', 'one_time_token_hash' => str_repeat( 'a', 64 ), 'ship_to' => '{"legacy":"preserve"}' ];
+			$wp_token = WP_Session_Tokens::get_instance( get_current_user_id() )->create( time() + HOUR_IN_SECONDS );
+			$before_session = [ 'id' => 21, 'partner_id' => 12, 'user_id' => get_current_user_id(), 'status' => 'ordered', 'order_id' => 987, 'payload_id' => 'schema-fixture', 'one_time_token_hash' => str_repeat( 'a', 64 ), 'wp_session_token' => $wp_token, 'ship_to' => '{"legacy":"preserve"}' ];
 			$this->check( 1 === $wpdb->insert( $sessions, $before_session ), 'seed legacy linked session' );
-			$legacy_partner = $this->row( $partners, 12 ); unset( $legacy_partner['b2bking_company_user_id'], $legacy_partner['b2bking_group_id'] );
+			$legacy_partner = $this->row( $partners, 12 );
 			$legacy_session = $this->row( $sessions, 21 );
 			update_option( 'pow_db_version', '3', false ); update_option( 'pow_rewrite_version', '1', false );
 			POW\Installer::maybe_upgrade();
-			$this->check( '4' === get_option( 'pow_db_version' ), 'schema 3 advances to schema 4' );
+			$this->check( POW\Installer::DB_VERSION === get_option( 'pow_db_version' ), 'schema 3 advances to the candidate schema' );
 			$partner_columns = $this->columns( $partners ); $session_columns = $this->columns( $sessions );
 			foreach ( self::CONFIG as $key => $type ) {
 				$this->check( isset( $partner_columns[ $key ] ) && ( 'tinyint' === $type ? str_starts_with( $partner_columns[ $key ]['Type'], 'tinyint' ) : $type === $partner_columns[ $key ]['Type'] ), 'native column type ' . $key );
@@ -76,10 +93,36 @@ final class AddressSchemaNative {
 			foreach ( [ 'delivery_choice', 'delivery_confirmation' ] as $key ) {
 				$this->check( 'text' === $session_columns[ $key ]['Type'] && 'YES' === $session_columns[ $key ]['Null'] && null === $session_columns[ $key ]['Default'], 'nullable TEXT ' . $key );
 			}
+			foreach ( self::VISIT as $key => $type ) {
+				$this->check( isset( $session_columns[ $key ] ) && $type === $session_columns[ $key ]['Type'] && 'YES' === $session_columns[ $key ]['Null'] && null === $session_columns[ $key ]['Default'], 'nullable visit column ' . $key );
+			}
+			$session_indexes = $this->indexes( $sessions );
+			foreach ( self::VISIT_INDEXES as $name => $columns ) {
+				$this->check( $columns === ( $session_indexes[ $name ]['columns'] ?? [] ) && ( 'wc_session_key' === $name ) === ( $session_indexes[ $name ]['unique'] ?? false ), 'visit index ' . $name );
+			}
 			$p = $this->row( $partners, 12 ); $s = $this->row( $sessions, 21 );
 			$this->check( $legacy_partner === array_intersect_key( $p, $legacy_partner ), 'all legacy partner columns preserved' );
-			$this->check( $legacy_session === array_intersect_key( $s, $legacy_session ), 'all legacy session columns and order reference preserved' );
-			$this->check( ! isset( $partner_columns['b2bking_company_user_id'] ) && ! isset( $partner_columns['b2bking_group_id'] ) && null === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $fixture . 'pow_skumap' ) ) ), 'retired columns and SKU map removed' );
+			// Schema seven deliberately closes the open row: its basket carried no
+			// per-visit key, and the login it recorded now opens the connection's
+			// shared customer account. Every other column survives untouched.
+			$preserved_session = array_diff_key( $legacy_session, [ 'status' => null ] );
+			$this->check( $preserved_session === array_intersect_key( $s, $preserved_session ) && 'expired' === $s['status'], 'legacy session columns and order reference preserved except the status the upgrade closed' );
+			wp_cache_delete( get_current_user_id(), 'user_meta' );
+			$this->check( ! WP_Session_Tokens::get_instance( get_current_user_id() )->verify( $wp_token ), 'the upgrade destroyed the WordPress login the open row recorded' );
+			$closed = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . POW\Installer::log_table() . ' WHERE event = %s ORDER BY id DESC LIMIT 1', 'schema_visits_closed' ), ARRAY_A );
+			$this->check( is_array( $closed ) && str_contains( (string) $closed['detail'], '"visits":1' ) && ! str_contains( (string) $closed['detail'], $wp_token ), 'one audit line counts the closed visits and carries no credential' );
+			// Two claims exist before either has minted a key, so the UNIQUE column
+			// must be nullable; and one key must never be claimed twice.
+			foreach ( [ 22, 23 ] as $claim ) {
+				$this->check( 1 === $wpdb->insert( $sessions, [ 'id' => $claim, 'partner_id' => 12, 'status' => 'pending', 'payload_id' => 'schema-fixture-' . $claim, 'one_time_token_hash' => str_repeat( (string) $claim, 32 ) ] ), 'keyless claim row ' . $claim . ' is accepted under the UNIQUE per-visit key' );
+			}
+			$visit_key = 'pow_' . bin2hex( random_bytes( 14 ) );
+			$this->check( 32 === strlen( $visit_key ) && 1 === $wpdb->update( $sessions, [ 'wc_session_key' => $visit_key ], [ 'id' => 22 ] ), 'the first visit claims a 32-character key' );
+			$suppressed = $wpdb->suppress_errors( true );
+			$duplicate = $wpdb->update( $sessions, [ 'wc_session_key' => $visit_key ], [ 'id' => 23 ] );
+			$wpdb->suppress_errors( $suppressed ); $wpdb->last_error = '';
+			$this->check( false === $duplicate && null === $this->row( $sessions, 23 )['wc_session_key'], 'the same per-visit key cannot be claimed twice' );
+			$this->sql( "DELETE FROM `$sessions` WHERE id IN (22, 23)" );
 			$defaults = [ 'delivery_code_prefix' => '', 'delivery_code_extrinsic_name' => 'DeliveryAddressCode', 'emit_ship_to' => '0', 'emit_delivery_code' => '0', 'emit_delivery_line' => '0', 'delivery_unknown_policy' => 'require_rate', 'delivery_notes_policy' => 'off', 'freight_supplier_part_id' => 'DELIVERY', 'freight_uom' => 'EA', 'freight_classification_domain' => 'supplier', 'freight_classification' => 'freight' ];
 			$this->check( $defaults === array_intersect_key( $p, $defaults ), 'upgraded rows get safe database defaults' );
 			$this->check( null === POW\Sessions\Session::from_row( $s )->delivery_choice() && null === POW\Sessions\Session::from_row( $s )->delivery_confirmation(), 'old session remains unselected and unconfirmed' );
@@ -114,7 +157,7 @@ final class AddressSchemaNative {
 			$wpdb->update( $sessions, [ 'delivery_confirmation' => wp_json_encode( $confirmation ) ], [ 'id' => 21 ] );
 			$before_p = $this->row( $partners, 12 ); $before_s = $this->row( $sessions, 21 );
 			update_option( 'pow_db_version', '3', false ); POW\Installer::maybe_upgrade();
-			$this->check( $before_p === $this->row( $partners, 12 ) && $before_s === $this->row( $sessions, 21 ) && $partner_columns === $this->columns( $partners ) && $session_columns === $this->columns( $sessions ), 'second actual dbDelta migration is idempotent' );
+			$this->check( $before_p === $this->row( $partners, 12 ) && $before_s === $this->row( $sessions, 21 ) && $partner_columns === $this->columns( $partners ) && $session_columns === $this->columns( $sessions ) && $session_indexes === $this->indexes( $sessions ), 'second actual dbDelta migration is idempotent, indexes included' );
 			$ddl = [];
 			$observe_ddl = static function ( string $sql ) use ( &$ddl ): string { if ( preg_match( '/\A\s*(CREATE|ALTER|DROP)\b/i', $sql ) ) { $ddl[] = $sql; } return $sql; };
 			add_filter( 'query', $observe_ddl );
