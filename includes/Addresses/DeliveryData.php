@@ -19,6 +19,12 @@ final class DeliveryData {
 	private const ADDRESS_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
 	private const SOURCES = [ 'native' => 'company_book', 'inbound' => 'ship_to', 'customer' => 'customer', 'filter' => 'filter' ];
 
+	/** New confirmations write schema 2 (schema 1 plus preferred_delivery_date). Schema 1 rows are still read exactly as stored. */
+	public const CONFIRMATION_SCHEMA = 2;
+
+	/** WooCommerce core's zone Local Pickup ids and the Blocks Local Pickup id. Fixed, with no filter, so the review and the Quote note always agree on what counts as collection. */
+	public const PICKUP_METHOD_IDS = [ 'local_pickup', 'legacy_local_pickup', 'pickup_location' ];
+
 	/**
 	 * Retain accepted values verbatim. Country-specific validation belongs to Shape at selection time; a later configuration change must not rewrite history.
 	 *
@@ -85,13 +91,17 @@ final class DeliveryData {
 		if ( '' === $json || strlen( $json ) > self::MAX_JSON_BYTES ) { $invalid(); }
 		try { $data = json_decode( $json, true, 16, JSON_THROW_ON_ERROR ); }
 		catch ( \JsonException $e ) { $invalid(); }
-		$fields = [ 'schema', 'session_id', 'buyer_user_id', 'choice_hash', 'cart_fingerprint', 'policy_fingerprint', 'delivery', 'notes', 'confirmed_at' ];
+		$v1 = [ 'schema', 'session_id', 'buyer_user_id', 'choice_hash', 'cart_fingerprint', 'policy_fingerprint', 'delivery', 'notes', 'confirmed_at' ];
+		// Each schema has an exact field set and the decoded array is returned as stored: never add the date to schema 1 or drop it from schema 2, or stored fingerprints stop matching.
+		$fields = is_array( $data ) && 2 === ( $data['schema'] ?? null ) ? [ ...$v1, 'preferred_delivery_date' ] : $v1;
 		// Both bindings stay, but their meanings have parted: buyer_user_id is the connection's bound login, the same value for every concurrent visit, so session_id is the term that actually decides whose consent this is. Never write a guard on buyer_user_id alone.
-		if ( ! self::fields( $data, $fields ) || 1 !== $data['schema'] || $session_id <= 0 || $buyer_id <= 0 || $data['session_id'] !== $session_id || $data['buyer_user_id'] !== $buyer_id ) { $invalid(); }
+		if ( ! self::fields( $data, $fields ) || ! in_array( $data['schema'], [ 1, 2 ], true ) || $session_id <= 0 || $buyer_id <= 0 || $data['session_id'] !== $session_id || $data['buyer_user_id'] !== $buyer_id ) { $invalid(); }
 		foreach ( [ 'choice_hash', 'cart_fingerprint', 'policy_fingerprint' ] as $key ) {
 			if ( ! is_string( $data[ $key ] ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', $data[ $key ] ) ) { $invalid(); }
 		}
 		if ( ! hash_equals( self::fingerprint( $choice ), $data['choice_hash'] ) || ! self::text( $data['notes'], 2000 ) || strlen( $data['notes'] ) > 8000 || ! is_int( $data['confirmed_at'] ) || $data['confirmed_at'] <= 0 ) { $invalid(); }
+		// Format only: the tomorrow minimum applies when the buyer reviews, so a confirmation made before midnight still returns after it.
+		if ( 2 === $data['schema'] && null !== $data['preferred_delivery_date'] && ! self::date( $data['preferred_delivery_date'] ) ) { $invalid(); }
 		if ( null !== $choice && 'native' === $choice['provider'] && null === $choice['entry_fingerprint'] ) { $invalid(); }
 		$d = $data['delivery'];
 		if ( ! self::fields( $d, [ 'status', 'amount_cents', 'currency', 'code', 'emit', 'rates', 'freight' ] ) || ! in_array( $d['status'], [ 'quoted', 'unknown', 'not_required', 'disabled' ], true ) || ! is_bool( $d['emit'] ) || ! is_string( $d['currency'] ) || 1 !== preg_match( '/\A[A-Z]{3}\z/', $d['currency'] ) || ! self::text( $d['code'], 32 ) || ! is_array( $d['rates'] ) || ! array_is_list( $d['rates'] ) ) { $invalid(); }
@@ -118,6 +128,32 @@ final class DeliveryData {
 		if ( ! self::fields( $d['freight'], array_keys( $freight_fields ) ) ) { $invalid(); }
 		foreach ( $freight_fields as $key => $limit ) { if ( ! self::text( $d['freight'][ $key ], $limit ) || '' === $d['freight'][ $key ] ) { $invalid(); } }
 		return $data;
+	}
+
+	/** A real calendar date written exactly as Y-m-d, from the year 2000. No minimum-day rule here. */
+	public static function date( mixed $value ): bool {
+		if ( ! is_string( $value ) || 1 !== preg_match( '/\A(\d{4})-(\d{2})-(\d{2})\z/', $value, $parts ) ) { return false; }
+		return (int) $parts[1] >= 2000 && checkdate( (int) $parts[2], (int) $parts[3], (int) $parts[1] );
+	}
+
+	/** Collection is derived, never stored: true when every selected rate is a native Local Pickup method. method_id is already in the confirmation and both hashes. */
+	public static function is_collection( ?array $delivery ): bool {
+		$rates = $delivery['rates'] ?? null;
+		if ( ! is_array( $rates ) || [] === $rates || ! array_is_list( $rates ) ) { return false; }
+		foreach ( $rates as $rate ) {
+			if ( ! is_array( $rate ) || ! in_array( $rate['method_id'] ?? null, self::PICKUP_METHOD_IDS, true ) ) { return false; }
+		}
+		return true;
+	}
+
+	/** The selected rate labels as plain text, in package order, joined with '; '. Pure PHP so every caller and test harness can use it. */
+	public static function method_label( array $delivery ): string {
+		$labels = [];
+		foreach ( $delivery['rates'] ?? [] as $rate ) {
+			$label = trim( (string) preg_replace( '/\s+/u', ' ', html_entity_decode( strip_tags( (string) ( $rate['label'] ?? '' ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) );
+			if ( '' !== $label ) { $labels[] = $label; }
+		}
+		return implode( '; ', $labels );
 	}
 
 	private static function fields( mixed $data, array $fields ): bool {

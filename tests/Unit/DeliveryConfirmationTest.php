@@ -111,13 +111,14 @@ final class DeliveryEstimate {
 	public array $taxes=[1=>'0.75'];
 	public bool $split_destination=false;
 	public int $calls=0;
+	public string $method='flat';
 	public function quote(Session $s,Partner $p,?array $destination):array{
 		\PHPUnit\Framework\TestCase::assertFalse(state()->registry->locked);++$this->calls;if($this->callback){($this->callback)();}
 		$physical=state()->cart->cart_contents['line']['data']->physical;
 		if($physical&&null===$destination){throw new \DomainException('Missing address');}
 		if($destination){state()->customer->address=$destination['address'];}
 		$chosen=state()->session->get('chosen_shipping_methods',[0=>'flat:1']);state()->session->set('chosen_shipping_methods',$physical?$chosen:[]);
-		$rates=[];foreach(['flat:1'=>$this->amount,'flat:2'=>900] as $id=>$amount){$rates[]=['package_key'=>0,'rate_id'=>$id,'method_id'=>'flat','instance_id'=>1,'label'=>'Delivery','amount_cents'=>$amount,'taxes'=>$this->taxes];}
+		$rates=[];foreach(['flat:1'=>$this->amount,'flat:2'=>900] as $id=>$amount){$rates[]=['package_key'=>0,'rate_id'=>$id,'method_id'=>$this->method,'instance_id'=>1,'label'=>'Delivery','amount_cents'=>$amount,'taxes'=>$this->taxes];}
 		$selected=array_values(array_filter($rates,fn($r)=>$r['rate_id']===($chosen[0]??'')));
 		state()->shipping->packages=$physical?[0=>['destination'=>$destination['address'],'rates'=>$this->unknown?[]:array_column(array_map(fn($r)=>['key'=>$r['rate_id'],'rate'=>new NativeRate($r)],$rates),'rate','key')]]:[];
 		if($this->split_destination){state()->shipping->packages[0]['destination']['city']='Other destination';}
@@ -185,7 +186,7 @@ final class DeliveryConfirmationTest extends TestCase {
 		$this->s->resolver->choices=[['schema'=>1,'partner_id'=>7,'storage_user_id'=>99,'provider'=>'native','key'=>'depot','code'=>'DEPOT','address'=>$address,'label'=>'Depot','source'=>'company_book','book_revision'=>1,'entry_fingerprint'=>str_repeat('a',64)]];
 		$this->model=new Confirmation($this->s->registry,$this->s->store,$this->s->address,$this->s->estimate,$this->s->resolver,$this->s->mapper);
 	}
-	protected function tearDown():void{unset($GLOBALS['confirmation_test_state']);if(null===$this->previous_db){unset($GLOBALS['wpdb']);}else{$GLOBALS['wpdb']=$this->previous_db;}}
+	protected function tearDown():void{unset($GLOBALS['confirmation_test_state'],$GLOBALS['pow_test_timezone']);if(null===$this->previous_db){unset($GLOBALS['wpdb']);}else{$GLOBALS['wpdb']=$this->previous_db;}}
 	private function preview(array $input=[]):array|WP_Error{return $this->model->preview($this->s->store->session,$this->s->registry->partner,$input);}
 	private function input(array $changes=[]):array{$v=$this->preview($changes);self::assertTrue(is_array($v));self::assertNull($v['error']);return $changes+['provider'=>'native','key'=>'depot','notes'=>$v['notes'],'review_digest'=>$v['review_digest']];}
 	private function confirm(array $input):array|WP_Error{return $this->model->confirm($this->s->store->session,$this->s->registry->partner,$input);}
@@ -352,6 +353,109 @@ final class DeliveryConfirmationTest extends TestCase {
 			$resolver=new \POW\Tests\AddressProvider\Resolver($r,$b,$visits);self::assertTrue(method_exists($resolver,'choices_for_session'),'Full choice producer must exist');$choices=$resolver->choices_for_session($visit,$r->find(7));self::assertCount(1,$choices);self::assertSame(9,$choices[0]['book_revision']);self::assertSame(20,$choices[0]['storage_user_id']);self::assertSame(\POW\Tests\AddressProvider\CompanyBook::entry_fingerprint('depot',$b->state['addresses']['depot']),$choices[0]['entry_fingerprint']);self::assertSame(1,$b->reads);
 			$r->on_lock=function()use($r){$r->rows[7]['owner_user_id']=30;};self::assertInstanceOf(WP_Error::class,$resolver->choices_for_session($visit,$r->find(7)));
 		}finally{foreach($before as $key=>[$exists,$value]){if($exists){$GLOBALS[$key]=$value;}else{unset($GLOBALS[$key]);}}}
+	}
+
+	private static function day(int $days,string $zone='UTC'):string{return (new \DateTimeImmutable('today',new \DateTimeZone($zone)))->modify('+'.$days.' days')->format('Y-m-d');}
+	public function test_review_defaults_the_preferred_date_to_fourteen_days_ahead_in_site_time():void{
+		$GLOBALS['pow_test_timezone']='Africa/Johannesburg';
+		$v=$this->preview();
+		self::assertNull($v['error']);
+		self::assertSame(self::day(14,'Africa/Johannesburg'),$v['preferred_delivery_date']);
+		self::assertSame(self::day(1,'Africa/Johannesburg'),$v['preferred_delivery_date_min']);
+	}
+	public function test_preferred_date_before_tomorrow_is_refused_on_review_and_submit():void{
+		foreach([self::day(0),'2020-01-01','2026-02-30','07/10/2026',['2026-10-07']] as $date){
+			$result=$this->preview(['preferred_delivery_date'=>$date]);
+			self::assertInstanceOf(WP_Error::class,$result);self::assertSame('delivery_date_invalid',$result->get_error_code());
+			$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>$date]));
+			self::assertInstanceOf(WP_Error::class,$result);self::assertSame('delivery_date_invalid',$result->get_error_code());
+		}
+		self::assertSame(0,$this->s->store->writes);
+		self::assertNull($this->s->store->session->delivery_confirmation_json);
+	}
+	public function test_buyer_can_change_the_date_on_the_shown_review_and_submit_directly():void{
+		$i=$this->input();$i['preferred_delivery_date']=self::day(3);
+		$result=$this->confirm($i);
+		self::assertTrue(is_array($result));
+		self::assertSame(2,$result['delivery_confirmation']['schema']);
+		self::assertSame(self::day(3),$result['delivery_confirmation']['preferred_delivery_date']);
+		$stored=json_decode($this->s->store->session->delivery_confirmation_json,true);
+		self::assertSame(self::day(3),$stored['preferred_delivery_date']);
+		$returned=$this->returned();self::assertTrue(is_array($returned));self::assertSame(self::day(3),$returned['delivery_preferred_date']);
+		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
+	}
+	public function test_date_is_bound_to_the_stored_fingerprint_not_the_review_digest():void{
+		$a=$this->preview(['preferred_delivery_date'=>self::day(2)]);$b=$this->preview(['preferred_delivery_date'=>self::day(5)]);
+		self::assertSame($a['review_digest'],$b['review_digest']);
+		self::assertNotSame($a['_confirmation_fingerprint'],$b['_confirmation_fingerprint']);
+		$first=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(2)]));
+		$second=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(5)]));
+		self::assertNotSame($first['delivery_confirmation']['cart_fingerprint'],$second['delivery_confirmation']['cart_fingerprint']);
+		$none=$this->preview(['preferred_delivery_date'=>'']);
+		self::assertSame($a['review_digest'],$none['review_digest']);
+	}
+	public function test_cleared_date_confirms_as_null():void{
+		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>'']));
+		self::assertTrue(is_array($result));
+		self::assertTrue(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
+		self::assertNull($result['delivery_confirmation']['preferred_delivery_date']);
+		$returned=$this->returned();self::assertTrue(is_array($returned));self::assertNull($returned['delivery_preferred_date']);
+		// A cleared date stays cleared on the next review instead of returning to the default.
+		self::assertNull($this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
+	}
+	public function test_previous_date_is_offered_again_on_the_next_review():void{
+		$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(4)]));
+		self::assertSame(self::day(4),$this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
+	}
+	public function test_schema_one_confirmation_from_before_the_upgrade_still_returns():void{
+		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>'']));self::assertTrue(is_array($result));
+		$old=json_decode($this->s->store->session->delivery_confirmation_json,true);$old['schema']=1;unset($old['preferred_delivery_date']);
+		$this->s->store->change(['delivery_confirmation_json'=>json_encode($old)]);
+		$returned=$this->returned();
+		self::assertTrue(is_array($returned));
+		self::assertNull($returned['delivery_preferred_date']);
+		self::assertSame(1,$returned['delivery_confirmation']['schema']);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$returned['delivery_confirmation']));
+		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
+	}
+	public function test_return_after_midnight_accepts_a_date_that_is_no_longer_tomorrow():void{
+		// Confirm at UTC-11 for its tomorrow, then return at UTC+14, where that date is today or earlier.
+		$GLOBALS['pow_test_timezone']='Pacific/Pago_Pago';
+		$date=self::day(1,'Pacific/Pago_Pago');
+		self::assertTrue(is_array($this->confirm(array_replace($this->input(),['preferred_delivery_date'=>$date]))));
+		$GLOBALS['pow_test_timezone']='Pacific/Kiritimati';
+		self::assertTrue($date<=self::day(0,'Pacific/Kiritimati'));
+		$returned=$this->returned();
+		self::assertTrue(is_array($returned));
+		self::assertSame($date,$returned['delivery_preferred_date']);
+		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
+		// A new review of the same stale date is refused; the default replaces it.
+		self::assertInstanceOf(WP_Error::class,$this->preview(['preferred_delivery_date'=>$date]));
+		self::assertSame(self::day(14,'Pacific/Kiritimati'),$this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
+	}
+	public function test_tampered_prepared_date_fails_the_final_guard():void{
+		$this->confirm($this->input());$r=$this->returned();self::assertTrue(is_array($r));
+		$r['delivery_preferred_date']='2099-01-01';
+		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
+		unset($r['delivery_preferred_date']);
+		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
+	}
+	public function test_virtual_cart_never_stores_a_preferred_date():void{
+		$this->s->cart->cart_contents['line']['data']->physical=false;
+		self::assertNull($this->preview()['preferred_delivery_date']);
+		$i=$this->input();unset($i['provider'],$i['key']);$i['preferred_delivery_date']=self::day(3);
+		$result=$this->confirm($i);
+		self::assertTrue(is_array($result));
+		self::assertNull($this->s->store->session->delivery_choice_json);
+		self::assertNull($result['delivery_confirmation']['preferred_delivery_date']);
+		self::assertNull($this->returned()['delivery_preferred_date']);
+	}
+	public function test_collection_follows_the_selected_native_pickup_rate():void{
+		self::assertFalse($this->preview()['collection']);
+		$this->s->estimate->method='local_pickup';
+		self::assertTrue($this->preview()['collection']);
+		$this->s->estimate->method='flat';
+		self::assertFalse($this->preview()['collection']);
 	}
 }
 }

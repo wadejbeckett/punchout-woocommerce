@@ -121,4 +121,56 @@ final class DeliveryChooserTest extends TestCase {
 		self::assertStringContainsString( 'name="review_digest" value="' . $digest . '"', $html );
 		self::assertStringNotContainsString( '<script', $html );
 	}
+	private static function physical( array $changes = [] ): array {
+		$choice = [ 'provider' => 'native', 'key' => 'depot', 'label' => 'Depot', 'address' => [ 'city' => 'Pretoria', 'state' => 'GP', 'country' => 'ZA' ], 'code' => '' ];
+		$package = [ 'package_key' => 0, 'label' => 'Parcel', 'selected_rate_id' => 'flat_rate:1', 'rates' => [ [ 'rate_id' => 'flat_rate:1', 'display_label' => 'Courier (3-5 working days)' ] ] ];
+		return array_replace( [ 'choices' => [ $choice ], 'selected_choice' => $choice, 'delivery_destination' => $choice, 'packages' => [ $package ], 'delivery' => [ 'status' => 'quoted', 'amount_cents' => 5000, 'emit' => true ], 'preferred_delivery_date' => '2026-10-07', 'preferred_delivery_date_min' => '2026-09-24' ], $changes );
+	}
+	private static function date_input( string $html ): string {
+		self::assertSame( 1, preg_match( '#<input type="date"[^>]*>#', $html, $m ), 'One native date input.' );
+		return $m[0];
+	}
+	public function test_date_input_is_native_optional_with_a_tomorrow_minimum(): void {
+		$html = $this->render( self::physical() );
+		$input = self::date_input( $html );
+		self::assertStringContainsString( 'name="preferred_delivery_date"', $input );
+		self::assertStringContainsString( 'value="2026-10-07"', $input );
+		self::assertStringContainsString( 'min="2026-09-24"', $input );
+		self::assertStringNotContainsString( 'required', $input );
+		self::assertStringNotContainsString( 'max=', $input );
+		self::assertStringContainsString( '<label for="pow-preferred-date">Preferred delivery date</label>', $html );
+		self::assertStringContainsString( 'it is not sent to your purchasing system', $html );
+		self::assertStringNotContainsString( '<script', $html );
+		// A cleared date renders empty; an absent minimum adds no attribute.
+		$input = self::date_input( $this->render( self::physical( [ 'preferred_delivery_date' => null, 'preferred_delivery_date_min' => '' ] ) ) );
+		self::assertStringContainsString( 'value=""', $input );
+		self::assertStringNotContainsString( 'min=', $input );
+		// A theme override fed an older view still renders.
+		$view = self::physical(); unset( $view['preferred_delivery_date'], $view['preferred_delivery_date_min'] );
+		self::assertStringContainsString( 'value=""', self::date_input( $this->render( $view ) ) );
+	}
+	public function test_collection_labels_the_method_section(): void {
+		$html = $this->render( self::physical( [ 'collection' => true ] ) );
+		self::assertStringContainsString( '<h2 id="pow-shipping-title">Collection</h2>', $html );
+		self::assertStringContainsString( '<h2 id="pow-destination-title">Address for this order</h2>', $html );
+		self::assertStringContainsString( 'Collection orders keep this address on the order', $html );
+		self::assertStringContainsString( '<select id="pow-delivery-choice" name="choice" required>', $html );
+		$html = $this->render( self::physical() );
+		self::assertStringContainsString( '<h2 id="pow-shipping-title">Delivery method</h2>', $html );
+		self::assertStringContainsString( '<h2 id="pow-destination-title">Delivery address</h2>', $html );
+		self::assertStringNotContainsString( 'Collection orders keep', $html );
+	}
+	public function test_delivery_period_hint_is_shown_under_the_methods(): void {
+		$hint = 'Delivery periods are shown with each delivery method.';
+		$html = $this->render( self::physical() );
+		self::assertStringContainsString( $hint, $html );
+		self::assertStringContainsString( 'Courier (3-5 working days)', $html );
+		self::assertStringNotContainsString( $hint, $this->render( self::physical( [ 'packages' => [] ] ) ) );
+		self::assertStringNotContainsString( $hint, $this->render() );
+	}
+	public function test_virtual_basket_has_no_date_input(): void {
+		$html = $this->render( [ 'preferred_delivery_date' => null ] );
+		self::assertStringNotContainsString( 'type="date"', $html );
+		self::assertStringNotContainsString( 'preferred_delivery_date', $html );
+	}
 }
