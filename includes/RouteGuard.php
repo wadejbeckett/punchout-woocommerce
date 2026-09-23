@@ -82,6 +82,7 @@ final class RouteGuard {
 		// judged too.
 		add_filter( 'woocommerce_account_menu_items', [ $this, 'visit_menu_items' ], PHP_INT_MAX );
 		add_filter( 'wp_pre_insert_user_data', [ $this, 'refuse_user_creation' ], PHP_INT_MAX, 4 );
+		add_filter( 'get_user_option_default_password_nag', [ $this, 'hide_temporary_password' ], PHP_INT_MAX );
 
 		add_action( 'woocommerce_checkout_process', [ $this, 'block_checkout_process' ] );
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'block_store_api_checkout' ] );
@@ -105,6 +106,16 @@ final class RouteGuard {
 		// guard_rest() hold those. The bound account outside a visit keeps
 		// its whole account area.
 		if ( $this->account_page_refused( $visit ) ) {
+			$this->redirect_to_landing();
+			return;
+		}
+
+		// WooCommerce's "resend the set-password link" action, which it
+		// handles later on this same hook for any page: it mails the shared
+		// account a new password-reset link and replaces the account's reset
+		// key. A visit never sees that link (hide_temporary_password()), and
+		// a request carrying the action is refused as well.
+		if ( isset( $_GET['wc-resend-set-password'] ) && $this->inside_visit() ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing decision.
 			$this->redirect_to_landing();
 			return;
 		}
@@ -188,7 +199,10 @@ final class RouteGuard {
 			}
 
 			foreach ( $requested as $endpoint ) {
-				if ( ! VisitEndpoints::allows( $allowed, $endpoint ) ) {
+				// `dashboard` names the account page itself here, so a page
+				// another plugin registers under that name is never opened
+				// by the dashboard's tick; the form does not offer it either.
+				if ( VisitEndpoints::DASHBOARD === $endpoint || ! VisitEndpoints::allows( $allowed, $endpoint ) ) {
 					return false;
 				}
 
@@ -351,6 +365,30 @@ final class RouteGuard {
 				: VisitEndpoints::allows( $allowed, (string) $endpoint ) && self::has_account_content( (string) $endpoint ),
 			ARRAY_FILTER_USE_KEY
 		);
+	}
+
+	/**
+	 * WooCommerce's temporary-password notice, inside a visit.
+	 *
+	 * An account whose password WooCommerce generated, or that registered
+	 * itself through WordPress, carries the default_password_nag user
+	 * option. WooCommerce then shows "Your account is using a temporary
+	 * password" on the account dashboard and on account details, with a
+	 * Resend link that mails the account a new password-reset link and
+	 * replaces its reset key. In a visit that account is the connection's
+	 * shared login and the buyer is not its holder, so inside a visit the
+	 * option reads false and neither the notice nor its link renders. A
+	 * request whose visit cannot be proved reads false too. Outside a visit,
+	 * the account holder's own login included, the option is untouched.
+	 *
+	 * @param mixed $value The option as stored.
+	 */
+	public function hide_temporary_password( mixed $value ): mixed {
+		if ( empty( $value ) ) {
+			return $value;
+		}
+
+		return $this->inside_visit() ? false : $value;
 	}
 
 	/**

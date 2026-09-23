@@ -152,7 +152,7 @@ final class AdminActionsNative {
 				$r = $this->call( 'associate_partner', $f['id'], [ 'owner_user_id' => $existing['owner'] ], 'POST', $existing['owner'] );
 				$this->check( 403 === $r->args['response'] );
 			} );
-			$this->case( 'the My Account list saves from real checkboxes, refuses payment pages, and a new connection starts with the dashboard', function () {
+			$this->case( 'the My Account list saves from real checkboxes and the name box, refuses payment pages and malformed names, and a new connection starts with the dashboard', function () {
 				$f = $this->fixture();
 				$this->check( 'dashboard' === $this->registry->find( $f['id'] )->visit_endpoints );
 				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '', 'dashboard', 'orders', 'late-page' ] ] );
@@ -162,6 +162,12 @@ final class AdminActionsNative {
 				$this->check( str_contains( (string) wp_json_encode( get_transient( 'pow_notice_' . $this->admin ) ), 'never pays on site' ) );
 				$r = $this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ 'x' => [ 'dashboard' ] ] ] );
 				$this->check( 400 === ( $r->args['response'] ?? 0 ) );
+				// The form's name box posts one more entry of the same list.
+				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '', 'dashboard', 'orders', 'typed-page' ] ] );
+				$this->check( 'dashboard,orders,typed-page' === $this->registry->find( $f['id'] )->visit_endpoints );
+				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '', 'dashboard', 'Typed Page' ] ] );
+				$this->check( 'dashboard,orders,typed-page' === $this->registry->find( $f['id'] )->visit_endpoints );
+				$this->check( str_contains( (string) wp_json_encode( get_transient( 'pow_notice_' . $this->admin ) ), 'lowercase letters, digits and hyphens' ) );
 				$this->call( 'save_partner', $f['id'], $f['data'] + [ 'visit_endpoints' => [ '' ] ] );
 				$this->check( '' === $this->registry->find( $f['id'] )->visit_endpoints );
 			} );

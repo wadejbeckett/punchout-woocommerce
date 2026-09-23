@@ -176,8 +176,9 @@ final class Partner {
 
 	/**
 	 * The My Account pages a visit of this connection may open ([] = none).
-	 * The payment-method pages are left out unless the exit policy allows
-	 * WooCommerce's own checkout.
+	 * The pages that never open in a visit are left out, and so are the
+	 * payment-method pages unless the exit policy allows WooCommerce's own
+	 * checkout.
 	 *
 	 * @return list<string>
 	 */

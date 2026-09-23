@@ -621,28 +621,30 @@ final class Page {
 
 	/**
 	 * The connection's My Account pages as a checkbox list, built live from
-	 * WooCommerce's endpoint map: the dashboard and WooCommerce's own pages
-	 * first, then this plugin's tab, then every page another plugin added,
-	 * then anything the connection lists that is not registered right now.
-	 * Some plugins register a page only for some accounts or only on the
-	 * front end; such an entry keeps a ticked row of its own, so saving the
-	 * form never drops it unseen.
+	 * the account pages the site registers (registered_account_endpoints()):
+	 * the dashboard and WooCommerce's own pages first, then this plugin's tab,
+	 * then every page another plugin added, then anything the connection
+	 * lists that the site does not register right now. Such an entry keeps a
+	 * ticked row of its own, so saving the form never drops it unseen, and a
+	 * name box below the list adds a page the list does not show, so nothing
+	 * unticked is lost for good.
 	 *
 	 * A new connection starts with the dashboard ticked and nothing else. The
 	 * payment-method rows are disabled unless the connection's exit policy
-	 * allows WooCommerce's own checkout, which no connection's does.
+	 * allows WooCommerce's own checkout, which no connection's does, and the
+	 * rows for pages that never open in a visit are disabled too.
 	 */
 	private function visit_endpoints_field( ?Partner $partner ): string {
 		$registered = self::registered_account_endpoints();
 		$native     = null !== $partner && $partner->allows_native_checkout();
 		$ticked     = null === $partner ? [ VisitEndpoints::NEW_CONNECTION ] : VisitEndpoints::listed( $partner->visit_endpoints, $native );
 		$stored     = null === $partner ? $ticked : VisitEndpoints::listed( $partner->visit_endpoints, true );
-		$groups     = VisitEndpoints::groups( array_keys( $registered ), $stored );
+		$groups     = VisitEndpoints::groups( array_keys( $registered ), $stored, self::woocommerce_feature_endpoints( array_keys( $registered ) ) );
 		$headings   = [
 			'woocommerce' => __( 'WooCommerce', 'punchout-woocommerce' ),
 			'plugin'      => __( 'This plugin', 'punchout-woocommerce' ),
 			'other'       => __( 'Added by other plugins', 'punchout-woocommerce' ),
-			'stored'      => __( 'Stored, not currently registered', 'punchout-woocommerce' ),
+			'stored'      => __( 'Ticked, but not found on this site right now', 'punchout-woocommerce' ),
 		];
 
 		$html  = '<fieldset class="pow-visit-endpoints"><legend class="screen-reader-text">' . esc_html__( 'My Account pages in a visit', 'punchout-woocommerce' ) . '</legend>';
@@ -670,12 +672,20 @@ final class Page {
 			$html .= '</ul>';
 		}
 
+		// One more entry of the same list, typed: for a page the list above
+		// cannot see from here. The save handler checks it like a ticked box.
+		$html .= sprintf(
+			'<p><label>%s <input type="text" name="visit_endpoints[]" value="" class="regular-text" autocomplete="off" spellcheck="false" /></label></p><p class="description">%s</p>',
+			esc_html__( 'Add a page by name:', 'punchout-woocommerce' ),
+			esc_html__( 'For a page the list above does not show. Type the last part of its address, for example page-name for /my-account/page-name/. Use lowercase letters, digits and hyphens.', 'punchout-woocommerce' )
+		);
+
 		return $html . '</fieldset>';
 	}
 
 	/** One checkbox of the My Account list: label, name, and the note that goes with the page. */
 	private function visit_endpoint_row( string $name, ?string $slug, string $group, bool $ticked, bool $native_checkout ): string {
-		$disabled = in_array( $name, VisitEndpoints::PAYMENT, true ) && ! $native_checkout;
+		$disabled = in_array( $name, VisitEndpoints::NEVER_OPEN, true ) || ( in_array( $name, VisitEndpoints::PAYMENT, true ) && ! $native_checkout );
 
 		if ( VisitEndpoints::DASHBOARD === $name ) {
 			$label = esc_html__( 'Dashboard', 'punchout-woocommerce' ) . ' <code>' . esc_html( self::account_page_path() ) . '</code>';
@@ -693,10 +703,7 @@ final class Page {
 			}
 		}
 
-		[ $note, $warned ] = self::endpoint_note( $name, $group, $disabled );
-		$note_html = '' === $note ? '' : ( $warned
-			? ' <strong class="pow-endpoint-warning" style="color:#d63638">' . esc_html( $note ) . '</strong>'
-			: ' <span class="description">' . esc_html( $note ) . '</span>' );
+		$note = self::endpoint_note( $name, $group, $disabled );
 
 		return sprintf(
 			'<li><label><input type="checkbox" name="visit_endpoints[]" value="%s"%s%s /> %s</label>%s</li>',
@@ -704,45 +711,53 @@ final class Page {
 			$ticked && ! $disabled ? ' checked="checked"' : '',
 			$disabled ? ' disabled="disabled"' : '',
 			$label,
-			$note_html
+			'' === $note ? '' : ' <span class="description">' . esc_html( $note ) . '</span>'
 		);
 	}
 
-	/**
-	 * What the form says beside a page, and whether it says it in red.
-	 *
-	 * @return array{0: string, 1: bool}
-	 */
-	private static function endpoint_note( string $name, string $group, bool $disabled ): array {
+	/** What the form says beside a page, in plain words. */
+	private static function endpoint_note( string $name, string $group, bool $disabled ): string {
 		if ( 'stored' === $group ) {
-			return [ __( 'Listed on this connection, but not registered with WooCommerce right now. Some plugins register a page only for some accounts. It stays listed while ticked.', 'punchout-woocommerce' ), false ];
+			return __( 'Not found on this site right now. Some plugins add a page only for certain accounts, so it can still open in a visit. Untick it to remove it.', 'punchout-woocommerce' );
+		}
+
+		if ( in_array( $name, VisitEndpoints::NEVER_OPEN, true ) ) {
+			return __( 'Stays closed in a visit.', 'punchout-woocommerce' );
 		}
 
 		if ( 'other' === $group ) {
-			return [ __( 'Added by another plugin.', 'punchout-woocommerce' ), false ];
+			return __( 'Added by another plugin.', 'punchout-woocommerce' );
 		}
 
 		if ( in_array( $name, VisitEndpoints::PAYMENT, true ) ) {
-			return [ $disabled ? __( 'Punchout-only connections never pay on site.', 'punchout-woocommerce' ) : __( 'Saved payment methods belong to the shared login.', 'punchout-woocommerce' ), false ];
+			return $disabled ? __( 'Punchout-only connections never pay on site.', 'punchout-woocommerce' ) : __( 'Saved payment methods belong to the shared login.', 'punchout-woocommerce' );
 		}
 
 		return match ( $name ) {
-			VisitEndpoints::DASHBOARD                   => [ __( 'Shows only the pages ticked here.', 'punchout-woocommerce' ), false ],
-			'orders', 'view-order'                      => [ __( 'Every buyer of this connection shares one login, so the order history is shared.', 'punchout-woocommerce' ), false ],
-			'downloads'                                 => [ __( 'Shared by every buyer of this connection.', 'punchout-woocommerce' ), false ],
-			'edit-address'                              => [ __( 'The company admin manages addresses from a normal login.', 'punchout-woocommerce' ), false ],
-			'edit-account'                              => [ __( 'Holds the shared login\'s email address and password. Prefer changing them from a normal login.', 'punchout-woocommerce' ), false ],
-			'customer-logout', 'lost-password'          => [ __( 'Opening this page breaks the punchout visit.', 'punchout-woocommerce' ), true ],
-			IntegrationTab::ENDPOINT                    => [ __( 'Exposes this connection\'s settings.', 'punchout-woocommerce' ), true ],
-			'order-pay', 'order-received'               => [ __( 'Checkout pages. A punchout-only connection still refuses checkout.', 'punchout-woocommerce' ), true ],
-			default                                     => [ '', false ],
+			VisitEndpoints::DASHBOARD => __( 'Shows only the pages ticked here.', 'punchout-woocommerce' ),
+			'orders'                  => __( 'Shows the order list, which every buyer of this connection shares. A single order\'s page stays closed in a visit.', 'punchout-woocommerce' ),
+			'downloads'               => __( 'Shared by every buyer of this connection.', 'punchout-woocommerce' ),
+			'edit-address'            => __( 'The company admin manages addresses from a normal login.', 'punchout-woocommerce' ),
+			'edit-account'            => __( 'Holds the shared login\'s email address and password. Prefer changing them from a normal login.', 'punchout-woocommerce' ),
+			default                   => '',
 		};
 	}
 
 	/**
-	 * WooCommerce's endpoint map as it stands now: name => address slug.
-	 * Names that could not be stored are left out. Without WooCommerce the
-	 * map is empty and the form offers the dashboard and the stored entries.
+	 * The account pages the site registers, as far as wp-admin can see them:
+	 * name => address slug. Names that could not be stored are left out.
+	 *
+	 * Two sources, because wp-admin sees less than the shop does.
+	 * WooCommerce's endpoint map (WC()->query->get_query_vars()) holds its own
+	 * pages and whatever other plugins add to it on this request, but a plugin
+	 * may add its pages to that map only on the front end, or only for some
+	 * accounts. A page with an address of its own under /my-account/ is also a
+	 * WordPress rewrite endpoint, and those are registered on every request,
+	 * wp-admin included, or saving the permalink settings would drop their
+	 * addresses. So every rewrite endpoint registered for pages (but not for
+	 * every address on the site) is offered too, under the query var
+	 * WordPress gives it, unless WooCommerce's map already holds it. Without
+	 * either source the form offers the dashboard and the stored entries.
 	 *
 	 * @return array<string, string>
 	 */
@@ -762,7 +777,101 @@ final class Page {
 			}
 		}
 
+		$mapped = array_merge( array_keys( $endpoints ), array_values( $endpoints ) );
+
+		foreach ( self::page_rewrite_endpoints() as $name => $slug ) {
+			if ( ! in_array( $name, $mapped, true ) && ! in_array( $slug, $mapped, true ) ) {
+				$endpoints[ $name ] = $slug;
+			}
+		}
+
 		return $endpoints;
+	}
+
+	/**
+	 * WordPress's rewrite endpoints that apply to pages and not to every
+	 * address on the site: query var => address slug. An endpoint without a
+	 * query var cannot be an account page, and one registered for every
+	 * address is an API or feed address rather than a page of the account.
+	 *
+	 * @return array<string, string>
+	 */
+	private static function page_rewrite_endpoints(): array {
+		global $wp_rewrite;
+
+		$pages     = defined( 'EP_PAGES' ) ? (int) EP_PAGES : 4096;
+		$all       = defined( 'EP_ALL' ) ? (int) EP_ALL : 8191;
+		$endpoints = [];
+
+		foreach ( is_object( $wp_rewrite ) && isset( $wp_rewrite->endpoints ) && is_array( $wp_rewrite->endpoints ) ? $wp_rewrite->endpoints : [] as $endpoint ) {
+			if ( ! is_array( $endpoint ) || ! isset( $endpoint[0], $endpoint[1], $endpoint[2] ) || ! is_string( $endpoint[1] ) || ! is_string( $endpoint[2] ) ) {
+				continue;
+			}
+
+			$mask = (int) $endpoint[0];
+
+			if ( 0 === ( $mask & $pages ) || $all === ( $mask & $all ) || ! VisitEndpoints::is_name( $endpoint[2] ) ) {
+				continue;
+			}
+
+			$endpoints[ $endpoint[2] ] = $endpoint[1];
+		}
+
+		return $endpoints;
+	}
+
+	/**
+	 * Which of $names are pages a WooCommerce feature adds (outside its
+	 * standard set): WooCommerce itself provides the page's account content,
+	 * the woocommerce_account_<name>_endpoint action, from its own files.
+	 * Without WooCommerce, or when a callback cannot be traced, a name is not
+	 * WooCommerce's, and the form shows it with the other plugins' pages.
+	 *
+	 * @param list<string> $names
+	 * @return list<string>
+	 */
+	private static function woocommerce_feature_endpoints( array $names ): array {
+		if ( ! defined( 'WC_ABSPATH' ) || ! function_exists( 'wp_normalize_path' ) ) {
+			return [];
+		}
+
+		$root  = wp_normalize_path( (string) WC_ABSPATH );
+		$found = [];
+
+		foreach ( array_diff( $names, VisitEndpoints::WOOCOMMERCE ) as $name ) {
+			$hook = $GLOBALS['wp_filter'][ 'woocommerce_account_' . $name . '_endpoint' ] ?? null;
+
+			foreach ( is_object( $hook ) && isset( $hook->callbacks ) && is_array( $hook->callbacks ) ? $hook->callbacks : [] as $callbacks ) {
+				foreach ( is_array( $callbacks ) ? $callbacks : [] as $callback ) {
+					$file = self::callback_file( $callback['function'] ?? null );
+
+					if ( '' !== $file && str_starts_with( wp_normalize_path( $file ), $root ) ) {
+						$found[] = (string) $name;
+						continue 3;
+					}
+				}
+			}
+		}
+
+		return $found;
+	}
+
+	/** The file a hook callback is defined in, or '' when it cannot be told. */
+	private static function callback_file( mixed $callback ): string {
+		try {
+			$reflection = match ( true ) {
+				is_array( $callback ) && isset( $callback[0], $callback[1] ) && is_string( $callback[1] ) && ( is_object( $callback[0] ) || is_string( $callback[0] ) ) => new \ReflectionMethod( $callback[0], $callback[1] ),
+				is_string( $callback ) && str_contains( $callback, '::' ) => new \ReflectionMethod( $callback ),
+				$callback instanceof \Closure || is_string( $callback )  => new \ReflectionFunction( $callback ),
+				is_object( $callback ) && method_exists( $callback, '__invoke' ) => new \ReflectionMethod( $callback, '__invoke' ),
+				default => null,
+			};
+			$file = null === $reflection ? false : $reflection->getFileName();
+		} catch ( \Throwable $e ) {
+			return '';
+		}
+
+		return is_string( $file ) ? $file : '';
 	}
 
 	/**

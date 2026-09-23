@@ -42,30 +42,33 @@ final class VisitEndpointsTest extends TestCase {
 		sort( $map );
 		self::assertSame( $map, $own );
 		self::assertSame( [], array_diff( VisitEndpoints::PAYMENT, VisitEndpoints::WOOCOMMERCE ) );
-		self::assertSame( [ 'customer-logout', 'lost-password', IntegrationTab::ENDPOINT, 'order-pay', 'order-received' ], VisitEndpoints::WARNED );
+		self::assertSame( [ 'customer-logout', 'lost-password', 'order-pay', 'order-received', IntegrationTab::ENDPOINT ], VisitEndpoints::NEVER_OPEN );
+		self::assertSame( [ 'view-order' ], VisitEndpoints::FOLDED, 'A single order\'s page is folded into the Orders row' );
 		self::assertSame( 'punchout-integration', IntegrationTab::ENDPOINT );
 	}
 
 	/**
-	 * Every page can be ticked now, the shared login's own included; the form
-	 * warns instead. The payment-method pages are the exception: they open
-	 * only where the exit policy allows WooCommerce's checkout, and no
+	 * Every page can be stored, the shared login's own included; the form
+	 * says what sharing it means. Two groups never reach a visit's list: the
+	 * pages that never open in a visit (logout, lost password, order-pay,
+	 * order-received, the integration tab), and the payment-method pages
+	 * unless the exit policy allows WooCommerce's checkout, which no
 	 * connection's does.
 	 */
-	public function test_every_page_can_be_listed_and_the_payment_pages_open_only_with_native_checkout(): void {
+	public function test_every_page_can_be_stored_but_pages_that_never_open_are_not_listed(): void {
 		$all    = array_merge( [ 'dashboard' ], VisitEndpoints::WOOCOMMERCE, [ IntegrationTab::ENDPOINT ] );
 		$parsed = VisitEndpoints::parse( implode( ',', $all ) );
 
 		self::assertSame( $all, $parsed['endpoints'] );
 		self::assertSame( [], $parsed['rejected'] );
 		self::assertFalse( $parsed['too_long'], 'Every WooCommerce page, the dashboard and the tab fit the column together' );
-		self::assertSame( array_values( array_diff( $all, VisitEndpoints::PAYMENT ) ), VisitEndpoints::listed( implode( ',', $all ) ), 'Without native checkout the payment pages are not in the list a visit reads' );
-		self::assertSame( $all, VisitEndpoints::listed( implode( ',', $all ), true ) );
+		self::assertSame( [ 'dashboard', 'orders', 'view-order', 'downloads', 'edit-address', 'edit-account' ], VisitEndpoints::listed( implode( ',', $all ) ), 'Without native checkout neither the payment pages nor the pages that never open are in the list a visit reads' );
+		self::assertSame( array_values( array_diff( $all, VisitEndpoints::NEVER_OPEN ) ), VisitEndpoints::listed( implode( ',', $all ), true ), 'With native checkout the payment pages are listed; the pages that never open still are not' );
 
-		$partner = Partner::from_row( [ 'id' => 1, 'visit_endpoints' => 'dashboard,payment-methods,orders,add-payment-method', 'exit_policy' => 'punchout_and_other' ] );
+		$partner = Partner::from_row( [ 'id' => 1, 'visit_endpoints' => 'dashboard,payment-methods,orders,add-payment-method,customer-logout,punchout-integration', 'exit_policy' => 'punchout_and_other' ] );
 		self::assertFalse( $partner->allows_native_checkout(), 'Every connection reads as punchout-only' );
-		self::assertSame( 'dashboard,payment-methods,orders,add-payment-method', $partner->visit_endpoints, 'The stored value is kept as written' );
-		self::assertSame( [ 'dashboard', 'orders' ], $partner->visit_endpoint_list(), 'but a visit never opens a payment page' );
+		self::assertSame( 'dashboard,payment-methods,orders,add-payment-method,customer-logout,punchout-integration', $partner->visit_endpoints, 'The stored value is kept as written' );
+		self::assertSame( [ 'dashboard', 'orders' ], $partner->visit_endpoint_list(), 'but a visit never opens a payment page, logout or the integration tab' );
 	}
 
 	public function test_lowercase_names_are_accepted_in_order_without_duplicates(): void {
@@ -123,21 +126,23 @@ final class VisitEndpointsTest extends TestCase {
 
 	/**
 	 * The form's groups: WooCommerce's own pages behind the dashboard in a
-	 * fixed order, the plugin's tab, every other registered page
-	 * alphabetically, and listed entries not registered right now.
+	 * fixed order (a single order's page folded into Orders), then pages a
+	 * WooCommerce feature added, the plugin's tab, every other registered
+	 * page alphabetically, and listed entries not registered right now.
 	 */
 	public function test_the_form_groups_woocommerce_pages_first_then_other_plugins_then_stored_entries(): void {
-		$registered = array_merge( [ 'subaccounts', 'bulkorder' ], self::WOOCOMMERCE_MAP, [ IntegrationTab::ENDPOINT, 'purchase-lists', 'Bad Name', 'dashboard', 'bulkorder' ] );
-		$groups     = VisitEndpoints::groups( $registered, [ 'dashboard', 'bulkorder', 'late-page', 'orders', 'company-credit' ] );
+		$registered = array_merge( [ 'subaccounts', 'bulkorder', 'order-withdrawal' ], self::WOOCOMMERCE_MAP, [ IntegrationTab::ENDPOINT, 'purchase-lists', 'Bad Name', 'dashboard', 'bulkorder', 'new-list' ] );
+		$groups     = VisitEndpoints::groups( $registered, [ 'dashboard', 'bulkorder', 'late-page', 'orders', 'company-credit' ], [ 'order-withdrawal', 'orders', 'not-registered', 'dashboard' ] );
 
-		self::assertSame( array_merge( [ 'dashboard' ], VisitEndpoints::WOOCOMMERCE ), $groups['woocommerce'] );
+		self::assertSame( array_merge( [ 'dashboard' ], array_values( array_diff( VisitEndpoints::WOOCOMMERCE, [ 'view-order' ] ) ), [ 'order-withdrawal' ] ), $groups['woocommerce'], 'view-order has no row of its own; a registered page WooCommerce provides comes after its standard set' );
 		self::assertSame( [ IntegrationTab::ENDPOINT ], $groups['plugin'] );
-		self::assertSame( [ 'bulkorder', 'purchase-lists', 'subaccounts' ], $groups['other'], 'Anything outside WooCommerce\'s own set, once, alphabetically; a name that could not be stored is left out' );
+		self::assertSame( [ 'bulkorder', 'new-list', 'purchase-lists', 'subaccounts' ], $groups['other'], 'Anything else, once, alphabetically; a name that could not be stored, and a page registered as dashboard, are left out' );
 		self::assertSame( [ 'late-page', 'company-credit' ], $groups['stored'], 'Listed but not registered keeps a row of its own, in stored order' );
 
 		$bare = VisitEndpoints::groups( [], [] );
 		self::assertSame( [ 'woocommerce' => [ 'dashboard' ], 'plugin' => [], 'other' => [], 'stored' => [] ], $bare, 'Without WooCommerce the form still offers the dashboard' );
 		self::assertSame( [ 'dashboard', 'orders' ], VisitEndpoints::groups( [ 'orders' ], [] )['woocommerce'], 'Only WooCommerce pages that are registered are offered' );
+		self::assertSame( [ 'order-withdrawal' ], VisitEndpoints::groups( [ 'order-withdrawal' ], [] )['other'], 'Without proof that WooCommerce provides it, a page is shown with the other plugins\' pages' );
 	}
 
 	/**
