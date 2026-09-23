@@ -580,6 +580,16 @@ final class Page {
 		$this->form_row( __( 'My Account pages in a visit', 'punchout-woocommerce' ), $this->visit_endpoints_field( $partner ) );
 
 		$this->form_row(
+			__( 'Buyer-added addresses', 'punchout-woocommerce' ),
+			sprintf(
+				'<label><input type="checkbox" name="buyer_addresses" value="1" %s /> %s</label><p class="description">%s</p>',
+				checked( true, (bool) ( $partner->buyer_addresses ?? false ), false ),
+				esc_html__( 'Buyers may add delivery addresses to the company book', 'punchout-woocommerce' ),
+				esc_html__( 'Off by default. When ticked, a buyer inside a punchout visit can add a new address on the delivery review page. It is saved to this connection’s company book, enabled and selected at once, and the audit log records which visit added it. Buyers cannot change or remove entries.', 'punchout-woocommerce' )
+			)
+		);
+
+		$this->form_row(
 			__( 'Token TTL / session TTL (s)', 'punchout-woocommerce' ),
 			sprintf(
 				'<input type="number" class="small-text" name="token_ttl" value="%d" min="30" /> / <input type="number" class="small-text" name="session_ttl" value="%d" min="300" />',

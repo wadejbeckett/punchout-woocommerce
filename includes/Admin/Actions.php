@@ -63,6 +63,8 @@ final class Actions {
 			'deployment_mode'         => sanitize_key( (string) ( $posted['deployment_mode'] ?? 'test' ) ),
 			'return_encoding'         => sanitize_key( (string) ( $posted['return_encoding'] ?? 'base64' ) ),
 			'allcaps_transform'       => isset( $posted['allcaps_transform'] ) ? 1 : 0,
+			'buyer_addresses'         => isset( $posted['buyer_addresses'] ) ? 1 : 0,
+			'owner_settings'          => isset( $posted['owner_reset_connection'] ) ? 'reset_connection' : '',
 			'ip_allowlist'            => $this->cidrs_to_json( (string) ( $posted['ip_allowlist'] ?? '' ) ),
 			'token_ttl'               => absint( $posted['token_ttl'] ?? 300 ),
 			'session_ttl'             => absint( $posted['session_ttl'] ?? 14400 ),
@@ -135,8 +137,9 @@ final class Actions {
 		} catch ( \Throwable $e ) { /* A confirmed write still needs its direct credential handover. */ }
 
 		if ( $ok ) {
-			// The endpoint list is what a visit may open, so the trail keeps each saved value.
-			$this->record( 'partner_saved', $partner_id, array_key_exists( 'visit_endpoints', $data ) ? [ 'visit_endpoints' => $data['visit_endpoints'] ] : [] );
+			// The endpoint list is what a visit may open, and the two permissions are what a
+			// buyer or the bound account may change, so the trail keeps each saved value.
+			$this->record( 'partner_saved', $partner_id, ( array_key_exists( 'visit_endpoints', $data ) ? [ 'visit_endpoints' => $data['visit_endpoints'] ] : [] ) + [ 'buyer_addresses' => $data['buyer_addresses'], 'owner_settings' => $data['owner_settings'] ] );
 			if ( '' !== $issued ) { $this->secret_response( __( 'Customer saved.', 'punchout-woocommerce' ), $issued ); }
 		}
 		$this->finish( 'partners', $ok ? __( 'Customer saved.', 'punchout-woocommerce' ) : $this->save_failed_message(), $ok ? 'success' : 'error' );

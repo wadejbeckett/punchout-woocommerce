@@ -18,9 +18,12 @@ use POW\Cart\NativeSessionGuard;
 defined( 'ABSPATH' ) || exit;
 
 final class Chooser {
+	/** The buyer add-address form's own nonce action, on top of the review's pow_confirm_delivery. */
+	private const ADD_NONCE = 'pow_add_delivery_address';
+
 	private ?Current $current = null;
 
-	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null ) {}
+	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null, private ?CompanyBook $book = null ) {}
 
 	public function register(): void {
 		add_shortcode( 'punchout_delivery_confirmation', [ $this, 'markup' ] );
@@ -50,7 +53,7 @@ final class Chooser {
 	public function markup(): string {
 		if ( ! Transport::request_allowed() ) { return Transport::notice(); }
 		self::headers();
-		try { [ $session, $partner ] = $this->context(); return $this->render( $this->confirmation->prepare( $session, $partner ), false ); }
+		try { [ $session, $partner ] = $this->context(); return $this->render( $this->confirmation->prepare( $session, $partner ), false, $this->add_vars( $partner ) ); }
 		catch ( \Throwable $error ) { return $this->render( [ 'error' => self::expired() ], false ); }
 	}
 
@@ -60,13 +63,20 @@ final class Chooser {
 		try {
 			[ $session, $partner ] = $this->context();
 			$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
-			if ( 'GET' === $method ) { echo $this->render( $this->confirmation->prepare( $session, $partner ), true ); return; }
+			if ( 'GET' === $method ) { echo $this->render( $this->confirmation->prepare( $session, $partner ), true, $this->add_vars( $partner ) ); return; }
 			if ( ! self::request_allowed( $method, $_POST ) ) { status_header( 403 ); echo $this->render( [ 'error' => new \WP_Error( 'delivery_nonce', __( 'This form has expired. Open the cart and review your delivery again.', 'punchout-woocommerce' ) ) ], true ); return; }
 			$action = $_POST['pow_delivery_action'] ?? 'review';
-			if ( ! is_string( $action ) || ! in_array( $action, [ 'review', 'submit', 'back' ], true ) ) { throw new \DomainException(); }
+			$actions = [ 'review', 'submit', 'back' ];
+			// Offered only when the connection allows buyer adds; a forged add_address otherwise gets the expired page.
+			if ( null !== $this->book && $partner->buyer_addresses ) { $actions[] = 'add_address'; }
+			if ( ! is_string( $action ) || ! in_array( $action, $actions, true ) ) { throw new \DomainException(); }
 			if ( 'back' === $action ) {
 				if ( ! $this->invalidate( $session ) ) { throw new \DomainException(); }
 				wp_safe_redirect( wc_get_cart_url(), 303 ); return;
+			}
+			if ( 'add_address' === $action ) {
+				[ $view, $add ] = $this->add_address( $session, $partner );
+				echo $this->render( $view, true, $this->add_vars( $partner, $add ) ); return;
 			}
 			$input = [];
 			foreach ( [ 'rates', 'notes', 'review_digest', 'acknowledge_unknown', 'preferred_delivery_date' ] as $field ) { if ( array_key_exists( $field, $_POST ) ) { $input[$field] = wp_unslash( $_POST[$field] ); } }
@@ -102,8 +112,55 @@ final class Chooser {
 				if ( isset( $input['preferred_delivery_date'] ) && is_string( $input['preferred_delivery_date'] ) && ( '' === $input['preferred_delivery_date'] || DeliveryData::date( $input['preferred_delivery_date'] ) ) ) { $view['preferred_delivery_date'] = '' === $input['preferred_delivery_date'] ? null : $input['preferred_delivery_date']; }
 				$view['can_confirm'] = false;
 			}
-			echo $this->render( $view, true );
+			echo $this->render( $view, true, $this->add_vars( $partner ) );
 		} catch ( \Throwable $error ) { status_header( 403 ); echo $this->render( [ 'error' => self::expired() ], true ); }
+	}
+
+	/**
+	 * A buyer's add-address POST: validate its schema and nonce, then ask the book, which decides under the partner lock whether this visit may add.
+	 *
+	 * Success previews the new entry as the selected address without storing consent; the buyer still checks the method and submits. A refusal from the book redraws the review with its message and keeps what the buyer typed.
+	 *
+	 * @return array{0: array, 1: array{draft: ?array, open: bool, notice: ?string}}
+	 * @throws \DomainException For a request this connection never offered or a schema or nonce that fails; the caller answers with the expired page.
+	 */
+	private function add_address( Session $session, \POW\Partners\Partner $partner ): array {
+		$post = wp_unslash( $_POST );
+		$nonce = $post['pow_address_nonce'] ?? null;
+		if ( null === $this->book || ! $partner->buyer_addresses || ! Fields::buyer_post_allowed( $post ) || ! is_string( $nonce ) || ! wp_verify_nonce( $nonce, self::ADD_NONCE ) ) { throw new \DomainException(); }
+		$draft = Fields::buyer_draft( $post );
+		if ( '1' === ( $post['pow_address_refresh'] ?? '' ) ) {
+			return [ $this->confirmation->prepare( $session, $partner ), [ 'draft' => $draft, 'open' => true, 'notice' => null ] ];
+		}
+		$added = $this->book->add_for_visit( $session, $draft['label'], $draft['address'] );
+		if ( $added instanceof \WP_Error ) {
+			$view = $this->confirmation->prepare( $session, $partner );
+			$view['error'] = 'address_book_invalid' === $added->get_error_code()
+				? new \WP_Error( 'address_book_invalid', __( 'Enter an address name of at most 190 characters and a complete delivery address.', 'punchout-woocommerce' ) )
+				: $added;
+			$view['can_confirm'] = false;
+			return [ $view, [ 'draft' => $draft, 'open' => true, 'notice' => null ] ];
+		}
+		$view = $this->confirmation->preview( $session, $partner, [ 'provider' => 'native', 'key' => (string) $added['key'] ] );
+		if ( $view instanceof \WP_Error ) {
+			$error = $view; $view = $this->confirmation->prepare( $session, $partner ); $view['error'] = $error; $view['can_confirm'] = false;
+		}
+		return [ $view, [ 'draft' => null, 'open' => false, 'notice' => __( 'Address added to your company’s delivery book and selected for this cart. Check the delivery method, then submit for approval.', 'punchout-woocommerce' ) ] ];
+	}
+
+	/**
+	 * The add-address form's template variables, or null when this connection does not offer it (or its fields cannot be built).
+	 *
+	 * @param array{draft: ?array, open: bool, notice: ?string}|null $state What the last add request left behind.
+	 */
+	private function add_vars( \POW\Partners\Partner $partner, ?array $state = null ): ?array {
+		if ( null === $this->book || ! $partner->buyer_addresses ) { return null; }
+		try {
+			$draft = $state['draft'] ?? Fields::buyer_draft( [] );
+			$country = (string) ( $draft['address']['country'] ?? '' );
+			if ( '' === $country ) { $country = (string) WC()->countries->get_base_country(); }
+			return [ 'fields' => Fields::address_inputs( 'pow_add_address_', $country, $draft['address'] ), 'label' => (string) $draft['label'], 'nonce' => wp_create_nonce( self::ADD_NONCE ), 'notice' => $state['notice'] ?? null, 'open' => (bool) ( $state['open'] ?? false ) ];
+		} catch ( \Throwable $error ) { return null; }
 	}
 
 	/** Native mutations invalidate consent even when a theme never renders our cart button. */
@@ -150,8 +207,8 @@ final class Chooser {
 		return [ $session, $partner ];
 	}
 
-	private function render( array $view, bool $document ): string {
-		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document ] );
+	private function render( array $view, bool $document, ?array $add = null ): string {
+		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add ] );
 	}
 	private static function expired(): \WP_Error { return new \WP_Error( 'delivery_unavailable', __( 'Delivery could not be verified. Return to your purchasing system and open the catalog again if your session has expired.', 'punchout-woocommerce' ) ); }
 	private static function headers(): void { if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); } nocache_headers(); if ( ! headers_sent() ) { header( 'Cache-Control: private, no-store' ); header( 'X-Robots-Tag: noindex, nofollow' ); } }

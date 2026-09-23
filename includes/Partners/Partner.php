@@ -29,6 +29,17 @@ defined( 'ABSPATH' ) || exit;
  * normalised by Account\VisitEndpoints on the way in and again here, so a
  * hand-edited row holds only well-formed names. Empty keeps the whole
  * account area closed; a new connection starts with `dashboard`.
+ *
+ * `buyer_addresses` (schema 9, off by default) lets a buyer inside one of
+ * this connection's visits add a new entry to the company delivery book from
+ * the delivery review page. It is add-only: the entry is saved enabled and
+ * coded, and buyers never change or remove entries. Only an administrator
+ * switches it on.
+ *
+ * `owner_settings` (schema 9, empty by default) is the comma-separated list
+ * of actions the bound customer account may take for itself, drawn from
+ * OWNER_ACTIONS and normalised by normalise_owner_settings() on the way in
+ * and again here. owner_may() is the one question callers ask of it.
  */
 final class Partner {
 
@@ -37,6 +48,9 @@ final class Partner {
 	public const STATUS_DISABLED = 'disabled';
 
 	public const MODE_REQUISITION_ONLY = 'requisition_only';
+
+	/** The actions an administrator can grant the bound account in owner_settings. */
+	public const OWNER_ACTIONS = [ 'reset_connection' ];
 
 	public function __construct(
 		public readonly int $id,
@@ -76,6 +90,8 @@ final class Partner {
 		public readonly string $freight_classification = 'freight',
 		public readonly string $exit_policy = 'punchout_only',
 		public readonly string $visit_endpoints = '',
+		public readonly bool $buyer_addresses = false,
+		public readonly string $owner_settings = '',
 	) {}
 
 	/**
@@ -124,6 +140,9 @@ final class Partner {
 			exit_policy: 'punchout_only',
 			// Absent before schema 8: an older row allows nothing.
 			visit_endpoints: VisitEndpoints::normalise( (string) ( $row['visit_endpoints'] ?? '' ) ),
+			// Both absent before schema 9, which reads as off.
+			buyer_addresses: ! empty( $row['buyer_addresses'] ),
+			owner_settings: self::normalise_owner_settings( (string) ( $row['owner_settings'] ?? '' ) ),
 		);
 	}
 
@@ -157,6 +176,20 @@ final class Partner {
 			if ( array_key_exists( $key, $data ) ) { $result[ $key ] = in_array( $data[ $key ], $values, true ) ? $data[ $key ] : $values[0]; }
 		}
 		return $result;
+	}
+
+	/**
+	 * The known owner actions in $raw, once each, in OWNER_ACTIONS order,
+	 * comma-joined. Anything else is dropped.
+	 */
+	public static function normalise_owner_settings( string $raw ): string {
+		$given = array_map( 'trim', explode( ',', $raw ) );
+		return implode( ',', array_values( array_filter( self::OWNER_ACTIONS, static fn( string $action ): bool => in_array( $action, $given, true ) ) ) );
+	}
+
+	/** Whether an administrator granted the bound account this known action. */
+	public function owner_may( string $action ): bool {
+		return in_array( $action, self::OWNER_ACTIONS, true ) && in_array( $action, explode( ',', $this->owner_settings ), true );
 	}
 
 	public function is_active(): bool {

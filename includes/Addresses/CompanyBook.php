@@ -20,6 +20,9 @@ final class CompanyBook {
 	/** Persisted schema bounds are stable; current Woo country/required-field policy belongs to new saves and active selection. */
 	private const ADDRESS_LIMITS = [ 'first_name' => 190, 'last_name' => 190, 'company' => 190, 'address_1' => 190, 'address_2' => 190, 'city' => 190, 'state' => 190, 'postcode' => 32, 'country' => 2, 'phone' => 100 ];
 
+	/** How many entries a book may hold before a buyer's add is refused; the owner's editor is not bound by it. */
+	private const BUYER_ADD_LIMIT = 100;
+
 	/** Reject synchronous metadata-hook reentry across instances; Registry itself is reentrant. */
 	private static array $mutating = [];
 
@@ -72,15 +75,34 @@ final class CompanyBook {
 		return $result instanceof \WP_Error ? $result : true;
 	}
 
-	private function mutate( int $partner_id, int $actor, int $expected_revision, ?string $key, ?array $fields ): array|\WP_Error {
+	/**
+	 * The one write a punchout visit can make: add a new entry to its connection's book, when the connection allows buyers to.
+	 *
+	 * The buyer supplies only a label and an address. The key is always new, the code always comes from the connection prefix, and the entry is always enabled. buyer_adder() decides under the partner lock whether this visit may add at all; the expected revision is the one read under that lock, so a buyer never races the form. Who added it is recorded in the audit log, never in the entry, whose shape stays fixed.
+	 *
+	 * @return array|\WP_Error Success is {revision,key,entry,changed}.
+	 */
+	public function add_for_visit( \POW\Sessions\Session $visit, string $label, array $address ): array|\WP_Error {
+		return $this->mutate( $visit->partner_id, $visit->user_id, 0, null, [ 'label' => $label, 'address' => $address, 'code' => '', 'use_for_punchout' => true ], $visit );
+	}
+
+	private function mutate( int $partner_id, int $actor, int $expected_revision, ?string $key, ?array $fields, ?\POW\Sessions\Session $visit = null ): array|\WP_Error {
 		if ( isset( self::$mutating[$partner_id] ) ) { return self::unavailable(); }
 		self::$mutating[$partner_id] = true;
 		try {
-			$result = $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $actor, $expected_revision, $key, $fields ) {
-				$partner = $this->editor( $partner_id, $actor );
+			$result = $this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $actor, $expected_revision, $key, $fields, $visit ) {
+				$partner = null === $visit ? $this->editor( $partner_id, $actor ) : $this->buyer_adder( $partner_id, $visit );
 				if ( $partner instanceof \WP_Error ) { return $partner; }
 				$stored = $this->load( $partner->owner_user_id, $partner_id );
 				$book = $stored['book'];
+				if ( null !== $visit ) {
+					// Add only, and against the revision read under this lock, never one from a form.
+					if ( null !== $key || null === $fields ) { return self::invalid(); }
+					if ( count( $book['addresses'] ) >= self::BUYER_ADD_LIMIT ) {
+						return new \WP_Error( 'address_book_full', __( 'Your company’s delivery book is full. Ask your company administrator to add this address.', 'punchout-woocommerce' ) );
+					}
+					$expected_revision = $book['revision'];
+				}
 				if ( $expected_revision < 0 || $expected_revision !== $book['revision'] ) {
 					return new \WP_Error( 'address_book_stale', __( 'The delivery book changed. Reload it before saving.', 'punchout-woocommerce' ) );
 				}
@@ -133,7 +155,13 @@ final class CompanyBook {
 			if ( is_array( $result ) && $result['changed'] ) {
 				// No external callbacks inside the mutex. An optional diagnostic failure cannot undo a verified aggregate or invite a duplicate retry.
 				try {
-					$this->log->write( null === $fields ? 'address_book_removed' : 'address_book_saved', [ 'partner_id' => $partner_id, 'user_id' => $actor, 'direction' => 'internal', 'result' => 'ok', 'detail' => [ 'revision' => $result['revision'], 'key' => $result['key'] ] ] );
+					if ( null !== $visit ) {
+						// Which visit added it, by session and a short identity hash: never the raw buyer identity.
+						$buyer_name = (string) $visit->buyer_name;
+						$this->log->write( 'address_book_buyer_added', [ 'partner_id' => $partner_id, 'session_id' => $visit->id, 'user_id' => $actor, 'direction' => 'internal', 'result' => 'ok', 'detail' => [ 'revision' => $result['revision'], 'key' => $result['key'], 'buyer_hash' => substr( (string) $visit->buyer_identity_hash, 0, 12 ) ] + ( '' !== $buyer_name ? [ 'buyer_name' => $buyer_name ] : [] ) ] );
+					} else {
+						$this->log->write( null === $fields ? 'address_book_removed' : 'address_book_saved', [ 'partner_id' => $partner_id, 'user_id' => $actor, 'direction' => 'internal', 'result' => 'ok', 'detail' => [ 'revision' => $result['revision'], 'key' => $result['key'] ] ] );
+					}
 				} catch ( \Throwable $error ) { /* Persisted state remains authoritative; no address content enters the audit. */ }
 			}
 			return $result;
@@ -151,13 +179,44 @@ final class CompanyBook {
 	 * from editing the company's addresses from a catalogue session.
 	 * read_for_partner_locked() is deliberately not gated this way — that is
 	 * the selection read, and selecting a delivery address is the whole point
-	 * of the visit.
+	 * of the visit. add_for_visit() is the one write a visit can make, and only
+	 * when its connection allows buyers to add addresses; buyer_adder() gates
+	 * it, and this gate never opens for a visit.
 	 */
 	private function editor( int $partner_id, int $actor ): Partner|\WP_Error {
 		$partner = $this->registry->find( $partner_id );
 		$user = $actor > 0 && $actor === get_current_user_id() && null === $this->visits->visit() ? $this->ordinary_user( $actor ) : false;
 		if ( ! $partner || ! $user || ! $this->ordinary_user( $partner->owner_user_id ) || ! ( user_can( $user, 'manage_woocommerce' ) || $partner->is_owned_by( $actor ) ) ) {
 			return new \WP_Error( 'address_forbidden', __( 'You cannot manage this company delivery book.', 'punchout-woocommerce' ) );
+		}
+		return $partner;
+	}
+
+	/**
+	 * The buyer-add gate, asked under the partner lock: the connection is active and allows buyer adds, the visit is the bound account's, and this request is inside that very visit, still active, on its own basket.
+	 *
+	 * The visit passed in is only a claim. The live visit is resolved again here from the login, and must be the same row with the same per-visit basket key; the shared account id alone proves nothing, because every visit of the connection signs in as it.
+	 */
+	private function buyer_adder( int $partner_id, \POW\Sessions\Session $visit ): Partner|\WP_Error {
+		$partner = $this->registry->find( $partner_id );
+		$live = $this->visits->visit();
+		$key = null !== $live ? (string) $live->wc_session_key : '';
+		if (
+			! $partner
+			|| ! $partner->is_active()
+			|| ! $partner->buyer_addresses
+			|| $partner->owner_user_id <= 0
+			|| $partner->owner_user_id !== $visit->user_id
+			|| get_current_user_id() !== $partner->owner_user_id
+			|| null === $live
+			|| $live->id !== $visit->id
+			|| $live->partner_id !== $partner->id
+			|| \POW\Sessions\Session::ACTIVE !== $live->status
+			|| ! \POW\Cart\SessionKey::is_visit_key( $key )
+			|| ! hash_equals( $key, (string) $visit->wc_session_key )
+			|| ! $this->ordinary_user( $partner->owner_user_id )
+		) {
+			return new \WP_Error( 'address_add_forbidden', __( 'Adding a delivery address is not available for this visit. Ask your company administrator to add it.', 'punchout-woocommerce' ) );
 		}
 		return $partner;
 	}
