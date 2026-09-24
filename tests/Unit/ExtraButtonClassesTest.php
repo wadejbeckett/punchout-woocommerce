@@ -26,6 +26,10 @@ namespace {
 
 	// WordPress core's class sanitiser, as the cart suite stubs it.
 	if ( ! function_exists( 'sanitize_html_class' ) ) { function sanitize_html_class( string $class ): string { return preg_replace( '/[^A-Za-z0-9_-]/', '', $class ); } }
+	// The Settings API calls register_settings() makes, recorded so the help text can be read. Never defined when WordPress is loaded.
+	if ( ! function_exists( 'register_setting' ) ) { function register_setting( string $group, string $name, array $args = [] ): void {} }
+	if ( ! function_exists( 'add_settings_section' ) ) { function add_settings_section( string $id, string $title, mixed $callback, string $page ): void {} }
+	if ( ! function_exists( 'add_settings_field' ) ) { function add_settings_field( string $id, string $title, mixed $callback, string $page, string $section = 'default', array $args = [] ): void { $GLOBALS['pow_test_settings_fields'][ $id ] = $args; } }
 
 	final class ExtraButtonClassesTest extends TestCase {
 		private array $saved = [];
@@ -66,6 +70,23 @@ namespace {
 			self::assertSame( [], Settings::button_class_tokens( '   ' ) );
 			self::assertSame( [ 'a' ], Settings::button_class_tokens( "POW-return\tcheckout a\ncheckout-button" ) );
 			self::assertCount( 20, Settings::button_class_tokens( implode( ' ', array_map( static fn( int $i ): string => 'c' . $i, range( 1, 30 ) ) ) ) );
+		}
+
+		/** One list: every class the visit stylesheet hides is refused as an extra class, so no extra class can hide the visit's exit or the review's buttons. */
+		public function test_the_reserved_classes_are_exactly_the_ones_the_visit_stylesheet_hides(): void {
+			$reserved = Settings::reserved_button_classes();
+			self::assertSame( [ 'checkout-button', 'checkout', 'wc-block-mini-cart__footer-checkout' ], $reserved );
+			self::assertCount( count( Settings::VISIT_HIDDEN_SELECTORS ), $reserved );
+			foreach ( Settings::VISIT_HIDDEN_SELECTORS as $i => $selector ) { self::assertSame( '.' . $reserved[ $i ], substr( $selector, -strlen( '.' . $reserved[ $i ] ) ) ); }
+			foreach ( $reserved as $class ) { self::assertSame( [ 'site-btn' ], Settings::button_class_tokens( $class . ' site-btn' ), $class ); }
+			// The settings help names them from the same list.
+			$saved = $GLOBALS['pow_test_settings_fields'] ?? null; $GLOBALS['pow_test_settings_fields'] = [];
+			try {
+				( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor()->register_settings();
+				$help = $GLOBALS['pow_test_settings_fields']['pow_extra_button_classes']['help'];
+			} finally { if ( null === $saved ) { unset( $GLOBALS['pow_test_settings_fields'] ); } else { $GLOBALS['pow_test_settings_fields'] = $saved; } }
+			foreach ( $reserved as $class ) { self::assertStringContainsString( $class, $help ); }
+			self::assertStringContainsString( 'pow-', $help );
 		}
 
 		public function test_settings_read_sanitises_again(): void {

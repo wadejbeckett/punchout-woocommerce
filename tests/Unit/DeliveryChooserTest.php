@@ -182,14 +182,16 @@ final class DeliveryChooserTest extends TestCase {
 		self::assertSame( 3, substr_count( $html, 'type="hidden"' ) );
 		$add = [ 'fields' => '<p class="form-row"><input type="text" name="shipping_city" id="pow_add_address_shipping_city" value=""></p>', 'label' => 'Site "B"', 'nonce' => 'add-nonce', 'notice' => null, 'open' => false ];
 		$html = $this->render( self::physical(), [ 'add_address' => $add ] );
-		self::assertSame( 2, substr_count( $html, '<form' ) );
-		// A sibling, never nested: the review form closes before the add form opens, and keeps its three hidden inputs.
-		$review_end = strpos( $html, '</form>' );
-		self::assertGreaterThan( $review_end, strrpos( $html, '<form' ) );
-		self::assertSame( 3, substr_count( substr( $html, 0, $review_end ), 'type="hidden"' ) );
-		self::assertStringContainsString( '<input type="hidden" name="pow_delivery_action" value="add_address">', $html );
+		// One form: the add fieldset sits inside the review form, after the review layout, so an add posts the review's live notes and date.
+		self::assertSame( 1, substr_count( $html, '<form' ) );
+		$fieldset = strpos( $html, '<fieldset class="pow-confirmation__add-set"' );
+		self::assertTrue( is_int( $fieldset ), 'The add fieldset renders.' );
+		self::assertGreaterThan( strpos( $html, '</aside></div>' ), $fieldset );
+		self::assertGreaterThan( $fieldset, strpos( $html, '</form>' ) );
+		self::assertSame( 4, substr_count( $html, 'type="hidden"' ), 'The review\'s three hidden inputs and the add nonce; nothing mirrors the notes or date.' );
+		self::assertStringContainsString( '<button type="submit" name="pow_delivery_action" value="add_address" class="button wp-element-button pow-confirmation__secondary pow-confirmation__add-submit" formnovalidate>Add and use this address</button>', $html );
 		self::assertStringContainsString( '<input type="hidden" name="pow_address_nonce" value="add-nonce">', $html );
-		self::assertSame( 2, substr_count( $html, 'name="pow_nonce" value="confirmation-nonce"' ) );
+		self::assertSame( 1, substr_count( $html, 'name="pow_nonce" value="confirmation-nonce"' ) );
 		self::assertStringContainsString( 'name="pow_address_label" maxlength="190" value="Site &quot;B&quot;"', $html );
 		self::assertStringContainsString( $add['fields'], $html );
 		self::assertStringContainsString( 'Add a delivery address', $html );
@@ -211,5 +213,24 @@ final class DeliveryChooserTest extends TestCase {
 		self::assertStringContainsString( 'No delivery address is available. Ask your company administrator to add and enable one.', $this->render( self::physical( [ 'choices' => [], 'selected_choice' => null, 'delivery_destination' => null ] ) ) );
 		// A cart that needs no delivery offers no address form.
 		self::assertSame( 1, substr_count( $this->render( [], [ 'add_address' => $add ] ), '<form' ) );
+	}
+	/** The add rides the review form: the notes and date the buyer is typing are the very fields it posts. Its buttons skip the review's own required fields (the address select, the acknowledgement); the server validates the add. */
+	public function test_add_posts_the_reviews_live_notes_and_date_and_skips_the_reviews_required_fields(): void {
+		$add = [ 'fields' => '<p class="form-row"><input type="text" name="shipping_city" id="pow_add_address_shipping_city" value="" aria-required="true"></p>', 'label' => '', 'nonce' => 'add-nonce', 'notice' => null, 'open' => false ];
+		$html = $this->render( self::physical( [ 'requires_unknown_acknowledgement' => true, 'delivery' => [ 'status' => 'unknown', 'amount_cents' => null, 'emit' => false ] ] ), [ 'add_address' => $add ] );
+		self::assertSame( 1, substr_count( $html, 'name="notes"' ), 'No mirror: the one notes field posts with every button.' );
+		self::assertSame( 1, substr_count( $html, 'name="preferred_delivery_date"' ) );
+		self::assertStringContainsString( '<select id="pow-delivery-choice" name="choice" required>', $html );
+		self::assertStringContainsString( 'name="acknowledge_unknown" value="1" required', $html );
+		foreach ( [ 'value="add_address"', 'name="pow_address_refresh"' ] as $button ) {
+			self::assertSame( 1, preg_match( '#<button[^>]*' . preg_quote( $button, '#' ) . '[^>]*>#', $html, $m ), $button );
+			self::assertStringContainsString( ' formnovalidate', $m[0], $button );
+		}
+		// Submit for approval still validates the review, and the add adds no required attribute of its own that could block it.
+		self::assertSame( 1, preg_match( '#<button[^>]*value="submit"[^>]*>#', $html, $m ) );
+		self::assertStringNotContainsString( 'formnovalidate', $m[0] );
+		$fieldset = substr( $html, strpos( $html, '<fieldset class="pow-confirmation__add-set"' ) );
+		self::assertSame( 0, preg_match( '#\srequired[\s>=]#', substr( $fieldset, 0, strpos( $fieldset, '</fieldset>' ) ) ) );
+		self::assertStringNotContainsString( '<script', $html );
 	}
 }

@@ -168,10 +168,10 @@ final class Fields {
 	/**
 	 * The strict schema of a buyer's add-address POST on the delivery review page.
 	 *
-	 * Only the review nonce, the add nonce, the action, a label, the ten shipping fields and an optional country refresh; every value a string. There is no code field, so a buyer never picks a delivery code, and nothing names a key, revision or enablement.
+	 * Only the review nonce, the add nonce, the action, a label, the ten shipping fields, an optional country refresh, and the review's notes and preferred delivery date, which post with the add because the add fieldset sits inside the review form; every value a string. Chooser drops the review form's other fields (return nonce, digest, choice, rates, acknowledgement) unread before asking. There is no code field, so a buyer never picks a delivery code, and nothing names a key, revision, rate or enablement.
 	 */
 	public static function buyer_post_allowed( array $post ): bool {
-		$allowed = array_merge( [ 'pow_nonce', 'pow_address_nonce', 'pow_delivery_action', 'pow_address_label', 'pow_address_refresh' ], array_map( static fn( $key ) => 'shipping_' . $key, self::ADDRESS_KEYS ) );
+		$allowed = array_merge( [ 'pow_nonce', 'pow_address_nonce', 'pow_delivery_action', 'pow_address_label', 'pow_address_refresh', 'notes', 'preferred_delivery_date' ], array_map( static fn( $key ) => 'shipping_' . $key, self::ADDRESS_KEYS ) );
 		if ( array_diff_key( $post, array_flip( $allowed ) ) ) { return false; }
 		foreach ( $post as $value ) { if ( ! is_string( $value ) ) { return false; } }
 		return ! isset( $post['pow_address_refresh'] ) || '1' === $post['pow_address_refresh'];

@@ -216,6 +216,8 @@ final class Confirmation implements ReturnConfirmation {
 			}
 			if ( ! $physical ) { $date = null; }
 			$view = self::empty_view(); $view['choices'] = $choices; $view['notes'] = $notes; $view['preferred_delivery_date'] = $date; $view['preferred_delivery_date_min'] = self::date_from_today( 1 );
+			// A well-formed date the review refused stays in the field beside its error, as on a refused submit. Display only: $date stays null, so the fingerprint binds no date.
+			if ( null !== $date_error && $physical && is_string( $date_input ) && DeliveryData::date( $date_input ) ) { $view['preferred_delivery_date'] = $date_input; }
 			$choice = null;
 			if ( $physical ) {
 				if ( array_key_exists( 'provider', $input ) || array_key_exists( 'key', $input ) ) {

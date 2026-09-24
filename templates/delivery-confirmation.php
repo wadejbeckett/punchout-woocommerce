@@ -2,7 +2,7 @@
 /**
  * Theme-overridable delivery confirmation; all choices and amounts are prepared server-side.
  *
- * Variables: $view, $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the separate add form. An override that ignores $add_address simply offers no add form.
+ * Variables: $view, $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes and preferred date as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
  *
  * @package POW @license AGPL-3.0-or-later
  */
@@ -91,24 +91,23 @@ if ( $document ) : ?>
 			<p><?php echo esc_html__( 'Your complete cart will return to your purchasing system. Your company’s approval process continues there.', 'punchout-woocommerce' ); ?></p>
 			<button type="submit" name="pow_delivery_action" value="back" class="pow-confirmation__back" formnovalidate><?php echo esc_html__( 'Back to cart', 'punchout-woocommerce' ); ?></button>
 		</aside></div>
+		<?php if ( null !== $add ) : ?>
+		<details class="pow-confirmation__add" id="pow-add-address"<?php if ( ! empty( $add['open'] ) ) { echo ' open'; } ?>>
+			<summary id="pow-add-address-title"><?php echo esc_html__( 'Add a delivery address', 'punchout-woocommerce' ); ?></summary>
+			<?php // Inside the review form, so the notes and date the buyer is typing post with the add. Its buttons skip the review's required fields; the server validates the add. ?>
+			<fieldset class="pow-confirmation__add-set" aria-labelledby="pow-add-address-title">
+				<p class="pow-confirmation__hint"><?php echo esc_html__( 'It is saved to your company’s delivery book for every buyer of your company and selected for this cart. Only your company administrator can change or remove it.', 'punchout-woocommerce' ); ?></p>
+				<input type="hidden" name="pow_address_nonce" value="<?php echo esc_attr( (string) ( $add['nonce'] ?? '' ) ); ?>">
+				<label for="pow-add-address-label"><?php echo esc_html__( 'Address name', 'punchout-woocommerce' ); ?></label>
+				<input type="text" id="pow-add-address-label" name="pow_address_label" maxlength="190" value="<?php echo esc_attr( (string) ( $add['label'] ?? '' ) ); ?>">
+				<p class="pow-confirmation__hint"><?php echo esc_html__( 'For example, the site or depot name.', 'punchout-woocommerce' ); ?></p>
+				<div class="pow-confirmation__add-fields"><?php echo $add['fields'] ?? ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- WooCommerce's own woocommerce_form_field() markup, escaped by it. ?></div>
+				<button type="submit" name="pow_address_refresh" value="1" class="pow-confirmation__back" formnovalidate><?php echo esc_html__( 'Update fields for the chosen country', 'punchout-woocommerce' ); ?></button>
+				<button type="submit" name="pow_delivery_action" value="add_address" class="button wp-element-button pow-confirmation__secondary pow-confirmation__add-submit<?php echo esc_attr( $button_extra ); ?>" formnovalidate><?php echo esc_html__( 'Add and use this address', 'punchout-woocommerce' ); ?></button>
+			</fieldset>
+		</details>
+		<?php endif; ?>
 	</form>
-	<?php if ( null !== $add ) : ?>
-	<details class="pow-confirmation__add" id="pow-add-address"<?php if ( ! empty( $add['open'] ) ) { echo ' open'; } ?>>
-		<summary><?php echo esc_html__( 'Add a delivery address', 'punchout-woocommerce' ); ?></summary>
-		<p class="pow-confirmation__hint"><?php echo esc_html__( 'It is saved to your company’s delivery book for every buyer of your company and selected for this cart. Only your company administrator can change or remove it.', 'punchout-woocommerce' ); ?></p>
-		<form method="post" action="<?php echo esc_url( $action_url ); ?>">
-			<input type="hidden" name="pow_nonce" value="<?php echo esc_attr( $nonce ); ?>">
-			<input type="hidden" name="pow_address_nonce" value="<?php echo esc_attr( (string) ( $add['nonce'] ?? '' ) ); ?>">
-			<input type="hidden" name="pow_delivery_action" value="add_address">
-			<label for="pow-add-address-label"><?php echo esc_html__( 'Address name', 'punchout-woocommerce' ); ?></label>
-			<input type="text" id="pow-add-address-label" name="pow_address_label" maxlength="190" value="<?php echo esc_attr( (string) ( $add['label'] ?? '' ) ); ?>">
-			<p class="pow-confirmation__hint"><?php echo esc_html__( 'For example, the site or depot name.', 'punchout-woocommerce' ); ?></p>
-			<div class="pow-confirmation__add-fields"><?php echo $add['fields'] ?? ''; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- WooCommerce's own woocommerce_form_field() markup, escaped by it. ?></div>
-			<button type="submit" name="pow_address_refresh" value="1" class="pow-confirmation__back" formnovalidate><?php echo esc_html__( 'Update fields for the chosen country', 'punchout-woocommerce' ); ?></button>
-			<button type="submit" class="button wp-element-button pow-confirmation__secondary pow-confirmation__add-submit<?php echo esc_attr( $button_extra ); ?>"><?php echo esc_html__( 'Add and use this address', 'punchout-woocommerce' ); ?></button>
-		</form>
-	</details>
-	<?php endif; ?>
 	<?php endif; ?>
 <?php if ( $document ) : ?></main><?php else : ?></section><?php endif; ?>
 <?php if ( $document ) : ?></body></html><?php endif; ?>

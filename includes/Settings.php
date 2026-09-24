@@ -29,10 +29,13 @@ class Settings {
 	public const OPTION_KEY = 'pow_settings';
 
 	/**
-	 * Classes an operator may not add: the visit stylesheet hides these, and
-	 * a hidden class on the exit would hide the visit's only way out.
+	 * What the visit stylesheet hides with display:none, each selector
+	 * ending in the class it hides. Cart\Surface emits exactly these, and
+	 * the final class of each is reserved (reserved_button_classes()): an
+	 * operator's extra class on the exit would otherwise hide the visit's
+	 * only way out. One list, so the two can never drift apart.
 	 */
-	private const RESERVED_BUTTON_CLASSES = [ 'checkout-button', 'checkout' ];
+	public const VISIT_HIDDEN_SELECTORS = [ '.checkout-button', '.widget_shopping_cart .buttons .checkout', '.wc-block-mini-cart__footer-checkout' ];
 
 	/** At most this many extra classes are kept. */
 	private const MAX_BUTTON_CLASSES = 20;
@@ -137,7 +140,7 @@ class Settings {
 		$tokens = [];
 		foreach ( preg_split( '/\s+/', trim( $raw ) ) ?: [] as $token ) {
 			$token = sanitize_html_class( $token );
-			if ( '' === $token || 0 === stripos( $token, 'pow-' ) || in_array( $token, self::RESERVED_BUTTON_CLASSES, true ) || in_array( $token, $tokens, true ) ) {
+			if ( '' === $token || 0 === stripos( $token, 'pow-' ) || in_array( $token, self::reserved_button_classes(), true ) || in_array( $token, $tokens, true ) ) {
 				continue;
 			}
 			$tokens[] = $token;
@@ -146,6 +149,16 @@ class Settings {
 			}
 		}
 		return $tokens;
+	}
+
+	/**
+	 * Classes an operator may not add: the class each VISIT_HIDDEN_SELECTORS
+	 * selector ends in, in the same order.
+	 *
+	 * @return list<string>
+	 */
+	public static function reserved_button_classes(): array {
+		return array_map( static fn( string $selector ): string => substr( $selector, (int) strrpos( $selector, '.' ) + 1 ), self::VISIT_HIDDEN_SELECTORS );
 	}
 
 	/**

@@ -8,10 +8,11 @@
  * that is administrator work — with one opt-in exception: when an
  * administrator ticks "Reset connection" for this connection, the account
  * holder can reset it here (Registration::reset_by_owner), and the new
- * secret is shown once on the no-store response and never stored. The
- * screen, and that reset, do not exist inside a punchout visit, because
- * then the request is an employee shopping as this account rather than the
- * account holder reading its own integration details.
+ * secret is shown once, inside the account page, on the no-store response
+ * to the reset and never stored. The screen, and that reset, do not exist
+ * inside a punchout visit, because then the request is an employee shopping
+ * as this account rather than the account holder reading its own
+ * integration details.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -38,6 +39,9 @@ final class IntegrationTab {
 	public const ENDPOINT = 'punchout-integration';
 	public const NONCE = 'pow_account';
 	public const RESET_NONCE = 'pow_account_reset';
+
+	/** This request's own reset answer, which render() prints once; the new secret lives only here, for this one response. */
+	private ?array $reset = null;
 
 	public function __construct(
 		private Plugin $plugin,
@@ -119,15 +123,20 @@ final class IntegrationTab {
 		Transport::require_https();
 		if ( 0 === $this->actor() ) { return; }
 		try {
-			// The view never holds a secret: no sealed slot and no reveal store is read.
-			$vars = $this->view_vars();
-			echo Templates::render( 'account/integration', $vars ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped template.
+			// The view never holds a secret: no sealed slot and no reveal store is read. The one exception is this request's own reset answer, printed once and then dropped.
+			$reset = $this->reset;
+			$this->reset = null;
+			echo null !== $reset ? $this->reset_emission( $reset )['body'] : Templates::render( 'account/integration', $this->view_vars() ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped template.
 		} catch ( \Throwable $e ) {
 			echo '<p class="woocommerce-error">' . esc_html__( 'Connection information is unavailable. Please try again later.', 'punchout-woocommerce' ) . '</p>';
 		}
 	}
 
-	/** The POSTs this screen answers, as direct responses; no reveal store exists. */
+	/**
+	 * The POSTs this screen answers; no reveal store exists.
+	 *
+	 * The download answers directly: an XML attachment, or the notice. The reset sets its no-store headers and status here and is drawn inside the account page, theme and navigation included, by render() on this same request.
+	 */
 	public function handle_post(): void {
 		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! is_account_page() || ! is_wc_endpoint_url( self::ENDPOINT ) ) { return; }
 		Transport::require_https();
@@ -141,10 +150,9 @@ final class IntegrationTab {
 			$reset = $this->owner_reset_result();
 			if ( null === $reset ) { return; }
 			$this->private_headers();
-			$emission = $this->reset_emission( $reset );
-			status_header( $emission['status'] );
-			echo $emission['body']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped template.
-			exit;
+			status_header( $reset['status'] );
+			$this->reset = $reset;
+			return;
 		}
 		$this->private_headers();
 		$download = $this->template_download_result();
@@ -199,7 +207,8 @@ final class IntegrationTab {
 		} catch ( \Throwable $e ) { return null; }
 		if ( null === $partner || ! $partner->is_owned_by( $actor ) || ! $partner->is_active() || ! $partner->owner_may( 'reset_connection' ) ) { return null; }
 		$nonce = $_POST['_wpnonce'] ?? null;
-		if ( ! is_string( $nonce ) || ! wp_verify_nonce( wp_unslash( $nonce ), self::RESET_NONCE ) ) {
+		// Bound to the credential the form was drawn for: a replay after a reset (a reload of the answer page) no longer verifies.
+		if ( ! is_string( $nonce ) || ! wp_verify_nonce( wp_unslash( $nonce ), self::reset_action( $partner ) ) ) {
 			return $this->reset_result( 403, __( 'This reset could not be authorised. Reload the integration page and try again.', 'punchout-woocommerce' ) );
 		}
 		if ( '1' !== ( $_POST['pow_confirm_reset'] ?? null ) ) {
@@ -212,6 +221,15 @@ final class IntegrationTab {
 			return $this->reset_result( 200, __( 'Connection reset. The previous shared secret and every open punchout visit have been revoked. Copy the new shared secret now: it is shown only once. Paste it into your purchasing system in place of the old one.', 'punchout-woocommerce' ), $secret );
 		}
 		return $this->reset_result( 409, __( 'The reset did not complete and no new secret was issued. The connection may now be disabled; contact the store.', 'punchout-woocommerce' ) );
+	}
+
+	/**
+	 * The reset form's nonce action, bound to the connection's current credential.
+	 *
+	 * A reset replaces the sealed secret, so the nonce minted before it no longer verifies and a resubmitted reset POST is refused instead of revoking the secret it just issued. The action is only ever hashed into the nonce; neither it nor the sealed value is sent.
+	 */
+	private static function reset_action( \POW\Partners\Partner $p ): string {
+		return self::RESET_NONCE . '|' . $p->id . '|' . hash( 'sha256', $p->secret_current );
 	}
 
 	/** @return array{status:int,notice:array{text:string,type:string},secret:string} */
@@ -282,6 +300,7 @@ final class IntegrationTab {
 			$vars['connection'] = [ 'name' => $p->name, 'from' => $p->from_domain . ' / ' . $p->from_identity, 'sender' => $p->sender_domain . ' / ' . $p->sender_identity, 'to' => $p->to_domain . ' / ' . $p->to_identity, 'deployment_mode' => $p->deployment_mode, 'cxml_version' => $p->cxml_version, 'return_encoding' => $p->return_encoding, 'visit_endpoints' => implode( ', ', $p->visit_endpoint_list() ) ];
 			$vars['template_ready'] = $p->is_active() && $this->template_ready( $p );
 			$vars['can_reset'] = $p->is_active() && $p->owner_may( 'reset_connection' );
+			$vars['reset_nonce'] = $vars['can_reset'] ? wp_create_nonce( self::reset_action( $p ) ) : '';
 			try { $vars['last_setup'] = $this->audit->last_success( $p->id ); } catch ( \Throwable $e ) { $vars['last_setup'] = __( 'Unavailable', 'punchout-woocommerce' ); }
 		}
 		return $vars;
@@ -304,7 +323,6 @@ final class IntegrationTab {
 			'state' => 'none',
 			'setup_url' => Router::setup_url(), 'last_setup' => null, 'docs_url' => $docs_url,
 			'action_url' => wc_get_endpoint_url( self::ENDPOINT, '', wc_get_page_permalink( 'myaccount' ) ), 'nonce' => wp_create_nonce( self::NONCE ),
-			'reset_nonce' => wp_create_nonce( self::RESET_NONCE ),
 		] );
 	}
 

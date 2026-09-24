@@ -30,6 +30,8 @@ namespace POW\Account {
 		if ( isset( $GLOBALS['pow_account_test'] ) ) { $GLOBALS['pow_account_test']['headers'][] = $header; return; }
 		\header( $header, $replace );
 	}
+	// The CLI runner has printed long before a test runs, so the native answer would always be "sent".
+	function headers_sent(): bool { return isset( $GLOBALS['pow_account_test'] ) ? (bool) ( $GLOBALS['pow_account_test']['headers_sent'] ?? false ) : \headers_sent(); }
 }
 
 namespace {
@@ -128,7 +130,8 @@ namespace {
 	final class AccountIntegrationTest extends TestCase {
 		private const VISIT_KEY = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
 		private const DOWNLOAD_NONCE = 'nonce-' . IntegrationTab::NONCE;
-		private const RESET_NONCE = 'nonce-' . IntegrationTab::RESET_NONCE;
+		/** A reset form nonce as a template receives it; the controller's own nonce is reset_nonce(). */
+		private const FORM_RESET_NONCE = 'reset-form-nonce';
 		private array $saved = [];
 		private AccountDatabase $db;
 		private AccountAudit $audit;
@@ -143,7 +146,7 @@ namespace {
 			$GLOBALS['pow_account_test'] = ['account'=>true,'endpoint'=>'punchout-integration','headers'=>[], 'pages'=>[(object)['ID'=>12,'post_content'=>'[punchout_docs]']]];
 			$GLOBALS['pow_test_options'] = ['pow_settings'=>['enabled'=>'yes']];
 			$GLOBALS['pow_test_current_user_id'] = 7;
-			$GLOBALS['pow_test_users'][7] = (object)['ID'=>7,'roles'=>['customer'],'allcaps'=>['read'=>true]];
+			$GLOBALS['pow_test_users'][7] = (object)['ID'=>7,'roles'=>['customer'],'allcaps'=>['read'=>true],'user_email'=>'owner@example.invalid'];
 			$_SERVER = ['REQUEST_METHOD'=>'POST','REMOTE_ADDR'=>'192.0.2.7'];
 			$_POST = ['pow_account_action'=>'download_setup_template','_wpnonce'=>self::DOWNLOAD_NONCE];
 			$GLOBALS['wpdb'] = $this->db = new AccountDatabase();
@@ -332,26 +335,33 @@ namespace {
 		}
 		/** The opt-in reset: a second, separate form, only when the view says the connection exposes it. */
 		public function test_reset_form_renders_only_when_the_connection_exposes_it(): void {
-			$html = Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>true,'reset_nonce'=>self::RESET_NONCE]));
+			$html = Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>true,'reset_nonce'=>self::FORM_RESET_NONCE]));
 			self::assertSame(2,substr_count($html,'<form'));
 			self::assertStringContainsString('value="reset_connection"',$html);
 			self::assertStringContainsString('name="pow_confirm_reset" value="1" required',$html);
 			self::assertStringContainsString('<h3>Reset connection</h3>',$html);
 			self::assertStringNotContainsString('New shared secret',$html);
 			foreach (['none','pending','disabled','unavailable'] as $state) {
-				self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>$state,'can_reset'=>true,'reset_nonce'=>self::RESET_NONCE])),$state);
+				self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>$state,'can_reset'=>true,'reset_nonce'=>self::FORM_RESET_NONCE])),$state);
 			}
 			self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>false])));
 		}
 		public function test_view_exposes_reset_only_for_an_opted_in_active_owner(): void {
 			$this->seed(['owner_settings'=>'reset_connection']); $view=$this->invoke('view_vars');
-			self::assertTrue($view['can_reset']); self::assertSame(self::RESET_NONCE,$view['reset_nonce']); self::assertSame(self::DOWNLOAD_NONCE,$view['nonce']); self::assertSame('',$view['issued_secret']);
-			$this->seed(['owner_settings'=>'']); self::assertFalse($this->invoke('view_vars')['can_reset']);
-			$this->seed(); self::assertFalse($this->invoke('view_vars')['can_reset']);
-			$this->seed(['owner_settings'=>'reset_connection','status'=>'disabled']); self::assertFalse($this->invoke('view_vars')['can_reset']);
-			$this->seed(['owner_settings'=>'reset_connection','owner_user_id'=>8]); self::assertFalse($this->invoke('view_vars')['can_reset']);
+			self::assertTrue($view['can_reset']); self::assertSame($this->reset_nonce(),$view['reset_nonce']); self::assertSame(self::DOWNLOAD_NONCE,$view['nonce']); self::assertSame('',$view['issued_secret']);
+			self::assertNotSame('nonce-' . IntegrationTab::RESET_NONCE,$view['reset_nonce'],'Not the bare action: the nonce names the credential it would reset');
+			$this->seed(['owner_settings'=>'reset_connection','secret_current'=>(new Secrets(str_repeat('a',32)))->seal('another-secret')]);
+			self::assertNotSame($view['reset_nonce'],$this->invoke('view_vars')['reset_nonce'],'Another credential, another nonce');
+			foreach ([['owner_settings'=>''],[],['owner_settings'=>'reset_connection','status'=>'disabled'],['owner_settings'=>'reset_connection','owner_user_id'=>8]] as $case) {
+				$this->seed($case); $view=$this->invoke('view_vars'); self::assertFalse($view['can_reset'],json_encode($case)); self::assertSame('',$view['reset_nonce'],json_encode($case));
+			}
 		}
-		private function reset_post( array $extra = [] ): void { $_POST = array_replace(['pow_account_action'=>'reset_connection','_wpnonce'=>self::RESET_NONCE,'pow_confirm_reset'=>'1'],$extra); }
+		/** The nonce the reset form carries for the seeded connection as it stands now. */
+		private function reset_nonce(): string {
+			$action = (new ReflectionMethod(IntegrationTab::class,'reset_action'))->invoke(null,POW\Partners\Partner::from_row($this->db->rows[0]));
+			return POW\Account\wp_create_nonce($action);
+		}
+		private function reset_post( array $extra = [] ): void { $_POST = array_replace(['pow_account_action'=>'reset_connection','_wpnonce'=>$this->reset_nonce(),'pow_confirm_reset'=>'1'],$extra); }
 		public function test_reset_post_without_the_permission_produces_nothing(): void {
 			foreach ([[],['owner_settings'=>''],['owner_settings'=>'reset_connection','owner_user_id'=>8],['owner_settings'=>'reset_connection','status'=>'disabled'],['owner_settings'=>'reset_connection','status'=>'pending']] as $case) {
 				$this->seed($case); $this->reset_post();
@@ -377,7 +387,7 @@ namespace {
 				$this->reset_post($case); $result=$this->invoke('owner_reset_result');
 				self::assertSame(400,$result['status']); self::assertSame('Tick the box to confirm the reset, then try again.',$result['notice']['text']); self::assertSame('',$result['secret']);
 			}
-			foreach ([['_wpnonce'=>'forged'],['_wpnonce'=>null],['_wpnonce'=>[self::RESET_NONCE]]] as $case) {
+			foreach ([['_wpnonce'=>'forged'],['_wpnonce'=>null],['_wpnonce'=>[$this->reset_nonce()]],['_wpnonce'=>'nonce-' . IntegrationTab::RESET_NONCE]] as $case) {
 				$this->reset_post($case); $result=$this->invoke('owner_reset_result');
 				self::assertSame(403,$result['status']); self::assertSame('This reset could not be authorised. Reload the integration page and try again.',$result['notice']['text']);
 			}
@@ -388,7 +398,7 @@ namespace {
 			$this->seed(['owner_settings'=>'reset_connection']);
 			$download = POW\Account\wp_create_nonce(IntegrationTab::NONCE);
 			self::assertSame($this->invoke('view_vars')['nonce'],$download,'This is the nonce the download form posts');
-			self::assertNotSame(POW\Account\wp_create_nonce(IntegrationTab::RESET_NONCE),$download);
+			self::assertNotSame($this->reset_nonce(),$download);
 			$this->reset_post(['_wpnonce'=>$download]); $result=$this->invoke('owner_reset_result');
 			self::assertSame(403,$result['status']); self::assertSame('This reset could not be authorised. Reload the integration page and try again.',$result['notice']['text']); self::assertSame('',$result['secret']);
 			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events); self::assertSame([],$GLOBALS['pow_test_mail'] ?? []);
@@ -406,6 +416,52 @@ namespace {
 			self::assertSame(409,$failed['status']); self::assertStringNotContainsString('New shared secret',$failed['body']); self::assertStringContainsString('no new secret was issued',$failed['body']);
 			self::assertStringNotContainsString('New shared secret',Templates::render('account/integration',$this->invoke('view_vars')));
 			self::assertStringNotContainsString('New shared secret',Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>true])));
+		}
+		/** Reloading the answer page resubmits the reset POST. The nonce names the credential it was drawn for, and the reset replaced that, so the replay is refused and the secret just copied stays valid. */
+		public function test_a_replayed_reset_is_refused_because_its_nonce_named_the_old_credential(): void {
+			$this->seed(['owner_settings'=>'reset_connection']); $this->reset_post();
+			$first=$this->invoke('owner_reset_result');
+			self::assertSame(200,$first['status']); self::assertNotSame('',$first['secret']);
+			$writes=count($this->db->writes); $events=count($this->audit->events); $mail=count($GLOBALS['pow_test_mail'] ?? []);
+			$replay=$this->invoke('owner_reset_result');
+			self::assertSame(403,$replay['status']); self::assertSame('This reset could not be authorised. Reload the integration page and try again.',$replay['notice']['text']); self::assertSame('',$replay['secret']);
+			self::assertCount($writes,$this->db->writes); self::assertCount($events,$this->audit->events); self::assertCount($mail,$GLOBALS['pow_test_mail'] ?? []);
+			self::assertSame(Secrets::SLOT_CURRENT,$this->registry->verify_secret($this->registry->find(20),$first['secret']));
+			// The page drawn after the reset carries the nonce for the new credential, so a deliberate second reset still works.
+			$this->reset_post();
+			$second=$this->invoke('owner_reset_result');
+			self::assertSame(200,$second['status']); self::assertNotSame($first['secret'],$second['secret']);
+		}
+		/** The reset is answered inside the account page: handle_post sets only the no-store headers and the status, and render() prints the notice and the new secret, once. */
+		public function test_the_reset_answer_is_drawn_inside_the_account_page_once(): void {
+			$this->seed(['owner_settings'=>'reset_connection']); $posted=$this->reset_nonce(); $this->reset_post();
+			ob_start(); $this->tab->handle_post(); self::assertSame('',ob_get_clean(),'Nothing is printed, and nothing exits, on template_redirect');
+			self::assertSame([200],$GLOBALS['pow_test_status_headers']);
+			self::assertSame(['Cache-Control: no-store, private, max-age=0','Referrer-Policy: no-referrer'],$GLOBALS['pow_account_test']['headers']);
+			self::assertSame(1,$GLOBALS['pow_test_nocache_headers']);
+			ob_start(); $this->tab->render(); $html=ob_get_clean();
+			self::assertStringStartsWith('<section class="pow-account-integration">',ltrim($html));
+			self::assertStringContainsString('Connection reset.',$html);
+			self::assertSame(1,preg_match('#<strong>New shared secret</strong></p><p><code>([^<]+)</code>#',$html,$m));
+			$secret=html_entity_decode($m[1],ENT_QUOTES);
+			self::assertSame(Secrets::SLOT_CURRENT,$this->registry->verify_secret($this->registry->find(20),$secret));
+			self::assertStringNotContainsString($posted,$html,'The form no longer carries the spent nonce');
+			self::assertStringContainsString('value="'.$this->reset_nonce().'"',$html);
+			ob_start(); $this->tab->render(); $again=ob_get_clean();
+			self::assertStringNotContainsString('New shared secret',$again,'Shown once');
+			self::assertStringNotContainsString($m[1],$again);
+			// A refused reset is answered the same way, with its own status.
+			$this->reset_post(['_wpnonce'=>$posted]); $GLOBALS['pow_test_status_headers']=[];
+			ob_start(); $this->tab->handle_post(); self::assertSame('',ob_get_clean());
+			self::assertSame([403],$GLOBALS['pow_test_status_headers']);
+			ob_start(); $this->tab->render(); $refused=ob_get_clean();
+			self::assertStringContainsString('This reset could not be authorised.',$refused);
+			self::assertStringNotContainsString('New shared secret',$refused);
+			// Headers already sent: no answer at all, and nothing is kept for render().
+			$GLOBALS['pow_account_test']['headers_sent']=true; $this->reset_post(); $GLOBALS['pow_test_status_headers']=[]; $writes=count($this->db->writes);
+			$this->tab->handle_post();
+			self::assertSame([],$GLOBALS['pow_test_status_headers']); self::assertCount($writes,$this->db->writes);
+			ob_start(); $this->tab->render(); self::assertStringNotContainsString('New shared secret',ob_get_clean());
 		}
 		/** With the flag off the tab is byte-for-byte today's markup: the new view keys render nothing. */
 		public function test_default_markup_is_unchanged_by_the_reset_keys(): void {
