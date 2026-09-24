@@ -78,7 +78,7 @@ final class CompanyBook {
 	/**
 	 * The one write a punchout visit can make: add a new entry to its connection's book, when the connection allows buyers to.
 	 *
-	 * The buyer supplies only a label and an address. The key is always new, the code always comes from the connection prefix, and the entry is always enabled. buyer_adder() decides under the partner lock whether this visit may add at all; the expected revision is the one read under that lock, so a buyer never races the form. Who added it is recorded in the audit log, never in the entry, whose shape stays fixed.
+	 * The buyer supplies only a label and an address. A new entry always gets a new key and a code from the connection prefix, and is always enabled. An add that repeats an enabled entry's normalised label and address (a double-click, a resubmitted form) returns that entry with changed: false and writes nothing. buyer_adder() decides under the partner lock whether this visit may add at all; the expected revision is the one read under that lock, so a buyer never races the form. Who added it is recorded in the audit log, never in the entry, whose shape stays fixed.
 	 *
 	 * @return array|\WP_Error Success is {revision,key,entry,changed}.
 	 */
@@ -98,6 +98,11 @@ final class CompanyBook {
 				if ( null !== $visit ) {
 					// Add only, and against the revision read under this lock, never one from a form.
 					if ( null !== $key || null === $fields ) { return self::invalid(); }
+					$entry = self::entry( $fields, null );
+					if ( $entry instanceof \WP_Error ) { return $entry; }
+					// A double-click or a resubmitted form posts the same add again. Answer it with the enabled entry that already holds this name and address, before the limit, so a repeat spends no key, no code and no room.
+					$same = self::enabled_match( $book['addresses'], $entry );
+					if ( null !== $same ) { return [ 'revision' => $book['revision'], 'key' => $same, 'entry' => $book['addresses'][$same], 'changed' => false ]; }
 					if ( count( $book['addresses'] ) >= self::BUYER_ADD_LIMIT ) {
 						return new \WP_Error( 'address_book_full', __( 'Your company’s delivery book is full. Ask your company administrator to add this address.', 'punchout-woocommerce' ) );
 					}
@@ -289,6 +294,19 @@ final class CompanyBook {
 		$address = Shape::normalise( $fields['address'] );
 		if ( $address instanceof \WP_Error ) { return $address; }
 		return [ 'label' => $label, 'address' => $address, 'code' => $code, 'use_for_punchout' => $enabled ];
+	}
+
+	/**
+	 * The key of an enabled entry with this normalised label and address, or null. Code and enablement are not compared: a buyer's add carries neither.
+	 *
+	 * @param array<string, array> $addresses The book's entries, by key.
+	 */
+	private static function enabled_match( array $addresses, array $entry ): ?string {
+		$address = DeliveryData::fingerprint( $entry['address'] );
+		foreach ( $addresses as $key => $existing ) {
+			if ( true === $existing['use_for_punchout'] && $existing['label'] === $entry['label'] && DeliveryData::fingerprint( $existing['address'] ) === $address ) { return (string) $key; }
+		}
+		return null;
 	}
 
 	private static function keys( array $value, array $keys ): bool { return count( $value ) === count( $keys ) && ! array_diff_key( $value, array_flip( $keys ) ); }

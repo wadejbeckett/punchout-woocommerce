@@ -404,12 +404,8 @@ final class Surface {
 		$checkout = str_replace( [ '\\', '"' ], [ '\\\\', '\\"' ], $checkout );
 		// Never the wc-proceed-to-checkout wrapper itself: with its hooks
 		// cleared it holds exactly one thing, this plugin's return control.
-		$selectors = [
-			'a[href^="' . $checkout . '"]',
-			'.checkout-button',
-			'.widget_shopping_cart .buttons .checkout',
-			'.wc-block-mini-cart__footer-checkout',
-		];
+		// The class selectors come from the one list the extra-class setting refuses, so an operator's class can never hide the exit.
+		$selectors = array_merge( [ 'a[href^="' . $checkout . '"]' ], Settings::VISIT_HIDDEN_SELECTORS );
 
 		wp_register_style( 'pow-visit', false, [], defined( 'POW\\VERSION' ) ? \POW\VERSION : false );
 		wp_enqueue_style( 'pow-visit' );

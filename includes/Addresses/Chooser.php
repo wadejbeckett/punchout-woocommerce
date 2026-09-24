@@ -21,6 +21,16 @@ final class Chooser {
 	/** The buyer add-address form's own nonce action, on top of the review's pow_confirm_delivery. */
 	private const ADD_NONCE = 'pow_add_delivery_address';
 
+	/**
+	 * Where a successful add leaves its result for the review it redirects to: {visit, key, notes?, preferred_delivery_date?}.
+	 *
+	 * It lives in the visit's own WooCommerce session, where the review already keeps the chosen shipping methods, and the next GET of the review takes it once. The notes are the buyer's free text, so they travel there rather than in the redirect URL.
+	 */
+	private const ADDED = 'pow_delivery_added';
+
+	/** The review form's own fields. The add fieldset sits inside that form, so an add posts these too; the add never reads them. The notes and date are read on their own. */
+	private const REVIEW_FIELDS = [ 'pow_return_nonce', 'review_digest', 'choice', 'rates', 'acknowledge_unknown' ];
+
 	private ?Current $current = null;
 
 	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null, private ?CompanyBook $book = null ) {}
@@ -63,9 +73,18 @@ final class Chooser {
 		try {
 			[ $session, $partner ] = $this->context();
 			$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
-			if ( 'GET' === $method ) { echo $this->render( $this->confirmation->prepare( $session, $partner ), true, $this->add_vars( $partner ) ); return; }
+			if ( 'GET' === $method ) {
+				$added = $this->take_added( $session );
+				if ( null === $added ) { echo $this->render( $this->confirmation->prepare( $session, $partner ), true, $this->add_vars( $partner ) ); return; }
+				// The review after a successful add: the new entry selected, with the notes and date the add carried. Still no consent.
+				$view = $this->confirmation->preview( $session, $partner, $added );
+				if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $added ); }
+				echo $this->render( $view, true, $this->add_vars( $partner, [ 'draft' => null, 'open' => false, 'notice' => self::added_notice() ] ) ); return;
+			}
 			if ( ! self::request_allowed( $method, $_POST ) ) { status_header( 403 ); echo $this->render( [ 'error' => new \WP_Error( 'delivery_nonce', __( 'This form has expired. Open the cart and review your delivery again.', 'punchout-woocommerce' ) ) ], true ); return; }
 			$action = $_POST['pow_delivery_action'] ?? 'review';
+			// The add fieldset's country refresh is a submit button of its own inside the review form: it posts pow_address_refresh and no action.
+			if ( ! isset( $_POST['pow_delivery_action'] ) && isset( $_POST['pow_address_refresh'] ) ) { $action = 'add_address'; }
 			$actions = [ 'review', 'submit', 'back' ];
 			// Offered only when the connection allows buyer adds; a forged add_address otherwise gets the expired page.
 			if ( null !== $this->book && $partner->buyer_addresses ) { $actions[] = 'add_address'; }
@@ -75,7 +94,10 @@ final class Chooser {
 				wp_safe_redirect( wc_get_cart_url(), 303 ); return;
 			}
 			if ( 'add_address' === $action ) {
-				[ $view, $add ] = $this->add_address( $session, $partner );
+				$redraw = $this->add_address( $session, $partner );
+				// Post, redirect, get: after a successful add a reload repeats the review, never the add.
+				if ( null === $redraw ) { wp_safe_redirect( Transport::supplier_url( home_url( '/punchout/confirm' ) ), 303 ); return; }
+				[ $view, $add ] = $redraw;
 				echo $this->render( $view, true, $this->add_vars( $partner, $add ) ); return;
 			}
 			$input = [];
@@ -104,14 +126,7 @@ final class Chooser {
 					$view = $this->confirmation->preview( $session, $partner, $refreshed );
 				}
 			}
-			if ( $view instanceof \WP_Error ) {
-				$error = $view; $view = $this->confirmation->prepare( $session, $partner ); $view['error'] = $error;
-				// Only valid bounded plain notes and a well-formed date survive a refused form; no document/cents/address POST is reflected.
-				if ( isset( $input['notes'] ) && is_string( $input['notes'] ) && strlen( $input['notes'] ) <= 8000 && 1 === preg_match( '//u', $input['notes'] ) ) { $view['notes'] = sanitize_textarea_field( $input['notes'] ); }
-				// A well-formed date (or an emptied field) survives too; anything else falls back to the review's own value.
-				if ( isset( $input['preferred_delivery_date'] ) && is_string( $input['preferred_delivery_date'] ) && ( '' === $input['preferred_delivery_date'] || DeliveryData::date( $input['preferred_delivery_date'] ) ) ) { $view['preferred_delivery_date'] = '' === $input['preferred_delivery_date'] ? null : $input['preferred_delivery_date']; }
-				$view['can_confirm'] = false;
-			}
+			if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $input ); }
 			echo $this->render( $view, true, $this->add_vars( $partner ) );
 		} catch ( \Throwable $error ) { status_header( 403 ); echo $this->render( [ 'error' => self::expired() ], true ); }
 	}
@@ -119,33 +134,90 @@ final class Chooser {
 	/**
 	 * A buyer's add-address POST: validate its schema and nonce, then ask the book, which decides under the partner lock whether this visit may add.
 	 *
-	 * Success previews the new entry as the selected address without storing consent; the buyer still checks the method and submits. A refusal from the book redraws the review with its message and keeps what the buyer typed.
+	 * The add fieldset is part of the review form, so the POST also carries the review's own fields; those are dropped unread before the strict schema check, and the notes and date the buyer is typing come along with the add.
 	 *
-	 * @return array{0: array, 1: array{draft: ?array, open: bool, notice: ?string}}
+	 * Success returns null: the book holds the entry (a repeat of the same add returns the same entry), and the caller redirects to the review, which takes the carried key, notes and date once from this visit's own WooCommerce session and previews them without storing consent. A refusal from the book, or a country refresh, redraws the review here with its message, keeping what the buyer typed: the address draft, the notes and the date.
+	 *
+	 * @return array{0: array, 1: array{draft: ?array, open: bool, notice: ?string}}|null
 	 * @throws \DomainException For a request this connection never offered or a schema or nonce that fails; the caller answers with the expired page.
 	 */
-	private function add_address( Session $session, \POW\Partners\Partner $partner ): array {
-		$post = wp_unslash( $_POST );
+	private function add_address( Session $session, \POW\Partners\Partner $partner ): ?array {
+		$post = array_diff_key( wp_unslash( $_POST ), array_flip( self::REVIEW_FIELDS ) );
 		$nonce = $post['pow_address_nonce'] ?? null;
 		if ( null === $this->book || ! $partner->buyer_addresses || ! Fields::buyer_post_allowed( $post ) || ! is_string( $nonce ) || ! wp_verify_nonce( $nonce, self::ADD_NONCE ) ) { throw new \DomainException(); }
 		$draft = Fields::buyer_draft( $post );
+		$typed = self::typed( $post );
 		if ( '1' === ( $post['pow_address_refresh'] ?? '' ) ) {
-			return [ $this->confirmation->prepare( $session, $partner ), [ 'draft' => $draft, 'open' => true, 'notice' => null ] ];
+			return [ $this->redraw( $session, $partner, $typed ), [ 'draft' => $draft, 'open' => true, 'notice' => null ] ];
 		}
 		$added = $this->book->add_for_visit( $session, $draft['label'], $draft['address'] );
 		if ( $added instanceof \WP_Error ) {
-			$view = $this->confirmation->prepare( $session, $partner );
-			$view['error'] = 'address_book_invalid' === $added->get_error_code()
+			$error = 'address_book_invalid' === $added->get_error_code()
 				? new \WP_Error( 'address_book_invalid', __( 'Enter an address name of at most 190 characters and a complete delivery address.', 'punchout-woocommerce' ) )
 				: $added;
-			$view['can_confirm'] = false;
-			return [ $view, [ 'draft' => $draft, 'open' => true, 'notice' => null ] ];
+			return [ $this->redraw( $session, $partner, $typed, $error ), [ 'draft' => $draft, 'open' => true, 'notice' => null ] ];
 		}
-		$view = $this->confirmation->preview( $session, $partner, [ 'provider' => 'native', 'key' => (string) $added['key'] ] );
-		if ( $view instanceof \WP_Error ) {
-			$error = $view; $view = $this->confirmation->prepare( $session, $partner ); $view['error'] = $error; $view['can_confirm'] = false;
-		}
-		return [ $view, [ 'draft' => null, 'open' => false, 'notice' => __( 'Address added to your company’s delivery book and selected for this cart. Check the delivery method, then submit for approval.', 'punchout-woocommerce' ) ] ];
+		// The visit's own session row, which the review below reads back under the same per-visit key.
+		WC()->session->set( self::ADDED, [ 'visit' => $session->id, 'key' => (string) $added['key'] ] + $typed );
+		return null;
+	}
+
+	/**
+	 * The carry a successful add left for this visit, taken once, as review input; null when there is none.
+	 *
+	 * Read only from the WooCommerce session this request holds, and only when that is the visit's own basket key; a carry naming another visit or a malformed key is dropped. The review then checks the key, notes and date exactly as it checks a posted form.
+	 */
+	private function take_added( Session $session ): ?array {
+		try {
+			$native = WC()->session ?? null;
+			if ( ! $native || ! hash_equals( SessionKey::for_session( $session ), (string) $native->get_customer_id() ) ) { return null; }
+			$carry = $native->get( self::ADDED );
+			if ( null === $carry ) { return null; }
+			$native->set( self::ADDED, null );
+		} catch ( \Throwable $error ) { return null; }
+		if ( ! is_array( $carry ) || ( $carry['visit'] ?? null ) !== $session->id || ! is_string( $carry['key'] ?? null ) || 1 !== preg_match( '/\A[A-Za-z0-9_-]{1,190}\z/', $carry['key'] ) ) { return null; }
+		return [ 'provider' => 'native', 'key' => $carry['key'] ] + self::typed( $carry );
+	}
+
+	private static function added_notice(): string {
+		return __( 'Address added to your company’s delivery book and selected for this cart. Check the delivery method, then submit for approval.', 'punchout-woocommerce' );
+	}
+
+	/**
+	 * The review's notes and preferred date from a POST or a carry, when well-formed: notes as plain bounded UTF-8 text, the date as Y-m-d or '' (no preference). Anything else is left out, so the review keeps its own value; the review validates what is kept again.
+	 *
+	 * @return array{notes?: string, preferred_delivery_date?: string}
+	 */
+	private static function typed( array $input ): array {
+		$typed = [];
+		if ( isset( $input['notes'] ) && is_string( $input['notes'] ) && strlen( $input['notes'] ) <= 8000 && 1 === preg_match( '//u', $input['notes'] ) ) { $typed['notes'] = $input['notes']; }
+		if ( isset( $input['preferred_delivery_date'] ) && is_string( $input['preferred_delivery_date'] ) && ( '' === $input['preferred_delivery_date'] || DeliveryData::date( $input['preferred_delivery_date'] ) ) ) { $typed['preferred_delivery_date'] = $input['preferred_delivery_date']; }
+		return $typed;
+	}
+
+	/**
+	 * A refused form redrawn: the review as it stands, the error, and the notes and date the buyer typed when well-formed. No document, cents or address from the POST is reflected, and it cannot be submitted as it is.
+	 */
+	private function refused( Session $session, \POW\Partners\Partner $partner, \WP_Error $error, array $input ): array {
+		$view = $this->confirmation->prepare( $session, $partner );
+		$typed = self::typed( $input );
+		if ( isset( $typed['notes'] ) ) { $view['notes'] = sanitize_textarea_field( $typed['notes'] ); }
+		if ( isset( $typed['preferred_delivery_date'] ) ) { $view['preferred_delivery_date'] = '' === $typed['preferred_delivery_date'] ? null : $typed['preferred_delivery_date']; }
+		$view['error'] = $error;
+		$view['can_confirm'] = false;
+		return $view;
+	}
+
+	/**
+	 * The review redrawn beside the add form, previewed with the notes and date the add form carried; with $error it cannot be submitted.
+	 *
+	 * @param array{notes?: string, preferred_delivery_date?: string} $typed
+	 */
+	private function redraw( Session $session, \POW\Partners\Partner $partner, array $typed, ?\WP_Error $error = null ): array {
+		$view = $this->confirmation->preview( $session, $partner, $typed );
+		if ( $view instanceof \WP_Error ) { return $this->refused( $session, $partner, $error ?? $view, $typed ); }
+		if ( null !== $error ) { $view['error'] = $error; $view['can_confirm'] = false; }
+		return $view;
 	}
 
 	/**

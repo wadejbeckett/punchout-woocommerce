@@ -386,6 +386,35 @@ final class CompanyBookTest extends TestCase {
 		self::assertTrue( is_array( $second ) );
 		self::assertFalse( array_key_exists( 'buyer_name', end( $this->audit->events )[1]['detail'] ) );
 	}
+	/** A double-click, or a reload that posts the add again, finds the entry the first post wrote: no second key, no second code, no write and no audit. */
+	public function test_a_repeated_buyer_add_returns_the_existing_entry_without_spending_a_key_or_code(): void {
+		$this->db->row['buyer_addresses'] = 1; $this->visits->live = $this->buyer_visit();
+		$first = $this->buyer_add();
+		self::assertTrue( is_array( $first ) && $first['changed'] );
+		$state = $this->state(); $writes = count( $this->db->writes ); $events = count( $this->audit->events );
+		foreach ( [ 'the same post' => 'Site B', 'the same name after normalising' => '  Site  B ' ] as $case => $label ) {
+			$again = $this->buyer_add( null, $label );
+			self::assertTrue( is_array( $again ), $case );
+			self::assertSame( [ 'revision' => $first['revision'], 'key' => $first['key'], 'entry' => $first['entry'], 'changed' => false ], $again, $case );
+			self::assertSame( $state, $this->state(), $case );
+			self::assertCount( $writes, $this->db->writes, $case );
+			self::assertCount( $events, $this->audit->events, $case );
+		}
+		// The same address under another name is another entry, with the next code.
+		$other = $this->buyer_add( null, 'Site C' );
+		self::assertTrue( $other['changed'] );
+		self::assertNotSame( $first['key'], $other['key'] );
+		self::assertSame( 'BUYER-002', $other['entry']['code'] );
+		// A disabled entry is not offered to buyers, so a matching one is not reused: the add makes a new, enabled entry.
+		$this->visits->live = null;
+		$disabled = $this->add( [ 'label' => 'Site D' ], $other['revision'] );
+		self::assertFalse( $disabled['entry']['use_for_punchout'] );
+		$this->visits->live = $this->buyer_visit();
+		$enabled = $this->buyer_add( null, 'Site D' );
+		self::assertTrue( $enabled['changed'] );
+		self::assertNotSame( $disabled['key'], $enabled['key'] );
+		self::assertTrue( $enabled['entry']['use_for_punchout'] );
+	}
 	public function test_buyer_add_is_refused_without_the_flag_or_outside_this_visit(): void {
 		$cases = [
 			'flag off' => function (): void { $this->db->row['buyer_addresses'] = 0; },
@@ -452,8 +481,12 @@ final class CompanyBookTest extends TestCase {
 		self::assertTrue( is_array( $hundredth ), 'The hundredth entry still fits.' );
 		self::assertCount( 100, $this->state()['addresses'] );
 		$writes = count( $this->db->writes ); $events = count( $this->audit->events );
-		$this->error( $this->buyer_add(), 'address_book_full' );
+		$this->error( $this->buyer_add( null, 'Site C' ), 'address_book_full' );
 		self::assertCount( $writes, $this->db->writes ); self::assertCount( $events, $this->audit->events );
+		// A full book still answers a repeat of an address it holds: that needs no room.
+		$again = $this->buyer_add();
+		self::assertSame( [ $hundredth['key'], false ], [ $again['key'], $again['changed'] ] );
+		self::assertCount( $writes, $this->db->writes );
 		// The limit is the buyer's; the owner's editor is not bound by it.
 		$this->visits->live = null;
 		self::assertTrue( is_array( $this->book->save( 12, 20, 8, null, $this->fields() ) ) );

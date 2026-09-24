@@ -433,12 +433,13 @@ final class DeliveryConfirmationTest extends TestCase {
 		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
 		// The next review drops the stale stored date and offers the default instead.
 		self::assertSame(self::day(14,'Pacific/Kiritimati'),$this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
-		// Posting the same stale date is refused on the review itself, with Submit disabled and no date carried.
+		// Posting the same stale date is refused on the review itself, with Submit disabled. The date stays in the field for display only and binds nothing.
 		$v=$this->preview(['preferred_delivery_date'=>$date]);
 		self::assertTrue(is_array($v));
 		self::assertSame('delivery_date_invalid',$v['error']->get_error_code());
 		self::assertFalse($v['can_confirm']);
-		self::assertNull($v['preferred_delivery_date']);
+		self::assertSame($date,$v['preferred_delivery_date']);
+		self::assertSame($this->preview(['preferred_delivery_date'=>''])['_confirmation_fingerprint'],$v['_confirmation_fingerprint']);
 	}
 	public function test_tampered_prepared_date_fails_the_final_guard():void{
 		$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(3)]));$r=$this->returned();self::assertTrue(is_array($r));

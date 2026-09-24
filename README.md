@@ -196,7 +196,7 @@ The connection's edit screen has a row **Account holder actions** with one check
 When it is ticked and the connection is active, the bound account, signed in normally (not in a punchout visit), sees a **Reset connection** section on **My Account → Punchout integration**: a warning, a confirmation checkbox and a button, in a form of its own beside the setup-XML download. A reset:
 
 - revokes the current and previous shared secrets and ends every open punchout visit of the connection at once (their baskets go with them);
-- issues a new shared secret and shows it once, on the no-store response to that POST. It is not stored in plain text, not in a transient, not logged and not e-mailed; a reload cannot show it again;
+- issues a new shared secret and shows it once, inside the account page, on the no-store response to that POST. It is not stored in plain text, not in a transient, not logged and not e-mailed; a reload cannot show it again, and resubmitting the form is refused ("reload and try again") because the form's nonce names the credential the reset replaced;
 - keeps the saved identities, the bound account, the delivery book and every other setting;
 - e-mails the account a notice without the secret, and is audited as `registration_owner_reset` (or `registration_owner_reset_failed` with a reason), with the account as the actor.
 
@@ -216,7 +216,7 @@ Every physical cart return requires the **same punchout visit** to review and co
 
 A valid existing shipping choice of that visit is preserved; otherwise WooCommerce's native default helper selects within the current cart context. The plugin adds no cheapest-rate or pickup preference. Unknown delivery is `null`/unavailable, never zero. With `emit_delivery_line` enabled, the default `delivery_unknown_policy=require_rate` refuses confirmation if a rate is unavailable. Explicit `quote_separately` allows the buyer to acknowledge the omission and continue without a freight line or Quote shipping charge. A real quoted zero remains a known rate. With charge export off, the available estimate or unavailable state is reviewed and retained locally without a charge.
 
-Confirmation binds the cart, destination, rates, configuration and notes to the visit — including the key of the basket it was taken from, so one visit's consent can never validate another's cart. Changes require fresh review. A selected company entry must still exist, be enabled and match its confirmed address, label and code at confirmation and final return. Removal or disablement requires an eligible reselection; a changed selected entry requires reconfirmation. An unrelated revision of the book does not invalidate an unchanged selected entry. Completed return and Quote snapshots remain immutable after later master edits.
+Confirmation binds the cart, destination, rates, configuration and notes to the visit — including the key of the basket it was taken from, so one visit's consent can never validate another's cart. Changes require fresh review. A selected company entry must still exist, be enabled and match its confirmed address, label and code at confirmation and final return. Removal or disablement requires an eligible reselection; a changed selected entry requires reconfirmation. After confirmation, an unrelated revision of the book does not invalidate an unchanged selected entry; an open review must be updated once. Completed return and Quote snapshots remain immutable after later master edits.
 
 Notes are sanitised plain text, at most 2,000 characters and 8,000 bytes. They are local by default. `delivery_notes_policy=item_detail_extrinsic` additionally copies the basket note into every merchandise `ItemDetail/Extrinsic` named `DeliveryInstructions`, excluding freight, under either verified DTD. Agree this repetition with the receiver before enabling it.
 
@@ -292,7 +292,7 @@ wp punchout generate-key
 | Log retention | 400 days | Audit-table trim horizon |
 | Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |
 | Cancel button label | "Return without a cart" | Text on the abandon control; blank = the default |
-| Extra button classes | empty | Space-separated classes added to the Punchout exit, the abandon control, the review page's Submit/Update buttons and the add-address form's Add and use this address button; pow-*, checkout and checkout-button are ignored; the Cart block's own button does not receive them |
+| Extra button classes | empty | Space-separated classes added to the Punchout exit, the abandon control, the review page's Submit/Update buttons and the add-address form's Add and use this address button; pow-* and the classes a visit hides (checkout-button, checkout, wc-block-mini-cart__footer-checkout) are ignored; the Cart block's own button does not receive them |
 | Default UNSPSC | empty | Classification fallback for unmapped SKUs |
 | Convert quotes to | Pending payment | Status the order action moves a Punchout Quote to |
 | Quote retention | 90 days | Unconverted quotes cancelled (never deleted) after this; 0 = keep for ever |
@@ -379,8 +379,9 @@ Before deploying, verify conversion on staging for each configured target: the s
 | `_pow_delivery_code` | The code on the confirmed destination, when one is available |
 | `_pow_delivery` | Accepted native delivery estimate, package rates, freight configuration and emission state |
 | `_pow_delivery_choice` | Exact stored destination-choice JSON from the return winner |
-| `_pow_delivery_confirmation` | Exact stored confirmation JSON, including cart/policy binding and notes |
+| `_pow_delivery_confirmation` | Exact stored confirmation JSON, including cart/policy binding and notes, and the optional preferred delivery date (schema 2) |
 | `_pow_delivery_notes` | Confirmed plain notes, also copied to the native order customer note |
+| `_pow_preferred_delivery_date` | The buyer's optional preferred delivery date (Y-m-d) from a schema-2 confirmation. Written only when set, checked against the confirmation at attach, never sent in the PunchOutOrderMessage |
 | `_pow_buyer_identity` | The buyer's e-mail or identity from the cXML request (`UserEmail`, `UniqueUsername`, `UniqueName`, `Contact/Email`); written empty when the request named nobody, and absent altogether on a quote taken before 0.4.0 |
 | `_pow_buyer_name` | The buyer's own spelling of their name (`UserPrintableName`, `UserFullName`, `User`); written empty when the request sent no name, and absent altogether on a quote taken before 0.4.0 |
 | `_pow_buyer_cookie` | The BuyerCookie of the visit, the purchasing system's own correlator |

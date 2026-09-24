@@ -201,6 +201,9 @@ namespace {
 			$css = implode( '', $GLOBALS['pow_blocks_styles']['inline']['pow-visit'] ?? [] );
 			self::assertStringContainsString( 'a[href^="https://shop.example.test/checkout"]', $css );
 			self::assertStringContainsString( '.checkout-button', $css );
+			// The stylesheet hides exactly the shared list the extra-class setting refuses.
+			foreach ( \POW\Settings::VISIT_HIDDEN_SELECTORS as $selector ) { self::assertStringContainsString( $selector, $css ); }
+			self::assertStringContainsString( '.wc-block-mini-cart__footer-checkout', $css );
 			self::assertStringContainsString( 'display:none!important', str_replace( ' ', '', $css ) );
 			self::assertStringNotContainsString( 'punchout/confirm', $css, 'The return control is never hidden' );
 			self::assertStringNotContainsString( 'wc-proceed-to-checkout', $css, 'Woo wraps the return control in that container; hiding it hides the visit\'s only exit' );
