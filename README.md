@@ -292,7 +292,7 @@ wp punchout generate-key
 | Log retention | 400 days | Audit-table trim horizon |
 | Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |
 | Cancel button label | "Return without a cart" | Text on the abandon control; blank = the default |
-| Extra button classes | empty | Space-separated classes added to the Punchout exit, the abandon control and the review page's Submit/Update buttons; pow-* and checkout-button are ignored; the Cart block's own button does not receive them |
+| Extra button classes | empty | Space-separated classes added to the Punchout exit, the abandon control, the review page's Submit/Update buttons and the add-address form's Add and use this address button; pow-*, checkout and checkout-button are ignored; the Cart block's own button does not receive them |
 | Default UNSPSC | empty | Classification fallback for unmapped SKUs |
 | Convert quotes to | Pending payment | Status the order action moves a Punchout Quote to |
 | Quote retention | 90 days | Unconverted quotes cancelled (never deleted) after this; 0 = keep for ever |

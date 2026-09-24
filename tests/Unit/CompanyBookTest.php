@@ -88,7 +88,12 @@ function get_userdata( int $id ): object|false {
 	if ( isset($db->user_cache[$id]) ) { return $db->user_cache[$id]; }
 	$user=\get_userdata($id); if($user){$db->user_cache[$id]=clone $user;} return $user;
 }
-function WC(): object { return (object) [ 'countries' => new Countries() ]; }
+/** WooCommerce's session handler, reduced to the one fact the buyer-add gate reads: the basket this request holds. null means no session is loaded. */
+final class Basket {
+	public static ?string $customer_id = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
+	public function get_customer_id(): string { return (string) self::$customer_id; }
+}
+function WC(): object { return (object) [ 'countries' => new Countries(), 'session' => null === Basket::$customer_id ? null : new Basket() ]; }
 function wc_strtoupper( string $value ): string { return strtoupper( $value ); }
 function wc_format_postcode( string $value, string $country ): string { return strtoupper( $value ); }
 final class Countries {
@@ -119,7 +124,7 @@ final class Audit extends \POW\Audit\Log {
 
 namespace {
 use PHPUnit\Framework\TestCase;
-use POW\Tests\CompanyBook\{CompanyBook, Current, Database, Audit, Countries};
+use POW\Tests\CompanyBook\{CompanyBook, Current, Database, Audit, Countries, Basket};
 use POW\Partners\{Registry, Secrets};
 use POW\Sessions\Session;
 
@@ -146,6 +151,7 @@ final class CompanyBookTest extends TestCase {
 		$GLOBALS['pow_test_user_meta'] = []; $GLOBALS['pow_test_current_user_id'] = 20;
 		Countries::$unavailable = false;
 		Countries::$country_removed = false; Countries::$company_required = false;
+		Basket::$customer_id = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
 		$this->registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->audit = new Audit(); $this->visits = new Current();
 		$this->book = new CompanyBook( $this->registry, $this->audit, $this->visits );
 	}
@@ -401,6 +407,26 @@ final class CompanyBookTest extends TestCase {
 			self::assertInstanceOf( WP_Error::class, $result, $name );
 			self::assertSame( 'address_add_forbidden', $result->get_error_code(), $name );
 			self::assertSame( [], $this->db->writes, $name );
+			self::assertSame( [], $this->audit->events, $name );
+		}
+	}
+	/** The row key and the claim come from the same session row, so only the basket this request actually holds proves the add is made on the visit's own cart. */
+	public function test_buyer_add_is_refused_unless_the_request_holds_the_visits_own_basket(): void {
+		$cases = [
+			'the shared account\'s numeric shopper row' => '20',
+			'another visit\'s basket' => 'pow_00112233445566778899aabbccdd',
+			'an empty customer id' => '',
+			'no WooCommerce session' => null,
+		];
+		foreach ( $cases as $name => $customer ) {
+			$this->tearDown(); $this->setUp();
+			$this->db->row['buyer_addresses'] = 1; $this->visits->live = $this->buyer_visit();
+			Basket::$customer_id = $customer;
+			$result = $this->buyer_add();
+			self::assertInstanceOf( WP_Error::class, $result, $name );
+			self::assertSame( 'address_add_forbidden', $result->get_error_code(), $name );
+			self::assertSame( [], $this->db->writes, $name );
+			self::assertSame( [], $this->db->meta, $name );
 			self::assertSame( [], $this->audit->events, $name );
 		}
 	}
