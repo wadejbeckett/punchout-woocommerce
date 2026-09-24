@@ -308,10 +308,13 @@ final class Registry {
 	/**
 	 * Secret rotation is an administrator action only.
 	 *
-	 * The owner branch went with the My Account rotation form: the account
-	 * holder's surface is the read-only setup-XML download, and a
+	 * The owner branch went with the My Account rotation form, and a
 	 * connection's own login is the account every buyer arrives on, so it
 	 * must not be able to re-issue the credential it authenticates with.
+	 * The account holder's only credential action is the opt-in
+	 * Registration::reset_by_owner: a full reset (fence, revoke, end every
+	 * open visit, issue), never a rotation, allowed only when an
+	 * administrator ticks it for the connection and never inside a visit.
 	 */
 	private function rotation_actor(): bool {
 		return self::shop_administrator();

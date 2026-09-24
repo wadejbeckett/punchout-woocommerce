@@ -124,7 +124,7 @@ punchout-woocommerce/
     │                               retention, buyer attribution)
     ├── Addresses/                  Company delivery book, destination resolution and the
     │                               mandatory per-visit delivery review
-    ├── Account/IntegrationTab.php  My Account: the read-only setup-XML download
+    ├── Account/IntegrationTab.php  My Account: the setup-XML download (and the opt-in owner reset)
     ├── Account/VisitEndpoints.php  The My Account pages a visit may open: the form's groups, the dashboard entry, the payment rule, the pages that never open
     ├── Account/VisitDashboard.php  Inside a visit, swaps WooCommerce's dashboard template for the plugin's copy without the logout link
     ├── Audit/Log.php               Compliance trail (wp_pow_log)
@@ -140,7 +140,7 @@ Three custom indexed tables (options/postmeta neither index nor GC well for per-
 
 | Table | Holds |
 |---|---|
-| `wp_pow_partners` | Company-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, delivery configuration, ALL-CAPS flag, IP allowlist, the bound customer account every buyer of this connection punches in as (`owner_user_id`), TTLs, the My Account pages its visits may open (`visit_endpoints`, `dashboard` for the account page itself). The open-visit cap is a constant, not a column |
+| `wp_pow_partners` | Company-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, delivery configuration, ALL-CAPS flag, IP allowlist, the bound customer account every buyer of this connection punches in as (`owner_user_id`), TTLs, the My Account pages its visits may open (`visit_endpoints`, `dashboard` for the account page itself), whether buyers may add delivery addresses to the company book (`buyer_addresses`, off by default) and the actions the bound account may take itself (`owner_settings`, empty by default; `reset_connection` is the only one). The open-visit cap is a constant, not a column |
 | `wp_pow_sessions` | One row per PunchOutSetupRequest — a visit, not a person, so many open rows naming one `user_id` is the normal state: BuyerCookie, BrowserFormPost URL, the bound account, hashed one-time token, exact WP session token, the per-visit WooCommerce session key (`wc_session_key`, UNIQUE, NULL until the token is redeemed), the buyer identity, name and indexed identity hash read from the request, state machine (`pending → active → returned/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics, confirmed delivery choice and cart/policy/rate/notes snapshot |
 | `wp_pow_log` | The audit/compliance trail: every transaction, full POOM XML archives, secrets redacted; retention-trimmed by cron |
 
@@ -148,7 +148,7 @@ Three custom indexed tables (options/postmeta neither index nor GC well for per-
 
 ## Connections and the bound account
 
-Connections are created, configured, credentialled and bound at **WooCommerce ▸ PunchOut** by an administrator with `manage_woocommerce`. There is no front-end application, no approval queue and no owner self-service. The one account-holder surface that survives is the read-only setup-XML download described below.
+Connections are created, configured, credentialled and bound at **WooCommerce ▸ PunchOut** by an administrator with `manage_woocommerce`. There is no front-end application, no approval queue and no owner self-service. The one account-holder surface that survives is the read-only setup-XML download described below, plus one opt-in action an administrator can switch on per connection: **Reset connection** (see *Account holder actions* below).
 
 At **WooCommerce ▸ PunchOut ▸ Customers**, **Add customer** opens the edit form and a connection added there starts active, or disabled if you say so; nothing creates a pending row any more, so the ordinary path never passes through an approval step. The **Pending requests** list and its **Approve company** POST remain only for rows left by the removed front-end application flow: edit such a row's identity and configuration, save, then approve it explicitly. Saving a pending row never activates it or generates credentials.
 
@@ -189,11 +189,26 @@ A listed page runs as the shared account, so anything it saves per user is share
 
 A visit never creates a WordPress user through WordPress's user insert, the routine that registration forms, the users REST route and other plugins' AJAX actions (a sub-account form, say) all use. Inside a visit it is refused and audited as `visit_user_create_refused`, once per request, with the script, AJAX action, `wc-ajax` action, REST route and path that asked. Code that writes the users table directly, without WordPress, is outside any hook and is not covered.
 
+### Account holder actions (0.4.8)
+
+The connection's edit screen has a row **Account holder actions** with one checkbox: **Reset connection from the My Account “Punchout integration” tab**. It is off by default, for new and existing connections; saving stores `reset_connection` in `owner_settings` and the save is audited as `partner_saved`.
+
+When it is ticked and the connection is active, the bound account, signed in normally (not in a punchout visit), sees a **Reset connection** section on **My Account → Punchout integration**: a warning, a confirmation checkbox and a button, in a form of its own beside the setup-XML download. A reset:
+
+- revokes the current and previous shared secrets and ends every open punchout visit of the connection at once (their baskets go with them);
+- issues a new shared secret and shows it once, on the no-store response to that POST. It is not stored in plain text, not in a transient, not logged and not e-mailed; a reload cannot show it again;
+- keeps the saved identities, the bound account, the delivery book and every other setting;
+- e-mails the account a notice without the secret, and is audited as `registration_owner_reset` (or `registration_owner_reset_failed` with a reason), with the account as the actor.
+
+It is the administrator's reset (same fence, revoke, end-visits and issue sequence under the connection lock), never a rotation, and the purchasing system stops working until the new secret is pasted in. Registration re-checks under the lock that the request comes from the bound account, the connection is active and still grants the action, and the request is not inside a visit. Inside a visit the tab and the reset do not exist. With the box unticked the tab is exactly as before and a reset POST gets no answer.
+
+The return button label is not offered here. It is one plugin-wide setting (**Punchout button label**, below), not a per-connection value, so there is nothing per connection to hand to the account holder.
+
 ## Company delivery book and confirmation
 
 Cart confirmation currently supports **ZAR only**. Set the WooCommerce store currency and the receiving catalogue currency to ZAR. Confirmation refuses a different currency; the plugin does not convert currencies.
 
-The core book belongs to the connection's bound store account. Shop administrators manage **Company delivery addresses** on the customer administration screen; buyers select any enabled entry inside their own visit, and the book is read-only inside a visit. No third-party address-book plugin, additional credential store or directory integration is required.
+The core book belongs to the connection's bound store account. Shop administrators manage **Company delivery addresses** on the customer administration screen; buyers select any enabled entry inside their own visit. The book is read-only inside a visit unless the connection ticks **Buyers may add delivery addresses to the company book**; then a buyer can only add an entry (enabled, coded with the connection's prefix, preselected for that cart, and audited as `address_book_buyer_added` with the visit's session, a buyer hash and the buyer's name when sent). Buyers never change or remove entries. No third-party address-book plugin, additional credential store or directory integration is required.
 
 Add an address manually, or preview and explicitly copy the bound account's normal WooCommerce billing or shipping address. New entries and imports start disabled. Review the saved entry, then enable it separately (`use_for_punchout`). A normal Woo address save never synchronises the book. Inbound `ShipTo` and the bound account's own profile address are per-visit candidates for explicit review — on a fresh visit the latter is the company's default destination, not one employee's — and neither silently replaces the company master data or provides an address-list pull API.
 
@@ -277,6 +292,7 @@ wp punchout generate-key
 | Log retention | 400 days | Audit-table trim horizon |
 | Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |
 | Cancel button label | "Return without a cart" | Text on the abandon control; blank = the default |
+| Extra button classes | empty | Space-separated classes added to the Punchout exit, the abandon control and the review page's Submit/Update buttons; pow-* and checkout-button are ignored; the Cart block's own button does not receive them |
 | Default UNSPSC | empty | Classification fallback for unmapped SKUs |
 | Convert quotes to | Pending payment | Status the order action moves a Punchout Quote to |
 | Quote retention | 90 days | Unconverted quotes cancelled (never deleted) after this; 0 = keep for ever |
@@ -390,7 +406,7 @@ Shortcode only — core's Shortcode block inserts it in the block editor, so a c
 
 It carries a **self-test**: paste a PunchOutSetupRequest or ProfileRequest, get back the cXML Status the live endpoint would have answered with, and why. Nothing is stored, no session is created, and any `SharedSecret` in the paste is redacted before it is echoed back. For an anonymous visitor the three authentication stages collapse into one result — splitting them on a public page would be a credential oracle — and the run is throttled on the setup endpoint's own rate limiter and written to the audit log (`docs_self_test`).
 
-Store administrators get the same page with more on it at **WooCommerce > PunchOut > Integration docs**: a per-connection block with the complete setup XML and a self-test that names the exact authentication stage. The holder of a connection's bound store account downloads the same template from **My Account → Punchout integration**; ownership is resolved server-side and the request carries a nonce. That tab is the one surviving customer-facing surface and it is download-only — no editing, no secret, no rotation — and it does not exist inside a punchout visit.
+Store administrators get the same page with more on it at **WooCommerce > PunchOut > Integration docs**: a per-connection block with the complete setup XML and a self-test that names the exact authentication stage. The holder of a connection's bound store account downloads the same template from **My Account → Punchout integration**; ownership is resolved server-side and the request carries a nonce. That tab is the one surviving customer-facing surface and it is download-only — no editing, no secret, no rotation — unless an administrator switches on the opt-in **Reset connection** for that connection (see *Account holder actions*), and it does not exist inside a punchout visit.
 
 Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (or `docs/self-test.php`), or via the `pow_template_docs/page` filter.
 
