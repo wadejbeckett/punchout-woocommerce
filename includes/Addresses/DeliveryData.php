@@ -19,7 +19,7 @@ final class DeliveryData {
 	private const ADDRESS_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
 	private const SOURCES = [ 'native' => 'company_book', 'inbound' => 'ship_to', 'customer' => 'customer', 'filter' => 'filter' ];
 
-	/** New confirmations write schema 2 (schema 1 plus preferred_delivery_date). Schema 1 rows are still read exactly as stored. */
+	/** Schema written when the buyer chose a preferred_delivery_date (schema 1 plus that key). A dateless confirmation is written as schema 1 so 0.4.7 can still read it after a rollback; schema 2 with a null date (earlier 0.4.8 builds) is still read. */
 	public const CONFIRMATION_SCHEMA = 2;
 
 	/** WooCommerce core's zone Local Pickup ids and the Blocks Local Pickup id. Fixed, with no filter, so the review and the Quote note always agree on what counts as collection. */

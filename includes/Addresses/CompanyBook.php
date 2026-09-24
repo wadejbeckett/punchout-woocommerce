@@ -195,12 +195,13 @@ final class CompanyBook {
 	/**
 	 * The buyer-add gate, asked under the partner lock: the connection is active and allows buyer adds, the visit is the bound account's, and this request is inside that very visit, still active, on its own basket.
 	 *
-	 * The visit passed in is only a claim. The live visit is resolved again here from the login, and must be the same row with the same per-visit basket key; the shared account id alone proves nothing, because every visit of the connection signs in as it.
+	 * The visit passed in is only a claim. The live visit is resolved again here from the login, and must be the same row with the same per-visit basket key. That row and the claim are read the same way, so the key must also be the basket this request actually holds (WooCommerce's session customer id), as Chooser::invalidate() and Confirmation::live_cart_key() require; no loaded session refuses. The shared account id alone proves nothing, because every visit of the connection signs in as it.
 	 */
 	private function buyer_adder( int $partner_id, \POW\Sessions\Session $visit ): Partner|\WP_Error {
 		$partner = $this->registry->find( $partner_id );
 		$live = $this->visits->visit();
 		$key = null !== $live ? (string) $live->wc_session_key : '';
+		$basket = null !== $live ? (string) ( WC()->session?->get_customer_id() ?? '' ) : '';
 		if (
 			! $partner
 			|| ! $partner->is_active()
@@ -214,6 +215,7 @@ final class CompanyBook {
 			|| \POW\Sessions\Session::ACTIVE !== $live->status
 			|| ! \POW\Cart\SessionKey::is_visit_key( $key )
 			|| ! hash_equals( $key, (string) $visit->wc_session_key )
+			|| ! hash_equals( $key, $basket )
 			|| ! $this->ordinary_user( $partner->owner_user_id )
 		) {
 			return new \WP_Error( 'address_add_forbidden', __( 'Adding a delivery address is not available for this visit. Ask your company administrator to add it.', 'punchout-woocommerce' ) );

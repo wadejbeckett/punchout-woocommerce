@@ -6,7 +6,9 @@ namespace POW\Account {
 	// Namespace-local I/O doubles do not claim global WordPress/WooCommerce functions.
 	function is_account_page(): bool { return isset($GLOBALS['pow_account_test']) ? $GLOBALS['pow_account_test']['account'] : \is_account_page(); }
 	function is_wc_endpoint_url( string $endpoint ): bool { return isset($GLOBALS['pow_account_test']) ? $endpoint === $GLOBALS['pow_account_test']['endpoint'] : \is_wc_endpoint_url($endpoint); }
-	function wp_create_nonce( string $action ): string { return isset($GLOBALS['pow_account_test']) ? 'account-nonce' : \wp_create_nonce($action); }
+	// Nonces are action-derived and checked against their action, so the download form's nonce cannot stand in for the reset form's.
+	function wp_create_nonce( string $action ): string { return isset($GLOBALS['pow_account_test']) ? 'nonce-' . $action : \wp_create_nonce($action); }
+	function wp_verify_nonce( string $nonce, string $action ): int|false { return isset($GLOBALS['pow_account_test']) ? ( $nonce === wp_create_nonce($action) ? 1 : false ) : \wp_verify_nonce($nonce,$action); }
 	function wc_get_page_permalink( string $page ): string { return isset($GLOBALS['pow_account_test']) ? 'https://shop.example.test/account/' : \wc_get_page_permalink($page); }
 	function wc_get_endpoint_url( string $endpoint, string $value, string $url ): string { return isset($GLOBALS['pow_account_test']) ? $url . $endpoint . '/' : \wc_get_endpoint_url($endpoint,$value,$url); }
 	function get_posts( array $args ): array {
@@ -125,6 +127,8 @@ namespace {
 	 */
 	final class AccountIntegrationTest extends TestCase {
 		private const VISIT_KEY = 'pow_1a2b3c4d5e6f708192a3b4c5d6e7';
+		private const DOWNLOAD_NONCE = 'nonce-' . IntegrationTab::NONCE;
+		private const RESET_NONCE = 'nonce-' . IntegrationTab::RESET_NONCE;
 		private array $saved = [];
 		private AccountDatabase $db;
 		private AccountAudit $audit;
@@ -140,9 +144,8 @@ namespace {
 			$GLOBALS['pow_test_options'] = ['pow_settings'=>['enabled'=>'yes']];
 			$GLOBALS['pow_test_current_user_id'] = 7;
 			$GLOBALS['pow_test_users'][7] = (object)['ID'=>7,'roles'=>['customer'],'allcaps'=>['read'=>true]];
-			$GLOBALS['pow_test_valid_nonce'] = 'account-nonce';
 			$_SERVER = ['REQUEST_METHOD'=>'POST','REMOTE_ADDR'=>'192.0.2.7'];
-			$_POST = ['pow_account_action'=>'download_setup_template','_wpnonce'=>'account-nonce'];
+			$_POST = ['pow_account_action'=>'download_setup_template','_wpnonce'=>self::DOWNLOAD_NONCE];
 			$GLOBALS['wpdb'] = $this->db = new AccountDatabase();
 			$this->registry = new Registry( new Secrets(str_repeat('a',32)) );
 			$this->audit = new AccountAudit();
@@ -161,7 +164,7 @@ namespace {
 			$this->db->rows = [array_replace(['id'=>20,'owner_user_id'=>7,'name'=>'Example Company','status'=>'active','from_domain'=>'NetworkID','from_identity'=>'EXAMPLE','sender_domain'=>'NetworkID','sender_identity'=>'EXAMPLE','to_domain'=>'NetworkID','to_identity'=>'STORE','secret_current'=>(new Secrets(str_repeat('a',32)))->seal('old-secret'),'secret_previous'=>''],$overrides)];
 		}
 		private function view( array $overrides = [] ): array {
-			return array_replace(['state'=>'none','connection'=>[],'notice'=>null,'setup_url'=>'https://shop.example.test/punchout/setup','last_setup'=>null,'action_url'=>'https://shop.example.test/account/punchout-integration/','docs_url'=>'https://shop.example.test/integration-guide/','nonce'=>'account-nonce','template_ready'=>false],$overrides);
+			return array_replace(['state'=>'none','connection'=>[],'notice'=>null,'setup_url'=>'https://shop.example.test/punchout/setup','last_setup'=>null,'action_url'=>'https://shop.example.test/account/punchout-integration/','docs_url'=>'https://shop.example.test/integration-guide/','nonce'=>self::DOWNLOAD_NONCE,'template_ready'=>false],$overrides);
 		}
 		public function test_template_names_the_identity_fields_and_offers_no_management_control(): void {
 			self::assertSame('account/integration',Templates::normalise_name('account/integration'));
@@ -250,7 +253,7 @@ namespace {
 		}
 		public function test_request_boundaries_refuse_before_lookup_or_mutation(): void {
 			foreach (['method','endpoint','account','nonce','nonce_missing','nonce_array','action_array','unknown','anonymous','capability','disabled','visit'] as $case) {
-				$_SERVER['REQUEST_METHOD']='POST'; $_POST=['pow_account_action'=>'download_setup_template','_wpnonce'=>'account-nonce'];
+				$_SERVER['REQUEST_METHOD']='POST'; $_POST=['pow_account_action'=>'download_setup_template','_wpnonce'=>self::DOWNLOAD_NONCE];
 				$GLOBALS['pow_account_test']['account']=true; $GLOBALS['pow_account_test']['endpoint']='punchout-integration';
 				$GLOBALS['pow_test_current_user_id']=7; $GLOBALS['pow_test_users'][7]->allcaps=['read'=>true];
 				$GLOBALS['pow_test_user_meta']=[]; $GLOBALS['pow_test_options']['pow_settings']['enabled']='yes';
@@ -323,32 +326,32 @@ namespace {
 		/** The self-service surface is gone as code, not merely unreachable. */
 		public function test_no_action_handler_survives_beside_the_download(): void {
 			foreach (['post_result','rotation_result','posted_fields','refused'] as $gone) { self::assertFalse(method_exists($this->tab,$gone),$gone); }
-			$this->seed(); $_POST=['pow_account_action'=>'rotate','_wpnonce'=>'account-nonce'];
+			$this->seed(); $_POST=['pow_account_action'=>'rotate','_wpnonce'=>self::DOWNLOAD_NONCE];
 			ob_start(); try { $this->tab->handle_post(); } finally { self::assertSame('',ob_get_clean()); }
 			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events);
 		}
 		/** The opt-in reset: a second, separate form, only when the view says the connection exposes it. */
 		public function test_reset_form_renders_only_when_the_connection_exposes_it(): void {
-			$html = Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>true,'reset_nonce'=>'account-nonce']));
+			$html = Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>true,'reset_nonce'=>self::RESET_NONCE]));
 			self::assertSame(2,substr_count($html,'<form'));
 			self::assertStringContainsString('value="reset_connection"',$html);
 			self::assertStringContainsString('name="pow_confirm_reset" value="1" required',$html);
 			self::assertStringContainsString('<h3>Reset connection</h3>',$html);
 			self::assertStringNotContainsString('New shared secret',$html);
 			foreach (['none','pending','disabled','unavailable'] as $state) {
-				self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>$state,'can_reset'=>true,'reset_nonce'=>'account-nonce'])),$state);
+				self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>$state,'can_reset'=>true,'reset_nonce'=>self::RESET_NONCE])),$state);
 			}
 			self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>false])));
 		}
 		public function test_view_exposes_reset_only_for_an_opted_in_active_owner(): void {
 			$this->seed(['owner_settings'=>'reset_connection']); $view=$this->invoke('view_vars');
-			self::assertTrue($view['can_reset']); self::assertSame('account-nonce',$view['reset_nonce']); self::assertSame('',$view['issued_secret']);
+			self::assertTrue($view['can_reset']); self::assertSame(self::RESET_NONCE,$view['reset_nonce']); self::assertSame(self::DOWNLOAD_NONCE,$view['nonce']); self::assertSame('',$view['issued_secret']);
 			$this->seed(['owner_settings'=>'']); self::assertFalse($this->invoke('view_vars')['can_reset']);
 			$this->seed(); self::assertFalse($this->invoke('view_vars')['can_reset']);
 			$this->seed(['owner_settings'=>'reset_connection','status'=>'disabled']); self::assertFalse($this->invoke('view_vars')['can_reset']);
 			$this->seed(['owner_settings'=>'reset_connection','owner_user_id'=>8]); self::assertFalse($this->invoke('view_vars')['can_reset']);
 		}
-		private function reset_post( array $extra = [] ): void { $_POST = array_replace(['pow_account_action'=>'reset_connection','_wpnonce'=>'account-nonce','pow_confirm_reset'=>'1'],$extra); }
+		private function reset_post( array $extra = [] ): void { $_POST = array_replace(['pow_account_action'=>'reset_connection','_wpnonce'=>self::RESET_NONCE,'pow_confirm_reset'=>'1'],$extra); }
 		public function test_reset_post_without_the_permission_produces_nothing(): void {
 			foreach ([[],['owner_settings'=>''],['owner_settings'=>'reset_connection','owner_user_id'=>8],['owner_settings'=>'reset_connection','status'=>'disabled'],['owner_settings'=>'reset_connection','status'=>'pending']] as $case) {
 				$this->seed($case); $this->reset_post();
@@ -374,11 +377,21 @@ namespace {
 				$this->reset_post($case); $result=$this->invoke('owner_reset_result');
 				self::assertSame(400,$result['status']); self::assertSame('Tick the box to confirm the reset, then try again.',$result['notice']['text']); self::assertSame('',$result['secret']);
 			}
-			foreach ([['_wpnonce'=>'forged'],['_wpnonce'=>null],['_wpnonce'=>['account-nonce']]] as $case) {
+			foreach ([['_wpnonce'=>'forged'],['_wpnonce'=>null],['_wpnonce'=>[self::RESET_NONCE]]] as $case) {
 				$this->reset_post($case); $result=$this->invoke('owner_reset_result');
 				self::assertSame(403,$result['status']); self::assertSame('This reset could not be authorised. Reload the integration page and try again.',$result['notice']['text']);
 			}
 			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events);
+		}
+		/** The download form's nonce is a valid nonce of this tab, but for another action: it must not authorise a reset. */
+		public function test_reset_refuses_the_download_forms_nonce(): void {
+			$this->seed(['owner_settings'=>'reset_connection']);
+			$download = POW\Account\wp_create_nonce(IntegrationTab::NONCE);
+			self::assertSame($this->invoke('view_vars')['nonce'],$download,'This is the nonce the download form posts');
+			self::assertNotSame(POW\Account\wp_create_nonce(IntegrationTab::RESET_NONCE),$download);
+			$this->reset_post(['_wpnonce'=>$download]); $result=$this->invoke('owner_reset_result');
+			self::assertSame(403,$result['status']); self::assertSame('This reset could not be authorised. Reload the integration page and try again.',$result['notice']['text']); self::assertSame('',$result['secret']);
+			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events); self::assertSame([],$GLOBALS['pow_test_mail'] ?? []);
 		}
 		public function test_reset_emission_shows_the_secret_once(): void {
 			$this->seed(['owner_settings'=>'reset_connection']);
