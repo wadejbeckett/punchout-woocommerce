@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.7
+Stable tag: 0.4.8
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,17 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.8 =
+* New: the cart review page follows the store. Amounts show in the store's own currency format (for example R 1 619,86, built from the exact cents that go to the purchasing system), the address shows province and country names, the items table has a line-total column, the standalone page shows the site logo, and the buttons carry WooCommerce's button classes so a theme that styles WooCommerce buttons styles these.
+* New: "Preferred delivery date" on the review page. Optional, earliest tomorrow, shown as two weeks ahead; saved on the local quote only (order meta and note) and never sent to the purchasing system. A confirmation with a date is stored as schema 2; one without stays schema 1, so an earlier release can still read it.
+* New: a WooCommerce Local Pickup rate is shown as "Collection" on the review page. The selected delivery method's full label, including any delivery-period text the store owner puts in the method title, is the delivery line's description in the returned cart and in the quote note.
+* New: connection setting "Buyers may add delivery addresses to the company book" (off by default). When on, a buyer in a visit can add an address to the connection's company book from the review page; it is enabled for punchout at once and records who added it. Buyers still cannot edit or remove entries.
+* New: connection setting "Reset connection from the My Account “Punchout integration” tab" (off by default). When on, the connection's account holder, logged in normally and never inside a visit, can revoke and reissue the shared secret once from that tab; the new secret is shown once and the reset is audited.
+* New: plugin setting "Extra button classes": space-separated classes added to the punchout buttons (cart exit, abandon, review page, add-address) so a theme's button style applies without site code.
+* New: `<body>` carries the class `pow-visit` on every page served inside a visit, for themes and page builders to gate presentation (never access control).
+* Fix: confirming the review without the date field no longer stores a server-chosen date; an invalid date on "Update delivery options" keeps the chosen address and method and reports the date.
+* Schema 9: adds `buyer_addresses` and `owner_settings` to the connections table; the upgrade runs on the next admin page load.
 
 = 0.4.7 =
 * Change: inside a punchout visit the My Account dashboard no longer shows WooCommerce's "not you? Log out" link. Logging out there ended the visit and deleted its basket. The dashboard shows the plugin's own copy of WooCommerce's dashboard in a visit, the same page without that sentence, and a theme can override it at punchout-woocommerce/account/dashboard.php. Outside a visit, including the account holder's own login, the dashboard and its logout link are unchanged. The account menu already left out Log out in a visit.
