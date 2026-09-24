@@ -2,13 +2,16 @@
 /**
  * The connection's setup-XML download in WooCommerce My Account.
  *
- * One read-only surface for the account a connection is bound to: the
+ * A read-only surface for the account a connection is bound to: the
  * generated Dynamics setup XML, with a placeholder where the shared secret
  * goes. Nothing here creates, changes, rotates or deactivates anything —
- * that is all administrator work now — and the screen does not exist inside
- * a punchout visit, because then the request is an employee shopping as
- * this account rather than the account holder reading its own integration
- * details.
+ * that is administrator work — with one opt-in exception: when an
+ * administrator ticks "Reset connection" for this connection, the account
+ * holder can reset it here (Registration::reset_by_owner), and the new
+ * secret is shown once on the no-store response and never stored. The
+ * screen, and that reset, do not exist inside a punchout visit, because
+ * then the request is an employee shopping as this account rather than the
+ * account holder reading its own integration details.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -24,6 +27,7 @@ use POW\Audit\Log;
 use POW\Docs\Page as DocsPage;
 use POW\Docs\Samples;
 use POW\Http\Router;
+use POW\Partners\Registration;
 use POW\Partners\Registry;
 use POW\Plugin;
 use POW\Support\Templates;
@@ -33,12 +37,19 @@ defined( 'ABSPATH' ) || exit;
 final class IntegrationTab {
 	public const ENDPOINT = 'punchout-integration';
 	public const NONCE = 'pow_account';
+	public const RESET_NONCE = 'pow_account_reset';
 
 	public function __construct(
 		private Plugin $plugin,
 		private Registry $registry,
 		private Log $audit,
+		private ?Registration $registration = null,
 	) {}
+
+	/** Built on first use, so the plugin's wiring stays as it is. */
+	private function registration(): Registration {
+		return $this->registration ??= new Registration( $this->registry, new \POW\Sessions\Store(), $this->audit );
+	}
 
 	/** Endpoint registration stays unconditional; permission checks guard each surface. */
 	public function register(): void {
@@ -116,14 +127,25 @@ final class IntegrationTab {
 		}
 	}
 
-	/** The one POST this screen answers, as a direct response; no reveal store exists. */
+	/** The POSTs this screen answers, as direct responses; no reveal store exists. */
 	public function handle_post(): void {
 		if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) || ! is_account_page() || ! is_wc_endpoint_url( self::ENDPOINT ) ) { return; }
 		Transport::require_https();
 		if ( 0 === $this->actor() ) { return; }
-		if ( 'download_setup_template' !== ( $_POST['pow_account_action'] ?? null ) ) { return; }
+		$action = $_POST['pow_account_action'] ?? null;
+		if ( 'download_setup_template' !== $action && 'reset_connection' !== $action ) { return; }
 		// Never answer after output has made no-store headers impossible.
 		if ( headers_sent() ) { return; }
+		if ( 'reset_connection' === $action ) {
+			// Not offered for this connection: no answer at all, exactly as before the option existed.
+			$reset = $this->owner_reset_result();
+			if ( null === $reset ) { return; }
+			$this->private_headers();
+			$emission = $this->reset_emission( $reset );
+			status_header( $emission['status'] );
+			echo $emission['body']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped template.
+			exit;
+		}
 		$this->private_headers();
 		$download = $this->template_download_result();
 		if ( null === $download ) { return; }
@@ -154,6 +176,55 @@ final class IntegrationTab {
 		} catch ( \Throwable $e ) {
 			return $this->download_result( 503, __( 'The setup template is unavailable. Reload the integration page and try again.', 'punchout-woocommerce' ) );
 		}
+	}
+
+	/**
+	 * The account holder's opt-in reset, or null when this connection does
+	 * not offer it to this request.
+	 *
+	 * Null (no answer, no write) unless the actor is the bound account of
+	 * an active connection whose administrator granted `reset_connection`,
+	 * outside a punchout visit. Registration::reset_by_owner checks all of
+	 * that again under the partner lock. The secret goes only into the
+	 * returned array for the one response; it is never logged or stored.
+	 *
+	 * @return array{status:int,notice:array{text:string,type:string},secret:string}|null
+	 */
+	private function owner_reset_result(): ?array {
+		if ( 'reset_connection' !== ( $_POST['pow_account_action'] ?? null ) ) { return null; }
+		$actor = $this->actor();
+		if ( 0 === $actor ) { return null; }
+		try {
+			$partner = $this->registry->find_by_owner( $actor );
+		} catch ( \Throwable $e ) { return null; }
+		if ( null === $partner || ! $partner->is_owned_by( $actor ) || ! $partner->is_active() || ! $partner->owner_may( 'reset_connection' ) ) { return null; }
+		$nonce = $_POST['_wpnonce'] ?? null;
+		if ( ! is_string( $nonce ) || ! wp_verify_nonce( wp_unslash( $nonce ), self::RESET_NONCE ) ) {
+			return $this->reset_result( 403, __( 'This reset could not be authorised. Reload the integration page and try again.', 'punchout-woocommerce' ) );
+		}
+		if ( '1' !== ( $_POST['pow_confirm_reset'] ?? null ) ) {
+			return $this->reset_result( 400, __( 'Tick the box to confirm the reset, then try again.', 'punchout-woocommerce' ) );
+		}
+		try {
+			$secret = $this->registration()->reset_by_owner( $partner->id, $actor );
+		} catch ( \Throwable $e ) { $secret = ''; }
+		if ( '' !== $secret ) {
+			return $this->reset_result( 200, __( 'Connection reset. The previous shared secret and every open punchout visit have been revoked. Copy the new shared secret now: it is shown only once. Paste it into your purchasing system in place of the old one.', 'punchout-woocommerce' ), $secret );
+		}
+		return $this->reset_result( 409, __( 'The reset did not complete and no new secret was issued. The connection may now be disabled; contact the store.', 'punchout-woocommerce' ) );
+	}
+
+	/** @return array{status:int,notice:array{text:string,type:string},secret:string} */
+	private function reset_result( int $status, string $text, string $secret = '' ): array {
+		return $this->result( $status, $text ) + [ 'secret' => $secret ];
+	}
+
+	/** The integration page with the reset's notice, and the new secret once on success. */
+	private function reset_emission( array $reset ): array {
+		return [
+			'status' => $reset['status'],
+			'body'   => Templates::render( 'account/integration', array_replace( $this->result_vars( $reset ), [ 'issued_secret' => (string) ( $reset['secret'] ?? '' ) ] ) ),
+		];
 	}
 
 	/** What the download actually sends: the XML as an attachment on success, the page with the notice otherwise. */
@@ -210,6 +281,7 @@ final class IntegrationTab {
 		if ( null !== $p ) {
 			$vars['connection'] = [ 'name' => $p->name, 'from' => $p->from_domain . ' / ' . $p->from_identity, 'sender' => $p->sender_domain . ' / ' . $p->sender_identity, 'to' => $p->to_domain . ' / ' . $p->to_identity, 'deployment_mode' => $p->deployment_mode, 'cxml_version' => $p->cxml_version, 'return_encoding' => $p->return_encoding, 'visit_endpoints' => implode( ', ', $p->visit_endpoint_list() ) ];
 			$vars['template_ready'] = $p->is_active() && $this->template_ready( $p );
+			$vars['can_reset'] = $p->is_active() && $p->owner_may( 'reset_connection' );
 			try { $vars['last_setup'] = $this->audit->last_success( $p->id ); } catch ( \Throwable $e ) { $vars['last_setup'] = __( 'Unavailable', 'punchout-woocommerce' ); }
 		}
 		return $vars;
@@ -232,6 +304,7 @@ final class IntegrationTab {
 			'state' => 'none',
 			'setup_url' => Router::setup_url(), 'last_setup' => null, 'docs_url' => $docs_url,
 			'action_url' => wc_get_endpoint_url( self::ENDPOINT, '', wc_get_page_permalink( 'myaccount' ) ), 'nonce' => wp_create_nonce( self::NONCE ),
+			'reset_nonce' => wp_create_nonce( self::RESET_NONCE ),
 		] );
 	}
 
@@ -239,6 +312,7 @@ final class IntegrationTab {
 		return [
 			'state' => 'unavailable', 'connection' => [], 'template_ready' => false, 'notice' => null,
 			'setup_url' => '', 'last_setup' => null, 'docs_url' => '', 'action_url' => '', 'nonce' => '',
+			'can_reset' => false, 'reset_nonce' => '', 'issued_secret' => '',
 		];
 	}
 }

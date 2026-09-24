@@ -327,6 +327,79 @@ namespace {
 			ob_start(); try { $this->tab->handle_post(); } finally { self::assertSame('',ob_get_clean()); }
 			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events);
 		}
+		/** The opt-in reset: a second, separate form, only when the view says the connection exposes it. */
+		public function test_reset_form_renders_only_when_the_connection_exposes_it(): void {
+			$html = Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>true,'reset_nonce'=>'account-nonce']));
+			self::assertSame(2,substr_count($html,'<form'));
+			self::assertStringContainsString('value="reset_connection"',$html);
+			self::assertStringContainsString('name="pow_confirm_reset" value="1" required',$html);
+			self::assertStringContainsString('<h3>Reset connection</h3>',$html);
+			self::assertStringNotContainsString('New shared secret',$html);
+			foreach (['none','pending','disabled','unavailable'] as $state) {
+				self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>$state,'can_reset'=>true,'reset_nonce'=>'account-nonce'])),$state);
+			}
+			self::assertStringNotContainsString('value="reset_connection"',Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>false])));
+		}
+		public function test_view_exposes_reset_only_for_an_opted_in_active_owner(): void {
+			$this->seed(['owner_settings'=>'reset_connection']); $view=$this->invoke('view_vars');
+			self::assertTrue($view['can_reset']); self::assertSame('account-nonce',$view['reset_nonce']); self::assertSame('',$view['issued_secret']);
+			$this->seed(['owner_settings'=>'']); self::assertFalse($this->invoke('view_vars')['can_reset']);
+			$this->seed(); self::assertFalse($this->invoke('view_vars')['can_reset']);
+			$this->seed(['owner_settings'=>'reset_connection','status'=>'disabled']); self::assertFalse($this->invoke('view_vars')['can_reset']);
+			$this->seed(['owner_settings'=>'reset_connection','owner_user_id'=>8]); self::assertFalse($this->invoke('view_vars')['can_reset']);
+		}
+		private function reset_post( array $extra = [] ): void { $_POST = array_replace(['pow_account_action'=>'reset_connection','_wpnonce'=>'account-nonce','pow_confirm_reset'=>'1'],$extra); }
+		public function test_reset_post_without_the_permission_produces_nothing(): void {
+			foreach ([[],['owner_settings'=>''],['owner_settings'=>'reset_connection','owner_user_id'=>8],['owner_settings'=>'reset_connection','status'=>'disabled'],['owner_settings'=>'reset_connection','status'=>'pending']] as $case) {
+				$this->seed($case); $this->reset_post();
+				self::assertNull($this->invoke('owner_reset_result'),json_encode($case));
+				ob_start(); try { $this->tab->handle_post(); } finally { self::assertSame('',ob_get_clean()); }
+			}
+			$this->seed(['owner_settings'=>'reset_connection']); $this->reset_post(['pow_account_action'=>'download_setup_template']);
+			self::assertNull($this->invoke('owner_reset_result'),'Another action is not a reset');
+			$this->db->fail_lookup=true; $this->reset_post();
+			self::assertNull($this->invoke('owner_reset_result'),'An unanswerable lookup refuses silently');
+			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events); self::assertSame([],$GLOBALS['pow_test_mail'] ?? []);
+		}
+		public function test_reset_is_refused_inside_a_visit(): void {
+			$this->seed(['owner_settings'=>'reset_connection']); $this->reset_post(); $this->enter_visit();
+			self::assertNull($this->invoke('owner_reset_result'));
+			ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean());
+			ob_start(); try { $this->tab->handle_post(); } finally { self::assertSame('',ob_get_clean()); }
+			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events);
+		}
+		public function test_reset_needs_the_confirmation_tick_and_its_own_nonce(): void {
+			$this->seed(['owner_settings'=>'reset_connection']);
+			foreach ([['pow_confirm_reset'=>null],['pow_confirm_reset'=>'0'],['pow_confirm_reset'=>['1']]] as $case) {
+				$this->reset_post($case); $result=$this->invoke('owner_reset_result');
+				self::assertSame(400,$result['status']); self::assertSame('Tick the box to confirm the reset, then try again.',$result['notice']['text']); self::assertSame('',$result['secret']);
+			}
+			foreach ([['_wpnonce'=>'forged'],['_wpnonce'=>null],['_wpnonce'=>['account-nonce']]] as $case) {
+				$this->reset_post($case); $result=$this->invoke('owner_reset_result');
+				self::assertSame(403,$result['status']); self::assertSame('This reset could not be authorised. Reload the integration page and try again.',$result['notice']['text']);
+			}
+			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events);
+		}
+		public function test_reset_emission_shows_the_secret_once(): void {
+			$this->seed(['owner_settings'=>'reset_connection']);
+			$reset=$this->invoke('reset_result',200,'Connection reset. The previous shared secret and every open punchout visit have been revoked. Copy the new shared secret now: it is shown only once. Paste it into your purchasing system in place of the old one.','s3cr<t&');
+			$emission=$this->invoke('reset_emission',$reset);
+			self::assertSame(200,$emission['status']);
+			self::assertStringContainsString('<code>s3cr&lt;t&amp;</code>',$emission['body']);
+			self::assertStringNotContainsString('s3cr<t&',$emission['body']);
+			self::assertStringContainsString('shown only once',$emission['body']);
+			self::assertStringContainsString('New shared secret',$emission['body']);
+			$failed=$this->invoke('reset_emission',$this->invoke('reset_result',409,'The reset did not complete and no new secret was issued. The connection may now be disabled; contact the store.'));
+			self::assertSame(409,$failed['status']); self::assertStringNotContainsString('New shared secret',$failed['body']); self::assertStringContainsString('no new secret was issued',$failed['body']);
+			self::assertStringNotContainsString('New shared secret',Templates::render('account/integration',$this->invoke('view_vars')));
+			self::assertStringNotContainsString('New shared secret',Templates::render('account/integration',$this->view(['state'=>'active','template_ready'=>true,'can_reset'=>true])));
+		}
+		/** With the flag off the tab is byte-for-byte today's markup: the new view keys render nothing. */
+		public function test_default_markup_is_unchanged_by_the_reset_keys(): void {
+			$this->seed(); $view=$this->invoke('view_vars');
+			$plain=array_diff_key($view,array_flip(['can_reset','reset_nonce','issued_secret']));
+			self::assertSame(Templates::render('account/integration',$plain),Templates::render('account/integration',$view));
+		}
 		public function test_endpoint_hooks_are_registered_even_when_feature_is_disabled(): void {
 			$GLOBALS['pow_test_options']['pow_settings']['enabled']='no'; $this->tab=$this->make_tab(); $this->tab->register();
 			$hooks=$GLOBALS['pow_account_test']['hooks'];
