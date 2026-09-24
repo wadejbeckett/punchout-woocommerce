@@ -2,10 +2,18 @@
 /**
  * Administrator lifecycle for a company connection.
  *
- * Approval and identity reset only: the self-service application, the
- * owner's own deactivation and the applicant field validator went with the
- * front-end surface, so every entry point here is reached from the admin
- * screens and authenticates a real shop administrator.
+ * Approval and identity reset: the self-service application, the owner's
+ * own deactivation and the applicant field validator went with the
+ * front-end surface, so approve() and reset() are reached from the admin
+ * screens and authenticate a real shop administrator.
+ *
+ * One account-holder entry point exists, and only by opt-in:
+ * reset_by_owner(), which an administrator switches on per connection
+ * (owner_settings `reset_connection`, off by default). It is a full reset
+ * with the saved identity, never a rotation, and it re-checks under the
+ * partner lock that the caller is the bound account, the connection is
+ * active and still grants the action, and the request is not inside a
+ * punchout visit.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -80,46 +88,115 @@ final class Registration {
 		$reason = 'authorization';
 		try {
 			if ( ! $this->admin_actor( $admin_user_id ) ) { return ''; }
-			$data = [];
 			$reason = 'identity';
-			foreach ( [ 'from_domain', 'from_identity', 'sender_domain', 'sender_identity', 'to_domain', 'to_identity' ] as $key ) {
-				$value = $new_identity[ $key ] ?? null;
-				if ( ! is_scalar( $value ) ) { return ''; }
-				$value = trim( (string) $value, " \t\r\n\v" );
-				if ( ! self::identity_value( $value ) ) { return ''; }
-				$data[ $key ] = $value;
-			}
-			if ( array_key_exists( 'deployment_mode', $new_identity ) ) {
-				if ( ! in_array( $new_identity['deployment_mode'], [ 'test', 'production' ], true ) ) { return ''; }
-				$data['deployment_mode'] = $new_identity['deployment_mode'];
-			}
+			$data = self::identity_data( $new_identity );
+			if ( null === $data ) { return ''; }
 			$reason = 'lock';
 			$this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $data, &$issued, &$fenced, &$partner, &$reason ) {
-				$reason = 'identity_or_state';
-				$partner = $this->registry->find( $partner_id );
-				if ( ! $partner || ! in_array( $partner->status, [ Partner::STATUS_ACTIVE, Partner::STATUS_DISABLED ], true ) ) { return; }
-				$other = $this->registry->find_by_sender( $data['sender_domain'], $data['sender_identity'] );
-				if ( $other && $other->id !== $partner_id ) { return; }
-				$reason = 'fence_unconfirmed';
-				$fenced = Partner::STATUS_DISABLED === $partner->status || $this->registry->transition_status( $partner_id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
-				if ( ! $fenced ) { return; }
-				$this->record( 'registration_disabled', get_current_user_id(), $partner_id );
-				$reason = 'revocation';
-				if ( ! $this->registry->revoke_secret( $partner_id ) ) { return; }
-				$reason = 'session_cleanup';
-				if ( ! $this->drain_locked( $partner_id ) ) { return; }
-				$reason = 'replacement_write';
-				$secret = Secrets::generate_secret();
-				try {
-					if ( $this->registry->transition_status( $partner_id, Partner::STATUS_DISABLED, $data + [ 'status' => Partner::STATUS_ACTIVE, 'secret_previous' => '' ], $secret ) ) { $issued = $secret; }
-				} catch ( CredentialRecoveryException $e ) {
-					$reason = $e->getMessage();
-				}
+				$issued = $this->reset_locked( $partner_id, $data, null, $partner, $reason, $fenced );
 			} );
 		} catch ( \Throwable $e ) { /* Only confirmed issuance survives release failure; recovery may be unconfirmed. */ }
 		finally { $this->record( '' !== $issued ? 'registration_reset' : 'registration_reset_failed', get_current_user_id(), $partner_id, '' !== $issued ? '' : $reason ); }
 		if ( '' !== $issued && $partner ) { $this->notify_owner( $partner, __( 'Your punchout connection has been reset. Previous sessions and credentials have been revoked. Contact the store to arrange credential handover.', 'punchout-woocommerce' ) ); }
 		return $issued;
+	}
+
+	/**
+	 * The account holder's own reset, offered only when an administrator
+	 * ticked it for this connection.
+	 *
+	 * A full reset with the saved identity, never a rotation: the same
+	 * fence, revoke, drain and issue sequence as reset(), so every open
+	 * visit of the connection ends and the old secret stops working. The
+	 * gate runs again under the partner lock: the bound account, the
+	 * granted action, an active connection and no live visit for this
+	 * request. An unanswerable visit lookup refuses.
+	 */
+	public function reset_by_owner( int $partner_id, int $owner_user_id ): string {
+		$issued = '';
+		$fenced = false;
+		$partner = null;
+		$reason = 'authorization';
+		try {
+			if ( $owner_user_id <= 0 || get_current_user_id() !== $owner_user_id ) { return ''; }
+			$user = get_userdata( $owner_user_id );
+			if ( ! $user || ! user_can( $user, 'read' ) ) { return ''; }
+			$gate = function ( Partner $p ) use ( $owner_user_id ): bool {
+				return Partner::STATUS_ACTIVE === $p->status && $p->is_owned_by( $owner_user_id ) && $p->owner_may( 'reset_connection' )
+					&& null === ( new \POW\Sessions\Current( $this->sessions ) )->visit();
+			};
+			$reason = 'lock';
+			$this->registry->with_partner_lock( $partner_id, function () use ( $partner_id, $gate, &$issued, &$fenced, &$partner, &$reason ) {
+				$issued = $this->reset_locked( $partner_id, null, $gate, $partner, $reason, $fenced );
+			} );
+		} catch ( \Throwable $e ) { /* A throwing gate or lookup refuses; only confirmed issuance survives. */ }
+		finally { $this->record( '' !== $issued ? 'registration_owner_reset' : 'registration_owner_reset_failed', get_current_user_id(), $partner_id, '' !== $issued ? '' : $reason ); }
+		if ( '' !== $issued && $partner ) { $this->notify_owner( $partner, __( 'Your punchout connection was reset from your store account. The previous shared secret and every open punchout visit have been revoked. The new secret was shown once on the Punchout integration page; it is not in this email.', 'punchout-woocommerce' ) ); }
+		return $issued;
+	}
+
+	/**
+	 * Validated identity columns, or null when any is unusable.
+	 *
+	 * @param array<string,mixed> $source
+	 * @return array<string,string>|null
+	 */
+	private static function identity_data( array $source ): ?array {
+		$data = [];
+		foreach ( [ 'from_domain', 'from_identity', 'sender_domain', 'sender_identity', 'to_domain', 'to_identity' ] as $key ) {
+			$value = $source[ $key ] ?? null;
+			if ( ! is_scalar( $value ) ) { return null; }
+			$value = trim( (string) $value, " \t\r\n\v" );
+			if ( ! self::identity_value( $value ) ) { return null; }
+			$data[ $key ] = $value;
+		}
+		if ( array_key_exists( 'deployment_mode', $source ) ) {
+			if ( ! in_array( $source['deployment_mode'], [ 'test', 'production' ], true ) ) { return null; }
+			$data['deployment_mode'] = $source['deployment_mode'];
+		}
+		return $data;
+	}
+
+	/**
+	 * The reset sequence, run by the caller under the partner lock.
+	 *
+	 * $data null takes the identity from the saved connection. $gate, when
+	 * given, is asked about the freshly read connection and refuses the
+	 * whole reset by answering false.
+	 *
+	 * @return string The issued secret, or '' when nothing was issued.
+	 */
+	private function reset_locked( int $partner_id, ?array $data, ?\Closure $gate, ?Partner &$partner, string &$reason, bool &$fenced ): string {
+		$reason = 'identity_or_state';
+		$partner = $this->registry->find( $partner_id );
+		if ( ! $partner || ! in_array( $partner->status, [ Partner::STATUS_ACTIVE, Partner::STATUS_DISABLED ], true ) ) { return ''; }
+		if ( null !== $gate ) {
+			$reason = 'owner_gate';
+			if ( ! $gate( $partner ) ) { return ''; }
+			$reason = 'identity_or_state';
+		}
+		if ( null === $data ) {
+			$data = self::identity_data( [ 'from_domain' => $partner->from_domain, 'from_identity' => $partner->from_identity, 'sender_domain' => $partner->sender_domain, 'sender_identity' => $partner->sender_identity, 'to_domain' => $partner->to_domain, 'to_identity' => $partner->to_identity, 'deployment_mode' => $partner->deployment_mode ] );
+			if ( null === $data ) { return ''; }
+		}
+		$other = $this->registry->find_by_sender( $data['sender_domain'], $data['sender_identity'] );
+		if ( $other && $other->id !== $partner_id ) { return ''; }
+		$reason = 'fence_unconfirmed';
+		$fenced = Partner::STATUS_DISABLED === $partner->status || $this->registry->transition_status( $partner_id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
+		if ( ! $fenced ) { return ''; }
+		$this->record( 'registration_disabled', get_current_user_id(), $partner_id );
+		$reason = 'revocation';
+		if ( ! $this->registry->revoke_secret( $partner_id ) ) { return ''; }
+		$reason = 'session_cleanup';
+		if ( ! $this->drain_locked( $partner_id ) ) { return ''; }
+		$reason = 'replacement_write';
+		$secret = Secrets::generate_secret();
+		try {
+			if ( $this->registry->transition_status( $partner_id, Partner::STATUS_DISABLED, $data + [ 'status' => Partner::STATUS_ACTIVE, 'secret_previous' => '' ], $secret ) ) { return $secret; }
+		} catch ( CredentialRecoveryException $e ) {
+			$reason = $e->getMessage();
+		}
+		return '';
 	}
 
 	private function drain_locked( int $partner_id ): bool {
@@ -167,7 +244,7 @@ final class Registration {
 					'user_id' => $actor,
 					'partner_id' => $partner_id,
 					'session_id' => $session_id,
-					'result' => in_array( $event, [ 'registration_approved', 'registration_reset', 'registration_disabled', 'session_revoked' ], true ) ? 'ok' : 'error',
+					'result' => in_array( $event, [ 'registration_approved', 'registration_reset', 'registration_owner_reset', 'registration_disabled', 'session_revoked' ], true ) ? 'ok' : 'error',
 					'detail' => '' !== $reason ? [ 'reason' => $reason ] : [],
 				] );
 			} finally {

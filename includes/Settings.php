@@ -28,6 +28,15 @@ class Settings {
 
 	public const OPTION_KEY = 'pow_settings';
 
+	/**
+	 * Classes an operator may not add: the visit stylesheet hides these, and
+	 * a hidden class on the exit would hide the visit's only way out.
+	 */
+	private const RESERVED_BUTTON_CLASSES = [ 'checkout-button', 'checkout' ];
+
+	/** At most this many extra classes are kept. */
+	private const MAX_BUTTON_CLASSES = 20;
+
 	private const DEFAULTS = [
 		// Master switch. Off by default so a fresh install exposes no
 		// pre-auth XML endpoint until an operator has configured at least
@@ -59,6 +68,12 @@ class Settings {
 		// run last, so code can override either one.
 		'return_button_label'  => '',
 		'abandon_button_label' => '',
+
+		// The site's own button classes, space-separated, added to the exit
+		// controls and the review page's primary actions so they match the
+		// theme without the plugin naming it. Normalised on save and on read
+		// by button_class_tokens(); empty adds nothing.
+		'extra_button_classes' => '',
 
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends
@@ -104,6 +119,42 @@ class Settings {
 
 	public function int( string $key ): int {
 		return (int) $this->get( $key, 0 );
+	}
+
+	/**
+	 * Normalise a list of extra button classes.
+	 *
+	 * Whitespace-separated; each token passes sanitize_html_class. Empty
+	 * results, plugin classes (`pow-…`, any case), the reserved classes the
+	 * visit stylesheet hides and repeats are dropped, and at most 20 are kept.
+	 *
+	 * @return list<string>
+	 */
+	public static function button_class_tokens( mixed $raw ): array {
+		if ( ! is_string( $raw ) || '' === trim( $raw ) ) {
+			return [];
+		}
+		$tokens = [];
+		foreach ( preg_split( '/\s+/', trim( $raw ) ) ?: [] as $token ) {
+			$token = sanitize_html_class( $token );
+			if ( '' === $token || 0 === stripos( $token, 'pow-' ) || in_array( $token, self::RESERVED_BUTTON_CLASSES, true ) || in_array( $token, $tokens, true ) ) {
+				continue;
+			}
+			$tokens[] = $token;
+			if ( count( $tokens ) >= self::MAX_BUTTON_CLASSES ) {
+				break;
+			}
+		}
+		return $tokens;
+	}
+
+	/**
+	 * The operator's extra button classes, sanitised again on read.
+	 *
+	 * @return list<string>
+	 */
+	public function extra_button_classes(): array {
+		return self::button_class_tokens( $this->get( 'extra_button_classes', '' ) );
 	}
 
 	/**
