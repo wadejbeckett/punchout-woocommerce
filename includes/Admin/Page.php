@@ -178,6 +178,7 @@ final class Page {
 			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
 			'return_button_label'  => [ __( 'Punchout button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button that sends the cart back to the buyer\'s purchasing system. Blank uses the default: “Punchout”.', 'punchout-woocommerce' ) ],
 			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Return without a cart”.', 'punchout-woocommerce' ) ],
+			'extra_button_classes' => [ __( 'Extra button classes', 'punchout-woocommerce' ), 'text', __( 'Space-separated CSS classes added to the Punchout exit button, the “Return without a cart” control and the delivery review page’s Submit and Update buttons, so they match the site’s own button styles. Plugin classes (pow-…) and checkout-button are ignored. The Cart block draws its own button and does not receive them.', 'punchout-woocommerce' ) ],
 			'token_ttl'            => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300.', 'punchout-woocommerce' ) ],
 			'session_ttl'          => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). Each customer connection can override both TTLs.', 'punchout-woocommerce' ) ],
 			'rate_limit_per_min'   => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 uses the default (30); the public self-test uses 10 when this is 0.', 'punchout-woocommerce' ) ],
@@ -300,6 +301,7 @@ final class Page {
 			'landing_page_id'      => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
 			'return_button_label'  => sanitize_text_field( (string) ( $input['return_button_label'] ?? '' ) ),
 			'abandon_button_label' => sanitize_text_field( (string) ( $input['abandon_button_label'] ?? '' ) ),
+			'extra_button_classes' => implode( ' ', \POW\Settings::button_class_tokens( $input['extra_button_classes'] ?? '' ) ),
 			'token_ttl'            => max( 30, (int) ( $input['token_ttl'] ?? 300 ) ),
 			'session_ttl'          => max( 300, (int) ( $input['session_ttl'] ?? 14400 ) ),
 			'rate_limit_per_min'   => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
@@ -586,6 +588,16 @@ final class Page {
 				checked( true, (bool) ( $partner->buyer_addresses ?? false ), false ),
 				esc_html__( 'Buyers may add delivery addresses to the company book', 'punchout-woocommerce' ),
 				esc_html__( 'Off by default. When ticked, a buyer inside a punchout visit can add a new address on the delivery review page. It is saved to this connection’s company book, enabled and selected at once, and the audit log records which visit added it. Buyers cannot change or remove entries.', 'punchout-woocommerce' )
+			)
+		);
+
+		$this->form_row(
+			__( 'Account holder actions', 'punchout-woocommerce' ),
+			sprintf(
+				'<label><input type="checkbox" name="owner_reset_connection" value="1" %s /> %s</label><p class="description">%s</p>',
+				checked( true, null !== $partner && $partner->owner_may( 'reset_connection' ), false ),
+				esc_html__( 'Reset connection from the My Account “Punchout integration” tab', 'punchout-woocommerce' ),
+				esc_html__( 'Off by default. A reset revokes the shared secret, ends every open punchout visit of this connection and shows the account holder a new secret once; the purchasing system stops working until it is pasted in. Never offered inside a punchout visit. A per-connection return button label does not exist, so it cannot be offered here.', 'punchout-woocommerce' )
 			)
 		);
 

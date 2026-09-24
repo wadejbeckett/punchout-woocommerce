@@ -15,6 +15,7 @@ use POW\Support\Transport;
 use POW\Partners\Registry;
 use POW\Plugin;
 use POW\Sessions\Session;
+use POW\Settings;
 use POW\Support\Templates;
 
 defined( 'ABSPATH' ) || exit;
@@ -56,6 +57,9 @@ defined( 'ABSPATH' ) || exit;
  * — because there is no core hook that means "the session chrome".
  */
 final class Surface {
+
+	/** The visit controls that carry the operator's extra button classes. */
+	private const EXTRA_CLASS_CONTROLS = [ 'pow-return-button', 'pow-abandon-button' ];
 
 	public function __construct(
 		private Plugin $plugin,
@@ -186,7 +190,10 @@ final class Surface {
 	 *
 	 * Generic WooCommerce and WordPress button classes give a site stable
 	 * styling hooks without detecting a theme or assuming its callbacks.
-	 * Site-specific classes can be added through the existing filter.
+	 * The visit's exit and abandon controls also carry the operator's
+	 * "Extra button classes" setting, appended before the filter so that
+	 * code keeps the last word; the non-visit checkout link does not.
+	 * Site-specific classes can also be added through the filter.
 	 *
 	 * The abandon control passes $themed = false: it is a secondary "leave
 	 * with nothing" action that reads as a text link beside the primary
@@ -197,6 +204,9 @@ final class Surface {
 	 */
 	private function button_classes( string $base, bool $themed = true ): string {
 		$classes = $themed ? [ 'button', 'alt', 'wp-element-button', $base ] : [ $base ];
+		if ( in_array( $base, self::EXTRA_CLASS_CONTROLS, true ) ) {
+			$classes = array_merge( $classes, array_values( array_diff( $this->plugin->settings()->extra_button_classes(), $classes ) ) );
+		}
 
 		/**
 		 * Filter the class list of a punchout submit control.
@@ -208,6 +218,19 @@ final class Surface {
 		$classes = (array) apply_filters( 'pow_button_classes', $classes, $base, $themed );
 
 		return implode( ' ', array_filter( array_map( 'sanitize_html_class', $classes ) ) );
+	}
+
+	/**
+	 * The operator's extra button classes as one class-attribute fragment,
+	 * for the delivery review page's primary actions; '' when none are set
+	 * or the settings cannot be read.
+	 */
+	public static function extra_button_classes(): string {
+		try {
+			return implode( ' ', ( new Settings() )->extra_button_classes() );
+		} catch ( \Throwable ) {
+			return '';
+		}
 	}
 
 	public function shortcode(): string {
