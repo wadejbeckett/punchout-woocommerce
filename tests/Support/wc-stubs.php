@@ -413,6 +413,9 @@ if ( ! class_exists( 'POW_Test_WC' ) ) {
 		public mixed $cart = null;
 
 		public mixed $query = null;
+
+		/** WC_Session_Handler when the shop session is up; null outside the shop context. */
+		public mixed $session = null;
 	}
 }
 

@@ -152,6 +152,7 @@ final class RouteGuard {
 		// its own password login — still reaches /checkout.
 		if ( function_exists( 'is_checkout' ) && is_checkout() && 0 === $endpoint_order_id && $this->checkout_blocked_for_visit() ) {
 			$target = function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : $this->settings->landing_url();
+			$this->explain( $this->checkout_blocked_message() );
 			wp_safe_redirect( $target, 302 );
 			exit;
 		}
@@ -929,7 +930,46 @@ final class RouteGuard {
 	}
 
 	private function redirect_to_landing(): void {
+		$this->explain( $this->refused_page_message() );
 		wp_safe_redirect( $this->settings->landing_url(), 302 );
 		exit;
+	}
+
+	/**
+	 * Tell the buyer why a page sent her elsewhere: one WooCommerce notice,
+	 * shown wherever the site prints WooCommerce notices. Only when the
+	 * shop's session is up (it carries the notice across the redirect);
+	 * wp-admin and early requests have none and redirect silently. Never
+	 * lets a notice failure stand in the way of the refusal itself.
+	 */
+	private function explain( string $message ): void {
+		try {
+			if ( ! function_exists( 'wc_add_notice' ) || ! function_exists( 'WC' ) || empty( WC()->session ) ) {
+				return;
+			}
+			if ( function_exists( 'wc_has_notice' ) && wc_has_notice( $message, 'notice' ) ) {
+				return;
+			}
+			wc_add_notice( $message, 'notice' );
+		} catch ( \Throwable $error ) {
+			// The redirect is the protection; the explanation is a courtesy.
+		}
+	}
+
+	/** Why a page refused inside a visit, pointing at the configured return control. */
+	private function refused_page_message(): string {
+		$label = (string) apply_filters(
+			'pow_return_button_label',
+			$this->settings->button_label(
+				'return_button_label',
+				__( 'Punchout', 'punchout-woocommerce' )
+			)
+		);
+
+		return sprintf(
+			/* translators: %s: label of the punchout exit button */
+			__( 'That page is not available in this catalog session. Add what you need to your cart, then use "%s" to send it to your purchasing system.', 'punchout-woocommerce' ),
+			$label
+		);
 	}
 }
