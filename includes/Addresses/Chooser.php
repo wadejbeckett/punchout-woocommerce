@@ -249,7 +249,7 @@ final class Chooser {
 	}
 
 	public static function is_store_cart_mutation( string $method, string $route ): bool {
-		return in_array( strtoupper( $method ), [ 'POST', 'PUT', 'PATCH', 'DELETE' ], true ) && 1 === preg_match( '#\A/wc/store/v[1-9][0-9]*/cart/(?:select-shipping-rate|update-customer)/?\z#', $route );
+		return in_array( strtoupper( $method ), [ 'POST', 'PUT', 'PATCH', 'DELETE' ], true ) && 1 === preg_match( '#\A/wc/store/v[1-9][0-9]*/cart/(?:select-shipping-rate|update-customer)/?\z#i', $route );
 	}
 
 	/** These Store API setters do not emit a classic cart mutation action. Preserve their native response. */

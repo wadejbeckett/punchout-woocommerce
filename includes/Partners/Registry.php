@@ -30,15 +30,40 @@ final class Registry {
 	 *
 	 * Every buyer a purchasing system authorises is signed in as this one
 	 * account, on a token that came from that system rather than from a
-	 * password, so binding an account that can manage the shop, the store
-	 * or other users would hand the connection the shop itself. The list
-	 * lives here because this class performs the binding; the setup and
-	 * redemption endpoints re-prove it on every visit against the same
-	 * constant, so the bind screen and the runtime cannot drift apart.
+	 * password, so the account must be an ordinary shopper. Binding one that
+	 * can manage the shop, the store or other users would hand the connection
+	 * the shop itself; binding one that can author content (a Contributor,
+	 * Author or Editor, or any role holding the same powers) would let every
+	 * buyer write, upload or publish through WordPress's own REST API.
+	 *
+	 * These are asked through user_can(), so a capability granted by a
+	 * filter counts. privileged() also reads the account's stored grants for
+	 * the same verbs on any object type (edit_products, manage_*, ...), so a
+	 * custom or mixed role is judged by what it can do, never by its name.
+	 * The list lives here because this class performs the binding; setup,
+	 * redemption and the delegated-login gate re-prove it on every visit and
+	 * every request through eligible_login(), so the bind screen and the
+	 * runtime cannot drift apart.
 	 *
 	 * @var list<string>
 	 */
-	public const PRIVILEGED_CAPABILITIES = [ 'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'install_plugins', 'activate_plugins', 'update_plugins' ];
+	public const PRIVILEGED_CAPABILITIES = [
+		// Shop and site administration.
+		'manage_options', 'manage_woocommerce', 'edit_users', 'promote_users', 'delete_users', 'create_users', 'remove_users', 'list_users',
+		'install_plugins', 'activate_plugins', 'update_plugins', 'edit_plugins', 'edit_themes', 'switch_themes', 'edit_theme_options', 'edit_files',
+		'import', 'export', 'edit_dashboard', 'view_admin_dashboard', 'view_woocommerce_reports',
+		// Content authoring: Contributor and up.
+		'edit_posts', 'edit_pages', 'edit_others_posts', 'edit_others_pages', 'publish_posts', 'publish_pages', 'delete_posts', 'delete_pages',
+		'upload_files', 'unfiltered_html', 'unfiltered_upload', 'moderate_comments', 'manage_categories', 'manage_links',
+		// Store authoring.
+		'edit_products', 'publish_products', 'edit_shop_orders', 'edit_shop_coupons',
+	];
+
+	/**
+	 * Stored grants whose verb alone makes an account more than a shopper,
+	 * whatever object type follows it, plus the legacy user levels above 0.
+	 */
+	private const PRIVILEGED_GRANT = '/^(?:(?:edit|publish|delete|create|manage|moderate|upload|install|activate|update|promote|remove|switch|assign|unfiltered|read_private|list|view_admin|export|import)_|(?:import|export|customize)$|level_(?:[1-9]|10)$)/';
 
 	/** Shared across Registry instances on this request/connection. */
 	private static array $partner_locks = [];
@@ -233,8 +258,7 @@ final class Registry {
 					// company association, not an ownership test — the redeem
 					// path refuses such an account, so binding it would build a
 					// connection whose every visit is refused.
-					if ( ! $owner || ! user_can( $owner, 'read' ) || get_user_meta( $owner_user_id, '_pow_partner_id', true ) ) { return; }
-					if ( self::privileged( $owner ) ) { return; }
+					if ( ! $owner || ! self::eligible_login( $owner ) || get_user_meta( $owner_user_id, '_pow_partner_id', true ) ) { return; }
 					// A nonzero association owns the company's book; no transfer semantics exist.
 					if ( ! $partner || 0 !== $partner->owner_user_id || null !== $this->find_by_owner( $owner_user_id ) ) { return; }
 					$data = [ 'owner_user_id' => $owner_user_id, 'updated' => gmdate( 'Y-m-d H:i:s' ) ];
@@ -245,12 +269,34 @@ final class Registry {
 		return $confirmed;
 	}
 
-	/** Whether an account holds any capability that bars it from being a connection's login. */
+	/**
+	 * Whether an account holds any capability that bars it from being a
+	 * connection's login: a named administrative or authoring capability
+	 * (through user_can(), so filters count), or any stored grant whose verb
+	 * is one (PRIVILEGED_GRANT). Role names in the stored grants are skipped;
+	 * a role is judged by the capabilities it carries.
+	 */
 	public static function privileged( mixed $user ): bool {
 		foreach ( self::PRIVILEGED_CAPABILITIES as $capability ) {
 			if ( user_can( $user, $capability ) ) { return true; }
 		}
+		$user = is_object( $user ) ? $user : get_userdata( (int) $user );
+		if ( ! $user ) { return false; }
+		$roles = array_map( 'strval', (array) ( $user->roles ?? [] ) );
+		foreach ( (array) ( $user->allcaps ?? [] ) as $capability => $granted ) {
+			if ( $granted && ! in_array( (string) $capability, $roles, true ) && preg_match( self::PRIVILEGED_GRANT, (string) $capability ) ) { return true; }
+		}
 		return false;
+	}
+
+	/**
+	 * The one eligibility rule for a connection's login, at binding, setup,
+	 * redemption and every delegated request: an existing account that can
+	 * read and holds nothing privileged() names.
+	 */
+	public static function eligible_login( mixed $user ): bool {
+		$user = is_object( $user ) ? $user : ( is_numeric( $user ) && (int) $user > 0 ? get_userdata( (int) $user ) : false );
+		return (bool) $user && user_can( $user, 'read' ) && ! self::privileged( $user );
 	}
 
 	/** A lifecycle write must be conditional, changed once, and freshly confirmed. */

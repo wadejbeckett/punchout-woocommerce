@@ -22,6 +22,8 @@ defined( 'ABSPATH' ) || exit;
  * - open visits past expiry -> expired, their recorded logins destroyed and
  *   their own WooCommerce basket row deleted (including un-closed `ordered`
  *   rows — the buyer who closed the tab at the thank-you page, scope §5.4);
+ * - ended visits whose login survived a failed cleanup -> that login
+ *   revoked again (the delegated-login gate refuses it meanwhile);
  * - audit-table retention trim;
  * - unconverted Punchout Quote orders past their retention cancelled
  *   (never deleted — QuoteOrder::expire()).
@@ -69,8 +71,36 @@ final class Cron {
 
 	public function run(): void {
 		$this->expire_sessions();
+		$this->revoke_surviving_logins();
 		$this->audit->trim( $this->settings->int( 'log_retention_days' ) );
 		$this->quotes->expire();
+	}
+
+	/**
+	 * Retry the login revocation of visits that ended without it confirming.
+	 *
+	 * Until this succeeds the delegated-login gate refuses that login on every
+	 * request, so nothing it reaches is unconfined; this is what eventually
+	 * removes it. Only a real revocation or a further failure is recorded.
+	 */
+	private function revoke_surviving_logins(): void {
+		$registry = Plugin::instance()->registry();
+		if ( ! $registry ) { return; }
+		try { $ended = $this->sessions->ended_with_login(); }
+		catch ( \Throwable $e ) { return; }
+		foreach ( $ended as $session ) {
+			$result = $this->sessions->revoke_ended_login( $session, $registry );
+			if ( null === $result ) { continue; }
+			$this->audit->write_checked(
+				'visit_login_revoked',
+				[
+					'partner_id' => $session->partner_id,
+					'session_id' => $session->id,
+					'user_id'    => $session->user_id,
+					'result'     => $result ? 'retry' : 'revoke_failed',
+				]
+			);
+		}
 	}
 
 	private function expire_sessions(): void {

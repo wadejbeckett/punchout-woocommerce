@@ -334,7 +334,7 @@ final class NativeSessionGuard {
 	public function flush_cache(): void { $handler = WC()->session ?? null; if ( $handler instanceof NativeSessionHandler ) { $handler->flush_cache(); } }
 	/** Cookie+Nonce mutations must finish persistence before their successful REST response is delivered. */
 	public function save_rest_cart( mixed $response, mixed $route_handler, \WP_REST_Request $request ): mixed {
-		if ( ! preg_match( '#^/wc/store/v[1-9][0-9]*/(?:cart|checkout)(?:/|$)#', $request->get_route() ) ) { return $response; }
+		if ( ! preg_match( '#^/wc/store/v[1-9][0-9]*/(?:cart|checkout)(?:/|$)#i', $request->get_route() ) ) { return $response; }
 		$handler = WC()->session ?? null;
 		if ( $handler instanceof NativeSessionHandler && $handler->is_protected() && ! $handler->save_checked() ) { return self::error(); }
 		return $response;

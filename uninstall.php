@@ -13,6 +13,10 @@
  * a role here would strip capabilities from accounts this plugin does not
  * own, and it no longer knows which those are.
  *
+ * Delegated logins ARE ours to end: every WordPress login a visit row
+ * records is revoked first (exact tokens only), and the uninstall stops
+ * before removing anything if one cannot be confirmed gone.
+ *
  * Per-visit WooCommerce sessions ARE ours: every visit owns a
  * `pow_`-prefixed row in WooCommerce's own session table, so those rows are
  * swept here. Rows belonging to ordinary shoppers are left alone.
@@ -29,6 +33,22 @@
 declare( strict_types = 1 );
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
+
+// Delegated logins first, whatever happens to the data: once the plugin's
+// files are gone nothing confines a visit's login, so a surviving one would
+// simply be the bound account signed in. Only the tokens visit rows record
+// are revoked; every other login survives. If any cannot be confirmed gone,
+// stop before anything is removed so the uninstall can be retried.
+require_once __DIR__ . '/includes/Autoloader.php';
+POW\Autoloader::register( 'POW', __DIR__ . '/includes' );
+
+if ( ! POW\Installer::revoke_delegated_logins() ) {
+	wp_die(
+		esc_html__( 'PunchOut for WooCommerce was not deleted: one or more punchout logins could not be signed out. Nothing was removed. Please try again.', 'punchout-woocommerce' ),
+		esc_html__( 'Uninstall stopped', 'punchout-woocommerce' ),
+		[ 'response' => 500, 'back_link' => true ]
+	);
+}
 
 if ( defined( 'POW_KEEP_DATA' ) && POW_KEEP_DATA ) {
 	return;

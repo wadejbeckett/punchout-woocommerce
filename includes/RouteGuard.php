@@ -76,6 +76,9 @@ final class RouteGuard {
 		// login's three remaining doors need their own guards.
 		add_action( 'admin_init', [ $this, 'guard_admin' ], 1 );
 		add_filter( 'rest_pre_dispatch', [ $this, 'guard_rest' ], -99, 3 );
+		// The authoritative REST check: after WordPress has matched the request
+		// to a handler, whatever the route was spelled (batch sub-requests too).
+		add_filter( 'rest_request_before_callbacks', [ $this, 'guard_rest_handler' ], -99, 3 );
 		add_filter( 'wp_is_application_passwords_available_for_user', [ $this, 'deny_application_passwords' ], PHP_INT_MAX, 2 );
 
 		// Last, so items and user-data changes made by anything else are
@@ -317,13 +320,15 @@ final class RouteGuard {
 	 */
 	private static function endpoints_in_request( array $slugs ): array {
 		$path     = wp_parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '' ), PHP_URL_PATH ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- compared against known slugs, never output.
-		$segments = array_values( array_filter( explode( '/', is_string( $path ) ? $path : '' ), static fn( string $segment ): bool => '' !== $segment ) );
+		// Decoded and lower-cased so an encoded or re-cased slug is still
+		// recognised here; this fallback only ever adds endpoints to refuse.
+		$segments = array_values( array_filter( array_map( static fn( string $segment ): string => strtolower( rawurldecode( $segment ) ), explode( '/', is_string( $path ) ? $path : '' ) ), static fn( string $segment ): bool => '' !== $segment ) );
 		$found    = [];
 
 		foreach ( $slugs as $key => $slug ) {
 			$slug = (string) $slug;
 
-			if ( '' !== $slug && ( in_array( $slug, $segments, true ) || isset( $_GET[ $slug ] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing decision.
+			if ( '' !== $slug && ( in_array( strtolower( $slug ), $segments, true ) || isset( $_GET[ $slug ] ) ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing decision.
 				$found[] = (string) $key;
 			}
 		}
@@ -527,7 +532,12 @@ final class RouteGuard {
 			return $result;
 		}
 
-		return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
+		$error = new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
+
+		// A batch sub-request hands this result to rest_post_dispatch without
+		// converting an error first, and core callbacks there type-hint a
+		// response; the converted response is what a single request serves anyway.
+		return function_exists( 'rest_convert_error_to_response' ) ? rest_convert_error_to_response( $error ) : $error;
 	}
 
 	/**
@@ -542,11 +552,61 @@ final class RouteGuard {
 	}
 
 	/**
+	 * The users and application-password REST handlers during a visit,
+	 * judged by the controller WordPress matched the request to — the native
+	 * WP_REST_Users_Controller and WP_REST_Application_Passwords_Controller or
+	 * any subclass a plugin registers — so no spelling of the route (case,
+	 * encoding, repeated slashes, a batch sub-request) reaches them.
+	 *
+	 * @param mixed $response Result so far; an earlier error stands.
+	 * @param mixed $handler  The matched route handler.
+	 * @param mixed $request  The request, unused.
+	 */
+	public function guard_rest_handler( mixed $response, mixed $handler = null, mixed $request = null ): mixed {
+		if ( is_wp_error( $response ) || ! self::locked_handler( $handler ) || ! $this->inside_visit() ) {
+			return $response;
+		}
+
+		return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
+	}
+
+	private static function locked_handler( mixed $handler ): bool {
+		if ( ! is_array( $handler ) ) {
+			return false;
+		}
+
+		foreach ( [ 'callback', 'permission_callback' ] as $key ) {
+			$callback = $handler[ $key ] ?? null;
+			$object   = is_array( $callback ) && isset( $callback[0] ) ? $callback[0] : null;
+			$class    = is_object( $object ) ? get_class( $object ) : ( is_string( $object ) ? $object : '' );
+
+			foreach ( [ 'WP_REST_Users_Controller', 'WP_REST_Application_Passwords_Controller' ] as $locked ) {
+				if ( '' !== $class && class_exists( $locked ) && is_a( $class, $locked, true ) ) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Only the routes the shared-login lockdown names, so a plugin or theme
 	 * route a visit legitimately uses is never caught by accident.
+	 *
+	 * WordPress matches routes case-insensitively, so the comparison is made
+	 * on a normalised route: percent-decoding repeated until stable (bounded),
+	 * lower case, repeated slashes collapsed. guard_rest_handler() is the
+	 * authoritative check; this one refuses before any handler is matched.
 	 */
 	private static function locked_route( string $route ): bool {
-		$route = '/' . ltrim( $route, '/' );
+		for ( $i = 0; $i < 3; ++$i ) {
+			$decoded = rawurldecode( $route );
+			if ( $decoded === $route ) { break; }
+			$route = $decoded;
+		}
+		$route = strtolower( (string) preg_replace( '#/+#', '/', '/' . $route ) );
+		$route = '/' . trim( $route, '/' );
 
 		foreach ( [ '/wp/v2/users', '/wp/v2/application-passwords' ] as $locked ) {
 			if ( $route === $locked || str_starts_with( $route, $locked . '/' ) ) {

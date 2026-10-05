@@ -189,7 +189,8 @@ final class VisitLockdownNative {
 		foreach ( $locked as $route ) {
 			$result = $this->guard->guard_rest( null, null, new WP_REST_Request( 'GET', $route ) );
 			$this->check(
-				$result instanceof WP_Error && 'pow_visit_locked' === $result->get_error_code() && 403 === ( $result->get_error_data()['status'] ?? 0 ),
+				// Served as the converted response (0.4.9), which is what a WP_Error became anyway.
+				$result instanceof WP_REST_Response && 403 === $result->get_status() && 'pow_visit_locked' === ( $result->get_data()['code'] ?? '' ),
 				'REST ' . $route . ' is refused inside a visit with pow_visit_locked'
 			);
 		}

@@ -85,20 +85,27 @@ final class Plugin {
 		$this->settings = new Settings();
 		$this->logger   = new Logger( $this->settings );
 
+		$secrets        = new Secrets( $this->sealing_key() );
+		$this->registry = new Registry( $secrets );
+		$this->sessions = new Store();
+		$this->audit    = new Log( $this->logger );
+		// Always on, master switch or not, WooCommerce or not: a login minted
+		// for a visit authenticates only while its visit is live and its
+		// account is still an ordinary shopper (Sessions\DelegatedLogin).
+		$gate = new Sessions\DelegatedLogin( $this->sessions, $this->registry, $this->audit );
+		$gate->register();
+		$gate->recheck_current_user();
+
 		if ( ! $this->woocommerce_active() ) {
 			add_action( 'admin_notices', [ $this, 'render_missing_woocommerce_notice' ] );
 			return;
 		}
 
-		$secrets        = new Secrets( $this->sealing_key() );
 		// Refuse insecure buyer traffic before Woo initializes carts, even with new sessions switched off.
 		\POW\Support\Transport::register();
-		$this->registry = new Registry( $secrets );
-		$this->sessions = new Store();
 		// Select the guarded native cookie handler before Woo hydrates any buyer cart, including Store API requests.
 		$native_sessions = new Cart\NativeSessionGuard( $this->registry, $this->sessions, $this->logger );
 		$native_sessions->register();
-		$this->audit    = new Log( $this->logger );
 		$registration  = new \POW\Partners\Registration( $this->registry, $this->sessions, $this->audit );
 
 		$parser      = new Parser();
@@ -323,18 +330,7 @@ final class Plugin {
 				// rest of their TTL, none of them swept and none of them even
 				// counted. The incomplete sweep is still recorded below.
 				try {
-					$clean = $this->registry->with_partner_lock( $partner->id, function () use ( $partner ) {
-						$after = 0;
-						$clean = true;
-						while ( $rows = $this->sessions->revocation_batch( $partner->id, $after ) ) {
-							foreach ( $rows as $row ) {
-								if ( $row->id <= $after ) { return false; }
-								$after = $row->id;
-								$clean = $this->sessions->expire_locked( $row ) && $clean;
-							}
-						}
-						return $clean;
-					} );
+					$clean = $this->registry->with_partner_lock( $partner->id, fn(): bool => Installer::revoke_partner_locked( $this->sessions, $partner->id ) );
 				} catch ( \Throwable $e ) { $clean = false; }
 				$ok = $clean && $ok;
 			}

@@ -33,6 +33,7 @@ final class DeliveryChooserTest extends TestCase {
 	public function test_store_api_read_and_unrelated_routes_do_not_invalidate_consent(): void {
 		self::assertTrue( Chooser::is_store_cart_mutation( 'POST', '/wc/store/v1/cart/select-shipping-rate' ) );
 		self::assertTrue( Chooser::is_store_cart_mutation( 'POST', '/wc/store/v1/cart/update-customer' ) );
+		self::assertTrue( Chooser::is_store_cart_mutation( 'post', '/WC/Store/v1/Cart/Select-Shipping-Rate' ), 'WordPress matches routes case-insensitively.' );
 		foreach ( [ [ 'GET', '/wc/store/v1/cart/update-customer' ], [ 'POST', '/wc/store/v1/cart' ], [ 'POST', '/wc/store/v1/checkout' ], [ 'POST', '/unknown/cart/update-customer' ] ] as [ $method, $route ] ) { self::assertFalse( Chooser::is_store_cart_mutation( $method, $route ) ); }
 	}
 	public function test_confirmation_has_edit_and_transfer_actions_and_no_payment_fields(): void {

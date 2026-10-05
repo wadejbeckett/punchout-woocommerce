@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.8
+Stable tag: 0.4.9
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,13 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.9 =
+* Security: a connection's login must be an ordinary shopper. Accounts that can author content (Contributor, Author, Editor or any role with the same powers, such as edit_posts, upload_files, edit_products or a manage_* grant) are refused at binding, setup and redemption, as administrators already were. The test is by capability, never by role name, so custom and mixed roles are judged by what they can do.
+* Security: every request that presents a punchout login is checked on WordPress's own determine_current_user filter. If the account has since gained such a capability, its visit ends and the request continues as a guest. If the visit has already ended but its login survived a cleanup that did not confirm, the login does not authenticate and is revoked again; the hourly job also retries. Ordinary logins of the same account, and every other user, are untouched.
+* Security: deactivating or deleting the plugin first ends every open visit and revokes every login a visit recorded (exactly those tokens). If any cannot be confirmed gone, deactivation or deletion stops and nothing is removed.
+* Security: the visit's REST lockdown now refuses requests matched to WordPress's users and application-password controllers (or a subclass), whatever the route spelling, including batch sub-requests; the route check itself compares a decoded, lower-cased route with repeated slashes collapsed. Store API cart routes are matched case-insensitively too.
+* No schema change (stays 9).
 
 = 0.4.8 =
 * New: the cart review page follows the store. Amounts show in the store's own currency format (for example R 1 619,86, built from the exact cents that go to the purchasing system), the address shows province and country names, the items table has a line-total column, the standalone page shows the site logo, and the buttons carry WooCommerce's button classes so a theme that styles WooCommerce buttons styles these.
