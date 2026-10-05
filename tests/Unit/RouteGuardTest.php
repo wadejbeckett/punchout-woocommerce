@@ -167,6 +167,13 @@ namespace {
 		public function get_route(): string { return $this->route; }
 	}
 
+	// The native controllers whose routes a visit may never reach, and a plugin's subclass of one.
+	if ( ! class_exists( 'WP_REST_Controller' ) ) { class WP_REST_Controller { public function get_items( $request ) { return []; } } }
+	if ( ! class_exists( 'WP_REST_Users_Controller' ) ) { class WP_REST_Users_Controller extends WP_REST_Controller {} }
+	if ( ! class_exists( 'WP_REST_Application_Passwords_Controller' ) ) { class WP_REST_Application_Passwords_Controller extends WP_REST_Controller {} }
+	final class RouteGuardCustomUsersController extends WP_REST_Users_Controller {}
+	final class RouteGuardPostsController extends WP_REST_Controller {}
+
 final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 
 	private const ACCOUNT = 20;
@@ -836,6 +843,50 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		foreach ( [ '/wc/store/v1/cart', '/wp/v2/posts', '/', '/wp/v2/user-invented' ] as $route ) {
 			self::assertNull( $visit->guard_rest( null, null, new RouteGuardRestRequest( $route ) ), "{$route} stays available inside a visit" );
 		}
+	}
+
+	/**
+	 * WordPress matches REST routes case-insensitively, and the route a request
+	 * names can carry encoding or doubled slashes, so the route test compares a
+	 * normalised route (security review, 5 October).
+	 */
+	public function test_route_spelling_variants_are_refused_inside_a_visit(): void {
+		$visit = $this->guard( $this->visit() );
+
+		foreach ( [ '/wp/v2/Users', '/WP/V2/USERS/me', '/wp/v2/users%2Fme', '/wp/v2/%75sers', '//wp//v2//users', '/wp/v2///users/20', 'wp/v2/users/', '/wp/v2/Application-Passwords/introspect', '/wp/v2/users/20/APPLICATION-passwords', '/wp/v2/%2575sers' ] as $route ) {
+			$refusal = $visit->guard_rest( null, null, new RouteGuardRestRequest( $route ) );
+			self::assertTrue( is_wp_error( $refusal ), "{$route} must be refused inside a visit" );
+		}
+
+		self::assertNull( $visit->guard_rest( null, null, new RouteGuardRestRequest( '/wp/v2/Posts' ) ), 'Other routes stay available' );
+	}
+
+	/**
+	 * The authoritative check: whatever the route was spelled, refuse the
+	 * request once WordPress has matched it to a users or application-password
+	 * controller (a plugin's subclass included, and batch sub-requests too).
+	 */
+	public function test_requests_matched_to_user_controllers_are_refused_inside_a_visit(): void {
+		$visit   = $this->guard( $this->visit() );
+		$shopper = $this->guard( null );
+		$request = new RouteGuardRestRequest( '/anything/at/all' );
+
+		foreach ( [ new WP_REST_Users_Controller(), new WP_REST_Application_Passwords_Controller(), new RouteGuardCustomUsersController() ] as $controller ) {
+			$handler = [ 'callback' => [ $controller, 'get_items' ], 'permission_callback' => [ $controller, 'get_items' ] ];
+			$refusal = $visit->guard_rest_handler( null, $handler, $request );
+			self::assertTrue( is_wp_error( $refusal ), get_class( $controller ) . ' must be refused inside a visit' );
+			self::assertSame( 'pow_visit_locked', $refusal->get_error_code() );
+			self::assertNull( $shopper->guard_rest_handler( null, $handler, $request ), 'Outside a visit REST is untouched' );
+		}
+
+		$posts = new RouteGuardPostsController();
+		self::assertNull( $visit->guard_rest_handler( null, [ 'callback' => [ $posts, 'get_items' ] ], $request ) );
+		self::assertNull( $visit->guard_rest_handler( null, [ 'callback' => 'strlen' ], $request ) );
+		$earlier = new WP_Error( 'earlier', 'kept' );
+		self::assertSame( $earlier, $visit->guard_rest_handler( $earlier, [ 'callback' => [ new WP_REST_Users_Controller(), 'get_items' ] ], $request ), 'An earlier error stands' );
+
+		$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/RouteGuard.php' );
+		self::assertStringContainsString( "add_filter( 'rest_request_before_callbacks', [ \$this, 'guard_rest_handler' ], -99, 3 );", $source );
 	}
 
 	public function test_application_passwords_are_unavailable_inside_a_visit(): void {

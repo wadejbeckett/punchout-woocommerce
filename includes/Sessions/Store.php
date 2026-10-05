@@ -504,6 +504,83 @@ class Store {
 	}
 
 	/**
+	 * The visit row that recorded this login, whatever its status.
+	 *
+	 * The delegated-login gate's question: is this WordPress login one the
+	 * plugin minted for a visit? A token is recorded on exactly one row (the
+	 * same `login` index as find_for_login()), and an ended row still counts —
+	 * its login must not authenticate while it survives a failed cleanup.
+	 *
+	 * @throws \RuntimeException When the lookup cannot run.
+	 */
+	public function find_login_any_status( int $user_id, string $wp_session_token ): ?Session {
+		global $wpdb;
+
+		if ( $user_id <= 0 || '' === $wp_session_token ) {
+			return null;
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . $this->table() . ' WHERE user_id = %d AND wp_session_token = %s ORDER BY id DESC LIMIT 1', $user_id, $wp_session_token ), ARRAY_A );
+
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
+		$session = $row ? Session::from_row( $row ) : null;
+		// The column comparison is collation-insensitive for the index's sake; the proof is byte-exact.
+		return $session && hash_equals( $session->wp_session_token, $wp_session_token ) ? $session : null;
+	}
+
+	/**
+	 * Ended visits whose recorded login could still be valid: the retry input
+	 * for a cleanup that did not confirm. A visit's native token expires with
+	 * the row's `expires`, so only rows still inside it can hold a live login,
+	 * which keeps this bounded to recent visits.
+	 *
+	 * @return list<Session>
+	 */
+	public function ended_with_login( int $limit = 200 ): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . $this->table() . " WHERE status IN (%s, %s, %s) AND wp_session_token <> '' AND expires > %s ORDER BY id ASC LIMIT %d",
+				Session::EXPIRED,
+				Session::RETURNED,
+				Session::CLOSED,
+				gmdate( 'Y-m-d H:i:s' ),
+				max( 1, min( 500, $limit ) )
+			),
+			ARRAY_A
+		);
+
+		if ( '' !== ( $wpdb->last_error ?? '' ) ) { throw new \RuntimeException( 'Session lookup failed.' ); }
+		return array_map( [ Session::class, 'from_row' ], $rows ?: [] );
+	}
+
+	/**
+	 * Revoke the recorded login of an ENDED visit, under the connection lock.
+	 *
+	 * @return bool|null True when a live login was revoked now, null when there
+	 *                   was nothing live to revoke, false when it is still live
+	 *                   or could not be checked.
+	 */
+	public function revoke_ended_login( Session $session, \POW\Partners\Registry $registry ): ?bool {
+		if ( ! $session->is_terminal() || '' === $session->wp_session_token ) { return null; }
+		try {
+			return $registry->with_partner_lock(
+				$session->partner_id,
+				function () use ( $session ): ?bool {
+					$fresh = $this->find( $session->id );
+					// Re-read under the lock: only the same ended row's same login is ours to revoke.
+					if ( ! $fresh || ! $fresh->is_terminal() || $fresh->user_id !== $session->user_id || ! hash_equals( $fresh->wp_session_token, $session->wp_session_token ) ) { return null; }
+					if ( ! $this->login_valid_checked( $fresh ) ) { return null; }
+					return $this->destroy_login_checked( $fresh );
+				}
+			);
+		} catch ( \Throwable $e ) { return false; }
+	}
+
+	/**
 	 * The visit a WooCommerce session key names.
 	 *
 	 * The resolver for anything that starts from a basket rather than from the

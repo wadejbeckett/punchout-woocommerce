@@ -38,6 +38,8 @@ final class VisitKeyDatabase {
 	public bool $audit_result = true;
 	/** Compare keys the way a PAD SPACE collation on a char(32) column does. */
 	public bool $pads_trailing_space = false;
+	/** Whether SHOW TABLES finds the plugin's tables (a never-installed site has none). */
+	public bool $tables_exist = true;
 	/** Runs immediately after a successful session-row write, as a racing request would. */
 	public mixed $after_write = null;
 
@@ -49,6 +51,8 @@ final class VisitKeyDatabase {
 		$this->suppressed = $suppress;
 		return $previous;
 	}
+
+	public function esc_like( string $text ): string { return addcslashes( $text, '_%\\' ); }
 
 	public function prepare( string $sql, mixed ...$args ): string {
 		foreach ( $args as $arg ) {
@@ -77,6 +81,9 @@ final class VisitKeyDatabase {
 		if ( str_contains( $sql, 'GET_LOCK(' ) || str_contains( $sql, 'RELEASE_LOCK(' ) ) {
 			return '1';
 		}
+		if ( str_starts_with( $sql, 'SHOW TABLES LIKE ' ) ) {
+			return $this->tables_exist && preg_match( "/'([^']*)'/", $sql, $m ) ? str_replace( '\\_', '_', $m[1] ) : null;
+		}
 		if ( str_contains( $sql, 'woocommerce_sessions' ) ) {
 			return isset( $this->carts[ $this->cart_key( $sql ) ] ) ? '1' : null;
 		}
@@ -84,6 +91,19 @@ final class VisitKeyDatabase {
 			return (string) count( $this->matching( $sql ) );
 		}
 		throw new RuntimeException( 'Unexpected scalar query: ' . $sql );
+	}
+
+	/**
+	 * The distinct connections that hold visit rows, for the removal sweep.
+	 *
+	 * @return list<string>
+	 */
+	public function get_col( string $sql ): array {
+		$this->queries[] = $sql;
+		if ( ! str_contains( $sql, 'SELECT DISTINCT partner_id' ) ) { throw new RuntimeException( 'Unexpected column query: ' . $sql ); }
+		$ids = array_values( array_unique( array_map( static fn( array $row ): string => (string) $row['partner_id'], $this->sessions ) ) );
+		sort( $ids );
+		return $ids;
 	}
 
 	public function query( string $sql ): int|false {
@@ -179,13 +199,19 @@ final class VisitKeyDatabase {
 				$expires = (string) ( $row['expires'] ?? '' );
 				if ( '' === $expires || ( '>' === $operator ? $expires <= $m[1] : $expires >= $m[1] ) ) { continue 2; }
 			}
+			// Keyset pagination: the revocation sweep pages by id.
+			if ( preg_match( '/(?<![a-z_])id > (\d+)/', $where, $m ) && (int) ( $row['id'] ?? 0 ) <= (int) $m[1] ) { continue; }
 			if ( preg_match( '/status IN \(([^)]*)\)/', $where, $m ) ) {
 				preg_match_all( "/'([^']*)'/", $m[1], $all );
-				if ( ! in_array( (string) ( $row['status'] ?? '' ), $all[1], true ) ) { continue; }
+				// "(status IN (...) OR (wp_session_token IS NOT NULL AND wp_session_token <> ''))":
+				// an ended row still counts while it records a login.
+				$or_login = str_contains( $where, "OR (wp_session_token IS NOT NULL AND wp_session_token <> '')" ) && '' !== (string) ( $row['wp_session_token'] ?? '' );
+				if ( ! $or_login && ! in_array( (string) ( $row['status'] ?? '' ), $all[1], true ) ) { continue; }
 			}
 			if ( preg_match( "/status = '([^']*)'/", $where, $m ) && (string) ( $row['status'] ?? '' ) !== $m[1] ) { continue; }
 			$found[] = $row;
 		}
+		if ( str_contains( $sql, 'ORDER BY id ASC' ) ) { usort( $found, static fn( array $a, array $b ): int => (int) $a['id'] <=> (int) $b['id'] ); }
 		if ( str_contains( $sql, 'ORDER BY id DESC' ) ) { usort( $found, static fn( array $a, array $b ): int => (int) $b['id'] <=> (int) $a['id'] ); }
 		return $found;
 	}

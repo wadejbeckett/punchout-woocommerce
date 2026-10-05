@@ -97,6 +97,18 @@ final class Installer {
 	}
 
 	public static function deactivate(): void {
+		// Every guard that confines a visit is about to be unhooked, so no
+		// delegated login may outlive this: an unconfined one is simply the
+		// bound account signed in. A revocation that cannot be confirmed
+		// stops the deactivation and leaves everything as it was.
+		if ( ! self::revoke_delegated_logins() ) {
+			wp_die(
+				esc_html__( 'PunchOut for WooCommerce was not deactivated: one or more punchout logins could not be signed out, and deactivating now would leave them signed in without the visit restrictions. Nothing else was changed. Please try again.', 'punchout-woocommerce' ),
+				esc_html__( 'Deactivation stopped', 'punchout-woocommerce' ),
+				[ 'response' => 500, 'back_link' => true ]
+			);
+		}
+
 		// Cancel queued GC work so a deactivated plugin does not leave
 		// orphaned Action Scheduler rows firing against missing callbacks.
 		if ( function_exists( 'as_unschedule_all_actions' ) ) {
@@ -114,6 +126,71 @@ final class Installer {
 
 		// Tables and settings stay: deactivation is not uninstallation,
 		// and live punchout visits reference both.
+	}
+
+	/**
+	 * End every open visit and revoke every login a visit row records,
+	 * connection by connection under each connection's lock — the same
+	 * per-row teardown the master switch uses (Store::expire_locked()), so
+	 * only those exact tokens are destroyed and the account holder's own
+	 * logins, and everybody else's, survive. Ended rows are included because
+	 * their login may have survived an earlier cleanup.
+	 *
+	 * Self-contained so deactivation and uninstall can call it whether or not
+	 * the plugin booted (WooCommerce inactive, or uninstall.php, where the
+	 * plugin is not loaded). The connection lock needs no sealed secret, so a
+	 * request that has no booted registry uses a throwaway sealing key that is
+	 * never used to seal or open anything.
+	 *
+	 * @return bool True only when every recorded login is confirmed gone.
+	 */
+	public static function revoke_delegated_logins(): bool {
+		global $wpdb;
+
+		try {
+			$table = self::sessions_table();
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+			if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ) !== $table ) {
+				return true;
+			}
+
+			$registry = Plugin::instance()->registry() ?? new Partners\Registry( new Partners\Secrets( random_bytes( 32 ) ) );
+			$sessions = Plugin::instance()->sessions() ?? new Sessions\Store();
+
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
+			$partners = $wpdb->get_col( 'SELECT DISTINCT partner_id FROM ' . $table . ' ORDER BY partner_id ASC' );
+			if ( '' !== ( $wpdb->last_error ?? '' ) ) { return false; }
+
+			$clean = true;
+			foreach ( (array) $partners as $partner_id ) {
+				$partner_id = (int) $partner_id;
+				if ( $partner_id <= 0 ) { continue; }
+				try {
+					$clean = $registry->with_partner_lock( $partner_id, static fn(): bool => self::revoke_partner_locked( $sessions, $partner_id ) ) && $clean;
+				} catch ( \Throwable $e ) { $clean = false; }
+			}
+
+			return $clean && [] === $sessions->all_open( 1 );
+		} catch ( \Throwable $e ) {
+			return false;
+		}
+	}
+
+	/**
+	 * One connection's sweep; the caller holds that connection's lock.
+	 * Shared with the master switch (Plugin::on_settings_updated()).
+	 */
+	public static function revoke_partner_locked( Sessions\Store $sessions, int $partner_id ): bool {
+		$after = 0;
+		$clean = true;
+		while ( $rows = $sessions->revocation_batch( $partner_id, $after ) ) {
+			foreach ( $rows as $row ) {
+				if ( $row->id <= $after ) { return false; }
+				$after = $row->id;
+				$clean = $sessions->expire_locked( $row ) && $clean;
+			}
+		}
+		return $clean;
 	}
 
 	/**

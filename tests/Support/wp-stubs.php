@@ -460,14 +460,16 @@ if ( ! class_exists( 'WP_Session_Tokens' ) ) {
 	 * caller attached (the attach_session_information result plus expiry,
 	 * login time, IP and user agent) under that visit's token, and destroy()
 	 * removes exactly one visit's entry. Ending one visit must therefore
-	 * leave every other visit of the same account verifiable.
+	 * leave every other visit of the same account verifiable. Setting
+	 * pow_test_destroy_fails makes destroy() a silent no-op, the way a native
+	 * write that does not land looks to the caller (destroy() is void).
 	 */
 	class WP_Session_Tokens {
 		public function __construct( private int $user_id = 0 ) {}
 		public static function get_instance( int $user_id ): self { return new self( $user_id ); }
 		public function verify( string $token ): bool { return ! empty( $GLOBALS['pow_test_session_tokens'][ $this->user_id ][ $token ] ); }
 		public function update( string $token, array $info ): void { $GLOBALS['pow_test_session_tokens'][ $this->user_id ][ $token ] = $info; }
-		public function destroy( string $token ): void { $GLOBALS['pow_test_destroyed_tokens'][] = $token; unset( $GLOBALS['pow_test_session_tokens'][ $this->user_id ][ $token ] ); }
+		public function destroy( string $token ): void { $GLOBALS['pow_test_destroyed_tokens'][] = $token; if ( ! empty( $GLOBALS['pow_test_destroy_fails'] ) ) { return; } unset( $GLOBALS['pow_test_session_tokens'][ $this->user_id ][ $token ] ); }
 	}
 }
 if ( ! function_exists( 'wp_cache_delete' ) ) {

@@ -41,7 +41,27 @@ namespace {
 
 		public bool $refuse = false;
 
+		/** @var list<Session> Ended visits whose recorded login may have survived cleanup. */
+		public array $ended = [];
+
+		/** @var array<int, ?bool> What revoke_ended_login() reports per visit id. */
+		public array $revoke_results = [];
+
+		/** @var list<int> */
+		public array $revoked = [];
+
 		public function __construct() {}
+
+		/** @return list<Session> */
+		public function ended_with_login( int $limit = 200 ): array {
+			return $this->ended;
+		}
+
+		public function revoke_ended_login( Session $session, \POW\Partners\Registry $registry ): ?bool {
+			$this->revoked[] = $session->id;
+
+			return $this->revoke_results[ $session->id ] ?? null;
+		}
 
 		/** @return list<Session> */
 		public function expired_open( int $limit = 200 ): array {
@@ -190,6 +210,20 @@ namespace {
 
 			self::assertSame( [], $this->sessions->expired );
 			self::assertSame( [], $this->audit->written );
+		}
+
+		/** PO-02: a login that outlived its visit's cleanup is revoked again by the next run, and only a real revocation or failure is recorded. */
+		public function test_run_retries_logins_that_outlived_their_visit(): void {
+			$this->sessions->ended          = [ $this->visit( 50, 'survived' ), $this->visit( 51, 'already-dead' ), $this->visit( 52, 'still-stuck' ) ];
+			$this->sessions->revoke_results = [ 50 => true, 51 => null, 52 => false ];
+
+			$this->cron()->run();
+
+			self::assertSame( [ 50, 51, 52 ], $this->sessions->revoked );
+			self::assertSame(
+				[ [ 'visit_login_revoked', 50, 'retry' ], [ 'visit_login_revoked', 52, 'revoke_failed' ] ],
+				array_map( static fn( array $row ): array => [ $row[0], $row[1]['session_id'], $row[1]['result'] ], $this->audit->written )
+			);
 		}
 
 		/**
