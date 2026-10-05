@@ -886,7 +886,24 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertSame( $earlier, $visit->guard_rest_handler( $earlier, [ 'callback' => [ new WP_REST_Users_Controller(), 'get_items' ] ], $request ), 'An earlier error stands' );
 
 		$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/RouteGuard.php' );
-		self::assertStringContainsString( "add_filter( 'rest_request_before_callbacks', [ \$this, 'guard_rest_handler' ], -99, 3 );", $source );
+		// Last on every REST hook, so another plugin's callback that drops an
+		// earlier result (as Secure Custom Fields' rest_pre_dispatch does)
+		// cannot discard the refusal.
+		self::assertStringContainsString( "add_filter( 'rest_pre_dispatch', [ \$this, 'guard_rest' ], PHP_INT_MAX, 3 );", $source );
+		self::assertStringContainsString( "add_filter( 'rest_request_before_callbacks', [ \$this, 'guard_rest_handler' ], PHP_INT_MAX, 3 );", $source );
+		self::assertStringContainsString( "add_filter( 'rest_dispatch_request', [ \$this, 'guard_rest_dispatch' ], PHP_INT_MAX, 4 );", $source );
+	}
+
+	public function test_the_last_dispatch_hook_refuses_user_controllers_and_routes_inside_a_visit(): void {
+		$visit   = $this->guard( $this->visit() );
+		$request = new RouteGuardRestRequest( '/wp/v2/Users/me' );
+		$users   = [ 'callback' => [ new WP_REST_Users_Controller(), 'get_items' ] ];
+		$posts   = [ 'callback' => [ new RouteGuardPostsController(), 'get_items' ] ];
+
+		self::assertTrue( is_wp_error( $visit->guard_rest_dispatch( null, $request, '/wp/v2/users/(?P<id>[\\d]+)', $users ) ) );
+		self::assertTrue( is_wp_error( $visit->guard_rest_dispatch( null, $request, '/wp/v2/users/me', $posts ) ), 'A locked route is refused even under another controller.' );
+		self::assertNull( $visit->guard_rest_dispatch( null, new RouteGuardRestRequest( '/wp/v2/posts' ), '/wp/v2/posts', $posts ) );
+		self::assertNull( $this->guard( null )->guard_rest_dispatch( null, $request, '/wp/v2/users/me', $users ), 'Outside a visit REST is untouched' );
 	}
 
 	public function test_application_passwords_are_unavailable_inside_a_visit(): void {

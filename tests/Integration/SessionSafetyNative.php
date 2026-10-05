@@ -101,6 +101,18 @@ final class SessionSafetyNative {
 		$batched = rest_do_request( $batch );
 		$inner   = $batched->get_data()['responses'][0] ?? [];
 		$this->check( 403 === (int) ( $inner['status'] ?? 0 ) || 400 <= $batched->get_status(), 'REST batch sub-request to /wp/v2/Users/me refused (' . (int) ( $inner['status'] ?? $batched->get_status() ) . ')' );
+		// Another plugin's REST callbacks that drop an earlier short-circuit
+		// (Secure Custom Fields' rest_pre_dispatch returns nothing when its
+		// REST API setting is off): the refusal must survive them.
+		$clobber = static function () { return null; };
+		add_filter( 'rest_pre_dispatch', $clobber, 10, 0 );
+		add_filter( 'rest_request_before_callbacks', $clobber, 10, 0 );
+		foreach ( [ '/wp/v2/users/me', '/wp/v2/Users/me' ] as $route ) {
+			$response = rest_do_request( new WP_REST_Request( 'GET', $route ) );
+			$this->check( 403 === $response->get_status() && 'pow_visit_locked' === ( $response->get_data()['code'] ?? '' ), 'REST ' . $route . ' refused despite a callback that drops earlier results (' . $response->get_status() . ')' );
+		}
+		remove_filter( 'rest_pre_dispatch', $clobber, 10 );
+		remove_filter( 'rest_request_before_callbacks', $clobber, 10 );
 		$posts = rest_do_request( new WP_REST_Request( 'GET', '/wp/v2/posts' ) );
 		$this->check( 200 === $posts->get_status(), 'REST /wp/v2/posts still answers inside a visit' );
 		pow_native_leave_visit( $this->admin );
@@ -116,7 +128,7 @@ final class SessionSafetyNative {
 		// PO-02 retry path: Cron's store method.
 		$late = pow_native_open_visit( $partner, $account );
 		$wpdb->update( POW\Installer::sessions_table(), [ 'status' => POW\Sessions\Session::RETURNED ], [ 'id' => $late->id ] );
-		$found = array_filter( $this->sessions->ended_with_login(), static fn( $s ): bool => $s->id === $late->id );
+		$found = array_filter( $this->sessions->ended_with_login( 200, $late->id - 1 ), static fn( $s ): bool => $s->id === $late->id );
 		$this->check( 1 === count( $found ), 'hourly retry finds the ended visit with a login' );
 		$this->check( true === $this->sessions->revoke_ended_login( $this->sessions->find( $late->id ), $this->registry ) && ! $this->token_live( $account, $late->wp_session_token ), 'hourly retry revokes it' );
 

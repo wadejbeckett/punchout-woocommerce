@@ -76,9 +76,15 @@ final class RouteGuard {
 		// login's three remaining doors need their own guards.
 		add_action( 'admin_init', [ $this, 'guard_admin' ], 1 );
 		add_filter( 'rest_pre_dispatch', [ $this, 'guard_rest' ], -99, 3 );
-		// The authoritative REST check: after WordPress has matched the request
-		// to a handler, whatever the route was spelled (batch sub-requests too).
-		add_filter( 'rest_request_before_callbacks', [ $this, 'guard_rest_handler' ], -99, 3 );
+		// And again last on every REST hook up to the callback itself: another
+		// plugin's callback that returns nothing (Secure Custom Fields'
+		// rest_pre_dispatch does, whenever its REST API setting is off) would
+		// otherwise discard an earlier refusal. The handler checks are the
+		// authoritative ones: after WordPress has matched the request to a
+		// handler, whatever the route was spelled (batch sub-requests too).
+		add_filter( 'rest_pre_dispatch', [ $this, 'guard_rest' ], PHP_INT_MAX, 3 );
+		add_filter( 'rest_request_before_callbacks', [ $this, 'guard_rest_handler' ], PHP_INT_MAX, 3 );
+		add_filter( 'rest_dispatch_request', [ $this, 'guard_rest_dispatch' ], PHP_INT_MAX, 4 );
 		add_filter( 'wp_is_application_passwords_available_for_user', [ $this, 'deny_application_passwords' ], PHP_INT_MAX, 2 );
 
 		// Last, so items and user-data changes made by anything else are
@@ -565,6 +571,29 @@ final class RouteGuard {
 	public function guard_rest_handler( mixed $response, mixed $handler = null, mixed $request = null ): mixed {
 		if ( is_wp_error( $response ) || ! self::locked_handler( $handler ) || ! $this->inside_visit() ) {
 			return $response;
+		}
+
+		return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
+	}
+
+	/**
+	 * `rest_dispatch_request`, last: the final hook before WordPress calls the
+	 * handler. A non-null answer replaces the callback's.
+	 *
+	 * @param mixed $result  Dispatch result so far.
+	 * @param mixed $request The request, unused.
+	 * @param mixed $route   The matched route pattern.
+	 * @param mixed $handler The matched handler.
+	 */
+	public function guard_rest_dispatch( mixed $result, mixed $request = null, mixed $route = '', mixed $handler = null ): mixed {
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$path = is_object( $request ) && method_exists( $request, 'get_route' ) ? (string) $request->get_route() : '';
+
+		if ( ! ( self::locked_handler( $handler ) || self::locked_route( is_string( $route ) ? $route : '' ) || self::locked_route( $path ) ) || ! $this->inside_visit() ) {
+			return $result;
 		}
 
 		return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );

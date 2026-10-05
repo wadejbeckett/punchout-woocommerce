@@ -86,8 +86,20 @@ final class Cron {
 	private function revoke_surviving_logins(): void {
 		$registry = Plugin::instance()->registry();
 		if ( ! $registry ) { return; }
-		try { $ended = $this->sessions->ended_with_login(); }
-		catch ( \Throwable $e ) { return; }
+		$ended = [];
+		$after = 0;
+		try {
+			// Keyset pages over the expiry window; bounded so one run stays short.
+			for ( $page = 0; $page < 20; ++$page ) {
+				$batch = $this->sessions->ended_with_login( 200, $after );
+				if ( [] === $batch ) { break; }
+				foreach ( $batch as $session ) {
+					if ( $session->id <= $after ) { break 2; }
+					$after   = $session->id;
+					$ended[] = $session;
+				}
+			}
+		} catch ( \Throwable $e ) { /* Revoke what was read; the next run continues. */ }
 		foreach ( $ended as $session ) {
 			$result = $this->sessions->revoke_ended_login( $session, $registry );
 			if ( null === $result ) { continue; }

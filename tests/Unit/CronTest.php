@@ -53,8 +53,8 @@ namespace {
 		public function __construct() {}
 
 		/** @return list<Session> */
-		public function ended_with_login( int $limit = 200 ): array {
-			return $this->ended;
+		public function ended_with_login( int $limit = 200, int $after_id = 0 ): array {
+			return array_values( array_filter( $this->ended, static fn( Session $s ): bool => $s->id > $after_id ) );
 		}
 
 		public function revoke_ended_login( Session $session, \POW\Partners\Registry $registry ): ?bool {
