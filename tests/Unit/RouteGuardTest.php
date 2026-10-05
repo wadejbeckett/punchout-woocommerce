@@ -19,6 +19,9 @@ namespace {
 	if ( ! function_exists( 'is_checkout' ) ) { function is_checkout(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['checkout'] ?? false ); } }
 	if ( ! function_exists( 'is_wc_endpoint_url' ) ) { function is_wc_endpoint_url( string $endpoint = '' ): bool { return '' !== $endpoint && $endpoint === ( $GLOBALS['pow_route_guard_test']['endpoint'] ?? '' ); } }
 	if ( ! function_exists( 'wc_get_cart_url' ) ) { function wc_get_cart_url(): string { return 'https://shop.example.test/cart/'; } }
+	// WooCommerce's notice queue, recorded per test. A refusal tells the buyer why only when the shop's session is up.
+	if ( ! function_exists( 'wc_add_notice' ) ) { function wc_add_notice( string $message, string $type = 'success', array $data = [] ): void { $GLOBALS['pow_route_guard_test']['notices'][] = [ $type, $message ]; } }
+	if ( ! function_exists( 'wc_has_notice' ) ) { function wc_has_notice( string $message, string $type = 'success' ): bool { return in_array( [ $type, $message ], $GLOBALS['pow_route_guard_test']['notices'] ?? [], true ); } }
 
 	// WooCommerce's answer to "is this AJAX", which it derives from the
 	// ?wc-ajax= query parameter on every request. RouteGuard deliberately
@@ -425,6 +428,58 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		$redirect = $this->guarded( $this->guard( $visit ) );
 		if ( null !== $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
 		return null === $redirect;
+	}
+
+	/** The notices a refusal queued in this test. */
+	private function notices(): array { return $GLOBALS['pow_route_guard_test']['notices'] ?? []; }
+
+	public function test_a_refused_page_tells_the_buyer_why_when_the_shop_session_is_up(): void {
+		WC()->session = new stdClass();
+		$GLOBALS['pow_route_guard_test']['account'] = true;
+		$GLOBALS['pow_route_guard_test']['endpoint'] = 'orders';
+
+		$redirect = $this->guarded( $this->guard( $this->visit() ) );
+		self::assertNotNull( $redirect );
+		self::assertSame( $this->landing(), $redirect->url, 'The refusal still lands on the configured page' );
+		self::assertCount( 1, $this->notices(), 'One notice explains the refusal' );
+		[ $type, $message ] = $this->notices()[0];
+		self::assertSame( 'notice', $type );
+		self::assertStringContainsString( 'not available', $message );
+		self::assertStringContainsString( '"Punchout"', $message, 'The buyer is pointed at the configured return control' );
+
+		// A second refusal in the same request does not stack the same notice.
+		$this->guarded( $this->guard( $this->visit() ) );
+		self::assertCount( 1, $this->notices() );
+
+		// An ordinary shopper is never refused, so never told anything.
+		$GLOBALS['pow_route_guard_test']['notices'] = [];
+		self::assertNull( $this->guarded( $this->guard( null ) ) );
+		self::assertSame( [], $this->notices() );
+	}
+
+	public function test_the_checkout_refusal_explains_itself_on_the_cart(): void {
+		WC()->session = new stdClass();
+		$GLOBALS['pow_route_guard_test']['checkout'] = true;
+
+		$redirect = $this->guarded( $this->guard( $this->visit() ) );
+		self::assertSame( 'https://shop.example.test/cart/', $redirect->url );
+		self::assertCount( 1, $this->notices() );
+		self::assertSame( 'notice', $this->notices()[0][0] );
+		self::assertStringContainsString( 'Checkout is not available', $this->notices()[0][1] );
+	}
+
+	public function test_without_a_shop_session_a_refusal_redirects_silently(): void {
+		// wp-admin requests and early requests have no WooCommerce session to carry a notice; the redirect must not depend on one.
+		WC()->session = null;
+		$GLOBALS['pow_route_guard_test']['account'] = true;
+		$GLOBALS['pow_route_guard_test']['endpoint'] = 'edit-account';
+		self::assertNotNull( $this->guarded( $this->guard( $this->visit() ) ) );
+		self::assertSame( [], $this->notices() );
+
+		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/profile.php';
+		try { $this->guard( $this->visit() )->guard_admin(); self::fail( 'wp-admin must be refused inside a visit' ); }
+		catch ( RouteGuardRedirect $redirect ) { self::assertSame( $this->landing(), $redirect->url ); }
+		self::assertSame( [], $this->notices() );
 	}
 
 	public function test_a_listed_endpoint_opens_inside_a_visit_and_nothing_else_does(): void {
