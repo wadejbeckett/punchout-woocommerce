@@ -533,17 +533,18 @@ class Store {
 	 * Ended visits whose recorded login could still be valid: the retry input
 	 * for a cleanup that did not confirm. A visit's native token expires with
 	 * the row's `expires`, so only rows still inside it can hold a live login,
-	 * which keeps this bounded to recent visits.
+	 * which keeps this bounded to recent visits. Paged by id ($after_id).
 	 *
 	 * @return list<Session>
 	 */
-	public function ended_with_login( int $limit = 200 ): array {
+	public function ended_with_login( int $limit = 200, int $after_id = 0 ): array {
 		global $wpdb;
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.NotPrepared
 		$rows = $wpdb->get_results(
 			$wpdb->prepare(
-				'SELECT * FROM ' . $this->table() . " WHERE status IN (%s, %s, %s) AND wp_session_token <> '' AND expires > %s ORDER BY id ASC LIMIT %d",
+				'SELECT * FROM ' . $this->table() . " WHERE id > %d AND status IN (%s, %s, %s) AND wp_session_token <> '' AND expires > %s ORDER BY id ASC LIMIT %d",
+				max( 0, $after_id ),
 				Session::EXPIRED,
 				Session::RETURNED,
 				Session::CLOSED,
