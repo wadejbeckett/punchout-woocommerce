@@ -103,6 +103,8 @@ final class PoomMapper {
 			// extended amount.
 			$total_cents += (int) round( $unit_cents * $quantity );
 
+			$name = self::line_name( $product->get_name(), (array) ( $cart_item['variation'] ?? [] ) );
+
 			$items[] = [
 				'quantity'         => $quantity,
 				'supplier_part_id' => $sku,
@@ -111,8 +113,8 @@ final class PoomMapper {
 				// cXML PO (scope §6.2).
 				'aux_id'           => (int) ( $cart_item['product_id'] ?? 0 ) . '|' . (int) ( $cart_item['variation_id'] ?? 0 ),
 				'unit_price_cents' => $unit_cents,
-				'description'      => $product->get_name(),
-				'short_name'       => $product->get_name(),
+				'description'      => $name,
+				'short_name'       => $name,
 				'uom'              => 'EA',
 				'classification'   => (string) $this->settings->get( 'default_unspsc', '' ),
 			];
@@ -131,6 +133,59 @@ final class PoomMapper {
 			'currency'    => $currency,
 			'skipped'     => $skipped,
 		];
+	}
+
+	/**
+	 * The text a buyer's system shows for one line: the product's name,
+	 * completed with the variation attributes the buyer chose.
+	 *
+	 * Purchasing systems map Description/ShortName to the requisition line
+	 * and ignore SupplierPartAuxiliaryID, so two sizes of one shirt must
+	 * differ in text. WooCommerce writes the values into a variation's title
+	 * only sometimes — not with three or more attributes, and never a value
+	 * chosen under "Any …", which exists only on the cart line — so each of
+	 * the cart line's own values that the title does not already show is
+	 * appended, in WooCommerce's own title format and with its own
+	 * formatting and "already in the name" test. A simple product, and a
+	 * variation whose title already names everything, are unchanged.
+	 *
+	 * @param array<string, mixed> $variation The cart line's `variation` map (attribute_* => value).
+	 */
+	public static function line_name( string $name, array $variation ): string {
+		if ( [] === $variation || ! function_exists( 'wc_get_formatted_variation' ) || ! function_exists( 'wc_is_attribute_in_product_name' ) ) {
+			return $name;
+		}
+
+		$shown   = false;
+		$missing = [];
+
+		foreach ( $variation as $key => $value ) {
+			if ( ! is_scalar( $value ) ) {
+				continue;
+			}
+
+			// One attribute at a time, so each value is judged on its own.
+			$text = trim( wc_get_formatted_variation( [ (string) $key => (string) $value ], true, false ) );
+
+			if ( '' === $text ) {
+				continue;
+			}
+
+			if ( wc_is_attribute_in_product_name( $text, $name ) ) {
+				$shown = true;
+				continue;
+			}
+
+			$missing[] = $text;
+		}
+
+		if ( [] === $missing ) {
+			return $name;
+		}
+
+		// "<name> - <values>" as WooCommerce titles a variation; when the
+		// title already ends in such values, the rest join that list.
+		return $name . ( $shown ? ', ' : ' - ' ) . implode( ', ', $missing );
 	}
 
 	/**

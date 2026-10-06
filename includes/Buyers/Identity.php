@@ -66,6 +66,23 @@ final class Identity {
 	}
 
 	/**
+	 * Whether an extrinsic of this name carries a buyer identity — the one
+	 * rule the setup archive's redaction shares with the lookup above, so a
+	 * spelling the lookup accepts (`User email`) is never archived in clear.
+	 */
+	public static function is_identity_extrinsic( string $name ): bool {
+		$key = SetupMessage::extrinsic_key( $name );
+
+		foreach ( self::IDENTITY_EXTRINSICS as $candidate ) {
+			if ( '' !== $key && SetupMessage::extrinsic_key( $candidate ) === $key ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * The indexed, non-reversible form: sha256 of the connection id and the
 	 * identity. Scoped by connection so two customers' buyers sharing an
 	 * e-mail address never collide, and so the hash of one connection's
