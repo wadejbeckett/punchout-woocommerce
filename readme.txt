@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.10
+Stable tag: 0.4.11
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,12 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.11 =
+* The buyer's identity is read whatever spelling the purchasing system's administrator typed: extrinsic names are matched ignoring case, spaces, underscores and hyphens, so `User email` and `user_email` are the same name as `UserEmail`. A certified Dynamics 365 tenant sends `User email`; before this, such a visit recorded no buyer, the quote said "an unnamed buyer", and a later visit of the same person opened a second visit instead of replacing the first. The setup archive blanks identities by the same rule.
+* A variation line returns with its options in the text: the attribute values WooCommerce leaves out of a variation's title (three or more attributes, or a value chosen under "Any …") are appended to Description and ShortName, so two sizes of one product no longer arrive as two identical lines. Receiving systems key on SupplierPartID and show the description; they do not read SupplierPartAuxiliaryID.
+* With "ALL CAPS outbound data" on, the freight line is uppercased like every other returned line. The delivery address and the buyer's notes keep their own case.
+* No schema change (stays 9).
 
 = 0.4.10 =
 * A page refused inside a visit (a My Account page the connection does not list, checkout, an order of another visit) now says why. The redirect is unchanged; WooCommerce shows one notice on the page the buyer lands on: the page is not available in this catalog session, use the return button (its configured label) to send the cart. Checkout refusals reuse the existing "Checkout is not available" text on the cart. Shown only where the site prints WooCommerce notices and only when the shop session is up; wp-admin refusals stay silent.
