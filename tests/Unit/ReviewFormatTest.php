@@ -49,8 +49,8 @@ final class ReviewFormatTest extends TestCase {
 	}
 	public function test_address_lines_show_province_and_country_names(): void {
 		self::with_countries( self::countries_double(), static function (): void {
-			$address = [ 'first_name' => 'Thys', 'address_1' => '1 Depot Road', 'address_2' => '', 'city' => 'Pretoria', 'state' => 'GP', 'postcode' => '0157', 'country' => 'ZA', 'phone' => '0123456789' ];
-			self::assertSame( [ 'Thys', '1 Depot Road', 'Pretoria', 'Gauteng', '0157', 'South Africa' ], ReviewFormat::address_lines( $address ) );
+			$address = [ 'first_name' => 'Sam', 'address_1' => '1 Depot Road', 'address_2' => '', 'city' => 'Pretoria', 'state' => 'GP', 'postcode' => '0157', 'country' => 'ZA', 'phone' => '0123456789' ];
+			self::assertSame( [ 'Sam', '1 Depot Road', 'Pretoria', 'Gauteng', '0157', 'South Africa' ], ReviewFormat::address_lines( $address ) );
 			self::assertSame( [ 'Mariehamn', 'Åland Islands' ], ReviewFormat::address_lines( [ 'city' => 'Mariehamn', 'country' => 'AX' ] ) );
 		} );
 	}

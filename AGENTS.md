@@ -1,39 +1,25 @@
-# PunchOut for WooCommerce — agent handoff (written 2026-09-22 for Codex / any agent)
+# PunchOut for WooCommerce — notes for agents
 
-Read this first, then `.remember/remember.md` (latest state) and `docs/single-login-mode.md` (the spec). Owner: Wade Beckett (plain English, no essays, HIGH priority; he does not read long briefs).
+Read this first, then `docs/single-login-mode.md` (the spec), `README.md` and `tests/README.md`.
 
 ## What this is
-A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `includes/`). Only install: **lema.co.za** (Plesk host neo.noiz.co.za, `ssh -p 24 root@neo.noiz.co.za`, site user `jcaxkarn`, table prefix `wp5l_`, WooCommerce 11.1.2, WordPress 7.1.1, Avada theme, B2BKing). Customer: Coca-Cola (tester Thys Wessels), Dynamics 365 sends the PunchOutSetupRequest.
+A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `includes/`). A buyer's e-procurement system (for example Microsoft Dynamics 365) sends a PunchOutSetupRequest; the buyer shops in a visit and returns the basket as a PunchOutOrderMessage.
 
-## Owner's rules (binding)
+## Rules (binding)
 - Standalone: no mu-plugin, no site glue file, no hook whose purpose is site glue, no `if plugin X` branch, never name another plugin or theme in code or strings. Solve inside the plugin with WordPress/WooCommerce primitives.
 - The customer's WooCommerce account IS the punchout login (`partners.owner_user_id`). The plugin never creates, renames or deletes users. One WooCommerce session row per visit (`sessions.wc_session_key`, `pow_` + 28 hex). PunchOut-only exit (no checkout). Admin-only management; My Account keeps only the setup-XML download.
-- Never post a PunchOut return (PunchOutOrderMessage) from a test session on live. Remove test items; let test sessions expire.
-- Production changes only when Wade says so; back up first (`backup.sh`), record in `lema.co.za/memory-bank/custom-deploys.md`.
-- Keep secrets out of files and logs. The Coke shared secret lives only in `/home/noiz/Projects/Noiz/Clients/lema.co.za/context/meetings/2026-09-10-coke/private/lema-coke-dynamics-template-2026-09-12.xml` (mode 600) — read it at runtime, never print it.
+- Never post a PunchOut return (PunchOutOrderMessage) from a test session on a production site. Remove test items; let test sessions expire.
+- This repository is public. Keep client and site names, server and hosting details, account, group and connection identities, people's names, e-mail addresses and every secret out of files, commit messages, branch names and tags. Deployment notes and records belong to whoever runs the deployment, outside this repository.
+- Keep secrets out of files and logs. A connection's shared secret is read at runtime from private storage and never printed.
 
-## Current state (6 Oct 2026)
-- **Live on lema.co.za since 5 Oct 2026 15:02 SAST: 0.4.10 = 41ce129** (tag `v0.4.10`; branch `fix/0.4.10-refusal-notice` from 028f1c7; merged to master 6 Oct 2026). A page refused inside a visit now queues one WooCommerce notice (RouteGuard::explain). Same day a full cXML round trip with a real cart was proven on connection 1 against a local receiver (POOM DTD-valid; quote order created; login revoked): `lema.co.za/context/deployments/2026-10-05-punchout-e2e/README.md`. Unit 1184; native suites as for 0.4.9 all pass.
-- **Was live on lema.co.za since 5 Oct 2026 09:28 SAST: 0.4.9 = e914e51** (tag `v0.4.9`; branch `fix/0.4.9-session-safety`, cut from bc70cc5; merged to master 6 Oct 2026). Session safety: `Registry::eligible_login()` (capability rule incl. authoring), `Sessions\DelegatedLogin` on `determine_current_user` (ended-visit/promoted logins never authenticate; revoked, hourly retry in Cron), `Installer::revoke_delegated_logins()` before deactivation/uninstall (stops if unconfirmed), REST users/app-password refusal re-applied last on three REST hooks (a site plugin's `rest_pre_dispatch` returning null had disabled it on Lema). Evidence: `lema.co.za/context/deployments/2026-10-05-punchout-0.4.9/README.md`. Unit 1181; new native `tests/Integration/SessionSafetyNative.php` (28). The 24 Sep entry below is historical.
-- **Was live on lema.co.za 24 Sep 2026 11:23 SAST – 5 Oct 2026: 0.4.8 = bc70cc5** (tag `v0.4.8`; branch `feature/0.4.8-delivery-review`; schema 9; merged to master 6 Oct 2026). Before it: 0.4.7 = cad2077 (23 Sep 21:15), 0.4.6 = 97ed427, 0.4.5 = 1089f86, 0.4.4 = 7cfdfe7. master holds 0.4.0–0.4.10; each release is tagged `v<version>` at the commit that was installed.
-- 0.4.8 contents: review page in the store's money format (from the exact cents), province/country names, line-total column, site logo, WooCommerce button classes; optional preferred delivery date (local quote only; confirmation schema 2 only when dated); native Local Pickup shown as Collection; the selected method's label is the POOM freight Description; connection settings "Buyers may add delivery addresses to the company book" and "Reset connection from the My Account “Punchout integration” tab" (both off on Lema); plugin setting "Extra button classes"; `pow-visit` body class. Open check: the review page with an item in the cart — the Coca-Cola D365 account (user 4, B2BKing group 125706) sees no products until the catalogue grants land (site/catalogue work, tickets C1/C2 in `lema.co.za/context/meetings/2026-09-23-coke/tickets.md`); never post a return from a test visit.
-- Unit suite: `php tests/run-tests.php` (1184 pass at 0.4.10, no Composer). Also `php tests/CartBlocks/surface.php` (22), `php tests/Account/run.php` (29), `php tests/Admin/run.php` (44). Native suites (opt-in, real WP): see "Local fixture".
-- Lema cleanup done: 20 legacy `punchout_buyer` accounts, 6 test quotes and the mu-plugin `lema-punchout-groups.php` deleted (backups under `/var/www/vhosts/lema.co.za/AVADA-OPTION-BACKUPS/punchout-20260921-*`). User 4 `coca-cola-company` is connection 1's account, B2BKing group 10717.
-- Browser-verified as a visit: cart page shows the "Punchout" exit under the totals, no checkout button. Nine smoke visits (132–140) expire ~22 Sep evening; visit 135 still holds 2 test items in its own cart row (the sweep deletes it).
+## Releases
+- Each released version is tagged `v<version>` at its release commit and merged to `master`. Latest release: 0.4.10 (`v0.4.10`).
+- Before a release, bump the `Version:` header, `const VERSION`, the readme `Stable tag` and the changelog, then build the package with `bin/build-zip.sh <outdir>`.
 
-## Next steps
-1. Coke re-test with Thys (Dianna shares the recording), incl. two testers at once; watch `wp-content/uploads/wc-logs/punchout-woocommerce-*.log` and `wp5l_pow_log`. 2. Production cutover per `lema.co.za/context/meetings/2026-09-23-coke/cutover-checklist.md` (decisions Wade must take are listed there); 9 Oct Coke meeting, 1 Nov go-live. 3. Remaining plugin backlog: per-connection return-button label (label is plugin-wide today); the installs on Lema are run by Wade himself (`./install.sh`), agents do backup/verify/records.
-4. Deferred: fold the guarded cart save into one module.
+## Tests
+- Unit, no Composer needed: `php tests/run-tests.php` (1184 pass at 0.4.10). Also `php tests/CartBlocks/surface.php` (22), `node --test tests/CartBlocks/cart-blocks.test.js` (5), `php tests/Account/run.php` (29), `php tests/Admin/run.php` (44).
+- Native suites (opt-in) need a disposable WordPress + WooCommerce + MariaDB site with this plugin linked in; see `tests/README.md`. Example: `POW_NATIVE_TESTS=disposable POW_NATIVE_SCRIPT=$PWD/tests/Integration/TwoBuyerNative.php wp --user=1 eval 'require getenv("POW_NATIVE_SCRIPT");'` (the same for VisitLockdownNative, SessionSafetyNative, AddressSchemaNative, AdminActionsNative and DeliveryStoreNative). RegistrationLifecycleNative runs via `eval-file`. ConcurrencyNative also needs `POW_NATIVE_CONCURRENCY_MODE=suite`, `POW_NATIVE_WP_CLI`, `POW_NATIVE_WP_PATH`, `POW_NATIVE_WP_USER` and `POW_NATIVE_FIXTURE_ROOT`.
 
-## How to deploy to Lema
-Tooling (latest): `/home/noiz/Projects/Noiz/Clients/lema.co.za/punchout/tooling/deploy-live-0.4.10-refusal-notice/` (copy it for the next release) — `config.env` (COMMIT, PACKAGE, PACKAGE_SHA256, BACKUP dir), then `./backup.sh`, `./install.sh`, `./verify-installed.sh`, `./rollback.sh`. Build a package with `bin/build-zip.sh <outdir>` (bump `Version:` header, `const VERSION`, readme `Stable tag` and changelog first). Put builds under `lema.co.za/punchout/context/builds/<date>-<topic>-<sha7>/`.
-
-## How to smoke-test live without a browser
-`.remember/single-login-deliberation-20260921/live-smoke.py` (python3, stdlib): fills the private Dynamics template with a payloadID/timestamp/BuyerCookie/dummy BrowserFormPost and a UserEmail extrinsic, POSTs to `https://www.lema.co.za/punchout/setup`, redeems the StartPage URL, loads `/cart/`, checks `/wp-json/wp/v2/users/me` (must be 401) and `/wp-admin/` (must redirect). Never posts a return. Note: `/cart/?add-to-cart=` gets a Plesk 403 on this site; use `/shop/?add-to-cart=ID` or `?wc-ajax=add_to_cart`.
-
-## Local fixture (real WordPress 7.1 + WooCommerce 11.1.0 + MariaDB, disposable)
-`F=/home/noiz/Projects/Noiz/Clients/lema.co.za/tmp/pow-plan06-native-20260913`; `export PHP_INI_SCAN_DIR=/etc/php/8.3/cli/conf.d:$F/conf.d WP_ENVIRONMENT_TYPE=local`; `W="php $F/wp-cli.phar --path=$F/site"`; admin user id 1. Plugin is symlinked from `$F/site/wp-content/plugins/punchout-woocommerce` to this repo. Native suites: `POW_NATIVE_TESTS=disposable POW_NATIVE_SCRIPT=$PWD/tests/Integration/TwoBuyerNative.php $W --user=1 eval 'require getenv("POW_NATIVE_SCRIPT");'` (same for VisitLockdownNative, AddressSchemaNative, AdminActionsNative, DeliveryStoreNative); `RegistrationLifecycleNative` via `eval-file`; ConcurrencyNative needs `POW_NATIVE_CONCURRENCY_MODE=suite POW_NATIVE_WP_CLI=$F/wp-cli.phar POW_NATIVE_WP_PATH=$F/site POW_NATIVE_WP_USER=1 POW_NATIVE_FIXTURE_ROOT=$F`.
-
-## Records
-- Lema: `/home/noiz/Projects/Noiz/Clients/lema.co.za/memory-bank/custom-deploys.md` (deploy register), `punchout/memory-bank/activeContext.md`, `punchout/memory-bank/decisionLog.md` (decision 028 = this model), `/home/noiz/Projects/Noiz/Ops/AGENTS.md` + `OPERATIONS.md` (read before touching the server).
-- This repo: `.remember/remember.md` (handoff), `.remember/single-login-deliberation-20260921/` (code map, review findings, per-ticket packets, smoke script; gitignored).
+## Backlog
+- Per-connection return-button label (the label is plugin-wide today).
+- Fold the guarded cart save into one module.

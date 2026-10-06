@@ -348,7 +348,7 @@ final class CompanyBookTest extends TestCase {
 
 	/** A live visit carrying a buyer's attribution, as SetupEndpoint stores it. */
 	private function buyer_visit( array $changes = [] ): Session {
-		return Session::from_row( array_replace( [ 'id' => 81, 'partner_id' => 12, 'user_id' => 20, 'status' => Session::ACTIVE, 'wc_session_key' => 'pow_1a2b3c4d5e6f708192a3b4c5d6e7', 'buyer_identity' => 'thys@buyer.example', 'buyer_name' => 'Thys', 'buyer_identity_hash' => str_repeat( 'ab', 32 ) ], $changes ) );
+		return Session::from_row( array_replace( [ 'id' => 81, 'partner_id' => 12, 'user_id' => 20, 'status' => Session::ACTIVE, 'wc_session_key' => 'pow_1a2b3c4d5e6f708192a3b4c5d6e7', 'buyer_identity' => 'sam@buyer.example', 'buyer_name' => 'Sam', 'buyer_identity_hash' => str_repeat( 'ab', 32 ) ], $changes ) );
 	}
 	private function buyer_add( ?Session $visit = null, string $label = 'Site B', ?array $address = null ): array|WP_Error {
 		return $this->book->add_for_visit( $visit ?? $this->buyer_visit(), $label, $address ?? $this->fields()['address'] );
@@ -376,8 +376,8 @@ final class CompanyBookTest extends TestCase {
 		self::assertSame( 81, $context['session_id'] );
 		self::assertSame( 20, $context['user_id'] );
 		self::assertSame( 12, $context['partner_id'] );
-		self::assertSame( [ 'revision' => 2, 'key' => $result['key'], 'buyer_hash' => str_repeat( 'ab', 6 ), 'buyer_name' => 'Thys' ], $context['detail'] );
-		self::assertStringNotContainsString( 'thys@buyer.example', (string) json_encode( $this->audit->events ) );
+		self::assertSame( [ 'revision' => 2, 'key' => $result['key'], 'buyer_hash' => str_repeat( 'ab', 6 ), 'buyer_name' => 'Sam' ], $context['detail'] );
+		self::assertStringNotContainsString( 'sam@buyer.example', (string) json_encode( $this->audit->events ) );
 		// The fingerprint the selection read relies on still works for the new entry.
 		self::assertSame( 64, strlen( CompanyBook::entry_fingerprint( $result['key'], $state['addresses'][$result['key']] ) ) );
 		// An anonymous visit's add records no name.

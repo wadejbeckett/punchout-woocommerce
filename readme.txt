@@ -124,7 +124,7 @@ One. You create one ordinary WooCommerce customer account per connection, group 
 * Upgrade: the buyer accounts earlier releases created are now ordinary WordPress users. The password-login and password-reset denials that used to cover them are gone with the provisioning they belonged to, so each of those accounts can sign in and reset its own password like any customer. Delete the ones you do not want — this plugin never deletes a user — and sweep the _pow_identity, _pow_ephemeral, _pow_deactivated and _pow_last_seen user meta they leave behind.
 
 = 0.3.0 =
-* Note: lema.co.za runs commit 3196586 of this line, deployed 2026-09-15 with the header still labelled 0.2.4; the header now matches the changelog.
+* Note: commit 3196586 of this line was deployed with the header still labelled 0.2.4; the header now matches the changelog.
 * Fix: a Punchout buyer's cart quantity change could be lost silently when another request saved the same session first. The guarded save now reloads the cart, replays only the buyer's change and retries once; any final refusal is logged at warning level with a hashed session key instead of being dropped without trace.
 * Fix: refusal log entries name the throwable behind an "exception" refusal, and a request refused at initialisation no longer logs a spurious refusal at shutdown.
 * Fix: an active connection saved with only its name and Sender credential no longer breaks the Integration docs page for administrators; its row explains which identities are still missing.

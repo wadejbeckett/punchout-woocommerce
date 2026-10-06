@@ -116,12 +116,12 @@ final class VisitDashboardTest extends PHPUnit\Framework\TestCase {
 	}
 
 	public function test_the_plugins_dashboard_greets_without_a_logout_link_and_keeps_the_dashboard_hooks(): void {
-		$current_user = new WP_User( 20, 'Coca <Cola>' );
+		$current_user = new WP_User( 20, 'Acme <Buyer>' );
 		ob_start();
 		include $this->own();
 		$html = (string) ob_get_clean();
 
-		self::assertStringContainsString( 'Hello <strong>Coca &lt;Cola&gt;</strong>', $html, 'The greeting names the account, escaped' );
+		self::assertStringContainsString( 'Hello <strong>Acme &lt;Buyer&gt;</strong>', $html, 'The greeting names the account, escaped' );
 		self::assertStringNotContainsString( 'log out', strtolower( $html ) );
 		self::assertStringNotContainsString( 'logout', $html );
 		self::assertStringContainsString( 'href="https://shop.example.test/my-account/orders/"', $html, 'The rest of WooCommerce\'s dashboard text is kept' );
