@@ -754,19 +754,21 @@ final class SetupEndpoint {
 	 * the Contact e-mail it falls back to; a name extrinsic is left alone
 	 * because the buyer's name is logged in the detail JSON by decision. A
 	 * namespace prefix is legal cXML and is sent by real buyers, the name
-	 * attribute is matched case-insensitively because the extrinsic lookup
-	 * is, and a self-closing element is excluded so the pattern cannot run
-	 * on to the next element's closing tag and blank that instead.
+	 * attribute is judged by Buyers\Identity's own rule (case, spaces,
+	 * underscores and hyphens ignored, as the extrinsic lookup does), and a
+	 * self-closing element is excluded so the pattern cannot run on to the
+	 * next element's closing tag and blank that instead.
 	 */
 	private static function redact_identities( string $xml ): string {
-		// Keep in step with Buyers\Identity::IDENTITY_EXTRINSICS.
-		$extrinsics = 'UserEmail|UniqueUsername|UniqueName';
-
-		$xml = (string) preg_replace(
-			'#(<(?:[A-Za-z0-9_.-]+:)?Extrinsic\b[^>]*\bname\s*=\s*(["\'])\s*(?:' . $extrinsics . ')\s*\2[^>]*(?<!/)>)(.*?)(</(?:[A-Za-z0-9_.-]+:)?Extrinsic\s*>)#is',
-			'$1[redacted]$4',
+		// Which names are identities is Buyers\Identity's rule, shared with
+		// the lookup, so every spelling it accepts (`User email`, `user_email`)
+		// is blanked here too.
+		$redacted = preg_replace_callback(
+			'#(<(?:[A-Za-z0-9_.-]+:)?Extrinsic\b[^>]*\bname\s*=\s*(["\'])(.*?)\2[^>]*(?<!/)>)(.*?)(</(?:[A-Za-z0-9_.-]+:)?Extrinsic\s*>)#is',
+			static fn( array $m ): string => Identity::is_identity_extrinsic( html_entity_decode( $m[3], ENT_QUOTES | ENT_XML1, 'UTF-8' ) ) ? $m[1] . '[redacted]' . $m[5] : $m[0],
 			$xml
 		);
+		$xml = null === $redacted ? '' : $redacted;
 
 		return (string) preg_replace(
 			'#(<(?:[A-Za-z0-9_.-]+:)?Email\b[^>]*(?<!/)>)(.*?)(</(?:[A-Za-z0-9_.-]+:)?Email\s*>)#is',

@@ -70,6 +70,31 @@ final class BuyerIdentityTest extends TestCase {
 		self::assertSame( 'jdoe@example.test', Identity::from_message( $this->message( [ 'useremail' => 'jdoe@example.test' ] ) )->identity );
 	}
 
+	/**
+	 * Dynamics 365 sends the extrinsic under the label its administrator
+	 * typed. The live catalog configuration of the first certified buyer
+	 * emits `<Extrinsic name="User email">` — a space, and a lower-case e —
+	 * on every setup request. Missing it made every visit anonymous: no
+	 * "Bought by" attribution on the quote and no per-buyer supersede.
+	 */
+	public function test_dynamics_365_user_email_label_is_the_buyer_identity(): void {
+		self::assertSame( 'buyer.one@example.com', Identity::from_message( $this->message( [ 'User email' => 'Buyer.One@example.com' ] ) )->identity );
+	}
+
+	public function test_identity_and_name_lookups_ignore_spaces_underscores_and_hyphens_in_the_name(): void {
+		foreach ( [ 'User email', 'user_email', 'User-Email', ' USER EMAIL ', "User\temail" ] as $label ) {
+			self::assertSame( 'jdoe@example.test', Identity::from_message( $this->message( [ $label => 'jdoe@example.test' ] ) )->identity, $label );
+		}
+		self::assertSame( 'jdoe', Identity::from_message( $this->message( [ 'Unique User name' => 'jdoe' ] ) )->identity );
+		self::assertSame( 'Zoë Buyer', Identity::from_message( $this->message( [ 'User Printable Name' => 'Zoë Buyer' ] ) )->name );
+		self::assertSame( 'Zoe B', Identity::from_message( $this->message( [ 'user_full_name' => 'Zoe B' ] ) )->name );
+	}
+
+	public function test_a_lookalike_label_is_not_an_identity(): void {
+		// Only separators and case are forgiven; a different word is a different extrinsic.
+		self::assertSame( '', Identity::from_message( $this->message( [ 'User emails' => 'jdoe@example.test', 'Email of user' => 'x@example.test' ] ) )->identity );
+	}
+
 	public function test_identity_is_lowercased_and_trimmed(): void {
 		self::assertSame( 'jdoe@example.test', Identity::from_message( $this->message( [ 'UserEmail' => "  JDoe@Example.TEST \n" ] ) )->identity );
 	}
