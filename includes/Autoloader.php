@@ -15,8 +15,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Minimal PSR-4 autoloader.
  *
- * Deliberately dependency-free: the plugin ships to a Plesk-managed WordPress
- * install where running `composer install` on deploy is not guaranteed, so a
+ * Deliberately dependency-free: the plugin ships to managed WordPress
+ * installs where running `composer install` on deploy is not guaranteed, so a
  * vendor/ directory cannot be relied upon.
  * Class files map 1:1 onto the namespace under includes/
  * (e.g. POW\Cxml\Parser => includes/Cxml/Parser.php).
