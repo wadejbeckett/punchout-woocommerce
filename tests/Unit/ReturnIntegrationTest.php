@@ -346,6 +346,38 @@ final class ReturnIntegrationTest extends TestCase {
 		self::assertSame('2026-10-07',$order->get_meta(QuoteOrder::META_PREFERRED_DELIVERY_DATE));
 		self::assertStringContainsString('Delivery method: Courier (3-5 working days); Parcel two. Preferred delivery date: 2026-10-07.',$order->notes[0]);
 	}
+	/**
+	 * An ALL CAPS connection uppercases every returned line, and the freight
+	 * line is a returned line: its description becomes a requisition line
+	 * name next to the uppercased merchandise. The address and the buyer's
+	 * notes keep their spelling (notes may carry links, whose paths are
+	 * case-sensitive), and the quote keeps the store's own text.
+	 */
+	public function test_all_caps_connection_uppercases_the_freight_line_like_every_other_line():void{
+		$this->set_delivery(true,true);
+		$this->db->partner_fields=['allcaps_transform'=>true,'emit_delivery_line'=>true,'emit_ship_to'=>true,'delivery_notes_policy'=>'item_detail_extrinsic','cxml_version'=>'1.2.008'];
+		$xml=$this->xml($this->response());
+		self::assertSame('EXAMPLE ITEM',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="SKU-1001"]/ItemDetail/Description/ShortName)'));
+		self::assertSame('PARCEL ONE; PARCEL TWO',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
+		self::assertSame('FREIGHT',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Classification)'));
+		self::assertSame('supplier',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Classification/@domain)'),'A domain is an identifier, not text');
+		self::assertSame('EA',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitOfMeasure)'));
+		self::assertSame('35.00',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitPrice/Money)'));
+		self::assertSame('Gate & bell Call on arrival',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="SKU-1001"]/ItemDetail/Extrinsic[@name="DeliveryInstructions"])'),'notes keep the buyer\'s case (the builder only folds the line break)');
+		self::assertSame('Pretoria',$xml->evaluate('string(//ShipTo/Address/PostalAddress/City)'));
+		$order=array_values($GLOBALS['pow_test_orders'])[0];
+		self::assertSame('Pretoria',$order->props['shipping_city']);
+	}
+
+	/** Without the switch the freight line keeps the shop's own method title, as before. */
+	public function test_freight_line_keeps_its_case_when_the_connection_is_not_all_caps():void{
+		$this->set_delivery(true,true);
+		$this->db->partner_fields=['allcaps_transform'=>false,'emit_delivery_line'=>true,'cxml_version'=>'1.2.008'];
+		$xml=$this->xml($this->response());
+		self::assertSame('Parcel one; Parcel two',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
+		self::assertSame('freight',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Classification)'));
+	}
+
 	public function test_builder_uses_fresh_company_options_after_confirmation_preparation():void{$this->set_delivery(true,true);$this->delivery->mutate=function($prepared){$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'delivery_notes_policy'=>'item_detail_extrinsic'];return $prepared;};$xml=$this->xml($this->response());self::assertSame(1,$xml->query('//ShipTo')->length);self::assertSame(1,$xml->query('//ItemDetail/Extrinsic[@name="DeliveryInstructions"]')->length);}
 }
 }

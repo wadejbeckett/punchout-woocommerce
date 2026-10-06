@@ -73,6 +73,34 @@ XML;
 		self::assertSame( 'jdoe', $message->extrinsic( 'uniqueusername' ), 'extrinsic lookup is case-insensitive' );
 	}
 
+	/**
+	 * Byte-for-byte the shape a certified Dynamics 365 for Operations tenant
+	 * sent on every live setup request (identities and addresses replaced):
+	 * one line, no DOCTYPE, a braced GUID payloadID and BuyerCookie, a
+	 * timestamp with no offset, the SupplierSetup URL with a trailing space
+	 * exactly as pasted into its Message format, the e-mail extrinsic
+	 * labelled `User email` and placed before BuyerCookie, and a punchback
+	 * URL whose last segment is the percent-encoded cookie.
+	 */
+	public function test_parses_the_exact_request_shape_a_live_dynamics_tenant_sends(): void {
+		$xml = '<?xml version="1.0" encoding="utf-8"?><cXML payloadID="{0B6E2D51-7C3A-4F19-9E08-5A2C4D7F1B36}" timestamp="2026-01-15T08:30:00" version="1.2.008" xml:lang="en-US"><Header><From><Credential domain="NetworkID"><Identity>BUYER-TEST</Identity></Credential></From><To><Credential domain="NetworkID"><Identity>supplier-test</Identity></Credential></To><Sender><Credential domain="NetworkID"><Identity>BUYER-TEST</Identity><SharedSecret>s3cret</SharedSecret></Credential><UserAgent>Dynamics 365 for Operations</UserAgent></Sender></Header><Request deploymentMode="test"><PunchOutSetupRequest operation="create"><SupplierSetup><URL>https://shop.example.com/punchout/setup </URL></SupplierSetup><Extrinsic name="User email">Buyer.One@buyer.example.com</Extrinsic><BuyerCookie>{9D41C7A0-3E62-4B85-A1F4-6C0E2B9D5F17}</BuyerCookie><BrowserFormPost><URL>https://erp.buyer.example.com/punchout/cxml/%7B9D41C7A0-3E62-4B85-A1F4-6C0E2B9D5F17%7D</URL></BrowserFormPost></PunchOutSetupRequest></Request></cXML>';
+
+		$message = $this->parser->parse( $xml );
+
+		self::assertSame( SetupMessage::KIND_SETUP, $message->kind );
+		self::assertSame( '{0B6E2D51-7C3A-4F19-9E08-5A2C4D7F1B36}', $message->payload_id );
+		self::assertSame( '2026-01-15T08:30:00', $message->timestamp );
+		self::assertSame( '1.2.008', $message->version );
+		self::assertSame( 'test', $message->deployment_mode );
+		self::assertSame( 'create', $message->operation );
+		self::assertSame( [ 'NetworkID', 'BUYER-TEST', 's3cret' ], [ $message->sender_domain, $message->sender_identity, $message->shared_secret ] );
+		self::assertSame( '{9D41C7A0-3E62-4B85-A1F4-6C0E2B9D5F17}', $message->buyer_cookie );
+		self::assertSame( 'https://erp.buyer.example.com/punchout/cxml/%7B9D41C7A0-3E62-4B85-A1F4-6C0E2B9D5F17%7D', $message->browser_form_post, 'The punchback URL is kept exactly, percent-encoding included' );
+		self::assertSame( 'Buyer.One@buyer.example.com', $message->extrinsic( 'User email' ) );
+		self::assertSame( 'Buyer.One@buyer.example.com', $message->extrinsic( 'UserEmail' ), 'The label the tenant typed answers the conventional name' );
+		self::assertSame( 'buyer.one@buyer.example.com', \POW\Buyers\Identity::from_message( $message )->identity );
+	}
+
 	public function test_version_falls_back_to_doctype_system_id(): void {
 		$xml = str_replace(
 			[ '<?xml version="1.0" encoding="utf-8"?>', 'version="1.2.008" ' ],
