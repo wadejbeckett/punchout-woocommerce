@@ -371,6 +371,31 @@ final class SetupEdgeLimitTest extends TestCase {
 		self::assertSame( hash( 'sha256', $body ), $visit['body_hash'] );
 	}
 
+	/**
+	 * The label Dynamics 365 actually sends — `User email` — is an identity
+	 * like `UserEmail`: it reaches the visit row for the administrator and
+	 * never the log archive in clear. Spellings differ only by separators
+	 * and case, so the redaction must follow the same rule as the lookup.
+	 */
+	public function test_the_dynamics_user_email_label_is_recorded_on_the_visit_and_blanked_in_the_archive(): void {
+		$this->connect();
+		$this->bind_account();
+		$body = $this->valid_body( 'known', 'p1', [ 'User email' => 'Jane.Doe@buyer.example.com', 'user_full_name' => 'Jane Doe', 'Cost centre' => 'CC-100' ] );
+		self::assertSame( SetupEndpoint::STATUS_OK, $this->request( $this->endpoint( 10 ), $body ) );
+
+		$archive = (string) $this->audit->rows[0][1]['xml'];
+		self::assertStringNotContainsString( 'Jane.Doe@buyer.example.com', $archive );
+		self::assertStringContainsString( '<Extrinsic name="User email">[redacted]</Extrinsic>', $archive );
+		self::assertStringContainsString( '<Extrinsic name="user_full_name">Jane Doe</Extrinsic>', $archive, 'A name is not an identity and stays readable' );
+		self::assertStringContainsString( '<Extrinsic name="Cost centre">CC-100</Extrinsic>', $archive, 'Unrelated extrinsics are untouched' );
+		self::assertSame( 1, substr_count( $archive, '[redacted]' ) );
+
+		$visit = $this->visits()[0];
+		self::assertSame( 'jane.doe@buyer.example.com', $visit['buyer_identity'] );
+		self::assertSame( 'Jane Doe', $visit['buyer_name'] );
+		self::assertSame( hash( 'sha256', '7|jane.doe@buyer.example.com' ), $visit['buyer_identity_hash'] );
+	}
+
 	public function test_a_self_closing_identity_element_does_not_blank_the_element_after_it(): void {
 		$this->connect();
 		$this->bind_account();

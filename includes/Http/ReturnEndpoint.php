@@ -156,6 +156,11 @@ final class ReturnEndpoint {
 		if ( 'cart' === $mode ) {
 			try {
 				$freight = DeliveryEstimate::poom_line( $mapped['delivery'] );
+				// The freight line is a returned line like any other: an ALL
+				// CAPS connection gets it in capitals too (its description is
+				// a requisition line name beside the merchandise). Wire copy
+				// only; the Quote keeps the shop's own method title.
+				if ( null !== $freight && $partner->allcaps_transform ) { $freight = PoomMapper::uppercase_items( [ $freight ] )[0]; }
 				if ( null !== $freight ) { $wire_items[] = $freight; }
 				$destination = $mapped['delivery_destination'];
 				$delivery_args = [

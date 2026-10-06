@@ -11,7 +11,8 @@
  * files claiming one symbol makes the winning body depend on require
  * order): this file owns the WooCommerce surface only —
  * get_woocommerce_currency, WC, wc_create_order, wc_get_order, wc_get_orders,
- * wc_get_product, wc_price, the price-format getters (wc_get_price_decimal_separator,
+ * wc_get_product, wc_price, wc_get_formatted_variation, wc_is_attribute_in_product_name,
+ * the price-format getters (wc_get_price_decimal_separator,
  * wc_get_price_thousand_separator, get_woocommerce_price_format,
  * get_woocommerce_currency_symbol) and the classes WC_Order, WC_Order_Item_Product,
  * WC_Product, WC_Customer and the WC() container. The WordPress surface,
@@ -422,5 +423,39 @@ if ( ! class_exists( 'POW_Test_WC' ) ) {
 if ( ! function_exists( 'WC' ) ) {
 	function WC(): POW_Test_WC { // phpcs:ignore
 		return $GLOBALS['pow_test_wc'] ??= new POW_Test_WC();
+	}
+}
+
+if ( ! function_exists( 'wc_get_formatted_variation' ) ) {
+	/**
+	 * WooCommerce's variation formatter for the flat, value-only case the
+	 * mapper uses: strip the `attribute_` prefix, turn a term slug of a
+	 * registered attribute taxonomy into its term name, rawurldecode the
+	 * value, skip empty values, join with ", ". Terms come from
+	 * pow_test_attribute_terms[taxonomy][slug] = name.
+	 *
+	 * @param array<string, string>|object $variation
+	 */
+	function wc_get_formatted_variation( $variation, bool $flat = false, bool $include_names = true, bool $skip_attributes_in_name = false ): string { // phpcs:ignore
+		$list = [];
+		foreach ( (array) $variation as $key => $value ) {
+			$name  = str_replace( 'attribute_', '', (string) $key );
+			$value = (string) $value;
+			if ( isset( $GLOBALS['pow_test_attribute_terms'][ $name ] ) ) {
+				$value = $GLOBALS['pow_test_attribute_terms'][ $name ][ $value ] ?? $value;
+			}
+			if ( '' === $value ) {
+				continue;
+			}
+			$list[] = $include_names ? $name . ': ' . rawurldecode( $value ) : rawurldecode( $value );
+		}
+		return implode( ', ', $list );
+	}
+}
+
+if ( ! function_exists( 'wc_is_attribute_in_product_name' ) ) {
+	/** WooCommerce 11.1's own test: " <value>," anywhere, or " <value>" at the very end of the name. */
+	function wc_is_attribute_in_product_name( string $attribute, string $name ): bool { // phpcs:ignore
+		return false !== stristr( $name, ' ' . $attribute . ',' ) || 0 === stripos( strrev( $name ), strrev( ' ' . $attribute ) );
 	}
 }
