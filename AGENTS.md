@@ -13,7 +13,7 @@ A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `i
 - Keep secrets out of files and logs. A connection's shared secret is read at runtime from private storage and never printed.
 
 ## Releases
-- Each released version is tagged `v<version>` at its release commit and merged to `master`. Latest release: 0.4.10 (`v0.4.10`).
+- Each released version is tagged `v<version>` at its release commit and merged to `master`. Latest release: 0.4.11 (`v0.4.11`); 0.4.12 (review page inside the theme) built on `fix/0.4.12-review-chrome`, 7 Oct 2026.
 - Before a release, bump the `Version:` header, `const VERSION`, the readme `Stable tag` and the changelog, then build the package with `bin/build-zip.sh <outdir>`.
 
 ## Tests
