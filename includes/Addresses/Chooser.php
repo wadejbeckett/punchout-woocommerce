@@ -67,6 +67,43 @@ final class Chooser {
 		catch ( \Throwable $error ) { return $this->render( [ 'error' => self::expired() ], false ); }
 	}
 
+	/**
+	 * GET /punchout/confirm drawn inside the active theme's header and footer (ReviewChrome).
+	 * Runs at template_redirect, so the theme's layout, conditions and body classes see the
+	 * visit as on any other page. The forms still post to the dedicated no-store route.
+	 */
+	public function handle_in_theme(): void {
+		Transport::require_https();
+		self::headers();
+		$shop = get_bloginfo( 'name' );
+		add_filter( 'pre_get_document_title', static fn() => __( 'Review your cart', 'punchout-woocommerce' ) . ' — ' . $shop, 20 );
+		add_filter( 'body_class', static fn( array $classes ) => array_merge( $classes, [ 'pow-confirmation-page' ] ) );
+		wp_enqueue_style( 'pow-delivery-confirmation', plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), [], \POW\VERSION );
+		[ $status, $html ] = $this->review( false );
+		status_header( $status );
+		get_header();
+		echo '<div class="pow-confirmation-page__content">' . $html . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
+		get_footer();
+		exit;
+	}
+
+	/**
+	 * The review for a GET: the prepared view, or the view after a buyer add, or the expired page.
+	 *
+	 * @return array{0: int, 1: string} HTTP status and the rendered markup.
+	 */
+	private function review( bool $document ): array {
+		try {
+			[ $session, $partner ] = $this->context();
+			$added = $this->take_added( $session );
+			if ( null === $added ) { return [ 200, $this->render( $this->confirmation->prepare( $session, $partner ), $document, $this->add_vars( $partner ), ! $document ) ]; }
+			// The review after a successful add: the new entry selected, with the notes and date the add carried. Still no consent.
+			$view = $this->confirmation->preview( $session, $partner, $added );
+			if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $added ); }
+			return [ 200, $this->render( $view, $document, $this->add_vars( $partner, [ 'draft' => null, 'open' => false, 'notice' => self::added_notice() ] ), ! $document ) ];
+		} catch ( \Throwable $error ) { return [ 403, $this->render( [ 'error' => self::expired() ], $document, null, ! $document ) ]; }
+	}
+
 	public function handle(): void {
 		Transport::require_https();
 		self::headers();
@@ -74,12 +111,10 @@ final class Chooser {
 			[ $session, $partner ] = $this->context();
 			$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
 			if ( 'GET' === $method ) {
-				$added = $this->take_added( $session );
-				if ( null === $added ) { echo $this->render( $this->confirmation->prepare( $session, $partner ), true, $this->add_vars( $partner ) ); return; }
-				// The review after a successful add: the new entry selected, with the notes and date the add carried. Still no consent.
-				$view = $this->confirmation->preview( $session, $partner, $added );
-				if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $added ); }
-				echo $this->render( $view, true, $this->add_vars( $partner, [ 'draft' => null, 'open' => false, 'notice' => self::added_notice() ] ) ); return;
+				[ $status, $html ] = $this->review( true );
+				if ( 200 !== $status ) { status_header( $status ); }
+				echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
+				return;
 			}
 			if ( ! self::request_allowed( $method, $_POST ) ) { status_header( 403 ); echo $this->render( [ 'error' => new \WP_Error( 'delivery_nonce', __( 'This form has expired. Open the cart and review your delivery again.', 'punchout-woocommerce' ) ) ], true ); return; }
 			$action = $_POST['pow_delivery_action'] ?? 'review';
@@ -279,8 +314,9 @@ final class Chooser {
 		return [ $session, $partner ];
 	}
 
-	private function render( array $view, bool $document, ?array $add = null ): string {
-		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add ] );
+	/** $enqueued: the stylesheet is already enqueued by the page (theme chrome), so the template prints no link of its own. */
+	private function render( array $view, bool $document, ?array $add = null, bool $enqueued = false ): string {
+		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => $enqueued ? '' : plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add ] );
 	}
 	private static function expired(): \WP_Error { return new \WP_Error( 'delivery_unavailable', __( 'Delivery could not be verified. Return to your purchasing system and open the catalog again if your session has expired.', 'punchout-woocommerce' ) ); }
 	private static function headers(): void { if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); } nocache_headers(); if ( ! headers_sent() ) { header( 'Cache-Control: private, no-store' ); header( 'X-Robots-Tag: noindex, nofollow' ); } }
