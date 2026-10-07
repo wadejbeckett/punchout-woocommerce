@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.12
+Stable tag: 0.4.13
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,11 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.13 =
+* New e-mail "PunchOut order received" (WooCommerce → Settings → Emails): sent to the store when a buyer's cart returns and its Punchout Quote order is created, with the lines, totals, delivery address, delivery code, preferred date and the buyer's notes and identity. Recipients are comma-separated (the admin address when empty). WooCommerce's own "New order" e-mail never fires for the Punchout Quote status, so stores had no notice of a returned cart. Templates `emails/pow-quote-received.php` and `emails/plain/pow-quote-received.php`, overridable in the theme.
+* The review page drawn inside the theme no longer carries the `error404` body class.
+* No schema change (stays 9).
 
 = 0.4.12 =
 * The delivery review (/punchout/confirm) opens inside the store's own header and footer. A GET of the review is drawn at template_redirect within the active theme, so the buyer keeps the shop's layout, menus and conditions while reviewing delivery; the page carries the body class `pow-confirmation-page` and the title "Review your cart". The review's own forms still post to the dedicated no-store route and draw the plain document as before. A block theme, or a site returning false from the `punchout_review_in_theme` filter, keeps the plain document for GET too.

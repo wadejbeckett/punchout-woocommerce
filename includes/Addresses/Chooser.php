@@ -81,6 +81,9 @@ final class Chooser {
 		wp_enqueue_style( 'pow-delivery-confirmation', plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), [], \POW\VERSION );
 		[ $status, $html ] = $this->review( false );
 		status_header( $status );
+		// WordPress parsed this plugin route as "nothing found"; the page it is about to draw is found.
+		global $wp_query;
+		if ( $wp_query instanceof \WP_Query ) { $wp_query->is_404 = false; }
 		get_header();
 		echo '<div class="pow-confirmation-page__content">' . $html . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
 		get_footer();
