@@ -22,7 +22,7 @@ $button_extra = '' !== $button_extra ? ' ' . $button_extra : '';
 if ( $document ) : ?>
 <!doctype html><html <?php language_attributes(); ?>><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title><?php echo esc_html__( 'Review your cart', 'punchout-woocommerce' ); ?> — <?php echo esc_html( $shop_name ); ?></title></head><body>
 <?php endif; ?>
-<link rel="stylesheet" href="<?php echo esc_url( $stylesheet_url ); ?>">
+<?php if ( '' !== (string) $stylesheet_url ) : ?><link rel="stylesheet" href="<?php echo esc_url( $stylesheet_url ); ?>"><?php endif; ?>
 <?php if ( $document ) : ?><main class="pow-confirmation woocommerce" aria-labelledby="pow-review-title"><?php else : ?><section class="pow-confirmation woocommerce" aria-labelledby="pow-review-title"><?php endif; ?>
 	<header class="pow-confirmation__header"><span class="pow-confirmation__shop"><?php if ( '' !== $logo ) { echo wp_kses_post( $logo ); } else { echo esc_html( $shop_name ); } ?></span><span><?php echo esc_html__( 'Punchout', 'punchout-woocommerce' ); ?></span></header>
 	<h1 id="pow-review-title"><?php echo esc_html__( 'Review your cart', 'punchout-woocommerce' ); ?></h1>

@@ -91,6 +91,12 @@ final class Router {
 
 		if ( '/punchout/confirm' === $path && null !== $this->delivery ) {
 			$this->harden_headers();
+			if ( \POW\Addresses\ReviewChrome::wraps_request() ) {
+				// A GET of the review inside the active theme: WordPress parses the request on,
+				// and the page is drawn at template_redirect, before any guard or redirect runs.
+				add_action( 'template_redirect', [ $this->delivery, 'handle_in_theme' ], 0 );
+				return;
+			}
 			$this->delivery->handle();
 			exit;
 		}

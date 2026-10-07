@@ -331,7 +331,7 @@ final class ReturnIntegrationTest extends TestCase {
 	public function test_freight_description_carries_the_rate_label_and_the_preferred_date_never_reaches_the_poom():void{
 		$this->set_delivery(true,true);
 		$row=json_decode($this->db->session['delivery_confirmation'],true);$confirmed_at=$row['confirmed_at'];unset($row['confirmed_at']);
-		$row['schema']=2;$row['delivery']['rates'][0]['label']='Courier (3-5 working days)';$row['preferred_delivery_date']='2026-10-07';$row['confirmed_at']=$confirmed_at;
+		$row['schema']=2;$row['delivery']['rates'][0]['label']='Courier (3-5 working days)';$row['preferred_delivery_date']='2030-02-15';$row['confirmed_at']=$confirmed_at;
 		$this->db->session['delivery_confirmation']=json_encode($row);
 		$this->db->partner_fields=['emit_delivery_line'=>true,'emit_ship_to'=>true,'emit_delivery_code'=>true,'delivery_notes_policy'=>'item_detail_extrinsic','cxml_version'=>'1.2.071'];
 		$response=$this->response();
@@ -340,11 +340,11 @@ final class ReturnIntegrationTest extends TestCase {
 		$poom=(string)base64_decode(html_entity_decode($m[1]),true);
 		$xml=$this->xml($response);
 		self::assertSame('Courier (3-5 working days); Parcel two',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
-		self::assertStringNotContainsString('2026-10-07',$poom);
+		self::assertStringNotContainsString('2030-02-15',$poom);
 		self::assertStringNotContainsString('Preferred',$poom);
 		$order=array_values($GLOBALS['pow_test_orders'])[0];
-		self::assertSame('2026-10-07',$order->get_meta(QuoteOrder::META_PREFERRED_DELIVERY_DATE));
-		self::assertStringContainsString('Delivery method: Courier (3-5 working days); Parcel two. Preferred delivery date: 2026-10-07.',$order->notes[0]);
+		self::assertSame('2030-02-15',$order->get_meta(QuoteOrder::META_PREFERRED_DELIVERY_DATE));
+		self::assertStringContainsString('Delivery method: Courier (3-5 working days); Parcel two. Preferred delivery date: 2030-02-15.',$order->notes[0]);
 	}
 	/**
 	 * An ALL CAPS connection uppercases every returned line, and the freight
