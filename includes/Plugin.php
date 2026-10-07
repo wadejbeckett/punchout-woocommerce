@@ -146,6 +146,8 @@ final class Plugin {
 		// has, or they drop out of the orders screen entirely — and must
 		// still be able to convert them, which is the same argument.
 		( new \POW\Orders\Status() )->register();
+		// The store hears about each returned cart: WooCommerce's own order e-mails never fire for the custom status.
+		( new \POW\Emails\Notifications() )->register();
 
 		if ( is_admin() ) {
 			$quotes->register_admin();
