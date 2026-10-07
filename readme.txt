@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.11
+Stable tag: 0.4.12
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,10 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.12 =
+* The delivery review (/punchout/confirm) opens inside the store's own header and footer. A GET of the review is drawn at template_redirect within the active theme, so the buyer keeps the shop's layout, menus and conditions while reviewing delivery; the page carries the body class `pow-confirmation-page` and the title "Review your cart". The review's own forms still post to the dedicated no-store route and draw the plain document as before. A block theme, or a site returning false from the `punchout_review_in_theme` filter, keeps the plain document for GET too.
+* No schema change (stays 9).
 
 = 0.4.11 =
 * The buyer's identity is read whatever spelling the purchasing system's administrator typed: extrinsic names are matched ignoring case, spaces, underscores and hyphens, so `User email` and `user_email` are the same name as `UserEmail`. A certified Dynamics 365 tenant sends `User email`; before this, such a visit recorded no buyer, the quote said "an unnamed buyer", and a later visit of the same person opened a second visit instead of replacing the first. The setup archive blanks identities by the same rule.
