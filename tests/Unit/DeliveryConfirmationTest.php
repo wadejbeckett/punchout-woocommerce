@@ -240,6 +240,23 @@ final class DeliveryConfirmationTest extends TestCase {
 	public function test_tax_changes_and_independent_policy_flags_invalidate():void{$this->confirm($this->input());$this->s->estimate->taxes=[1=>'2.00'];self::assertInstanceOf(WP_Error::class,$this->returned());$this->confirm($this->input());$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_ship_to'=>true]));self::assertInstanceOf(WP_Error::class,$this->returned());}
 	public function test_preview_after_confirmation_clears_consent():void{$this->confirm($this->input());$this->preview(['notes'=>'Changed instructions']);self::assertNull($this->s->store->session->delivery_confirmation_json);self::assertInstanceOf(WP_Error::class,$this->returned());}
 	public function test_posted_null_notes_are_not_an_absent_field():void{self::assertInstanceOf(WP_Error::class,$this->preview(['notes'=>null]));}
+	/** 0.4.17: with the account's saved addresses listed, the account's own profile address is that book's default and is not offered a second time; an inbound ShipTo still is. */
+	public function test_profile_candidate_is_not_repeated_beside_the_account_book():void{
+		$address=['first_name'=>'Ada','last_name'=>'Buyer','company'=>'Company','address_1'=>'1 Main St','address_2'=>'','city'=>'Pretoria','state'=>'GP','postcode'=>'0001','country'=>'ZA','phone'=>''];
+		$account=['schema'=>1,'partner_id'=>7,'storage_user_id'=>20,'provider'=>'account','key'=>'a1','code'=>'','address'=>$address,'label'=>'Head office','source'=>'account_book','book_revision'=>null,'entry_fingerprint'=>str_repeat('b',64)];
+		$this->s->resolver->choices=[$account];
+		$this->s->address->candidate=['address'=>$address,'code'=>'','source'=>'customer'];
+		$v=$this->preview();
+		self::assertTrue(is_array($v));
+		self::assertCount(1,$v['choices']);
+		self::assertSame('account',$v['choices'][0]['provider']);
+		$this->s->address->candidate=['address'=>$address,'code'=>'','source'=>'ship_to'];
+		$v=$this->preview();
+		self::assertTrue(is_array($v));
+		self::assertCount(2,$v['choices']);
+		self::assertSame('ship_to',$v['choices'][1]['source']);
+	}
+
 	/** Decision 10: the fallback candidate is the bound account's own profile address, shared by every employee of the connection, so it is labelled as the company's and never as this buyer's own. */
 	public function test_bound_account_profile_candidate_is_labelled_as_the_company_address():void{
 		$this->s->resolver->choices=[];
