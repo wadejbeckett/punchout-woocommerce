@@ -34,7 +34,12 @@ final class Chooser {
 
 	private ?Current $current = null;
 
-	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null, private ?CompanyBook $book = null, private ?Attachment $attachments = null ) {}
+	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null, private ?CompanyBook $book = null, private ?Attachment $attachments = null, private ?AccountBook $account = null ) {}
+
+	/** Buyer adds write the company book, so they are offered only while the company book is the store a visit chooses from. */
+	private function buyer_adds( \POW\Partners\Partner $partner ): bool {
+		return null !== $this->book && $partner->buyer_addresses && ! ( $this->account?->in_use( $partner ) ?? false );
+	}
 
 	public function register(): void {
 		add_shortcode( 'punchout_delivery_confirmation', [ $this, 'markup' ] );
@@ -126,7 +131,7 @@ final class Chooser {
 			if ( ! isset( $_POST['pow_delivery_action'] ) && isset( $_POST['pow_address_refresh'] ) ) { $action = 'add_address'; }
 			$actions = [ 'review', 'submit', 'back' ];
 			// Offered only when the connection allows buyer adds; a forged add_address otherwise gets the expired page.
-			if ( null !== $this->book && $partner->buyer_addresses ) { $actions[] = 'add_address'; }
+			if ( $this->buyer_adds( $partner ) ) { $actions[] = 'add_address'; }
 			if ( ! is_string( $action ) || ! in_array( $action, $actions, true ) ) { throw new \DomainException(); }
 			if ( 'back' === $action ) {
 				if ( ! $this->invalidate( $session ) ) { throw new \DomainException(); }
@@ -188,7 +193,7 @@ final class Chooser {
 	private function add_address( Session $session, \POW\Partners\Partner $partner ): ?array {
 		$post = array_diff_key( wp_unslash( $_POST ), array_flip( self::REVIEW_FIELDS ) );
 		$nonce = $post['pow_address_nonce'] ?? null;
-		if ( null === $this->book || ! $partner->buyer_addresses || ! Fields::buyer_post_allowed( $post ) || ! is_string( $nonce ) || ! wp_verify_nonce( $nonce, self::ADD_NONCE ) ) { throw new \DomainException(); }
+		if ( ! $this->buyer_adds( $partner ) || ! Fields::buyer_post_allowed( $post ) || ! is_string( $nonce ) || ! wp_verify_nonce( $nonce, self::ADD_NONCE ) ) { throw new \DomainException(); }
 		$draft = Fields::buyer_draft( $post );
 		$typed = self::typed( $post );
 		if ( '1' === ( $post['pow_address_refresh'] ?? '' ) ) {
@@ -270,7 +275,7 @@ final class Chooser {
 	 * @param array{draft: ?array, open: bool, notice: ?string}|null $state What the last add request left behind.
 	 */
 	private function add_vars( \POW\Partners\Partner $partner, ?array $state = null ): ?array {
-		if ( null === $this->book || ! $partner->buyer_addresses ) { return null; }
+		if ( ! $this->buyer_adds( $partner ) ) { return null; }
 		try {
 			$draft = $state['draft'] ?? Fields::buyer_draft( [] );
 			$country = (string) ( $draft['address']['country'] ?? '' );

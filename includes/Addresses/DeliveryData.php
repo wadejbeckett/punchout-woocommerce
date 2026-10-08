@@ -17,7 +17,7 @@ final class DeliveryData {
 	public const MAX_JSON_BYTES = 60000;
 
 	private const ADDRESS_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
-	private const SOURCES = [ 'native' => 'company_book', 'inbound' => 'ship_to', 'customer' => 'customer', 'filter' => 'filter' ];
+	private const SOURCES = [ 'native' => 'company_book', 'account' => 'account_book', 'inbound' => 'ship_to', 'customer' => 'customer', 'filter' => 'filter' ];
 
 	/** Schema written when the buyer chose a preferred_delivery_date (schema 1 plus that key). A dateless confirmation is written as schema 1 so 0.4.7 can still read it after a rollback; schema 2 with a null date (earlier 0.4.8 builds) is still read. */
 	public const CONFIRMATION_SCHEMA = 2;
@@ -57,6 +57,11 @@ final class DeliveryData {
 			catch ( \InvalidArgumentException $e ) { $invalid(); }
 			$legacy = null === $data['book_revision'] && null === $data['entry_fingerprint'];
 			if ( ! $legacy && ( ! is_int( $data['book_revision'] ) || $data['book_revision'] < 1 || ! is_string( $data['entry_fingerprint'] ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', $data['entry_fingerprint'] ) ) ) { $invalid(); }
+		} elseif ( 'account' === $data['provider'] ) {
+			// The account's saved addresses (0.4.15): no book revision, always an entry fingerprint, a canonical code ('' allowed).
+			try { if ( Codes::sanitise( $data['code'] ) !== $data['code'] ) { $invalid(); } }
+			catch ( \InvalidArgumentException $e ) { $invalid(); }
+			if ( null !== $data['book_revision'] || ! is_string( $data['entry_fingerprint'] ) || 1 !== preg_match( '/\A[a-f0-9]{64}\z/', $data['entry_fingerprint'] ) ) { $invalid(); }
 		} elseif ( null !== $data['book_revision'] || null !== $data['entry_fingerprint'] ) { $invalid(); }
 		return $data;
 	}

@@ -117,7 +117,9 @@ final class Plugin {
 		// customer managing their delivery book from an employee shopping.
 		$visits = new Sessions\Current( $this->sessions );
 		$address_book = new Addresses\CompanyBook( $this->registry, $this->audit, $visits );
-		$address_resolver = new Addresses\Resolver( $this->registry, $address_book, $visits );
+		// The account's saved addresses (an address-book API found by shape) take precedence over the company book when present.
+		$account_book = new Addresses\AccountBook( $this->registry );
+		$address_resolver = new Addresses\Resolver( $this->registry, $address_book, $visits, $account_book );
 		$address_fields = new Addresses\Fields( $this->registry, $address_book, new Addresses\NativeImport( $this->registry, $address_book ) );
 
 		// Built before the master-switch gate because housekeeping needs it:
@@ -219,7 +221,7 @@ final class Plugin {
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
 		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), $address_resolver, $mapper, $native_sessions );
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
-		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book, $attachments );
+		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book, $attachments, $account_book );
 
 		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser ) )->register();
 		$chooser->register();
