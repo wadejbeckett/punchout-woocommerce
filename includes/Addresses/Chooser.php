@@ -14,6 +14,7 @@ use POW\Sessions\Current;
 use POW\Cart\SessionKey;
 use POW\Support\Templates;
 use POW\Cart\NativeSessionGuard;
+use POW\Orders\Attachment;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -33,7 +34,7 @@ final class Chooser {
 
 	private ?Current $current = null;
 
-	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null, private ?CompanyBook $book = null ) {}
+	public function __construct( private Plugin $plugin, private Registry $registry, private Store $sessions, private Confirmation $confirmation, private ReturnEndpoint $return_endpoint, private ?NativeSessionGuard $native = null, private ?CompanyBook $book = null, private ?Attachment $attachments = null ) {}
 
 	public function register(): void {
 		add_shortcode( 'punchout_delivery_confirmation', [ $this, 'markup' ] );
@@ -63,7 +64,7 @@ final class Chooser {
 	public function markup(): string {
 		if ( ! Transport::request_allowed() ) { return Transport::notice(); }
 		self::headers();
-		try { [ $session, $partner ] = $this->context(); return $this->render( $this->confirmation->prepare( $session, $partner ), false, $this->add_vars( $partner ) ); }
+		try { [ $session, $partner ] = $this->context(); return $this->render( $this->confirmation->prepare( $session, $partner ), false, $this->add_vars( $partner ), false, $session ); }
 		catch ( \Throwable $error ) { return $this->render( [ 'error' => self::expired() ], false ); }
 	}
 
@@ -99,11 +100,11 @@ final class Chooser {
 		try {
 			[ $session, $partner ] = $this->context();
 			$added = $this->take_added( $session );
-			if ( null === $added ) { return [ 200, $this->render( $this->confirmation->prepare( $session, $partner ), $document, $this->add_vars( $partner ), ! $document ) ]; }
+			if ( null === $added ) { return [ 200, $this->render( $this->confirmation->prepare( $session, $partner ), $document, $this->add_vars( $partner ), ! $document, $session ) ]; }
 			// The review after a successful add: the new entry selected, with the notes and date the add carried. Still no consent.
 			$view = $this->confirmation->preview( $session, $partner, $added );
 			if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $added ); }
-			return [ 200, $this->render( $view, $document, $this->add_vars( $partner, [ 'draft' => null, 'open' => false, 'notice' => self::added_notice() ] ), ! $document ) ];
+			return [ 200, $this->render( $view, $document, $this->add_vars( $partner, [ 'draft' => null, 'open' => false, 'notice' => self::added_notice() ] ), ! $document, $session ) ];
 		} catch ( \Throwable $error ) { return [ 403, $this->render( [ 'error' => self::expired() ], $document, null, ! $document ) ]; }
 	}
 
@@ -136,7 +137,7 @@ final class Chooser {
 				// Post, redirect, get: after a successful add a reload repeats the review, never the add.
 				if ( null === $redraw ) { wp_safe_redirect( Transport::supplier_url( home_url( '/punchout/confirm' ) ), 303 ); return; }
 				[ $view, $add ] = $redraw;
-				echo $this->render( $view, true, $this->add_vars( $partner, $add ) ); return;
+				echo $this->render( $view, true, $this->add_vars( $partner, $add ), false, $session ); return;
 			}
 			$input = [];
 			foreach ( [ 'rates', 'notes', 'review_digest', 'acknowledge_unknown', 'preferred_delivery_date' ] as $field ) { if ( array_key_exists( $field, $_POST ) ) { $input[$field] = wp_unslash( $_POST[$field] ); } }
@@ -145,6 +146,11 @@ final class Chooser {
 				$parts = explode( ':', wp_unslash( $_POST['choice'] ), 2 );
 				if ( count( $parts ) !== 2 ) { throw new \DomainException(); }
 				[ $input['provider'], $input['key'] ] = $parts;
+			}
+			// The optional attachment: a refused file redraws the review with its message and keeps the notes and date; it never reaches consent.
+			$refused_file = $this->attachments?->take_upload( $session, $_FILES, wp_unslash( $_POST ) );
+			if ( $refused_file instanceof \WP_Error ) {
+				echo $this->render( $this->refused( $session, $partner, $refused_file, $input ), true, $this->add_vars( $partner ), false, $session ); return;
 			}
 			if ( 'submit' === $action ) {
 				$return_nonce = $_POST['pow_return_nonce'] ?? null;
@@ -165,7 +171,7 @@ final class Chooser {
 				}
 			}
 			if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $input ); }
-			echo $this->render( $view, true, $this->add_vars( $partner ) );
+			echo $this->render( $view, true, $this->add_vars( $partner ), false, $session );
 		} catch ( \Throwable $error ) { status_header( 403 ); echo $this->render( [ 'error' => self::expired() ], true ); }
 	}
 
@@ -317,8 +323,11 @@ final class Chooser {
 		return [ $session, $partner ];
 	}
 
-	/** $enqueued: the stylesheet is already enqueued by the page (theme chrome), so the template prints no link of its own. */
-	private function render( array $view, bool $document, ?array $add = null, bool $enqueued = false ): string {
+	/** $enqueued: the stylesheet is already enqueued by the page (theme chrome), so the template prints no link of its own. With $session, a reviewable view also carries the attachment field's variables. */
+	private function render( array $view, bool $document, ?array $add = null, bool $enqueued = false, ?Session $session = null ): string {
+		if ( null !== $session && isset( $view['items'] ) && null !== $this->attachments ) {
+			try { $view['attachment'] = $this->attachments->view_vars( $session ); } catch ( \Throwable $error ) { $view['attachment'] = null; }
+		}
 		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => $enqueued ? '' : plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add ] );
 	}
 	private static function expired(): \WP_Error { return new \WP_Error( 'delivery_unavailable', __( 'Delivery could not be verified. Return to your purchasing system and open the catalog again if your session has expired.', 'punchout-woocommerce' ) ); }

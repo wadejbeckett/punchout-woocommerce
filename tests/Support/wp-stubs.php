@@ -251,6 +251,15 @@ if ( ! function_exists( 'language_attributes' ) ) {
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 	define( 'HOUR_IN_SECONDS', 3600 );
 }
+if ( ! defined( 'DAY_IN_SECONDS' ) ) {
+	define( 'DAY_IN_SECONDS', 86400 );
+}
+if ( ! defined( 'KB_IN_BYTES' ) ) {
+	define( 'KB_IN_BYTES', 1024 );
+}
+if ( ! defined( 'MB_IN_BYTES' ) ) {
+	define( 'MB_IN_BYTES', 1048576 );
+}
 
 if ( ! function_exists( 'get_option' ) ) {
 	/**

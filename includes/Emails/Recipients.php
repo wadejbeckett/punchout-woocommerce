@@ -25,4 +25,21 @@ final class Recipients {
 		}
 		return $out;
 	}
+
+	/** One valid Reply-To address from a setting, or '' when blank or invalid. */
+	public static function reply_to( string $setting ): string {
+		$candidate = strtolower( trim( $setting ) );
+		return '' !== $candidate && filter_var( $candidate, FILTER_VALIDATE_EMAIL ) ? $candidate : '';
+	}
+
+	/**
+	 * WooCommerce's header block with its Reply-to line replaced by $reply_to; unchanged when $reply_to is ''.
+	 * WC_Email already writes a Reply-to of the sender, so a second line would leave two.
+	 */
+	public static function with_reply_to( string $headers, string $reply_to ): string {
+		if ( '' === $reply_to ) { return $headers; }
+		$lines = array_filter( preg_split( '/\r\n|\n|\r/', $headers ) ?: [], static fn( string $line ): bool => '' !== trim( $line ) && 0 !== stripos( ltrim( $line ), 'reply-to:' ) );
+		$lines[] = 'Reply-to: ' . $reply_to;
+		return implode( "\r\n", $lines ) . "\r\n";
+	}
 }

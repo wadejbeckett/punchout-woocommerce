@@ -3,7 +3,8 @@
  * PunchOut order received (HTML). Override: <theme>/woocommerce/emails/pow-quote-received.php
  *
  * Variables: $order, $email_heading, $additional_content, $sent_to_admin, $plain_text, $email,
- * $connection, $buyer_name, $buyer_identity, $delivery_code, $preferred_date, $delivery_notes, $edit_url.
+ * $connection, $buyer_name, $buyer_identity, $delivery_code, $preferred_date, $delivery_notes, $edit_url,
+ * $attachment (null or {name, size, url}: the buyer's file; the link needs a signed-in store administrator).
  *
  * @package POW
  */
@@ -27,6 +28,7 @@ printf(
 	<?php if ( '' !== $delivery_code ) : ?><li><?php esc_html_e( 'Delivery address code:', 'punchout-woocommerce' ); ?> <strong><?php echo esc_html( $delivery_code ); ?></strong></li><?php endif; ?>
 	<?php if ( '' !== $preferred_date ) : ?><li><?php esc_html_e( 'Preferred delivery date:', 'punchout-woocommerce' ); ?> <strong><?php echo esc_html( $preferred_date ); ?></strong></li><?php endif; ?>
 	<?php if ( '' !== $delivery_notes ) : ?><li><?php esc_html_e( 'Buyer notes:', 'punchout-woocommerce' ); ?> <?php echo esc_html( $delivery_notes ); ?></li><?php endif; ?>
+	<?php if ( ! empty( $attachment ) ) : ?><li><?php esc_html_e( 'Attachment:', 'punchout-woocommerce' ); ?> <a href="<?php echo esc_url( $attachment['url'] ); ?>"><?php echo esc_html( $attachment['name'] ); ?></a> (<?php echo esc_html( $attachment['size'] ); ?>)</li><?php endif; ?>
 </ul>
 
 <?php do_action( 'woocommerce_email_order_meta', $order, $sent_to_admin, $plain_text, $email ); ?>
