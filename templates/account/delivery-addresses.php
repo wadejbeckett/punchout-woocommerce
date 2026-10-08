@@ -3,6 +3,7 @@
  * Private company delivery editor. Embed outside any existing admin form.
  * Native field markup and the hidden-field closure are prepared by Fields after authorization.
  * @var int $partner_id
+ * @var int $account_addresses How many saved addresses the connection's account holds through the site's address-book API (0.4.15); when more than zero, visits choose from those and not from this book.
  * @var array $book
  * @var array|null $notice
  * @var array $draft
@@ -21,6 +22,9 @@ $prefix = 'pow_address_' . $partner_id;
 ?>
 <section class="pow-company-delivery-addresses" aria-labelledby="<?php echo esc_attr( $prefix . '_title' ); ?>">
 	<h2 id="<?php echo esc_attr( $prefix . '_title' ); ?>"><?php esc_html_e( 'Company delivery addresses', 'punchout-woocommerce' ); ?></h2>
+	<?php if ( ! empty( $account_addresses ) ) : ?>
+		<div class="woocommerce-info" role="status"><?php echo esc_html( sprintf( /* translators: %d: number of saved addresses */ _n( 'Visits on this connection choose from the %d saved address of its store account (the account’s own address book), not from this company book. Maintain delivery addresses there.', 'Visits on this connection choose from the %d saved addresses of its store account (the account’s own address book), not from this company book. Maintain delivery addresses there.', (int) $account_addresses, 'punchout-woocommerce' ), (int) $account_addresses ) ); ?></div>
+	<?php endif; ?>
 	<?php if ( is_array( $notice ) ) : ?>
 		<div class="<?php echo 'error' === $notice['type'] ? 'woocommerce-error' : 'woocommerce-message'; ?>" role="alert"><?php echo esc_html( $notice['text'] ); ?></div>
 	<?php endif; ?>

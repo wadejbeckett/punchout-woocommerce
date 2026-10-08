@@ -166,6 +166,62 @@ final class Command {
 	}
 
 	/**
+	 * Copy a connection's enabled company-book addresses into its account's saved addresses (the site's
+	 * address-book API) and carry their delivery codes over. Reruns skip addresses the account already holds.
+	 *
+	 * ## OPTIONS
+	 *
+	 * <connection-id>
+	 * : The connection row id (see `wp punchout partners`).
+	 *
+	 * [--dry-run]
+	 * : Show what would be copied without writing.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp punchout migrate-addresses 1 --dry-run
+	 *     wp punchout migrate-addresses 1
+	 *
+	 * @subcommand migrate-addresses
+	 *
+	 * @param array<int, string>    $args       Positional args.
+	 * @param array<string, string> $assoc_args Flags.
+	 */
+	public function migrate_addresses( array $args, array $assoc_args = [] ): void {
+		$registry = $this->plugin->registry();
+		if ( null === $registry ) { WP_CLI::error( 'WooCommerce is not active.' ); }
+		if ( ! \POW\Addresses\AccountBook::available() ) { WP_CLI::error( 'No address-book API on this site (a get_address_book( WC_Customer, type ) function): nothing to migrate into.' ); }
+		$partner_id = (int) ( $args[0] ?? 0 );
+		$partner = $registry->find( $partner_id );
+		if ( ! $partner ) { WP_CLI::error( "No connection with id {$partner_id}." ); }
+		if ( $partner->owner_user_id <= 0 ) { WP_CLI::error( 'That connection has no bound account.' ); }
+		$dry_run = ! empty( $assoc_args['dry-run'] );
+		$audit = $this->plugin->audit(); $sessions = $this->plugin->sessions();
+		if ( null === $audit || null === $sessions ) { WP_CLI::error( 'The plugin is not fully booted.' ); }
+		$company = new \POW\Addresses\CompanyBook( $registry, $audit, new \POW\Sessions\Current( $sessions ) );
+		$account = new \POW\Addresses\AccountBook( $registry );
+		$report = $registry->with_partner_lock( $partner->id, function () use ( $registry, $partner, $company, $account, $dry_run ) {
+			$fresh = $registry->find( $partner->id );
+			if ( ! $fresh || $fresh->owner_user_id !== $partner->owner_user_id ) { return new \WP_Error( 'address_state_unavailable', 'The connection changed while migrating.' ); }
+			$book = $company->read_for_partner_locked( $fresh );
+			if ( $book instanceof \WP_Error ) { return $book; }
+			return $account->migrate_locked( $fresh, $book['addresses'], $dry_run );
+		} );
+		if ( $report instanceof \WP_Error ) { WP_CLI::error( $report->get_error_message() ); }
+		$rows = [];
+		foreach ( $report['copied'] as $row ) { $rows[] = [ 'company_key' => $row['from'], 'account_key' => $row['to'], 'label' => $row['label'], 'code' => $row['code'], 'result' => $dry_run ? 'would copy' : 'copied' ]; }
+		foreach ( $report['skipped'] as $row ) { $rows[] = [ 'company_key' => $row['from'], 'account_key' => $row['to'], 'label' => $row['label'], 'code' => '', 'result' => 'already there' ]; }
+		if ( [] === $rows ) { WP_CLI::log( 'No enabled company-book entries to migrate.' ); return; }
+		\WP_CLI\Utils\format_items( 'table', $rows, [ 'company_key', 'account_key', 'label', 'code', 'result' ] );
+		if ( ! $dry_run && [] !== $report['copied'] ) {
+			$this->plugin->audit()?->write( 'address_book_migrated', [ 'partner_id' => $partner->id, 'user_id' => $partner->owner_user_id, 'result' => 'ok', 'detail' => [ 'via' => 'wp-cli', 'copied' => count( $report['copied'] ), 'skipped' => count( $report['skipped'] ), 'default' => $report['default'] ] ] );
+			WP_CLI::success( sprintf( '%d address(es) copied into the account’s saved addresses%s; %d already there. Visits now choose from the account’s saved addresses.', count( $report['copied'] ), null !== $report['default'] ? ' (default: ' . $report['default'] . ')' : '', count( $report['skipped'] ) ) );
+		} else {
+			WP_CLI::success( sprintf( 'Dry run: %d to copy, %d already there.', count( $report['copied'] ), count( $report['skipped'] ) ) );
+		}
+	}
+
+	/**
 	 * Run housekeeping now (visit expiry, log trim, quote retention).
 	 *
 	 * @subcommand gc

@@ -111,7 +111,10 @@ final class Fields {
 				foreach ( $values as $name => $value ) { $html .= '<input type="hidden" name="' . esc_attr( $name ) . '" value="' . esc_attr( (string) $value ) . '" />'; }
 				return $html;
 			};
-			return Templates::render( 'account/delivery-addresses', [ 'partner_id' => $partner_id, 'book' => $book, 'notice' => $response['notice'] ?? null, 'draft' => $draft, 'key' => $key, 'revision' => $revision, 'form_fields' => $form_fields, 'hidden' => $hidden, 'preview' => $response['preview'] ?? null, 'copy' => $response['copy'] ?? null, 'copy_revision' => $response['revision'] ?? $book['revision'] ] );
+			// Since 0.4.15 a connection whose account holds saved addresses (address-book API) offers those to visits, not this book.
+			$account_count = 0;
+			try { $partner = $this->registry->find( $partner_id ); if ( $partner && $partner->owner_user_id > 0 && AccountBook::available() ) { $entries = ( new AccountBook( $this->registry ) )->read( $partner->owner_user_id ); $account_count = is_array( $entries ) ? count( $entries ) : 0; } } catch ( \Throwable $error ) { $account_count = 0; }
+			return Templates::render( 'account/delivery-addresses', [ 'partner_id' => $partner_id, 'account_addresses' => $account_count, 'book' => $book, 'notice' => $response['notice'] ?? null, 'draft' => $draft, 'key' => $key, 'revision' => $revision, 'form_fields' => $form_fields, 'hidden' => $hidden, 'preview' => $response['preview'] ?? null, 'copy' => $response['copy'] ?? null, 'copy_revision' => $response['revision'] ?? $book['revision'] ] );
 		} catch ( \Throwable $error ) { return self::error_markup( self::unavailable(), $response['draft'] ?? $response['copy'] ?? null ); }
 	}
 
