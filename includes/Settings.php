@@ -78,6 +78,15 @@ class Settings {
 		// by button_class_tokens(); empty adds nothing.
 		'extra_button_classes' => '',
 
+		// The review page's optional file field (0.4.14): on by default; the
+		// label and help text are blank for the translated defaults
+		// ("Attachment", "Optional: a sheet or document for this order.").
+		// The punchout_attachment_{enabled,label,help,types,max_bytes}
+		// filters run last, in Orders\Attachment.
+		'attachment_enabled'   => 'yes',
+		'attachment_label'     => '',
+		'attachment_help'      => '',
+
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends
 		// it to the item description (scope §4.3).
