@@ -103,6 +103,8 @@ final class QuoteAddressTest extends TestCase {
 	public function test_payload_keeps_all_ten_local_fields_and_only_destination_metadata(): void {
 		$choice=$this->choice();
 		self::assertSame(['address'=>$this->address(),'code'=>'','source'=>'company_book'],QuoteAddress::payload($choice));
+		// 0.4.15/0.4.16: a choice from the account's saved addresses projects the same way.
+		self::assertSame(['address'=>$this->address(),'code'=>'A-001','source'=>'account_book'],QuoteAddress::payload($this->choice(['provider'=>'account','key'=>'a1','code'=>'A-001','source'=>'account_book','book_revision'=>null])));
 		self::assertSame($this->choice(),$choice);
 		self::assertNull(QuoteAddress::payload(null));
 	}
