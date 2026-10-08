@@ -20,7 +20,7 @@ final class QuoteAddress {
 	/** Snapshot bounds match Shape, without calling mutable Woo validation on accepted values. */
 	private const ADDRESS_LIMITS = [ 'first_name' => 190, 'last_name' => 190, 'company' => 190, 'address_1' => 190, 'address_2' => 190, 'city' => 190, 'state' => 190, 'postcode' => 32, 'country' => 2, 'phone' => 100 ];
 	/** 'filter' stays decodable for snapshots taken while the removed extension filter still produced candidates; nothing produces it now. */
-	private const SOURCES = [ 'company_book', 'filter', 'ship_to', 'customer' ];
+	private const SOURCES = [ 'company_book', 'account_book', 'filter', 'ship_to', 'customer' ];
 
 	public function __construct( private Resolver $resolver ) {}
 
