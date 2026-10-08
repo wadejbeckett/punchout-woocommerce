@@ -54,7 +54,7 @@ function load_source(): void {
 	foreach ( ['Provider','Resolver','NativeProvider'] as $name ) {
 		$file = dirname( __DIR__, 2 ) . '/includes/Addresses/' . $name . '.php';
 		\PHPUnit\Framework\TestCase::assertTrue( is_file( $file ), 'Address provider source is missing.' );
-		$source = str_replace( 'namespace POW\\Addresses;', 'namespace POW\\Tests\\AddressProvider; use POW\\Addresses\\DeliveryData;', file_get_contents( $file ) );
+		$source = str_replace( 'namespace POW\\Addresses;', 'namespace POW\\Tests\\AddressProvider; use POW\\Addresses\\DeliveryData; use POW\\Addresses\\AccountBook;', file_get_contents( $file ) );
 		$source = str_replace( [ 'use POW\\Partners\\Registry;', 'use POW\\Sessions\\Current;' ], '', $source );
 		eval( substr( $source, 5 ) ); // Dependency bindings only; production method bodies are unchanged.
 	}

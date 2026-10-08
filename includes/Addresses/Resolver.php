@@ -12,7 +12,8 @@ use POW\Sessions\Session;
 defined( 'ABSPATH' ) || exit;
 
 final class Resolver {
-	public function __construct( private Registry $registry, private CompanyBook $book, private Current $visits ) {}
+	/** $account: the adapter for the account's saved addresses (0.4.15); without it, or when it offers nothing, the company book is the store. */
+	public function __construct( private Registry $registry, private CompanyBook $book, private Current $visits, private ?AccountBook $account = null ) {}
 
 	public function current(): Provider { return new NativeProvider( $this->registry, $this->book, $this->visits ); }
 
@@ -25,6 +26,9 @@ final class Resolver {
 			return $this->registry->with_partner_lock( $partner->id, function () use ( $session, $partner ) {
 				$fresh = $this->partner_for_user( $session->user_id );
 				if ( ! $this->is_request_visit( $session ) || ! self::bound_login( $session, $partner ) || ! $fresh || ! $fresh->is_active() || $fresh->id !== $partner->id || $fresh->owner_user_id !== $partner->owner_user_id ) { return self::error( 'address_unavailable' ); }
+				// The account's saved addresses come first; the company book only while the account offers none.
+				$account = $this->account?->choices_locked( $fresh );
+				if ( null !== $account ) { return $account; }
 				$book = $this->book->read_for_partner_locked( $fresh );
 				if ( $book instanceof \WP_Error ) { return self::error( 'address_state_unavailable' ); }
 				$choices = [];
@@ -106,6 +110,10 @@ final class Resolver {
 			$current_address = Shape::normalise( $choice['address'] );
 			if ( $current_address instanceof \WP_Error ) { return self::error( 'address_invalid' === $current_address->get_error_code() ? 'address_unavailable' : 'address_state_unavailable' ); }
 			if ( ! hash_equals( DeliveryData::fingerprint( $choice['address'] ), DeliveryData::fingerprint( $current_address ) ) ) { return self::error( 'address_changed' ); }
+			if ( AccountBook::PROVIDER === $choice['provider'] ) {
+				if ( null === $this->account ) { return self::error( 'address_unavailable' ); }
+				return $this->account->validate_choice_locked( $fresh, $choice );
+			}
 			if ( 'native' !== $choice['provider'] ) { return true; }
 			if ( null === $choice['entry_fingerprint'] || null === $choice['book_revision'] ) { return self::error( 'address_changed' ); }
 			$book = $this->book->read_for_partner_locked( $fresh );
