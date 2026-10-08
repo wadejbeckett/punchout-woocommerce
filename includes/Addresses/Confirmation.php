@@ -196,6 +196,8 @@ final class Confirmation implements ReturnConfirmation {
 			$candidate = $this->addresses->resolve_destination( $candidate_session, $company );
 			$state = $this->registry->with_partner_lock( $company->id, fn() => $this->authorized_locked( $fresh, $company ) );
 			if ( $state instanceof \WP_Error ) { return $state; }
+			// The account's native shipping address is its address book's default (the book writes it there), so it is already listed when the account book supplies the choices.
+			if ( null !== $candidate && 'customer' === $candidate['source'] && 'account' === ( $choices[0]['provider'] ?? null ) ) { $candidate = null; }
 			if ( null !== $candidate ) {
 				$provider = match ( $candidate['source'] ) { 'ship_to' => 'inbound', 'customer' => 'customer', 'filter' => 'filter', default => throw new \DomainException() };
 				$choices[] = [ 'schema' => 1, 'partner_id' => $company->id, 'storage_user_id' => $company->owner_user_id, 'provider' => $provider, 'key' => 'candidate', 'code' => $candidate['code'], 'address' => $candidate['address'], 'label' => match ( $provider ) { 'inbound' => __( 'Purchasing system destination', 'punchout-woocommerce' ), 'customer' => __( 'Company address', 'punchout-woocommerce' ), default => __( 'Suggested delivery address', 'punchout-woocommerce' ) }, 'source' => $candidate['source'], 'book_revision' => null, 'entry_fingerprint' => null ];

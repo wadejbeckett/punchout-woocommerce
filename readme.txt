@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.16
+Stable tag: 0.4.17
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,10 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.17 =
+* When the account's saved addresses supply the review's list, the account's own WooCommerce shipping address is no longer offered a second time as "Company address": an address book writes its default into that field, so it was already listed. An inbound purchasing-system ShipTo is still offered.
+* No schema change (stays 9).
 
 = 0.4.16 =
 * Fix: a review whose address came from the account's saved addresses (0.4.15) answered "Delivery changed or could not be verified" with no address listed, because the Quote destination projection did not accept the `account_book` source. 0.4.15 should not be installed; use this release.
