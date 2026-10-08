@@ -74,6 +74,7 @@ final class Cron {
 		$this->revoke_surviving_logins();
 		$this->audit->trim( $this->settings->int( 'log_retention_days' ) );
 		$this->quotes->expire();
+		\POW\Orders\Attachment::sweep();
 	}
 
 	/**

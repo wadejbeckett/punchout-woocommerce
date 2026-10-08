@@ -3,6 +3,7 @@
 declare( strict_types = 1 );
 namespace POW\Emails;
 
+use POW\Orders\Attachment;
 use POW\Orders\QuoteOrder;
 
 defined( 'ABSPATH' ) || exit;
@@ -11,7 +12,7 @@ defined( 'ABSPATH' ) || exit;
  * Sent to the store when a buyer's cart returns and its Punchout Quote order is created.
  * Configured like any WooCommerce e-mail (WooCommerce → Settings → Emails → PunchOut order
  * received): enabled, recipients (comma-separated; the store's admin address when empty),
- * subject, heading, type. Templates: templates/emails/pow-quote-received.php and
+ * Reply-To (0.4.14; blank keeps WooCommerce's sender), subject, heading, type. Templates: templates/emails/pow-quote-received.php and
  * templates/emails/plain/pow-quote-received.php, overridable in the theme under
  * woocommerce/emails/ like WooCommerce's own.
  */
@@ -53,6 +54,11 @@ final class QuoteReceived extends \WC_Email {
 		$this->restore_locale();
 	}
 
+	/** The Reply-To setting replaces WooCommerce's sender Reply-to line when it holds a valid address. */
+	public function get_headers() {
+		return Recipients::with_reply_to( (string) parent::get_headers(), Recipients::reply_to( (string) $this->get_option( 'reply_to', '' ) ) );
+	}
+
 	/** Comma-separated recipients, validated; the admin address when the setting is empty. */
 	public function get_recipient(): string {
 		return implode( ', ', Recipients::resolve( (string) $this->recipient, (string) get_option( 'admin_email' ) ) );
@@ -75,7 +81,15 @@ final class QuoteReceived extends \WC_Email {
 			'preferred_date'     => (string) $order->get_meta( QuoteOrder::META_PREFERRED_DELIVERY_DATE ),
 			'delivery_notes'     => (string) $order->get_customer_note(),
 			'edit_url'           => $order->get_edit_order_url(),
+			'attachment'         => self::attachment_vars( $order ),
 		];
+	}
+
+	/** @return array{name: string, size: string, url: string}|null The buyer's attachment for the templates: name, size and the staff download link. */
+	private static function attachment_vars( \WC_Order $order ): ?array {
+		$attachment = Attachment::for_order( $order );
+		if ( null === $attachment ) { return null; }
+		return [ 'name' => $attachment['name'], 'size' => Attachment::format_size( $attachment['size'] ), 'url' => Attachment::download_url( $order, $attachment ) ];
 	}
 
 	public function get_content_html(): string {
@@ -91,6 +105,7 @@ final class QuoteReceived extends \WC_Email {
 		$this->form_fields = [
 			'enabled'    => [ 'title' => __( 'Enable/Disable', 'punchout-woocommerce' ), 'type' => 'checkbox', 'label' => __( 'Enable this email notification', 'punchout-woocommerce' ), 'default' => 'yes' ],
 			'recipient'  => [ 'title' => __( 'Recipient(s)', 'punchout-woocommerce' ), 'type' => 'text', 'description' => sprintf( /* translators: %s: admin e-mail */ __( 'Comma-separated e-mail addresses. Defaults to %s.', 'punchout-woocommerce' ), '<code>' . esc_html( (string) get_option( 'admin_email' ) ) . '</code>' ), 'placeholder' => '', 'default' => '', 'desc_tip' => true ],
+			'reply_to'   => [ 'title' => __( 'Reply-To', 'punchout-woocommerce' ), 'type' => 'text', 'description' => __( 'Replies to this e-mail go to this address. Blank keeps WooCommerce’s sender address.', 'punchout-woocommerce' ), 'placeholder' => '', 'default' => '', 'desc_tip' => true ],
 		] + $this->form_fields;
 		unset( $this->form_fields['enabled_duplicate'] );
 	}

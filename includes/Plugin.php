@@ -148,9 +148,13 @@ final class Plugin {
 		( new \POW\Orders\Status() )->register();
 		// The store hears about each returned cart: WooCommerce's own order e-mails never fire for the custom status.
 		( new \POW\Emails\Notifications() )->register();
+		// The buyer's optional file: claimed by the Quote before the e-mail, downloadable by staff from the order screen.
+		$attachments = new \POW\Orders\Attachment( $this->settings );
+		$attachments->register();
 
 		if ( is_admin() ) {
 			$quotes->register_admin();
+			$attachments->register_admin();
 		}
 
 		// The [punchout_docs] page is registered before the master-switch
@@ -215,7 +219,7 @@ final class Plugin {
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
 		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), $address_resolver, $mapper, $native_sessions );
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
-		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book );
+		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book, $attachments );
 
 		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser ) )->register();
 		$chooser->register();

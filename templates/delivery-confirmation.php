@@ -2,7 +2,7 @@
 /**
  * Theme-overridable delivery confirmation; all choices and amounts are prepared server-side.
  *
- * Variables: $view, $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes and preferred date as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
+ * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes and preferred date as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
  *
  * @package POW @license AGPL-3.0-or-later
  */
@@ -33,7 +33,7 @@ if ( $document ) : ?>
 	<?php if ( ! isset( $view['items'] ) ) : ?>
 		<p><a href="<?php echo esc_url( $cart_url ); ?>"><?php echo esc_html__( 'Back to cart', 'punchout-woocommerce' ); ?></a></p>
 	<?php else : ?>
-	<form method="post" action="<?php echo esc_url( $action_url ); ?>">
+	<form method="post" action="<?php echo esc_url( $action_url ); ?>" enctype="multipart/form-data">
 		<input type="hidden" name="pow_nonce" value="<?php echo esc_attr( $nonce ); ?>">
 		<input type="hidden" name="pow_return_nonce" value="<?php echo esc_attr( $return_nonce ); ?>">
 		<input type="hidden" name="review_digest" value="<?php echo esc_attr( $view['review_digest'] ?? '' ); ?>">
@@ -79,7 +79,18 @@ if ( $document ) : ?>
 			<?php if ( ! ( $delivery && 'not_required' === $delivery['status'] ) ) : ?>
 			<label for="pow-preferred-date"><?php echo esc_html__( 'Preferred delivery date', 'punchout-woocommerce' ); ?></label><input type="date" id="pow-preferred-date" name="preferred_delivery_date" value="<?php echo esc_attr( (string) ( $view['preferred_delivery_date'] ?? '' ) ); ?>"<?php if ( ! empty( $view['preferred_delivery_date_min'] ) ) { echo ' min="' . esc_attr( $view['preferred_delivery_date_min'] ) . '"'; } ?>><p class="pow-confirmation__hint"><?php echo esc_html__( 'Optional. Saved with the shop’s copy of this order; it is not sent to your purchasing system.', 'punchout-woocommerce' ); ?></p>
 			<?php endif; ?>
-			<label class="pow-confirmation__hint" for="pow-delivery-notes"><?php echo esc_html__( 'Optional. Up to 2,000 characters.', 'punchout-woocommerce' ); ?></label><textarea id="pow-delivery-notes" name="notes" rows="4" maxlength="2000"><?php echo esc_textarea( $view['notes'] ); ?></textarea></section>
+			<label class="pow-confirmation__hint" for="pow-delivery-notes"><?php echo esc_html__( 'Optional. Up to 2,000 characters.', 'punchout-woocommerce' ); ?></label><textarea id="pow-delivery-notes" name="notes" rows="4" maxlength="2000"><?php echo esc_textarea( $view['notes'] ); ?></textarea>
+			<?php $attachment = isset( $view['attachment'] ) && is_array( $view['attachment'] ) ? $view['attachment'] : null; if ( null !== $attachment ) : ?>
+			<div class="pow-confirmation__attachment">
+				<label for="pow-attachment"><?php echo esc_html( $attachment['label'] ); ?></label>
+				<?php if ( ! empty( $attachment['pending'] ) ) : ?>
+				<p class="pow-confirmation__attached"><?php echo esc_html__( 'Attached:', 'punchout-woocommerce' ); ?> <strong><?php echo esc_html( $attachment['pending']['name'] ); ?></strong> (<?php echo esc_html( $attachment['pending']['size'] ); ?>) <label class="pow-confirmation__rate"><input type="checkbox" name="<?php echo esc_attr( \POW\Orders\Attachment::REMOVE_FIELD ); ?>" value="1"><span><?php echo esc_html__( 'Remove it', 'punchout-woocommerce' ); ?></span></label></p>
+				<p class="pow-confirmation__hint"><?php echo esc_html__( 'Choosing another file replaces it.', 'punchout-woocommerce' ); ?></p>
+				<?php endif; ?>
+				<input type="file" id="pow-attachment" name="<?php echo esc_attr( \POW\Orders\Attachment::FIELD ); ?>" accept="<?php echo esc_attr( $attachment['accept'] ); ?>">
+				<p class="pow-confirmation__hint"><?php echo esc_html( $attachment['help'] ); ?> <?php echo esc_html( $attachment['limit'] ); ?> <?php echo esc_html__( 'It stays with the shop’s copy of this order; it is not sent to your purchasing system.', 'punchout-woocommerce' ); ?></p>
+			</div>
+			<?php endif; ?></section>
 		<section class="pow-confirmation__section" aria-labelledby="pow-items-title"><h2 id="pow-items-title"><?php echo esc_html__( 'Items for approval', 'punchout-woocommerce' ); ?></h2><div class="pow-confirmation__table"><table><thead><tr><th scope="col"><?php echo esc_html__( 'Item', 'punchout-woocommerce' ); ?></th><th scope="col"><?php echo esc_html__( 'Quantity', 'punchout-woocommerce' ); ?></th><th scope="col" class="pow-confirmation__number"><?php echo esc_html__( 'Unit price', 'punchout-woocommerce' ); ?></th><th scope="col" class="pow-confirmation__number"><?php echo esc_html__( 'Line total', 'punchout-woocommerce' ); ?></th></tr></thead><tbody>
 			<?php foreach ( $view['items'] as $item ) : ?><tr><td><?php echo esc_html( $item['description'] ); ?><small><?php echo esc_html( $item['supplier_part_id'] ); ?></small></td><td><?php echo esc_html( (string) $item['quantity'] ); ?></td><td class="pow-confirmation__number"><?php echo esc_html( $money( $item['unit_price_cents'] ) ); ?></td><td class="pow-confirmation__number"><?php echo esc_html( $money( \POW\Addresses\ReviewFormat::line_total_cents( $item ) ) ); ?></td></tr><?php endforeach; ?>
 		</tbody></table></div></section>
