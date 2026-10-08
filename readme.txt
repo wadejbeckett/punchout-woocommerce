@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.14
+Stable tag: 0.4.15
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,11 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.15 =
+* Delivery addresses from the connection account's own saved addresses. When the site has an address-book API — a PHP function `get_address_book( WC_Customer $customer, string $type )` returning an object with `addresses()` and `default_key()`, found by that shape and never by the name of a product (or named outright through the `punchout_address_book_function` filter) — a visit chooses from the account's saved shipping addresses, the account's default first; the company book is used only while no such API exists or the account holds no usable address (filter `punchout_address_provider`: `auto` or `company`). Delivery codes stay the plugin's own: a per-connection map on the account (`_pow_account_codes_{connection}`) of address key → code and address fingerprint, so a key the extension reuses after a deletion gets a new code from the connection prefix and the old one is retired. Choices carry `provider` `account`, `source` `account_book` and an entry fingerprint (key, label, address, code); a stored selection whose address, label or code changed asks for a fresh review. Buyer "add address" (company book) is not offered while the account's addresses are in use.
+* `wp punchout migrate-addresses <connection-id> [--dry-run]` copies the connection's enabled company-book entries into the account's saved addresses (nickname = the entry's label; the first copied entry becomes the default when the account had none) and carries their delivery codes into the map; reruns skip addresses the account already holds. Audit event `address_book_migrated`.
+* No schema change (stays 9).
 
 = 0.4.14 =
 * The review page offers an optional file beside the delivery notes ("Attachment" by default). The file is checked by extension, by what its bytes are and by size (default xlsx, xls, csv, pdf and images, 10 MB or PHP's limit if lower; filters `punchout_attachment_types`, `punchout_attachment_max_bytes`); a refused file is reported in plain words and the buyer's notes and date are kept. An accepted file waits in the visit's own session (it survives "Update delivery options", can be removed or replaced) and is claimed by the Punchout Quote order when the cart returns: stored privately under `uploads/punchout-woocommerce/attachments/` (random directory, 0700, denied by `.htaccess`, never a public URL), recorded as `_pow_attachment` and an order note, shown on the order screen with a download link for store staff (`manage_woocommerce`, through admin-post.php), and linked in the "PunchOut order received" e-mail. Nothing is sent to the purchasing system. Files from visits that never returned are swept after two days by the hourly housekeeping job. Settings → PunchOut: "Attachment field" (on by default), "Attachment label" and "Attachment help text" (filters `punchout_attachment_enabled`, `punchout_attachment_label`, `punchout_attachment_help`).
