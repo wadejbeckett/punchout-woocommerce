@@ -261,7 +261,9 @@ Unverified versions do not gain optional postal, code or note fields through ver
 - **Visits**: the exact WP session token created at auto-login is recorded, so the return destroys *that* login only and a colleague's stays live; the visit also owns one `wp_woocommerce_sessions` row under its own key, which is the only basket its requests read or write and which a foreign key is refused for. Auth-cookie expiry is the customer's session TTL (default 4 h), the WooCommerce session and any Store API cart token are capped at what the visit has left, and cron reaps stragglers — it is the only collector of abandoned visits.
 - **Checkout**: blocked at classic checkout, the Store API and direct payment boundaries inside a punchout visit, and nowhere else. A password login to the bound account shops and checks out normally; a Punchout Quote is not payable anywhere.
 - **Pre-auth surface** is `/punchout/setup` alone: 2 MB body cap, content-type check, XXE hardening, per-(customer, IP) rate limiting, optional per-customer CIDR allowlist, generic 401s.
-- **Pricing-leak guards**: every `/punchout/*` response sends `no-store` + `X-Robots-Tag: noindex`; the handoff page is never cacheable; add-to-cart validates range server-side against WooCommerce's own visibility and purchasability chain (hiding a button is not access control); and inside a visit the request is refused at wp-admin, `/wp/v2/users*`, `/wp/v2/application-passwords*`, application passwords for the account, every My Account page the connection has not ticked, wp-login.php except logout, another visit's basket (including by Cart-Token) and any quote order that is not this visit's own. No user can be created inside a visit through WordPress's user insert. Add `Disallow: /punchout/` to robots.txt at deployment (see runbook) — the plugin does not rewrite robots.txt itself.
+- **Anonymous audit rows** (0.4.22): a request that has not authenticated (a setup whose sender has not proved its secret, a refused StartPage token, `/punchout/order`) writes its audit rows only within a per-IP budget of 60 requests an hour; later ones are answered but leave no row. Such a setup body is kept as a 4 KB excerpt with its length and SHA-256; an authenticated one keeps up to 64 KB. Identities and the shared secret are blanked before any cut.
+- **Lifetimes**: StartPage links and visits live at most 7 days (`Partner::MAX_TTL`), whatever a connection or the settings say.
+- **Pricing-leak guards**: every `/punchout/*` response sends `no-store` + `X-Robots-Tag: noindex` + `X-Content-Type-Options: nosniff`; the handoff page is never cacheable; add-to-cart validates range server-side against WooCommerce's own visibility and purchasability chain (hiding a button is not access control); and inside a visit the request is refused at wp-admin, `/wp/v2/users*`, `/wp/v2/application-passwords*`, application passwords for the account, every My Account page the connection has not ticked, wp-login.php except logout, another visit's basket (including by Cart-Token) and any quote order that is not this visit's own. No user can be created inside a visit through WordPress's user insert. Add `Disallow: /punchout/` to robots.txt at deployment (see runbook) — the plugin does not rewrite robots.txt itself.
 - **Audit**: every setup — including a refusal for an unbound account or an over-cap connection — token redemption, login, rejected add-to-cart, cart send (full XML), quote order event, rotation and GC action lands in `wp_pow_log` with secrets redacted, and the buyer is named there by a 12-hex identity hash, never by a raw e-mail address. WooCommerce log files rotate away; the dispute evidence (prices quoted to a named buyer at a timestamp) must not.
 
 ---
@@ -284,9 +286,10 @@ wp punchout generate-key
 | Setting | Default | Notes |
 |---|---|---|
 | Enable punchout | off | Master switch; off = endpoints and surfaces inert |
-| Landing page | shop page | Post-login redirect + route-guard home |
-| Login link lifetime | 300 s | One-time StartPage token TTL |
-| Session lifetime | 4 h | Punchout login TTL (per-partner override) |
+| Landing page | shop page | Post-login redirect + route-guard home; inside an active visit the site's front page also redirects here (0.4.22) |
+| Login link lifetime | 300 s | One-time StartPage token TTL; at most 7 days (604800 s), per-partner override within the same cap |
+| Session lifetime | 4 h | Punchout login TTL (per-partner override); at most 7 days (604800 s). A longer stored value is used as 7 days |
+| Review page title | "Review" | Shown as the page title, the last breadcrumb and the document title while the delivery review is drawn inside the theme (posing as the Cart page); blank = the default |
 | Setup rate limit | 30/min | Per partner+IP on `/punchout/setup`; 0 uses the default (30). The public self-test preserves positive values and uses 10/min when this is 0. |
 | Setup edge limit | 120/min | Per IP before method checks, body reads, parsing or audit storage on `/punchout/setup`; 0 uses the default (120) |
 | Log retention | 400 days | Audit-table trim horizon |
@@ -422,6 +425,9 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 | `pow_delivery_codes_enabled` | filter | Legacy custom-docs-template display hint; the bundled docs show all delivery settings, and this filter does not control emission |
 | `pow_handoff_copy` / `pow_expired_token_message` | filter | Buyer-facing strings |
 | `pow_start_redirect` | filter | Post-login destination |
+| `punchout_visit_front_page_redirect` | filter | Where the site's front page sends a buyer inside an active visit (`$url, $visit`); default the landing page, `''` keeps the front page. Never for administrators or shop managers, outside a visit or when the landing page is the front page |
+| `punchout_review_title` | filter | The review page's title while drawn inside the theme (applied after the setting); `''` turns the relabel off. It reaches anything that reads `get_the_title()`/`single_post_title()` for the posed page (WooCommerce and most theme breadcrumbs and title bars), not SEO-plugin breadcrumbs that keep their own stored titles |
+| `punchout_review_page_id` / `punchout_review_in_theme` | filter | Which page the theme-drawn review poses as (0 = none); whether the review is drawn inside the theme at all |
 | `pow_client_ip` | filter | Trust a proxy header for rate limiting / allowlists / audit |
 | `pow_is_punchout()` | function | Presentation gating for themes/builders (never access control). Namespaced: call it as `POW\pow_is_punchout()`, or check `function_exists( 'POW\\pow_is_punchout' )` — the unqualified name does not exist. |
 | `pow-visit` | body class | Added to `<body>` on every page served inside a live visit. Page builders and theme CSS gate presentation on it (`body.pow-visit .my-trade-console { display: none }`, or a builder's body-class condition); never access control. |

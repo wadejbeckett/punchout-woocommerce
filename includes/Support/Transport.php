@@ -96,6 +96,7 @@ final class Transport {
 			header( 'Cache-Control: no-store, private, max-age=0', true );
 			header( 'X-Robots-Tag: noindex, nofollow', true );
 			header( 'Referrer-Policy: no-referrer', true );
+			header( 'X-Content-Type-Options: nosniff', true );
 		}
 	}
 

@@ -46,6 +46,7 @@ final class StartEndpoint {
 		private Registry $registry,
 		private Settings $settings,
 		private Log $audit,
+		private ?AnonymousAudit $anonymous = null,
 	) {}
 
 	public function handle( string $token ): void {
@@ -123,8 +124,14 @@ final class StartEndpoint {
 			}
 		} catch ( \Throwable $e ) { /* No unconfirmed token is exposed; recorded references support recovery. */ }
 		try {
-			$this->audit->write_checked( $logged_in ? 'token_redeem' : 'token_reject', [ 'partner_id' => $session?->partner_id ?? 0, 'session_id' => $session?->id ?? 0, 'user_id' => $session?->user_id ?? 0, 'result' => $logged_in ? 'ok' : '403', 'ip' => $this->client_ip() ] );
+			// A refused token is an unauthenticated request: its row counts against the per-IP budget (0.4.22). A
+			// redeemed login is always recorded.
+			$ip = $this->client_ip();
+			if ( $logged_in || null === $this->anonymous || $this->anonymous->allow( $ip ) ) {
+				$this->audit->write_checked( $logged_in ? 'token_redeem' : 'token_reject', [ 'partner_id' => $session?->partner_id ?? 0, 'session_id' => $session?->id ?? 0, 'user_id' => $session?->user_id ?? 0, 'result' => $logged_in ? 'ok' : '403', 'ip' => $ip ] );
+			}
 		} catch ( \Throwable $e ) { /* Diagnostics cannot undo confirmed login. */ }
+		finally { $this->anonymous?->done(); }
 		if ( ! $logged_in || ! $session ) { $this->deny(); return; }
 
 		$target = $this->redirect_target( $session->selected_item );

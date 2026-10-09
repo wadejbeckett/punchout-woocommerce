@@ -23,6 +23,7 @@ use POW\Cxml\FormPack;
 use POW\Orders\QuoteOrder;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
+use POW\Sessions\HandoffReplay;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
 use POW\Support\Templates;
@@ -50,6 +51,11 @@ defined( 'ABSPATH' ) || exit;
  * WP_Session_Tokens entry per live visit and teardown destroys exactly the
  * one this row recorded. A colleague shopping in the next room keeps her
  * login, her cookie and her own basket.
+ *
+ * A repeated request for a visit that has already handed its cart back (a
+ * double click on "Submit for approval": the browser shows only the answer
+ * to the last request, and the first one won) gets the winner's handoff page
+ * again instead of the expired page (0.4.22, HandoffReplay, replay()).
  *
  * Also reachable as wc-ajax action `pow_return`.
  */
@@ -86,14 +92,18 @@ final class ReturnEndpoint {
 
 		$nonce = isset( $_POST['pow_nonce'] ) ? sanitize_text_field( wp_unslash( $_POST['pow_nonce'] ) ) : '';
 
+		$mode = ( isset( $_POST['pow_mode'] ) && 'empty' === $_POST['pow_mode'] ) ? 'empty' : 'cart';
+
+		// A request whose visit has already returned has lost its login (the
+		// winner destroyed it), so it fails here; the same form from the same
+		// browser gets the winner's handoff again.
 		if ( ! is_user_logged_in() || ! wp_verify_nonce( $nonce, 'pow_return' ) ) {
+			if ( $this->replay( $nonce, $mode ) ) { return; }
 			$this->expired_page();
 			return;
 		}
 
 		$user = wp_get_current_user();
-
-		$mode = ( isset( $_POST['pow_mode'] ) && 'empty' === $_POST['pow_mode'] ) ? 'empty' : 'cart';
 
 		// The visit must be THIS login's: the account is shared, so the user
 		// id names nobody and the exact WP session token is what selects one
@@ -105,6 +115,7 @@ final class ReturnEndpoint {
 		$session = $this->sessions->find_for_login( $user->ID, wp_get_session_token(), [ Session::ACTIVE ] );
 
 		if ( null === $session ) {
+			if ( $this->replay( $nonce, $mode ) ) { return; }
 			$this->expired_page();
 			return;
 		}
@@ -177,34 +188,42 @@ final class ReturnEndpoint {
 			} catch ( \Throwable $error ) { $this->review_page(); return; }
 		}
 
-		$poom_xml = $this->builder->poom(
-			[
-				'version'             => $partner->cxml_version,
-				'payload_id'          => Builder::payload_id( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ?: 'localhost' ),
-				'timestamp'           => Builder::timestamp(),
-				'deployment_mode'     => $session->deployment_mode,
-				// From/To reversed from the setup request — we are the
-				// originator of this document. Sender is identity-only by
-				// construction (Builder writes no SharedSecret, scope §6.2).
-				'from'                => [ 'domain' => $partner->to_domain, 'identity' => $partner->to_identity ],
-				'to'                  => [ 'domain' => $partner->from_domain, 'identity' => $partner->from_identity ],
-				'sender'              => [ 'domain' => $partner->to_domain, 'identity' => $partner->to_identity ],
-				'user_agent'          => 'PunchOut for WooCommerce/' . \POW\VERSION,
-				'buyer_cookie'        => $session->buyer_cookie,
-				'operation_allowed'   => 'create',
-				'currency'            => $mapped['currency'],
-				'total_cents'         => $mapped['total_cents'],
-				// Never a reference: a visit cannot pay here, so no order of
-				// ours exists for a POOM to name. The Builder keeps the
-				// ability to carry one for the 1.2.071 dialect.
-				'supplier_order_info' => null,
-				'items'               => $wire_items,
-			] + $delivery_args
-		);
+		// 0.4.22: the builder refuses a value cXML cannot carry (a control character in an address or a product
+		// name, for example). That refusal is a message on the review, never a 500 or the misleading expired page.
+		try {
+			$poom_xml = $this->builder->poom(
+				[
+					'version'             => $partner->cxml_version,
+					'payload_id'          => Builder::payload_id( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ?: 'localhost' ),
+					'timestamp'           => Builder::timestamp(),
+					'deployment_mode'     => $session->deployment_mode,
+					// From/To reversed from the setup request — we are the
+					// originator of this document. Sender is identity-only by
+					// construction (Builder writes no SharedSecret, scope §6.2).
+					'from'                => [ 'domain' => $partner->to_domain, 'identity' => $partner->to_identity ],
+					'to'                  => [ 'domain' => $partner->from_domain, 'identity' => $partner->from_identity ],
+					'sender'              => [ 'domain' => $partner->to_domain, 'identity' => $partner->to_identity ],
+					'user_agent'          => 'PunchOut for WooCommerce/' . \POW\VERSION,
+					'buyer_cookie'        => $session->buyer_cookie,
+					'operation_allowed'   => 'create',
+					'currency'            => $mapped['currency'],
+					'total_cents'         => $mapped['total_cents'],
+					// Never a reference: a visit cannot pay here, so no order of
+					// ours exists for a POOM to name. The Builder keeps the
+					// ability to carry one for the 1.2.071 dialect.
+					'supplier_order_info' => null,
+					'items'               => $wire_items,
+				] + $delivery_args
+			);
 
-		// Prepare the complete response before consuming the session. The same mapped
-		// snapshot supplies both the winning quote and this already-built document.
-		$markup = $this->handoff_markup( $session, $partner, $poom_xml, $notices );
+			// Prepare the complete response before consuming the session. The same mapped
+			// snapshot supplies both the winning quote and this already-built document.
+			$markup = $this->handoff_markup( $session, $partner, $poom_xml, $notices );
+		} catch ( \Throwable $error ) {
+			$this->audit_best_effort( 'return_build_failed', [ 'partner_id' => $partner->id, 'session_id' => $session->id, 'result' => 'error' ] );
+			$this->review_page( new \WP_Error( 'return_build_failed', __( 'Your cart could not be prepared for your purchasing system because some of its text cannot be sent (for example a special character pasted into an address or the notes). Review the delivery details and notes, then submit again.', 'punchout-woocommerce' ) ) );
+			return;
+		}
 
 		if ( '' === trim( $markup ) ) {
 			$this->error_page( __( 'The cart return could not be prepared. Please try again.', 'punchout-woocommerce' ), 500 );
@@ -215,8 +234,10 @@ final class ReturnEndpoint {
 		// never creates or attaches a quote, even if it read an earlier active snapshot.
 		$transitioned = false;
 		$delivery_error = null;
+		$login_token = (string) wp_get_session_token();
+		$kept = false;
 		try {
-			$this->registry->with_partner_lock( $partner->id, function () use ( $partner, $session, $mode, $user, $mapped, &$transitioned, &$delivery_error ) {
+			$this->registry->with_partner_lock( $partner->id, function () use ( $partner, $session, $mode, $user, $mapped, $nonce, $markup, $login_token, &$transitioned, &$delivery_error, &$kept ) {
 				$fresh_partner = $this->registry->find( $partner->id );
 				$fresh = $this->sessions->find( $session->id );
 				// Every predicate stays, but read the identity ones correctly:
@@ -245,6 +266,9 @@ final class ReturnEndpoint {
 					if ( ! is_array( $guard ) || ! array_key_exists( 'choice_json', $guard ) || ! array_key_exists( 'confirmation_json', $guard ) ) { return; }
 					$expected_guard = [ 'user_id' => $fresh->user_id, 'wp_session_token' => $fresh->wp_session_token, 'delivery_choice' => $guard['choice_json'], 'delivery_confirmation' => $guard['confirmation_json'] ];
 				}
+				// Kept before the transition, under the lock, so any request that sees this visit returned finds the
+				// handoff to repeat; dropped again below when this request does not win.
+				$kept = HandoffReplay::remember( $login_token, $nonce, $fresh->id, $mode, $markup );
 				$transitioned = $this->sessions->transition( $fresh->id, $expected, 'cart' === $mode ? Session::RETURNED : Session::CLOSED, [], $expected_guard );
 				if ( $transitioned && ! $this->sessions->destroy_login_checked( $fresh ) ) {
 					$fenced = $this->registry->transition_status( $partner->id, Partner::STATUS_ACTIVE, [ 'status' => Partner::STATUS_DISABLED ] );
@@ -255,8 +279,12 @@ final class ReturnEndpoint {
 			$this->audit_best_effort( 'return_boundary_failed', [ 'partner_id' => $partner->id, 'session_id' => $session->id, 'result' => 'error' ] );
 		}
 
+		if ( ! $transitioned && $kept ) { HandoffReplay::forget( $login_token ); }
+
 		if ( ! $transitioned ) {
 			if ( $delivery_error instanceof \WP_Error ) { $this->review_page( $delivery_error ); return; }
+			// The other click of a double submit won while this one waited for the lock.
+			if ( $this->replay( $nonce, $mode ) ) { return; }
 			$this->expired_page();
 			return;
 		}
@@ -297,9 +325,40 @@ final class ReturnEndpoint {
 
 		$this->teardown( $user->ID, $session );
 
-		status_header( 200 );
-		header( 'Content-Type: text/html; charset=utf-8' );
+		self::html_headers( 200 );
 		echo $markup; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within.
+	}
+
+	/**
+	 * Answer a repeated return for a visit that has already handed its cart back with that same handoff page
+	 * (0.4.22). Only when this browser presents the login token and the return nonce the winner kept its page
+	 * under, for the same mode, and the visit row it names has left `active` that way with that login. Builds
+	 * nothing and changes nothing but this browser's cookies. True when the page was sent.
+	 */
+	public function replay( string $nonce, string $mode = 'cart' ): bool {
+		try {
+			$login_token = (string) wp_get_session_token();
+			$kept = HandoffReplay::find( $login_token, $nonce );
+			if ( null === $kept || $kept['mode'] !== $mode || ! in_array( $mode, [ 'cart', 'empty' ], true ) ) { return false; }
+			$visit = $this->sessions->find( $kept['session_id'] );
+			$ended = 'cart' === $mode ? Session::RETURNED : Session::CLOSED;
+			if ( null === $visit || $ended !== $visit->status || '' === $visit->wp_session_token || ! hash_equals( $visit->wp_session_token, $login_token ) ) { return false; }
+		} catch ( \Throwable $error ) {
+			return false;
+		}
+
+		wp_clear_auth_cookie();
+		$this->audit_best_effort( 'return_replayed', [ 'partner_id' => $visit->partner_id, 'session_id' => $visit->id, 'user_id' => $visit->user_id, 'direction' => 'out', 'result' => 'ok' ] );
+		self::html_headers( 200 );
+		echo $kept['markup']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the winner's rendered template, escaped within.
+		return true;
+	}
+
+	/** Status, HTML content type and (0.4.22) no MIME sniffing: also for the wc-ajax alias, which the router never sees. */
+	private static function html_headers( int $status ): void {
+		status_header( $status );
+		header( 'Content-Type: text/html; charset=utf-8' );
+		header( 'X-Content-Type-Options: nosniff' );
 	}
 
 	/* ---------------------------------------------------------------------
@@ -395,8 +454,7 @@ final class ReturnEndpoint {
 	}
 
 	private function error_page( string $message, int $status = 403, bool $review = false ): void {
-		status_header( $status );
-		header( 'Content-Type: text/html; charset=utf-8' );
+		self::html_headers( $status );
 
 		echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow"><title>';
 		echo esc_html__( 'Punchout', 'punchout-woocommerce' );

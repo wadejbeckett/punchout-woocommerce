@@ -182,7 +182,9 @@ final class ReturnIntegrationTest extends TestCase {
 		};
 		$first = $this->response();
 		self::assertCount( 1, $GLOBALS['pow_test_orders'] );
-		self::assertStringContainsString( 'expired', $first );
+		// 0.4.22: both are this browser's own form (one login, one return nonce), so the loser answers with the
+		// winner's handoff again rather than the expired page; it builds, quotes and transitions nothing itself.
+		self::assertSame( $other, $first );
 		self::assertStringContainsString( 'pow-handoff-form', $other );
 		self::assertSame( 'returned', $this->db->session['status'] );
 		$order = array_values( $GLOBALS['pow_test_orders'] )[0];
@@ -192,6 +194,87 @@ final class ReturnIntegrationTest extends TestCase {
 		self::assertSame( $order->get_id(), $this->db->session['order_id'] );
 		self::assertCount( 1, $GLOBALS['pow_test_destroyed_tokens'] );
 	}
+	/** The record the winner kept for this browser's login, if any. */
+	private function kept(): mixed { return $GLOBALS['pow_test_transients'][ \POW\Sessions\HandoffReplay::key( 'test-login' ) ] ?? null; }
+
+	public function test_a_repeated_submit_after_the_return_gets_the_same_handoff_and_changes_nothing(): void {
+		$first = $this->response();
+		self::assertStringContainsString( 'pow-handoff-form', $first );
+		self::assertSame( 'returned', $this->db->session['status'] );
+		self::assertTrue( is_array( $this->kept() ) );
+		self::assertSame( [ \POW\Sessions\HandoffReplay::TTL ], $GLOBALS['pow_test_transient_expirations'][ \POW\Sessions\HandoffReplay::key( 'test-login' ) ] );
+		self::assertStringNotContainsString( 'test-login', (string) json_encode( array_keys( $GLOBALS['pow_test_transients'] ) ), 'Only a hash of the login token names the record' );
+
+		// The second click, still carrying the login cookie the winner has destroyed: logged out now.
+		$GLOBALS['pow_test_current_user_id'] = 0;
+		$GLOBALS['pow_test_setup_io']['headers'] = [];
+		$cleared = count( $GLOBALS['pow_test_cookies_cleared'] ?? [] );
+		$second = $this->response();
+		self::assertSame( $first, $second, 'The same handoff, byte for byte' );
+		self::assertSame( 200, end( $GLOBALS['pow_test_status_headers'] ) );
+		self::assertContains( 'X-Content-Type-Options: nosniff', $GLOBALS['pow_test_setup_io']['headers'] );
+		self::assertGreaterThan( $cleared, count( $GLOBALS['pow_test_cookies_cleared'] ?? [] ), 'The repeat clears this browser\'s login cookie too' );
+
+		// Or still signed in (the second request arrived before the token was destroyed, then waited).
+		$GLOBALS['pow_test_current_user_id'] = 99;
+		self::assertSame( $first, $this->response() );
+
+		self::assertCount( 1, $GLOBALS['pow_test_orders'], 'No second quote' );
+		self::assertCount( 1, $GLOBALS['pow_test_destroyed_tokens'], 'No second teardown' );
+		self::assertSame( 1, $this->delivery->validated_calls, 'No second winner attempt' );
+	}
+
+	public function test_only_the_same_form_from_the_same_browser_gets_the_handoff_again(): void {
+		self::assertStringContainsString( 'pow-handoff-form', $this->response() );
+		$GLOBALS['pow_test_current_user_id'] = 0;
+
+		$_POST['pow_nonce'] = 'another-form';
+		self::assertStringContainsString( 'expired', $this->response(), 'Another return nonce' );
+		$_POST['pow_nonce'] = 'valid';
+
+		$_POST['pow_mode'] = 'empty';
+		self::assertStringContainsString( 'expired', $this->response(), 'Another mode' );
+		unset( $_POST['pow_mode'] );
+
+		$GLOBALS['pow_test_login_token'] = 'another-browser';
+		self::assertStringContainsString( 'expired', $this->response(), 'Another login' );
+		$GLOBALS['pow_test_login_token'] = 'test-login';
+
+		self::assertStringContainsString( 'pow-handoff-form', $this->response() );
+		self::assertCount( 1, $GLOBALS['pow_test_orders'] );
+	}
+
+	public function test_a_kept_handoff_is_never_served_for_a_visit_that_has_not_returned(): void {
+		// A record that names this login but whose visit is still active (a winner that then lost) is ignored.
+		\POW\Sessions\HandoffReplay::remember( 'test-login', 'valid', 42, 'cart', '<form class="pow-handoff-form"></form>' );
+		$GLOBALS['pow_test_current_user_id'] = 0;
+		self::assertStringContainsString( 'expired', $this->response() );
+		self::assertSame( 'active', $this->db->session['status'] );
+	}
+
+	public function test_a_request_that_loses_the_transition_drops_its_record(): void {
+		$this->delivery->valid = new WP_Error( 'changed', 'Delivery changed.' );
+		$response = $this->response();
+		self::assertStringContainsString( 'Delivery changed.', $response );
+		self::assertSame( 'active', $this->db->session['status'] );
+		self::assertNull( $this->kept(), 'Nothing is left to repeat' );
+	}
+
+	public function test_a_value_the_builder_refuses_is_a_message_on_the_review_never_a_500(): void {
+		$this->set_delivery( true, true );
+		$this->db->partner_fields = [ 'emit_delivery_line' => true, 'emit_ship_to' => true, 'delivery_notes_policy' => 'item_detail_extrinsic', 'cxml_version' => '1.2.008' ];
+		// A vertical tab that reached the return without passing the review's notes check (0.4.21 let one through).
+		$this->delivery->mutate = static function ( array $prepared ): array { $prepared['delivery_notes'] = "Gate\x0Bbell"; return $prepared; };
+		$response = $this->response();
+		self::assertStringContainsString( 'could not be prepared for your purchasing system', $response );
+		self::assertStringContainsString( '/punchout/confirm', $response, 'With the way back to the review' );
+		self::assertSame( 409, end( $GLOBALS['pow_test_status_headers'] ) );
+		self::assertSame( 'active', $this->db->session['status'] );
+		self::assertSame( [], $GLOBALS['pow_test_orders'] );
+		self::assertSame( [], $GLOBALS['pow_test_destroyed_tokens'] ?? [] );
+		self::assertNull( $this->kept() );
+	}
+
 	/**
 	 * Two employees of one customer, returning one after the other. They are
 	 * one WordPress account and two visits, so each return must consume its

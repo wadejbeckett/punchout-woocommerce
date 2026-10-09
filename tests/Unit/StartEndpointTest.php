@@ -310,6 +310,18 @@ final class StartEndpointTest extends TestCase {
 
 	// -------------------------------------------------------- the cookie TTL
 
+	public function test_refused_tokens_are_logged_within_the_per_ip_budget_and_a_login_always_is(): void {
+		$counts = [];
+		$budget = new \POW\Http\AnonymousAudit( new \POW\Http\RateLimiter( 2, static function ( string $key ) use ( &$counts ): int { return $counts[ $key ] ?? 0; }, static function ( string $key, int $count ) use ( &$counts ): void { $counts[ $key ] = $count; }, 3600 ) );
+		$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), new QuoteOrderTestSettings(), new Log( new QuoteOrderTestLogger() ), $budget );
+		foreach ( range( 1, 5 ) as $guess ) {
+			self::assertStringContainsString( 'This catalog link has expired', $this->redeem( str_pad( 'guess-' . $guess, 43, 'q' ) ) );
+		}
+		self::assertCount( 2, array_filter( $this->db->audits, static fn( array $row ): bool => 'token_reject' === $row['event'] ), 'Two refusals logged, the rest answered without a row' );
+		$this->redeem( $this->claim( 61 ) );
+		self::assertSame( 'ok', $this->audited( 'token_redeem' )['result'] ?? null, 'A redeemed login is recorded whatever the budget' );
+	}
+
 	public function test_the_cookie_ttl_filter_is_installed_and_removed_on_every_path(): void {
 		$token = $this->claim( 42 );
 		$this->redeem( $token );

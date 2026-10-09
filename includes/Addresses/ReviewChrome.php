@@ -61,4 +61,20 @@ final class ReviewChrome {
 	public static function page_to_pose( int $id ): int {
 		return $id > 0 ? $id : 0;
 	}
+
+	/** Whether this request is the review drawn inside the theme (set by the router when it hands the request on). */
+	private static bool $review_request = false;
+
+	/**
+	 * Mark (or, with false, clear) this request as the theme-drawn review (0.4.22). The theme's own Punchout button
+	 * (the return-button shortcode, helper or cart control) then draws nothing here: on the review it would only
+	 * reload the review.
+	 */
+	public static function mark_review_request( bool $review = true ): void {
+		self::$review_request = $review;
+	}
+
+	public static function is_review_request(): bool {
+		return self::$review_request;
+	}
 }

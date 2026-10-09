@@ -82,7 +82,8 @@ final class Chooser {
 		Transport::require_https();
 		self::headers();
 		$shop = get_bloginfo( 'name' );
-		add_filter( 'pre_get_document_title', static fn() => __( 'Review your cart', 'punchout-woocommerce' ) . ' — ' . $shop, 20 );
+		// 0.4.22: the review title ("Review" by default) when the pose relabelled the page, else "Review your cart".
+		add_filter( 'pre_get_document_title', static fn() => \POW\Addresses\ReviewTitle::document_title( (string) $shop, __( 'Review your cart', 'punchout-woocommerce' ) ), 20 );
 		add_filter( 'body_class', static fn( array $classes ) => array_merge( $classes, [ 'pow-confirmation-page' ] ) );
 		wp_enqueue_style( 'pow-delivery-confirmation', plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), [], \POW\VERSION );
 		wp_enqueue_script( 'pow-delivery-review', plugins_url( 'assets/js/delivery-review.js', POW_PLUGIN_FILE ), [], \POW\VERSION, [ 'in_footer' => true ] );
@@ -98,7 +99,7 @@ final class Chooser {
 		// WordPress parsed this plugin route as "nothing found"; the page it is about to draw is found.
 		global $wp_query;
 		if ( $wp_query instanceof \WP_Query ) { $wp_query->is_404 = false; }
-		self::pose_as_page( \POW\Addresses\ReviewChrome::pose_as_page_id() );
+		self::pose_as_page( \POW\Addresses\ReviewChrome::pose_as_page_id(), $this->settings() );
 		get_header();
 		echo '<div class="pow-confirmation-page__content">' . $html . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
 		get_footer();
@@ -107,14 +108,20 @@ final class Chooser {
 
 	/** `wp` action, priority 0: pose before the theme resolves which layout, header and footer this request gets. */
 	public function pose_for_theme(): void {
-		self::pose_as_page( \POW\Addresses\ReviewChrome::pose_as_page_id() );
+		self::pose_as_page( \POW\Addresses\ReviewChrome::pose_as_page_id(), $this->settings() );
+	}
+
+	/** The plugin's settings, when the container offers them. */
+	private function settings(): ?\POW\Settings {
+		return method_exists( $this->plugin, 'settings' ) ? $this->plugin->settings() : null;
 	}
 
 	/**
 	 * Make the current request look like the given published page to the theme (layout, header, footer,
 	 * body classes), without loading that page's template or content. 0 or an unpublished page: no change.
+	 * Once posed, that page's title reads as the review title for this request (ReviewTitle, 0.4.22).
 	 */
-	private static function pose_as_page( int $page_id ): void {
+	private static function pose_as_page( int $page_id, ?\POW\Settings $settings = null ): void {
 		if ( $page_id <= 0 ) { return; }
 		$page = get_post( $page_id );
 		if ( ! $page instanceof \WP_Post || 'publish' !== $page->post_status ) { return; }
@@ -134,6 +141,7 @@ final class Chooser {
 		$wp_query->is_archive        = false;
 		$wp_query->is_search         = false;
 		setup_postdata( $page );
+		\POW\Addresses\ReviewTitle::relabel( $page, $settings );
 	}
 
 	/**
@@ -176,6 +184,8 @@ final class Chooser {
 	 * @return array{0: int, 1: string}|null
 	 */
 	private function respond_post( bool $document ): ?array {
+		// 0.4.22: a repeated "Submit for approval" (a double click) after this browser's cart has already returned gets that same handoff again, not an error page.
+		if ( $this->replayed_submit() ) { return null; }
 		try {
 			[ $session, $partner ] = $this->context();
 			$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
@@ -220,6 +230,8 @@ final class Chooser {
 					$_POST['pow_nonce'] = $return_nonce; $_POST['pow_mode'] = 'cart';
 					$this->return_endpoint->handle(); return null;
 				}
+				// The other click of a double submit may have won while this one waited for the connection lock.
+				if ( $this->replayed_submit() ) { return null; }
 			} else {
 				$view = $this->confirmation->preview( $session, $partner, $input );
 				if ( $view instanceof \WP_Error && 'delivery_rate_invalid' === $view->get_error_code() ) {
@@ -231,7 +243,23 @@ final class Chooser {
 			}
 			if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $input ); }
 			return [ 200, $this->render( $view, $document, $this->add_vars( $partner ), ! $document, $session ) ];
-		} catch ( \Throwable $error ) { return [ 403, $this->render( [ 'error' => self::expired() ], $document, null, ! $document ) ]; }
+		} catch ( \Throwable $error ) {
+			// The visit may have just returned through the other click of a double submit: its login or its active row is gone.
+			if ( $this->replayed_submit() ) { return null; }
+			return [ 403, $this->render( [ 'error' => self::expired() ], $document, null, ! $document ) ];
+		}
+	}
+
+	/**
+	 * A "Submit for approval" POST that repeats one whose cart has already returned: the return endpoint sends that
+	 * first handoff again when this browser's login and this review form's return nonce match it. False when the POST
+	 * is not a submit or nothing matches.
+	 */
+	private function replayed_submit(): bool {
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- the return nonce is compared with the one the winning request verified.
+		if ( 'submit' !== ( $_POST['pow_delivery_action'] ?? null ) || ! is_string( $_POST['pow_return_nonce'] ?? null ) ) { return false; }
+		try { return $this->return_endpoint->replay( (string) wp_unslash( $_POST['pow_return_nonce'] ) ); }
+		catch ( \Throwable $error ) { return false; }
 	}
 
 	/**
@@ -304,7 +332,7 @@ final class Chooser {
 	private function refused( Session $session, \POW\Partners\Partner $partner, \WP_Error $error, array $input ): array {
 		$view = $this->confirmation->prepare( $session, $partner );
 		$typed = self::typed( $input );
-		if ( isset( $typed['notes'] ) ) { $view['notes'] = sanitize_textarea_field( $typed['notes'] ); }
+		if ( isset( $typed['notes'] ) ) { $view['notes'] = sanitize_textarea_field( Confirmation::strip_controls( $typed['notes'] ) ); }
 		if ( isset( $typed['preferred_delivery_date'] ) ) { $view['preferred_delivery_date'] = '' === $typed['preferred_delivery_date'] ? null : $typed['preferred_delivery_date']; }
 		$view['error'] = $error;
 		$view['can_confirm'] = false;
@@ -387,8 +415,8 @@ final class Chooser {
 		if ( null !== $session && isset( $view['items'] ) && null !== $this->attachments ) {
 			try { $view['attachment'] = $this->attachments->view_vars( $session ); } catch ( \Throwable $error ) { $view['attachment'] = null; }
 		}
-		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => $enqueued ? '' : plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add, 'estimate_note' => \POW\Addresses\EstimateNote::text( method_exists( $this->plugin, 'settings' ) ? $this->plugin->settings() : null ) ] );
+		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => $enqueued ? '' : plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add, 'estimate_note' => \POW\Addresses\EstimateNote::text( $this->settings() ), 'script_url' => $enqueued ? '' : plugins_url( 'assets/js/delivery-review.js', POW_PLUGIN_FILE ) . ( defined( 'POW\\VERSION' ) ? '?ver=' . rawurlencode( (string) \POW\VERSION ) : '' ) ] );
 	}
 	private static function expired(): \WP_Error { return new \WP_Error( 'delivery_unavailable', __( 'Delivery could not be verified. Return to your purchasing system and open the catalog again if your session has expired.', 'punchout-woocommerce' ) ); }
-	private static function headers(): void { if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); } nocache_headers(); if ( ! headers_sent() ) { header( 'Cache-Control: private, no-store' ); header( 'X-Robots-Tag: noindex, nofollow' ); } }
+	private static function headers(): void { if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); } nocache_headers(); if ( ! headers_sent() ) { header( 'Cache-Control: private, no-store' ); header( 'X-Robots-Tag: noindex, nofollow' ); header( 'X-Content-Type-Options: nosniff' ); } }
 }

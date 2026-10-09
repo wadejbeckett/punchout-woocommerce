@@ -3,7 +3,7 @@
  * Plugin Name:       PunchOut for WooCommerce
  * Plugin URI:        https://github.com/wadejbeckett/punchout-woocommerce
  * Description:       Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first). Multi-tenant customer registry, one bound customer account per connection, one-time StartPage login, and a "send for approval" cart exit that returns the cart as an RFQ (PunchOutOrderMessage).
- * Version:           0.4.21
+ * Version:           0.4.22
  * Requires at least: 6.4
  * Requires PHP:      8.2
  * Author:            Noiz
@@ -12,7 +12,7 @@
  * Text Domain:       punchout-woocommerce
  * Domain Path:       /languages
  * WC requires at least: 11.1
- * WC tested up to:   11.1
+ * WC tested up to:   11.2
  *
  * The WooCommerce minimum is not a guess. One basket per punchout visit is a
  * bypass of WC_Session_Handler's own keying, and Docs\SelfTest pins the 21
@@ -47,7 +47,7 @@ namespace POW;
 
 defined( 'ABSPATH' ) || exit;
 
-const VERSION     = '0.4.21';
+const VERSION     = '0.4.22';
 const PLUGIN_FILE = __FILE__;
 
 define( 'POW_PLUGIN_FILE', __FILE__ );

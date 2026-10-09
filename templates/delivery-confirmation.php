@@ -2,7 +2,7 @@
 /**
  * Theme-overridable delivery confirmation; all choices and amounts are prepared server-side.
  *
- * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes and preferred date as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
+ * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $script_url (0.4.22: the review script where the page has not enqueued it, else ''), $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes and preferred date as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
  *
  * @package POW @license AGPL-3.0-or-later
  */
@@ -124,4 +124,5 @@ if ( $document ) : ?>
 
 	<?php endif; ?>
 <?php if ( $document ) : ?></main><?php else : ?></section><?php endif; ?>
+<?php if ( isset( $view['items'] ) && isset( $script_url ) && is_string( $script_url ) && '' !== $script_url ) : // 0.4.22: the review script (one submission per click) where the page has not enqueued it. ?><script src="<?php echo esc_url( $script_url ); ?>" defer></script><?php endif; ?>
 <?php if ( $document ) : ?></body></html><?php endif; ?>

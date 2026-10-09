@@ -398,9 +398,21 @@ final class Confirmation implements ReturnConfirmation {
 		return $selected;
 	}
 
+	/**
+	 * Notes without the characters XML 1.0 cannot carry (0.4.22): a vertical tab or form feed (what Word and
+	 * PowerPoint paste for a line break) becomes a line break, and every other C0 control character except tab,
+	 * line feed and carriage return, and U+FFFE/U+FFFF, is removed. The cXML builder refuses those characters, so a
+	 * pasted note used to pass the review and then fail every Submit. Valid UTF-8 in, valid UTF-8 out.
+	 */
+	public static function strip_controls( string $notes ): string {
+		$notes = str_replace( [ "\x0B", "\x0C" ], "\n", $notes );
+		$clean = preg_replace( '/[\x00-\x08\x0E-\x1F]|\x{FFFE}|\x{FFFF}/u', '', $notes );
+		return is_string( $clean ) ? $clean : $notes;
+	}
+
 	private static function notes( mixed $input ): string|\WP_Error {
 		if ( ! is_scalar( $input ) || 1 !== preg_match( '//u', (string) $input ) ) { return self::error( 'delivery_notes_invalid' ); }
-		$notes = sanitize_textarea_field( (string) $input );
+		$notes = sanitize_textarea_field( self::strip_controls( (string) $input ) );
 		if ( ! is_string( $notes ) || strlen( $notes ) > 8000 || 1 !== preg_match( '//u', $notes ) || preg_match_all( '/./us', $notes ) > 2000 ) { return self::error( 'delivery_notes_invalid' ); }
 		return $notes;
 	}

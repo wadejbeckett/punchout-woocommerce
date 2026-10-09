@@ -217,8 +217,10 @@ final class Plugin {
 		// Buyer-facing runtime.
 		$rate_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'rate_limit_per_min' ), 30 ) );
 		$edge_limiter    = new RateLimiter( RateLimiter::public_limit( $this->settings->int( 'edge_rate_limit_per_min' ), 120 ) );
-		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter );
-		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit );
+		// 0.4.22: one per-IP budget for the audit rows of requests nobody has authenticated (setup, start, order).
+		$anonymous_audit = \POW\Http\AnonymousAudit::hourly();
+		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter, $anonymous_audit );
+		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit, $anonymous_audit );
 		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), $address_resolver, $mapper, $native_sessions );
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
 		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book, $attachments, $account_book );
