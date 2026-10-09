@@ -66,9 +66,10 @@ final class Installer {
 	 *
 	 * Schema ten (0.5.0) only adds `line_description` and `order_details`.
 	 * Rollback: 0.4.23 and earlier never name either column and read the
-	 * connection row by column name, so going back needs no data change; the
-	 * two columns and `pow_db_version` = '10' stay, and re-installing 0.5.0
-	 * finds them in place and issues no further DDL.
+	 * connection row by column name, so going back needs no data change. On
+	 * its next admin page load 0.4.23 re-runs its own schema-nine dbDelta,
+	 * which drops nothing, and records '9'; both columns and their values
+	 * stay, and re-installing 0.5.0 records '10' again with no new DDL.
 	 */
 	private const PARTNERS_COLUMNS = [ 'visit_endpoints', 'buyer_addresses', 'owner_settings', 'line_description', 'order_details' ];
 
