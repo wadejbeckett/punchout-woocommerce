@@ -7,7 +7,8 @@
  *     POW_E2E_FIXTURE=<run dir>/fixture.json wp --user=<fixture admin> eval 'require getenv("POW_E2E_SCRIPT");'
  *
  * Steps:
- * - seed: one ordinary customer account (the connection's login) with a
+ * - seed: the linked build's schema upgrade (as a wp-admin page load would
+ *   run it), then one ordinary customer account (the connection's login) with a
  *   deliverable shipping address, one active test connection bound to it,
  *   two priced simple products. For the run it also sets the review's words
  *   to non-default values and its tax sentence on (0.4.23 settings), the
@@ -16,9 +17,16 @@
  *   priced flat-rate method to the "rest of the world" shipping zone, so the
  *   driver can see the settings drawn and see that a connection without the
  *   delivery line shows no amount. It makes sure one page draws the classic
- *   cart ([woocommerce_cart]), whatever the shop's own cart page is. Writes
- *   the run's facts, including the generated shared secret and what it
- *   changed, to POW_E2E_FIXTURE (mode 600). Prints nothing secret.
+ *   cart ([woocommerce_cart]), whatever the shop's own cart page is. For the
+ *   cXML from the order (0.5.0) the connection sends each line's name and
+ *   short description, and "Order details sent": the ones the driver passes
+ *   in POW_E2E_ORDER_DETAILS (JSON, from its --checkout-extras), then one a
+ *   classic checkout always writes and one no order has; with
+ *   POW_E2E_SEND_DELIVERY_COST=1 it also sends delivery cost. One product's
+ *   short description is markup with entities, the other only repeats its
+ *   name; the seed says what each must read as. Writes the run's facts,
+ *   including the generated shared secret and what it changed, to
+ *   POW_E2E_FIXTURE (mode 600). Prints nothing secret.
  * - inspect: reads back what the run left (POW_E2E_PAYLOAD names the visit by
  *   its setup payloadID): the visit's status, whether its login still
  *   verifies, and the orders that name the visit. Writes them to
@@ -49,6 +57,25 @@ require_once dirname( __DIR__ ) . '/Support/native-visits.php';
 final class PowEndToEndFixture {
 
 	private const PRODUCTS = [ 'alpha' => '11.00', 'beta' => '23.50' ];
+
+	/**
+	 * Each product's short description, and the plain text the line description must carry after the name ('' =
+	 * none: beta's only repeats its name, in other capitals). {name} is the product's name.
+	 */
+	private const SHORT_DESCRIPTIONS = [
+		'alpha' => [ "<p>Brand&nbsp;<strong>Example</strong> &amp; Co</p>\n<ul><li>Red,\t600&#8239;ml</li></ul>", 'Brand Example & Co Red, 600 ml' ],
+		'beta'  => [ '<p>{NAME}</p>', '' ],
+	];
+
+	/**
+	 * The connection's own "Order details sent" after the driver's: a key WooCommerce's classic checkout writes on
+	 * every order (as "yes" or "no"), and a key no order has, which must send nothing. With what they must send.
+	 */
+	private const ORDER_DETAILS = [
+		[ 'meta_key' => 'is_vat_exempt', 'label' => 'Exempt', 'format' => 'text' ],
+		[ 'meta_key' => '_pow_e2e_absent', 'label' => 'Absent', 'format' => 'unix_date' ],
+	];
+	private const ORDER_DETAILS_SENT = [ 'Exempt: no' ];
 
 	/** The review's words for the run (0.4.23 settings), none of them a default; the tax sentence is on, which a connection without the delivery line must still never show. */
 	private const REVIEW_SETTINGS = [ 'review_submit_label' => 'Send cart', 'review_items_heading' => 'Items on order', 'review_total_label' => 'Order total', 'review_tax_note' => 'yes', 'checkout_button_label' => 'Review' ];
@@ -115,10 +142,11 @@ final class PowEndToEndFixture {
 		return $address;
 	}
 
-	private static function product( string $sku, string $name, string $price ): int {
+	private static function product( string $sku, string $name, string $price, string $short ): int {
 		$product = new WC_Product_Simple();
 		$product->set_name( $name );
 		$product->set_sku( $sku );
+		$product->set_short_description( $short );
 		$product->set_regular_price( $price );
 		$product->set_status( 'publish' );
 		$product->set_catalog_visibility( 'visible' );
@@ -131,6 +159,12 @@ final class PowEndToEndFixture {
 
 	public function seed(): void {
 		$path    = self::path( 'POW_E2E_FIXTURE' );
+		// A wp-admin page load runs the schema upgrade after an install; WP-CLI and the front end never do, so the
+		// seed runs it for the linked build (schema 10 only adds columns an earlier build ignores).
+		POW\Installer::maybe_upgrade();
+		if ( (string) get_option( POW\Installer::DB_VERSION_KEY ) !== POW\Installer::DB_VERSION ) {
+			throw new RuntimeException( 'The schema upgrade to ' . POW\Installer::DB_VERSION . ' did not land; see the WooCommerce log.' );
+		}
 		$run     = strtolower( bin2hex( random_bytes( 4 ) ) );
 		$account = pow_native_bound_account( 'e2e' );
 		$address = self::store_address();
@@ -144,6 +178,8 @@ final class PowEndToEndFixture {
 
 		$secret = wp_generate_password( 40, false, false );
 		$buyer  = 'BUYER-E2E-' . strtoupper( $run );
+		$extra  = json_decode( (string) ( getenv( 'POW_E2E_ORDER_DETAILS' ) ?: '[]' ), true );
+		if ( ! is_array( $extra ) || ! array_is_list( $extra ) ) { throw new RuntimeException( 'POW_E2E_ORDER_DETAILS must be a JSON list.' ); }
 		$config = [
 			'name'                  => 'End-to-end ' . $run,
 			'status'                => POW\Partners\Partner::STATUS_ACTIVE,
@@ -160,10 +196,14 @@ final class PowEndToEndFixture {
 			'allcaps_transform'     => 1,
 			'session_ttl'           => 3600,
 			'token_ttl'             => 600,
-			// The launch profile: ship-to and notes travel, no delivery cost does.
+			// The launch profile: ship-to and notes travel, no delivery cost does (unless the run asks for it).
 			'emit_ship_to'          => 1,
-			'emit_delivery_line'    => 0,
+			'emit_delivery_line'    => '1' === getenv( 'POW_E2E_SEND_DELIVERY_COST' ) ? 1 : 0,
 			'delivery_notes_policy' => 'item_detail_extrinsic',
+			// 0.5.0 (schema 10; an earlier build's registry ignores both): name and short description, and the
+			// order details the driver's extras name, then this fixture's own.
+			'line_description'      => 'name_short_description',
+			'order_details'         => array_merge( $extra, self::ORDER_DETAILS ),
 		];
 		$id      = $this->registry->insert( $config, $secret );
 		$partner = $id > 0 ? $this->registry->find( $id ) : null;
@@ -172,7 +212,9 @@ final class PowEndToEndFixture {
 		$products = [];
 		foreach ( self::PRODUCTS as $label => $price ) {
 			$sku              = 'E2E-' . strtoupper( $label . '-' . $run );
-			$products[ $sku ] = [ 'id' => self::product( $sku, 'End-to-end ' . $label . ' ' . $run, $price ), 'price' => $price ];
+			$name             = 'End-to-end ' . $label . ' ' . $run;
+			[ $short, $detail ] = self::SHORT_DESCRIPTIONS[ $label ];
+			$products[ $sku ] = [ 'id' => self::product( $sku, $name, $price, str_replace( '{NAME}', strtoupper( $name ), $short ) ), 'price' => $price, 'name' => $name, 'detail' => $detail ];
 		}
 
 		$checkout = (int) wc_get_page_id( 'checkout' );
@@ -183,7 +225,7 @@ final class PowEndToEndFixture {
 			$path,
 			[
 				'run'          => $run,
-				'versions'     => [ 'plugin' => POW\VERSION, 'woocommerce' => WC_VERSION, 'wordpress' => get_bloginfo( 'version' ) ],
+				'versions'     => [ 'plugin' => POW\VERSION, 'schema' => POW\Installer::DB_VERSION, 'woocommerce' => WC_VERSION, 'wordpress' => get_bloginfo( 'version' ) ],
 				'currency'     => get_woocommerce_currency(),
 				'account'      => $account,
 				'connection'   => [
@@ -196,7 +238,15 @@ final class PowEndToEndFixture {
 					'emit_delivery_line'    => $partner->emit_delivery_line,
 					'delivery_notes_policy' => $partner->delivery_notes_policy,
 					'freight_supplier_part_id' => $partner->freight_supplier_part_id,
+					'allcaps'               => $partner->allcaps_transform,
+					// Null on a build before schema 10.
+					'line_description'      => $partner->line_description ?? null,
+					'order_details'         => method_exists( $partner, 'order_detail_list' ) ? $partner->order_detail_list() : null,
 				],
+				// What the fixture's own order details must send, after the driver's.
+				'instructions_expected' => self::ORDER_DETAILS_SENT,
+				// The sentence a freight line carries (and that then leads DeliveryInstructions).
+				'estimate_note' => class_exists( 'POW\\Addresses\\EstimateNote' ) ? POW\Addresses\EstimateNote::text( POW\Plugin::instance()->settings() ) : '',
 				'secret'       => $secret,
 				'products'     => $products,
 				'ship_to'      => $address,
@@ -289,6 +339,7 @@ final class PowEndToEndFixture {
 		$payload = (string) getenv( 'POW_E2E_PAYLOAD' );
 		$visit   = POW\Plugin::instance()->sessions()?->find_by_payload( (int) $seed['connection']['id'], $payload );
 		$orders  = [];
+		$keys    = array_values( array_map( static fn( array $entry ): string => (string) $entry['meta_key'], (array) ( $seed['connection']['order_details'] ?? [] ) ) );
 		if ( $visit ) {
 			// Every registered status: 'any' leaves out custom ones such as the Punchout Quote.
 			$ids = wc_get_orders( [ 'limit' => -1, 'return' => 'ids', 'status' => array_keys( wc_get_order_statuses() ), 'meta_key' => POW\Orders\QuoteOrder::META_SESSION_ID, 'meta_value' => (string) $visit->id ] );
@@ -308,6 +359,8 @@ final class PowEndToEndFixture {
 					'lines'          => $lines,
 					'buyer_cookie'   => (string) $order->get_meta( POW\Orders\QuoteOrder::META_BUYER_COOKIE ),
 					'customer_note'  => $order->get_customer_note(),
+					// Evidence: each "Order details sent" key as the order holds it.
+					'details'        => array_combine( $keys, array_map( static fn( string $key ): mixed => $order->get_meta( $key ), $keys ) ),
 				];
 			}
 		}

@@ -329,6 +329,91 @@ class OrderAgainstMessage(unittest.TestCase):
         self.assertFalse(driver.order_lines_match(order, {'E2E-ALPHA': {'qty': '2', 'unit': '11.00'}, 'X': {'qty': '1', 'unit': '1.00'}})[0])
 
 
+CHECKOUT_WITH_EXTRAS = CHECKOUT.replace(
+    '<textarea name="order_comments"></textarea>',
+    '<input type="hidden" name="h_date" value=""><input type="text" name="e_date" value="" readonly="readonly">'
+    '<textarea name="order_comments"></textarea>'
+    '<ul id="shipping_method"><li><input type="radio" name="shipping_method[0]" value="free_shipping:1" checked="checked"></li>'
+    '<li><input type="radio" name="shipping_method[0]" value="flat_rate:9"></li></ul>',
+)
+
+SEED_75 = {
+    'connection': {'allcaps': True, 'line_description': 'name_short_description', 'emit_delivery_line': 0},
+    'products': {
+        'E2E-ALPHA-X': {'id': 1, 'price': '11.00', 'name': 'End-to-end alpha x', 'detail': 'Brand Example & Co Red, 600 ml'},
+        'E2E-BETA-X': {'id': 2, 'price': '23.50', 'name': 'End-to-end beta x', 'detail': ''},
+    },
+    'instructions_expected': ['Exempt: no'],
+    'estimate_note': 'The delivery charge is an estimate.',
+    'shipping': {'instance_id': 9, 'priced_title': 'Courier E2E x', 'cost': '50.00'},
+}
+
+
+class OrderMessageLeg(unittest.TestCase):
+    """0.5.0 ticket 75: the checkout leg sets the connection's message settings and checks them in the cXML."""
+
+    def test_the_delivery_date_is_a_weekday_the_given_days_ahead(self):
+        from datetime import date
+        self.assertEqual(driver.delivery_date(date(2026, 10, 9), 7), date(2026, 10, 16))
+        self.assertEqual(driver.delivery_date(date(2026, 10, 9), 8), date(2026, 10, 19), 'A Saturday moves to Monday')
+        self.assertEqual(driver.delivery_date(date(2026, 10, 10), 7), date(2026, 10, 19))
+
+    def test_templates_take_the_date_in_each_format_they_name(self):
+        from datetime import date
+        day = date(2026, 10, 16)
+        self.assertEqual(driver.fill_template('{date:%d-%m-%Y}', day), '16-10-2026')
+        self.assertEqual(driver.fill_template('Preferred delivery date: {date:%Y-%m-%d} ({date:%d %B, %Y})', day), 'Preferred delivery date: 2026-10-16 (16 October, 2026)')
+        self.assertEqual(driver.fill_template('Attachment: plan.pdf', day), 'Attachment: plan.pdf')
+
+    def test_checkout_extras_are_read_and_a_malformed_file_is_refused(self):
+        good = {'date_offset_days': 7, 'fields': {'e_date': '{date:%d %B, %Y}', 'h_date': '{date:%d-%m-%Y}'}, 'order_details': [{'meta_key': '_date_ts', 'label': 'Preferred delivery date', 'format': 'unix_date'}], 'instructions': ['Preferred delivery date: {date:%Y-%m-%d}']}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'extras.json'
+            path.write_text(json.dumps(good))
+            self.assertEqual(driver.load_extras(path), good)
+            self.assertEqual(driver.load_extras(None), {'date_offset_days': 7, 'fields': {}, 'order_details': [], 'instructions': []})
+            for bad in ([], {'fields': []}, {'fields': {'a': 1}}, {'order_details': [{'meta_key': '_k', 'label': 'L'}]}, {'order_details': [{'meta_key': '_k', 'label': 'L', 'format': 'date'}]}, {'instructions': 'x'}, {'date_offset_days': 1}, {'unknown': 1}):
+                path.write_text(json.dumps(bad))
+                with self.assertRaises(ValueError, msg=json.dumps(bad)):
+                    driver.load_extras(path)
+
+    def test_the_submission_posts_the_extra_fields_and_the_chosen_shipping_method(self):
+        form = driver.checkout_form(CHECKOUT_WITH_EXTRAS, BASE + '/?page_id=258')
+        entries = dict(driver.checkout_submission(form, 'Leave at the gate.', {'e_date': '16 October, 2026', 'h_date': '16-10-2026'}, 'flat_rate:9'))
+        self.assertEqual([entries['e_date'], entries['h_date'], entries['shipping_method[0]']], ['16 October, 2026', '16-10-2026', 'flat_rate:9'])
+        self.assertEqual(dict(driver.checkout_submission(form, 'x'))['shipping_method[0]'], 'free_shipping:1', 'Without a choice the method the page chose is kept')
+        with self.assertRaises(KeyError):
+            driver.checkout_submission(form, 'x', {'not_on_the_page': '1'})
+
+    def test_the_priced_method_is_found_by_its_instance(self):
+        form = driver.checkout_form(CHECKOUT_WITH_EXTRAS, BASE + '/?page_id=258')
+        self.assertEqual(driver.shipping_choice(form, 9), 'flat_rate:9')
+        self.assertIsNone(driver.shipping_choice(form, 8))
+
+    def test_without_delivery_cost_the_message_is_the_settings_text_and_no_freight(self):
+        expected = driver.checkout_expected(SEED_75, 'Leave at the gate.', ['Preferred delivery date: 2026-10-16'])
+        self.assertEqual(expected['descriptions'], {
+            'E2E-ALPHA-X': {'description': 'END-TO-END ALPHA X - BRAND EXAMPLE & CO RED, 600 ML', 'short_name': 'END-TO-END ALPHA X'},
+            'E2E-BETA-X': {'description': 'END-TO-END BETA X', 'short_name': 'END-TO-END BETA X'},
+        })
+        self.assertEqual(expected['delivery_instructions'], 'Leave at the gate. | Preferred delivery date: 2026-10-16 | Exempt: no')
+        self.assertIsNone(expected['freight'])
+        self.assertNotIn('freight_description', expected)
+
+    def test_the_name_only_setting_expects_the_name(self):
+        seed = json.loads(json.dumps(SEED_75))
+        seed['connection'].update({'line_description': 'name', 'allcaps': False})
+        self.assertEqual(driver.checkout_expected(seed, 'n', [])['descriptions']['E2E-ALPHA-X'], {'description': 'End-to-end alpha x', 'short_name': 'End-to-end alpha x'})
+
+    def test_with_delivery_cost_the_priced_method_is_the_freight_line_and_the_estimate_leads(self):
+        seed = json.loads(json.dumps(SEED_75))
+        seed['connection']['emit_delivery_line'] = 1
+        expected = driver.checkout_expected(seed, 'Leave at the gate.', [])
+        self.assertEqual(expected['freight'], '50.00')
+        self.assertEqual(expected['freight_description'], 'COURIER E2E X — THE DELIVERY CHARGE IS AN ESTIMATE.')
+        self.assertEqual(expected['delivery_instructions'], 'The delivery charge is an estimate. | Leave at the gate. | Exempt: no')
+
+
 class _Closer:
     """A loopback listener that accepts and hangs up at once: the site came up, then every request fails."""
 

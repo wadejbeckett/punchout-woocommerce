@@ -163,3 +163,47 @@ class MessageLines(unittest.TestCase):
     def test_each_merchandise_line_is_read_by_its_part_number(self):
         self.assertEqual(poom.lines(GOOD), {'E2E-ALPHA': {'qty': '2', 'unit': '11.00'}, 'E2E-BETA': {'qty': '1', 'unit': '23.50'}})
 
+
+
+class OrderMessageSettings(unittest.TestCase):
+    """0.5.0 ticket 75: each line's Description and ShortName, the exact DeliveryInstructions, the freight line's
+    description."""
+
+    INSTRUCTIONS = 'Deliver to: Buyer Co. Leave at the gate.'
+    DESCRIPTIONS = {'E2E-ALPHA': {'description': 'Alpha', 'short_name': 'Alpha'}, 'E2E-BETA': {'description': 'Beta', 'short_name': 'Beta'}}
+
+    def run_checks(self, xml=GOOD, **expected):
+        return poom.check(xml, dict(EXPECTED, **expected), dtd=valid)
+
+    def test_each_lines_description_and_short_name_are_checked(self):
+        results = self.run_checks(descriptions=self.DESCRIPTIONS)
+        self.assertEqual([r['check'] for r in results][-2:], ['description E2E-ALPHA', 'description E2E-BETA'])
+        self.assertEqual(failed(results), [])
+
+    def test_a_description_that_differs_from_the_setting_fails_with_both_texts(self):
+        xml = GOOD.replace('<ShortName>Alpha</ShortName>Alpha</Description>', '<ShortName>Alpha</ShortName>Alpha - Brand Example</Description>')
+        results = self.run_checks(xml=xml, descriptions=self.DESCRIPTIONS)
+        self.assertEqual(failed(results), ['description E2E-ALPHA'])
+        detail = [r for r in results if r['check'] == 'description E2E-ALPHA'][0]['detail']
+        self.assertEqual(detail['got'], {'description': 'Alpha - Brand Example', 'short_name': 'Alpha'})
+        xml = GOOD.replace('<ShortName>Beta</ShortName>', '<ShortName>Beta - Brand</ShortName>')
+        self.assertEqual(failed(self.run_checks(xml=xml, descriptions=self.DESCRIPTIONS)), ['description E2E-BETA'])
+
+    def test_the_description_reads_without_a_short_name_too(self):
+        self.assertEqual(poom.description_texts(poom.parse_xml(GOOD.replace('<ShortName>Alpha</ShortName>', '')).find('.//ItemIn')), ('Alpha', None))
+
+    def test_the_delivery_instructions_must_be_exactly_the_expected_text_on_every_merchandise_line(self):
+        self.assertEqual(failed(self.run_checks(delivery_instructions=self.INSTRUCTIONS)), [])
+        self.assertIn('delivery_instructions_exact', [r['check'] for r in self.run_checks(delivery_instructions=self.INSTRUCTIONS)])
+        self.assertEqual(failed(self.run_checks(delivery_instructions=self.INSTRUCTIONS + ' | Preferred delivery date: 2026-10-16')), ['delivery_instructions_exact'])
+        one_line = GOOD.replace('Leave at the gate.</Extrinsic>', 'Leave at the gate. | Exempt: no</Extrinsic>', 1)
+        self.assertEqual(failed(self.run_checks(xml=one_line, delivery_instructions=self.INSTRUCTIONS)), ['delivery_instructions_exact'])
+
+    def test_a_freight_line_with_instructions_fails_the_exact_check(self):
+        xml = GOOD.replace('</PunchOutOrderMessage>', FREIGHT.replace('</ItemDetail>', '<Extrinsic name="DeliveryInstructions">' + self.INSTRUCTIONS + '</Extrinsic></ItemDetail>'))
+        self.assertEqual(failed(self.run_checks(xml=xml, freight='0.00', delivery_instructions=self.INSTRUCTIONS)), ['delivery_instructions_exact'])
+
+    def test_the_freight_lines_description_is_checked_when_expected(self):
+        xml = GOOD.replace('</PunchOutOrderMessage>', FREIGHT)
+        self.assertEqual(failed(self.run_checks(xml=xml, freight='0.00', freight_description='Delivery')), [])
+        self.assertEqual(failed(self.run_checks(xml=xml, freight='0.00', freight_description='Courier')), ['freight_description'])

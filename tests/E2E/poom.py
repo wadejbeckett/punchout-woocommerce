@@ -54,6 +54,16 @@ def _money(text):
         return None
 
 
+def description_texts(item):
+    """(Description text, ShortName or None) of one ItemIn: the Description's own text around its ShortName child."""
+    description = item.find('ItemDetail/Description')
+    if description is None:
+        return None, None
+    short = description.find('ShortName')
+    text = (description.text or '') + ((short.tail or '') if short is not None else '')
+    return text.strip(), (short.text or '').strip() if short is not None else None
+
+
 def lines(xml, freight_sku='DELIVERY'):
     """The message's merchandise lines by SupplierPartID: {sku: {qty, unit}}, both as the document wrote them."""
     root = parse_xml(xml)
@@ -121,10 +131,13 @@ def check(xml, expected, dtd=php_dtd, capture=None):
         unit = _money(money.text if money is not None else None)
         if quantity is not None and unit is not None:
             total += quantity * unit
+        description, short_name = description_texts(item)
         record = {
             'qty': quantity, 'unit': unit, 'currency': money.get('currency') if money is not None else None,
             'aux': item.findtext('ItemID/SupplierPartAuxiliaryID'), 'uom': (item.findtext('ItemDetail/UnitOfMeasure') or '').strip(),
             'classification': [(c.get('domain'), c.text) for c in item.findall('ItemDetail/Classification')],
+            'description': description, 'short_name': short_name,
+            'instructions': [e.text or '' for e in item.findall('ItemDetail/Extrinsic') if e.get('name') == 'DeliveryInstructions'],
         }
         if sku == freight_sku:
             freight.append(record)
@@ -157,5 +170,19 @@ def check(xml, expected, dtd=php_dtd, capture=None):
         notes = expected['notes']
         carried = [e.get('name') for e in poom.iter('Extrinsic') if notes in (e.text or '')] + ['Comments' for c in poom.iter('Comments') if notes in (c.text or '')]
         add('delivery_notes_carried', bool(carried), where=carried[:3])
+
+    # 0.5.0 (the cXML from the order): what the connection screen says each line and the instructions carry.
+    for sku, want in (expected.get('descriptions') or {}).items():
+        got = lines.get(sku)
+        got = None if got is None else {'description': got['description'], 'short_name': got['short_name']}
+        add('description ' + sku, got == {'description': want['description'], 'short_name': want['short_name']}, expected=want, got=got)
+
+    if expected.get('delivery_instructions') is not None:
+        want = expected['delivery_instructions']
+        got = {sku: record['instructions'] for sku, record in lines.items()}
+        add('delivery_instructions_exact', bool(lines) and all(value == [want] for value in got.values()) and not any(r['instructions'] for r in freight), expected=want, got=got, freight=[r['instructions'] for r in freight])
+
+    if expected.get('freight_description') is not None:
+        add('freight_description', len(freight) == 1 and freight[0]['description'] == expected['freight_description'], expected=expected['freight_description'], got=[r['description'] for r in freight])
 
     return results
