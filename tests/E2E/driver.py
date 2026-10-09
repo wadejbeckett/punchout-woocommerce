@@ -14,8 +14,10 @@ Opt-in, against a disposable local WordPress/WooCommerce only (see tests/README.
      POST (--redeem picks a method outright);
   5. adds both products with wc-ajax=add_to_cart;
   6. leaves through the release's own path: the cart's Punchout exit and the
-     review's Submit (0.4.x), or WooCommerce checkout (0.5.0, `checkout_path`,
-     not built yet);
+     review's Submit (0.4.x), or (0.5.0) the cart's checkout button to
+     WooCommerce's classic checkout, where PunchOut is the only payment method
+     and its button is the place-order label, then the GET handoff the
+     checkout answer redirects to (`Run.checkout_path`);
   7. reads the handoff page's form, submits it to the receiver as the browser's
      auto-post would, decodes the cXML and checks it (tests/E2E/poom.py,
      exact 1.2.008 DTD through tests/E2E/dtd.php);
@@ -30,7 +32,9 @@ run directory, mode 700.
 import argparse
 import base64
 import copy
+from decimal import Decimal
 import html as htmllib
+from html.parser import HTMLParser
 import http.cookiejar
 import http.server
 import json
@@ -184,6 +188,99 @@ def review_findings(page, labels, freight, priced_titles):
         ('review_has_no_tax_sentence', re.search(r'\b(tax|vat)\b', _text(area), re.I) is None, {}),
     ]
     return findings
+
+
+class _Anchors(HTMLParser):
+    def __init__(self, base_url):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.found = []
+        self.open = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'a':
+            attrs = {k: (v or '') for k, v in attrs}
+            self.open = {'href': urllib.parse.urljoin(self.base_url, attrs.get('href', '')), 'classes': attrs.get('class', '').split(), 'text': ''}
+            self.found.append(self.open)
+
+    def handle_endtag(self, tag):
+        if tag == 'a':
+            self.open = None
+
+    def handle_data(self, data):
+        if self.open is not None:
+            self.open['text'] += data
+
+
+def checkout_anchor(html, base_url, css_class):
+    """(href, label) of the first link carrying `css_class`: the cart's proceed button ('checkout-button') or the
+    Cart widget's checkout button ('checkout'). None when the page has none."""
+    parser = _Anchors(base_url)
+    parser.feed(html)
+    parser.close()
+    for anchor in parser.found:
+        if css_class in anchor['classes']:
+            return anchor['href'], ' '.join(anchor['text'].split())
+    return None
+
+
+def checkout_form(html, base_url):
+    """WooCommerce's classic checkout form (name="checkout"), or None."""
+    for form in forms.parse_forms(html, base_url):
+        if form.attrs.get('name') == 'checkout':
+            return form
+    return None
+
+
+def checkout_findings(page, form, place_order_label):
+    """0.5.0, the classic checkout in a visit: the PunchOut method is the only one offered, it carries the place-order
+    label setting, and the button already shows that label before any method is chosen. [(check, ok, detail)]"""
+    methods = [c for c in form.controls if c.name == 'payment_method' and c.type == 'radio']
+    offered = [c.value for c in methods]
+    punchout = [c for c in methods if c.value == 'punchout']
+    button = re.search(r'<button[^>]*\bid="place_order"[^>]*>(.*?)</button>', page, re.S)
+    shown = _text(button.group(1)) if button else None
+    return [
+        ('checkout_offers_only_the_punchout_method', offered == ['punchout'], {'offered': offered}),
+        ('punchout_method_carries_the_place_order_label', bool(punchout) and punchout[0].attrs.get('data-order_button_text') == place_order_label, {'label': punchout[0].attrs.get('data-order_button_text') if punchout else None, 'setting': place_order_label}),
+        ('place_order_button_shows_the_label_before_any_choice', shown == place_order_label, {'shown': shown, 'setting': place_order_label}),
+    ]
+
+
+def checkout_submission(form, note):
+    """What WooCommerce's checkout script posts: the form serialised (no button, as jQuery's serialize()), with the
+    PunchOut method chosen, the buyer's note, and a phone typed in when the shop asks for one and the account has none."""
+    choose = {'payment_method': 'punchout', 'order_comments': note}
+    if any(c.name == 'billing_phone' for c in form.controls) and not form.value('billing_phone'):
+        choose['billing_phone'] = '0100000000'
+    return [(name, '' if value is None else value) for name, value in form.submission(None, choose)]
+
+
+def checkout_answer(status, body):
+    """(result, redirect, messages) from WooCommerce's wc-ajax=checkout answer; 'unreadable' when it is not its JSON."""
+    try:
+        answer = json.loads(body)
+    except ValueError:
+        return 'unreadable', None, [_text(body)[:300]]
+    if not isinstance(answer, dict):
+        return 'unreadable', None, []
+    messages = [_text(m) for m in re.findall(r'<li[^>]*>(.*?)</li>', answer.get('messages') or '', re.S)]
+    return answer.get('result'), answer.get('redirect'), messages
+
+
+def order_lines_match(order_lines, message_lines):
+    """(ok, detail): the message carries exactly the order's lines, each with the order's quantity and its ex-tax line
+    total divided by that quantity as the unit price."""
+    want = {}
+    for line in order_lines:
+        quantity = Decimal(str(line['qty']))
+        want[line['sku']] = {'qty': quantity, 'unit': (Decimal(str(line['total'])) / quantity).quantize(Decimal('0.01'))}
+    got = {sku: {'qty': Decimal(str(v['qty'])), 'unit': Decimal(str(v['unit']))} for sku, v in message_lines.items()}
+    return want == got, {'order': {k: {'qty': str(v['qty']), 'unit': str(v['unit'])} for k, v in want.items()}, 'message': message_lines}
+
+
+def connection_freight_sku(seed):
+    return (seed.get('connection') or {}).get('freight_supplier_part_id') or 'DELIVERY'
 
 
 def handoff_form(html, base_url):
@@ -381,6 +478,8 @@ class Run:
                 answer = {'error': True}
             self.must(status == 200 and not answer.get('error') and 'cart_hash' in answer, 'wc_ajax_add_to_cart ' + sku, http=status)
             self.quantities[sku] = quantity
+            # The Cart widget as WooCommerce redraws it after the add (0.5.0 checks its checkout button).
+            self.mini_cart = (answer.get('fragments') or {}).get('div.widget_shopping_cart_content') or ''
 
     # -- 0.4.x: the cart's Punchout exit and the review -------------------------
 
@@ -431,6 +530,55 @@ class Run:
         self.check(status == 200, 'submit_answers_with_the_handoff_page', http=status)
         return handoff, (second, review, submitter, choose)
 
+    # -- 0.5.0: the cart's checkout button, WooCommerce checkout, the GET handoff --
+
+    def checkout_path(self, browser, seed):
+        """Leave through WooCommerce's classic checkout and return the handoff page, as `review_path` does.
+
+        Still to come with the later 0.5.0 tickets (spec "Testing Decisions"): the shipping section opened on the
+        default saved address, a date, a file, no delivery amount on the page, and the second leg (a repeated or
+        racing Submit, a zero-total cart, refusals outside a visit)."""
+        url = self.args.url
+        checkout = seed.get('checkout') or {}
+        labels = checkout.get('labels') or {}
+        cart_page = (seed.get('pages') or {}).get('classic_cart')
+        self.must({'proceed', 'place_order'} <= set(labels) and bool(cart_page) and checkout.get('classic') is True, 'seed_sets_the_checkout_labels_a_classic_cart_and_a_classic_checkout', labels=labels, classic_cart=cart_page, classic_checkout=checkout.get('classic'))
+
+        widget = checkout_anchor(getattr(self, 'mini_cart', ''), url, 'checkout')
+        self.check(widget is not None and widget[1] == labels['proceed'], 'cart_widget_checkout_button_carries_the_label', shown=widget[1] if widget else None, setting=labels['proceed'])
+
+        status, _, cart, cart_url = browser.get(url + '/?page_id=' + str(cart_page))
+        self.save('cart.html', cart)
+        proceed = checkout_anchor(cart, cart_url, 'checkout-button')
+        self.must(status == 200 and proceed is not None, 'cart_offers_the_checkout_button', http=status)
+        self.check(proceed[1] == labels['proceed'], 'cart_checkout_button_carries_the_label', shown=proceed[1], setting=labels['proceed'])
+
+        status, _, page, page_url = browser.get(proceed[0])
+        self.save('checkout.html', page)
+        form = checkout_form(page, page_url)
+        self.must(status == 200 and form is not None, 'the_checkout_button_opens_woocommerce_checkout_in_the_visit', http=status, url=page_url)
+        for name, ok, detail in checkout_findings(page, form, labels['place_order']):
+            if name == 'checkout_offers_only_the_punchout_method':
+                self.must(ok, name, **detail)
+            else:
+                self.check(ok, name, **detail)
+
+        self.note = 'Leave at the gate. End-to-end run ' + seed['run'] + '.'
+        body, content_type = forms.encode(checkout_submission(form, self.note), forms.URLENCODED)
+        status, _, answer = browser.request(url + '/?wc-ajax=checkout', body, content_type, accept='application/json')
+        self.save('checkout-answer.json', answer)
+        result, redirect, messages = checkout_answer(status, answer)
+        self.must(result == 'success' and isinstance(redirect, str) and redirect.startswith(url + '/punchout/'), 'submit_answers_success_with_the_handoff_address', http=status, result=result, redirect=redirect, messages=messages)
+
+        # A second browser holding this one's cookies as they are now asks for the handoff again afterwards.
+        self.handoff_again = (browser.clone(), redirect)
+        status, headers, handoff = browser.request(redirect)
+        self.save('handoff.html', handoff)
+        self.check(status == 200, 'the_handoff_answers', http=status)
+        self.check('no-store' in (headers.get('Cache-Control') or '').lower(), 'the_handoff_is_not_stored', cache_control=headers.get('Cache-Control'))
+        self.check((headers.get('Referrer-Policy') or '').lower() == 'no-referrer', 'the_handoff_sends_no_referrer', referrer_policy=headers.get('Referrer-Policy'))
+        return handoff
+
     @staticmethod
     def review_form(page, base):
         for form in forms.parse_forms(page, base):
@@ -466,30 +614,6 @@ class Run:
             'ship_to_contains': [seed['ship_to']['address_1'], seed['ship_to']['city']] if connection['emit_ship_to'] else None,
             'notes': self.note if connection['delivery_notes_policy'] == 'item_detail_extrinsic' else None,
         }
-
-
-def checkout_path(browser, run, seed):
-    """0.5.0 extension point: leave through WooCommerce checkout instead of the review.
-
-    To build with ticket 29, returning the handoff page HTML exactly as
-    `Run.review_path` does, so capture and every check stay shared:
-      1. GET the cart (?page_id=<cart>): the proceed button and the mini-cart
-         Checkout button carry the visit-only label ("Review").
-      2. GET the classic checkout (?page_id=<seed checkout page_id>, which must
-         be the [woocommerce_checkout] page): the `punchout` payment method is
-         the only one offered, `data-order_button_text` is the label setting
-         ("Submit"), the shipping section is open on the default saved address
-         (Address Book select), no delivery estimate, VAT wording at most once.
-      3. Read `woocommerce-process-checkout-nonce` and the form; POST
-         /?wc-ajax=checkout with the form's own billing/shipping fields,
-         `order_comments`, the chosen saved address and
-         `payment_method=punchout` (forms.encode, URLENCODED as WooCommerce's
-         script sends it). Expect JSON {"result":"success","redirect":...}.
-      4. GET the redirect: the GET handoff under /punchout/. Return its HTML.
-    Second leg (spec "Testing Decisions"): repeat the Submit (Sent state, no
-    second order), a zero-total cart, a forged punchout method outside a visit.
-    """
-    raise NotImplementedError('The 0.5.0 checkout path is not built yet; run 0.4.x releases with --path review.')
 
 
 def wait_for(url, seconds, server=None):
@@ -581,7 +705,7 @@ def main(argv=None):
         browser = Browser(args.url)
         run.punch_in(browser, seed, receiver)
         if path == 'checkout':
-            handoff, replay = checkout_path(browser, run, seed), None
+            handoff, replay = run.checkout_path(browser, seed), None
         else:
             handoff, replay = run.review_path(browser, seed)
         field, value, xml, posted = run.capture(browser, handoff, receiver)
@@ -590,6 +714,12 @@ def main(argv=None):
         (args.out / 'checks.json').write_text(json.dumps(results, indent=1, default=str))
         for result in results:
             run.check(result['ok'], 'cxml ' + result['check'], **({} if result['ok'] else result['detail']))
+
+        if path == 'checkout':
+            second, handoff_url = run.handoff_again
+            status, _, again = second.request(handoff_url)
+            run.save('handoff-again.html', again)
+            run.check(handoff_form(again, args.url) is None, 'the_handoff_is_served_once', http=status)
 
         if replay is not None:
             second, review, submitter, choose = replay
@@ -611,10 +741,13 @@ def main(argv=None):
             run.check(order['customer'] == seed['account'], 'order_belongs_to_the_bound_account', customer=order['customer'])
             run.check(order['buyer_cookie'] == run.cookie, 'order_names_the_buyer_cookie')
             run.check(sorted((line['sku'], line['qty']) for line in order['lines']) == sorted(run.quantities.items()), 'order_lines_equal_the_cart', lines=order['lines'])
-            if path == 'review':
-                run.check(order['status'] == 'punchout-quote', 'order_is_a_punchout_quote', status=order['status'])
-    except NotImplementedError as error:
-        run.check(False, 'release_path_available', reason=str(error))
+            run.check(order['status'] == 'punchout-quote', 'order_is_a_punchout_quote', status=order['status'])
+            if path == 'checkout':
+                run.check(order['payment_method'] == 'punchout', 'order_was_placed_with_the_punchout_method', payment_method=order['payment_method'])
+                run.check(visit.get('order_id') == order['id'], 'visit_names_its_order', visit_order=visit.get('order_id'), order=order['id'])
+                ok, detail = order_lines_match(order['lines'], poom.lines(xml, connection_freight_sku(seed)))
+                run.check(ok, 'cxml_lines_equal_the_orders_lines', **detail)
+                run.check(order['customer_note'] == run.note, 'order_keeps_the_buyers_note', note=order['customer_note'])
     except SystemExit as stop:
         run.check(False, 'run_completed', reason=str(stop))
     except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 - a connection error or a crash is a failed run, never an empty failure list

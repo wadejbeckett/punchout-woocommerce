@@ -54,6 +54,18 @@ def _money(text):
         return None
 
 
+def lines(xml, freight_sku='DELIVERY'):
+    """The message's merchandise lines by SupplierPartID: {sku: {qty, unit}}, both as the document wrote them."""
+    root = parse_xml(xml)
+    found = {}
+    for item in root.iter('ItemIn'):
+        sku = (item.findtext('ItemID/SupplierPartID') or '').strip()
+        if sku == freight_sku:
+            continue
+        found[sku] = {'qty': item.get('quantity'), 'unit': (item.findtext('ItemDetail/UnitPrice/Money') or '').strip()}
+    return found
+
+
 def check(xml, expected, dtd=php_dtd, capture=None):
     results = []
 

@@ -10,19 +10,22 @@
  * - seed: one ordinary customer account (the connection's login) with a
  *   deliverable shipping address, one active test connection bound to it,
  *   two priced simple products. For the run it also sets the review's words
- *   to non-default values and its tax sentence on (0.4.23 settings), and adds
- *   one priced flat-rate method to the "rest of the world" shipping zone, so
- *   the driver can see the settings drawn and see that a connection without
- *   the delivery line shows no amount. Writes the run's facts, including the
- *   generated shared secret and what it changed, to POW_E2E_FIXTURE (mode
- *   600). Prints nothing secret.
+ *   to non-default values and its tax sentence on (0.4.23 settings), the
+ *   cart's checkout button label and the PunchOut payment method's
+ *   place-order label to non-default values (0.5.0 settings), and adds one
+ *   priced flat-rate method to the "rest of the world" shipping zone, so the
+ *   driver can see the settings drawn and see that a connection without the
+ *   delivery line shows no amount. It makes sure one page draws the classic
+ *   cart ([woocommerce_cart]), whatever the shop's own cart page is. Writes
+ *   the run's facts, including the generated shared secret and what it
+ *   changed, to POW_E2E_FIXTURE (mode 600). Prints nothing secret.
  * - inspect: reads back what the run left (POW_E2E_PAYLOAD names the visit by
  *   its setup payloadID): the visit's status, whether its login still
  *   verifies, and the orders that name the visit. Writes them to
  *   POW_E2E_RESULT.
- * - retire: disables the run's connection, puts the review settings back as
- *   they were and removes the priced shipping method the seed added, so a
- *   later run starts clean. The run's rows (account, connection, products,
+ * - retire: disables the run's connection, puts the run's settings (the
+ *   plugin's and the payment method's) back as they were and removes the
+ *   priced shipping method the seed added, so a later run starts clean. The run's rows (account, connection, products,
  *   visit, order) stay for inspection.
  *
  * Every name is neutral and suffixed with a random run id.
@@ -48,7 +51,14 @@ final class PowEndToEndFixture {
 	private const PRODUCTS = [ 'alpha' => '11.00', 'beta' => '23.50' ];
 
 	/** The review's words for the run (0.4.23 settings), none of them a default; the tax sentence is on, which a connection without the delivery line must still never show. */
-	private const REVIEW_SETTINGS = [ 'review_submit_label' => 'Send cart', 'review_items_heading' => 'Items on order', 'review_total_label' => 'Order total', 'review_tax_note' => 'yes' ];
+	private const REVIEW_SETTINGS = [ 'review_submit_label' => 'Send cart', 'review_items_heading' => 'Items on order', 'review_total_label' => 'Order total', 'review_tax_note' => 'yes', 'checkout_button_label' => 'Review' ];
+
+	/** The PunchOut payment method's own settings for the run (0.5.0): its place-order label, not the default. */
+	private const GATEWAY_OPTION   = 'woocommerce_punchout_settings';
+	private const GATEWAY_SETTINGS = [ 'order_button_text' => 'Submit' ];
+
+	/** The page that draws the classic cart for the run, found by its slug or made once. */
+	private const CLASSIC_CART_SLUG = 'pow-e2e-classic-cart';
 
 	/** The priced method the seed adds for the run, ex tax. */
 	private const PRICED_COST = '50.00';
@@ -166,7 +176,9 @@ final class PowEndToEndFixture {
 		}
 
 		$checkout = (int) wc_get_page_id( 'checkout' );
+		$classic_cart = self::classic_cart_page();
 		[ $settings_before, $shipping ] = self::configure_review( $run );
+		$gateway_before = self::configure_gateway();
 		self::write(
 			$path,
 			[
@@ -188,8 +200,15 @@ final class PowEndToEndFixture {
 				'secret'       => $secret,
 				'products'     => $products,
 				'ship_to'      => $address,
-				'pages'        => [ 'shop' => (int) wc_get_page_id( 'shop' ), 'cart' => (int) wc_get_page_id( 'cart' ), 'checkout' => $checkout ],
-				'checkout'     => [ 'page_id' => $checkout, 'classic' => $checkout > 0 && has_shortcode( (string) get_post_field( 'post_content', $checkout ), 'woocommerce_checkout' ) ],
+				'pages'        => [ 'shop' => (int) wc_get_page_id( 'shop' ), 'cart' => (int) wc_get_page_id( 'cart' ), 'checkout' => $checkout, 'classic_cart' => $classic_cart ],
+				'checkout'     => [
+					'page_id' => $checkout,
+					'classic' => $checkout > 0 && has_shortcode( (string) get_post_field( 'post_content', $checkout ), 'woocommerce_checkout' ),
+					// 0.5.0: the cart's and the Cart widget's checkout button, and the payment method's place-order button.
+					'labels'  => [ 'proceed' => self::REVIEW_SETTINGS['checkout_button_label'], 'place_order' => self::GATEWAY_SETTINGS['order_button_text'] ],
+					// For retire: the payment method's settings as they were, null when never saved.
+					'gateway_before' => $gateway_before,
+				],
 				// An address book found by shape, as the plugin finds it: a get_address_book() in any namespace.
 				'address_book' => [] !== array_filter( get_defined_functions()['user'], static fn( string $f ): bool => 'get_address_book' === substr( $f, -16 ) ),
 				'review'       => [
@@ -231,6 +250,27 @@ final class PowEndToEndFixture {
 			throw $error;
 		}
 		return [ $before, [ 'instance_id' => $instance, 'priced_title' => $title, 'cost' => self::PRICED_COST ] ];
+	}
+
+	/** One published page whose content draws the classic cart, found by its slug or made once (left in place). */
+	private static function classic_cart_page(): int {
+		$page = get_page_by_path( self::CLASSIC_CART_SLUG, OBJECT, 'page' );
+		if ( $page instanceof WP_Post && 'publish' === $page->post_status && has_shortcode( (string) $page->post_content, 'woocommerce_cart' ) ) { return (int) $page->ID; }
+		$id = wp_insert_post( [ 'post_type' => 'page', 'post_status' => 'publish', 'post_name' => self::CLASSIC_CART_SLUG, 'post_title' => 'Cart (classic, end-to-end)', 'post_content' => "<!-- wp:shortcode -->\n[woocommerce_cart]\n<!-- /wp:shortcode -->" ], true );
+		if ( $id instanceof WP_Error || (int) $id <= 0 ) { throw new RuntimeException( 'The classic cart page could not be made.' ); }
+		return (int) $id;
+	}
+
+	/** Set the payment method's run settings; returns its option as it was (null = never saved). */
+	private static function configure_gateway(): ?array {
+		$stored = get_option( self::GATEWAY_OPTION, null );
+		$before = is_array( $stored ) ? $stored : null;
+		update_option( self::GATEWAY_OPTION, array_replace( $before ?? [], self::GATEWAY_SETTINGS ) );
+		return $before;
+	}
+
+	private static function restore_gateway( ?array $before ): void {
+		if ( null === $before ) { delete_option( self::GATEWAY_OPTION ); } else { update_option( self::GATEWAY_OPTION, $before ); }
 	}
 
 	/** @param array<string, mixed> $before Each changed setting as it was; null = not saved. */
@@ -289,6 +329,10 @@ final class PowEndToEndFixture {
 		if ( isset( $seed['review']['settings_before'] ) && is_array( $seed['review']['settings_before'] ) ) {
 			self::restore_settings( $seed['review']['settings_before'] );
 			echo "review settings put back\n";
+		}
+		if ( isset( $seed['checkout'] ) && is_array( $seed['checkout'] ) && array_key_exists( 'gateway_before', $seed['checkout'] ) ) {
+			self::restore_gateway( is_array( $seed['checkout']['gateway_before'] ) ? $seed['checkout']['gateway_before'] : null );
+			echo "payment method settings put back\n";
 		}
 		$instance = (int) ( $seed['shipping']['instance_id'] ?? 0 );
 		$method   = $instance > 0 ? WC_Shipping_Zones::get_shipping_method( $instance ) : false;

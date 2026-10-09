@@ -17,6 +17,7 @@ MULTIPART = 'multipart/form-data'
 class Control:
     def __init__(self, tag, attrs):
         self.tag = tag
+        self.attrs = attrs  # every attribute as the page wrote it, for checks on data-* values
         self.type = (attrs.get('type') or ('submit' if tag == 'button' else 'text')).lower() if tag in ('input', 'button') else tag
         self.name = attrs.get('name')
         self.value = attrs.get('value')

@@ -156,3 +156,10 @@ class ExactDtd(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MessageLines(unittest.TestCase):
+
+    def test_each_merchandise_line_is_read_by_its_part_number(self):
+        self.assertEqual(poom.lines(GOOD), {'E2E-ALPHA': {'qty': '2', 'unit': '11.00'}, 'E2E-BETA': {'qty': '1', 'unit': '23.50'}})
+

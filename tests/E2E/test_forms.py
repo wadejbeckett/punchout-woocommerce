@@ -109,3 +109,11 @@ class Encoding(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ControlAttributes(unittest.TestCase):
+
+    def test_a_control_keeps_its_own_attributes_for_checks(self):
+        form = parse_forms('<form method="post"><input type="radio" name="payment_method" value="punchout" checked data-order_button_text="Submit &amp; send"></form>', 'http://127.0.0.1:8080/')[0]
+        self.assertEqual(form.controls[0].attrs.get('data-order_button_text'), 'Submit & send')
+

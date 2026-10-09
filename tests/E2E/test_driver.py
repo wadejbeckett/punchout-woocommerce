@@ -103,9 +103,6 @@ class ReleasePath(unittest.TestCase):
     def test_an_explicit_path_wins(self):
         self.assertEqual(driver.path_for('0.4.22', 'checkout'), 'checkout')
 
-    def test_the_checkout_path_is_an_extension_point_until_it_is_built(self):
-        with self.assertRaises(NotImplementedError):
-            driver.checkout_path(None, None, None)
 
 
 class Loopback(unittest.TestCase):
@@ -237,6 +234,99 @@ class Review0423(unittest.TestCase):
     def test_with_the_delivery_line_on_only_the_words_and_the_date_are_checked(self):
         names = [name for name, _, _ in driver.review_findings(REVIEW, LABELS, True, [PRICED])]
         self.assertEqual(names, ['review_submit_label_is_the_setting', 'review_items_heading_is_the_setting', 'review_total_label_is_the_setting', 'review_has_no_date_input'])
+
+
+CART = (
+    '<div class="wc-proceed-to-checkout"><a href="' + BASE + '/?page_id=258" class="button alt wp-element-button checkout-button wc-forward">Review</a></div>'
+    '<form method="post" action="' + BASE + '/punchout/confirm" class="pow-return-form"><button type="submit">Punchout</button></form>'
+)
+MINI_CART = (
+    '<p class="woocommerce-mini-cart__buttons buttons"><a href="' + BASE + '/?page_id=6" class="button wc-forward">View cart</a>'
+    '<a href="' + BASE + '/?page_id=258" class="button checkout wc-forward">Review</a></p>'
+)
+CHECKOUT = (
+    '<form name="checkout" method="post" class="checkout woocommerce-checkout" action="' + BASE + '/?page_id=258" enctype="multipart/form-data">'
+    '<input type="text" name="billing_first_name" value="Receiving">'
+    '<input type="tel" name="billing_phone" value="">'
+    '<textarea name="order_comments"></textarea>'
+    '<ul class="wc_payment_methods payment_methods methods"><li><input id="payment_method_punchout" type="radio" class="input-radio" name="payment_method" value="punchout" checked=\'checked\' data-order_button_text="Submit" /></li></ul>'
+    '<input type="hidden" id="woocommerce-process-checkout-nonce" name="woocommerce-process-checkout-nonce" value="abc123" />'
+    '<button type="submit" class="button alt" name="woocommerce_checkout_place_order" id="place_order" value="Submit" data-value="Submit">Submit</button>'
+    '</form>'
+)
+
+
+class CheckoutButtons(unittest.TestCase):
+
+    def test_the_cart_proceed_button_is_found_with_its_label_and_target(self):
+        self.assertEqual(driver.checkout_anchor(CART, BASE + '/?page_id=300', 'checkout-button'), (BASE + '/?page_id=258', 'Review'))
+
+    def test_the_mini_cart_checkout_button_is_found_by_its_class(self):
+        self.assertEqual(driver.checkout_anchor(MINI_CART, BASE + '/', 'checkout'), (BASE + '/?page_id=258', 'Review'))
+
+    def test_a_page_without_the_button_is_none(self):
+        self.assertIsNone(driver.checkout_anchor('<a class="button wc-forward" href="/cart">View cart</a>', BASE + '/', 'checkout'))
+
+
+class CheckoutPage(unittest.TestCase):
+
+    def test_the_checkout_form_is_the_one_named_checkout(self):
+        form = driver.checkout_form('<form action="/search"></form>' + CHECKOUT, BASE + '/?page_id=258')
+        self.assertEqual(form.attrs.get('name'), 'checkout')
+
+    def test_only_punchout_with_the_label_passes(self):
+        form = driver.checkout_form(CHECKOUT, BASE + '/?page_id=258')
+        findings = {name: ok for name, ok, _ in driver.checkout_findings(CHECKOUT, form, 'Submit')}
+        self.assertEqual(findings, {'checkout_offers_only_the_punchout_method': True, 'punchout_method_carries_the_place_order_label': True, 'place_order_button_shows_the_label_before_any_choice': True})
+
+    def test_a_second_method_fails(self):
+        page = CHECKOUT.replace('</ul>', '<li><input type="radio" name="payment_method" value="ozow" data-order_button_text="" /></li></ul>')
+        findings = {name: ok for name, ok, _ in driver.checkout_findings(page, driver.checkout_form(page, BASE), 'Submit')}
+        self.assertFalse(findings['checkout_offers_only_the_punchout_method'])
+
+    def test_the_default_label_fails(self):
+        page = CHECKOUT.replace('Submit', 'Place order')
+        findings = {name: ok for name, ok, _ in driver.checkout_findings(page, driver.checkout_form(page, BASE), 'Submit')}
+        self.assertFalse(findings['punchout_method_carries_the_place_order_label'])
+        self.assertFalse(findings['place_order_button_shows_the_label_before_any_choice'])
+
+    def test_the_submission_is_the_serialised_form_with_the_buyers_entries(self):
+        form = driver.checkout_form(CHECKOUT, BASE + '/?page_id=258')
+        entries = driver.checkout_submission(form, 'Leave at the gate.')
+        self.assertIn(('payment_method', 'punchout'), entries)
+        self.assertIn(('order_comments', 'Leave at the gate.'), entries)
+        self.assertIn(('woocommerce-process-checkout-nonce', 'abc123'), entries)
+        self.assertNotIn('woocommerce_checkout_place_order', [k for k, _ in entries], 'jQuery serialize() sends no button')
+        phone = dict(entries)['billing_phone']
+        self.assertTrue(phone, 'An empty phone is typed in, as a buyer must when the shop requires it')
+
+
+class CheckoutAnswer(unittest.TestCase):
+
+    def test_success_with_a_handoff_address_is_read(self):
+        body = '{"result":"success","redirect":"http:\\/\\/127.0.0.1:8080\\/punchout\\/handoff?order=7&key=wc_order_x","order_id":7}'
+        self.assertEqual(driver.checkout_answer(200, body), ('success', BASE + '/punchout/handoff?order=7&key=wc_order_x', []))
+
+    def test_a_failure_keeps_woocommerces_messages_as_text(self):
+        body = '{"result":"failure","messages":"<ul class=\\"woocommerce-error\\"><li>Invalid payment method.<\\/li><\\/ul>","refresh":false,"reload":false}'
+        self.assertEqual(driver.checkout_answer(200, body), ('failure', None, ['Invalid payment method.']))
+
+    def test_a_page_that_is_not_json_is_a_failure(self):
+        self.assertEqual(driver.checkout_answer(500, '<html>error</html>')[0], 'unreadable')
+
+
+class OrderAgainstMessage(unittest.TestCase):
+
+    def test_the_messages_lines_equal_the_orders_lines(self):
+        order = [{'sku': 'E2E-ALPHA', 'qty': 2, 'total': '22.00'}, {'sku': 'E2E-BETA', 'qty': 1, 'total': '23.5'}]
+        message = {'E2E-ALPHA': {'qty': '2', 'unit': '11.00'}, 'E2E-BETA': {'qty': '1', 'unit': '23.50'}}
+        self.assertTrue(driver.order_lines_match(order, message)[0])
+
+    def test_a_different_price_quantity_or_line_set_does_not_match(self):
+        order = [{'sku': 'E2E-ALPHA', 'qty': 2, 'total': '22.00'}]
+        self.assertFalse(driver.order_lines_match(order, {'E2E-ALPHA': {'qty': '2', 'unit': '10.00'}})[0])
+        self.assertFalse(driver.order_lines_match(order, {'E2E-ALPHA': {'qty': '1', 'unit': '11.00'}})[0])
+        self.assertFalse(driver.order_lines_match(order, {'E2E-ALPHA': {'qty': '2', 'unit': '11.00'}, 'X': {'qty': '1', 'unit': '1.00'}})[0])
 
 
 class _Closer:
