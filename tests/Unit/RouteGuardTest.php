@@ -393,6 +393,11 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 			$own = $this->guarded( $this->guard( $this->visit() ) );
 			if ( 'order-pay' === $endpoint ) {
 				self::assertNotNull( $own, 'A visit may read its own order but never pay it' );
+			} elseif ( 'order-received' === $endpoint ) {
+				// 0.5.0 (ticket 76): a visit leaves through the handoff, never WooCommerce's "order received" page,
+				// which would tell the buyer an order was placed while nothing reached the purchasing system.
+				self::assertNotNull( $own, 'A visit never lands on order-received, not even for its own order' );
+				self::assertSame( $this->landing(), $own->url );
 			} else {
 				self::assertNull( $own, "A visit reads its own order at {$endpoint}" );
 			}

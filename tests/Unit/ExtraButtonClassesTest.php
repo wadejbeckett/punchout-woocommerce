@@ -106,22 +106,22 @@ namespace {
 			self::assertSame( '', $admin->sanitize_settings( [ 'extra_button_classes' => [ 'x' ] ] )['extra_button_classes'] );
 		}
 
+		/** 0.5.0 (ticket 76): the return button renders nothing, so the abandon control is the visit control that carries them. */
 		public function test_exit_and_abandon_controls_carry_the_extras_before_the_filter(): void {
 			$this->extras( 'site-btn big button' );
 			$surface = $this->surface();
-			self::assertSame( 'button alt wp-element-button pow-return-button site-btn big', self::button_class( $surface->markup() ) );
+			self::assertSame( '', $surface->markup(), 'The return button renders nothing in 0.5.0' );
 			self::assertSame( 'pow-abandon-button site-btn big button', self::button_class( $surface->abandon_markup() ) );
 			// The filter sees the extras and keeps the last word.
 			$seen = [];
 			$GLOBALS['pow_test_filters']['pow_button_classes'] = static function ( array $classes, string $base ) use ( &$seen ): array { $seen[ $base ] = $classes; return array_values( array_diff( $classes, [ 'big' ] ) ); };
-			self::assertSame( 'button alt wp-element-button pow-return-button site-btn', self::button_class( $surface->markup() ) );
 			self::assertSame( 'pow-abandon-button site-btn button', self::button_class( $surface->abandon_markup() ) );
-			self::assertSame( [ 'button', 'alt', 'wp-element-button', 'pow-return-button', 'site-btn', 'big' ], $seen['pow-return-button'] );
+			self::assertSame( [ 'pow-abandon-button', 'site-btn', 'big', 'button' ], $seen['pow-abandon-button'] );
 		}
 
 		public function test_without_extras_the_controls_are_unchanged(): void {
 			$surface = $this->surface();
-			self::assertSame( 'button alt wp-element-button pow-return-button', self::button_class( $surface->markup() ) );
+			self::assertSame( '', $surface->markup() );
 			self::assertSame( 'pow-abandon-button', self::button_class( $surface->abandon_markup() ) );
 		}
 

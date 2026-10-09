@@ -208,17 +208,7 @@ final class Submission {
 
 	/** The provenance every PunchOut order carries (the same keys old Quotes carry), and the cXML copy. */
 	private function stamp( \WC_Order $order, Session $visit, Partner $partner, string $poom_xml ): void {
-		foreach (
-			[
-				QuoteOrder::META_SESSION_ID     => (string) $visit->id,
-				QuoteOrder::META_PARTNER_ID     => (string) $partner->id,
-				QuoteOrder::META_PARTNER_NAME   => $partner->name,
-				QuoteOrder::META_BUYER_IDENTITY => (string) $visit->buyer_identity,
-				QuoteOrder::META_BUYER_NAME     => (string) $visit->buyer_name,
-				QuoteOrder::META_BUYER_COOKIE   => $visit->buyer_cookie,
-				QuoteOrder::META_POOM_XML       => $poom_xml,
-			] as $key => $value
-		) {
+		foreach ( Provenance::keys( $visit, $partner ) + [ QuoteOrder::META_POOM_XML => $poom_xml ] as $key => $value ) {
 			$order->update_meta_data( $key, $value );
 		}
 		$order->save();
@@ -230,7 +220,8 @@ final class Submission {
 		return [ 'result' => 'failure' ];
 	}
 
-	private static function ended(): string {
+	/** The plain message for a visit that has ended or cannot be confirmed (also used as checkout creates the order). */
+	public static function ended(): string {
 		return __( 'This catalog session has ended or could not be confirmed, so the order was not sent. Open the catalog again from your purchasing system.', 'punchout-woocommerce' );
 	}
 

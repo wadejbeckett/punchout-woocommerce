@@ -48,6 +48,14 @@ Any buyer that speaks direct cXML PunchOut over HTTPS with shared-secret authent
 
 No. Checkout is blocked inside a punchout visit only — ordinary shoppers, including the bound account when someone signs into it with a password, are never affected. The plugin does not override, replace or filter the checkout or any payment gateway.
 
+= Does it work with the Checkout block? =
+
+No. A visit sends its cart back through WooCommerce's classic checkout, where PunchOut is the only payment method, so the shop's checkout page must use the classic checkout (the `[woocommerce_checkout]` shortcode). The plugin declares itself incompatible with the cart and checkout blocks, and WooCommerce shows its own notice about that. Inside a visit the Store API checkout is refused.
+
+= What happens to the account's saved details and addresses during a visit? =
+
+Nothing is saved to them. Checkout inside a visit writes nothing to the bound account: not its billing or shipping details, and not the entries of an address-book plugin that saves through WooCommerce's checkout customer-data filter, so such a plugin saves no address-book entries during a visit. Buyers choose from the addresses the store keeps on the account, or type a one-off address, which stays on that order only. Billing opens on the account's saved billing details.
+
 = Where does the returned cart go? =
 
 To the URL the buyer's system supplies in each setup request (`BrowserFormPost`), as an auto-submitting browser form POST carrying the cXML PunchOutOrderMessage in a `cxml-base64` (or `cxml-urlencoded`) hidden field.

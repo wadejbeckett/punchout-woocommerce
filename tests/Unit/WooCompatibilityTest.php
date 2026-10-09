@@ -62,6 +62,22 @@ final class WooCompatibilityTest extends TestCase {
 	}
 
 	/**
+	 * 0.5.0 (ticket 76): the visit leaves through WooCommerce's classic checkout, where PunchOut is a payment method.
+	 * The Checkout block shows no PunchOut method (it has no block integration), so the plugin declares itself
+	 * incompatible with the cart and checkout blocks and WooCommerce shows its own notice, instead of a store whose
+	 * buyers silently find no way out. High-performance order storage stays declared compatible.
+	 */
+	public function test_it_declares_itself_incompatible_with_the_checkout_block_and_says_so(): void {
+		$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/punchout-woocommerce.php' );
+		self::assertSame( 1, preg_match_all( "/declare_compatibility\\(\\s*'cart_checkout_blocks',\\s*__FILE__,\\s*(true|false)\\s*\\)/", $source, $found ) );
+		self::assertSame( [ 'false' ], $found[1], 'Declared incompatible with the cart and checkout blocks' );
+		self::assertSame( 1, preg_match( "/declare_compatibility\\(\\s*'custom_order_tables',\\s*__FILE__,\\s*true\\s*\\)/", $source ) );
+
+		$readme = (string) file_get_contents( dirname( __DIR__, 2 ) . '/readme.txt' );
+		self::assertSame( 1, preg_match( '/= Does it work with the Checkout block\? =\s*\n\s*\nNo\. [^\n]*classic checkout/', $readme ), 'The readme says the plugin needs classic checkout' );
+	}
+
+	/**
 	 * Why the minimum is version-fragile at all: the bypass depends on core
 	 * methods staying non-public. A handler without them is a fault, which is
 	 * what the 409 is raised from — so the declared minimum has to track the

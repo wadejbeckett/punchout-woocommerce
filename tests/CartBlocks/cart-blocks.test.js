@@ -19,16 +19,23 @@ function load(config, api = true) {
 	return { registrations, apply, window };
 }
 
-const restricted = { restricted: true, label: 'Send requisition', confirmUrl: 'https://shop.example.test/store/punchout/confirm' };
+const restricted = { restricted: true, label: 'Review' };
 
-test('restricted first render and later cart refreshes use one native confirmation button', () => {
+// 0.5.0 (ticket 76): in a visit the Cart block's own button keeps its native link to checkout, where PunchOut is the
+// only payment method, and carries the Checkout button label. Nothing points at the old review page any more.
+test('in a visit the first render and later cart refreshes carry the checkout button label and keep the native link', () => {
 	const client = load(restricted);
 	for (const args of [undefined, { cart: { items: [{ id: 11 }] } }, { cart: { items: [] } }]) {
-		assert.equal(client.apply('proceedToCheckoutButtonLabel', 'Proceed to Checkout', args), 'Send requisition');
-		assert.equal(client.apply('proceedToCheckoutButtonLink', '/checkout/', args), restricted.confirmUrl);
+		assert.equal(client.apply('proceedToCheckoutButtonLabel', 'Proceed to Checkout', args), 'Review');
+		assert.equal(client.apply('proceedToCheckoutButtonLink', '/checkout/', args), '/checkout/');
 	}
 	assert.equal(client.registrations.length, 1);
 	assert.equal(client.apply('placeOrderButtonLabel', 'Place order'), 'Place order');
+});
+
+test('a configuration that still names the old review cannot point the button at it', () => {
+	const client = load({ ...restricted, confirmUrl: 'https://shop.example.test/store/punchout/confirm' });
+	assert.equal(client.apply('proceedToCheckoutButtonLink', '/checkout/'), '/checkout/');
 });
 
 test('ordinary shoppers and absent or unrestricted configuration preserve native filters', () => {
@@ -40,17 +47,10 @@ test('ordinary shoppers and absent or unrestricted configuration preserve native
 	}
 });
 
-test('restricted malformed or foreign URLs cannot preserve a checkout or credential-bearing target', () => {
-	for (const confirmUrl of [undefined, '', '/checkout/', 'https://elsewhere.example.test/punchout/confirm', 'javascript:alert(1)', 'https://user:invented@shop.example.test/store/punchout/confirm', 'https://shop.example.test/store/punchout/confirm?token=invented', 'https://shop.example.test/store/punchout/confirm#token', 'http://shop.example.test/store/punchout/confirm']) {
-		const client = load({ ...restricted, confirmUrl });
-		assert.equal(client.apply('proceedToCheckoutButtonLink', '/checkout/'), '#');
-	}
-});
-
-test('configured label remains text data and a blank label has a usable fallback', () => {
+test('configured label remains text data and a blank label keeps the native one', () => {
 	const label = '</script><script>example & "label"</script>';
 	assert.equal(load({ ...restricted, label }).apply('proceedToCheckoutButtonLabel', 'Checkout'), label);
-	for (const invalid of [undefined, null, '', '   ', {}]) assert.equal(load({ ...restricted, label: invalid }).apply('proceedToCheckoutButtonLabel', 'Checkout'), 'Punchout');
+	for (const invalid of [undefined, null, '', '   ', {}]) assert.equal(load({ ...restricted, label: invalid }).apply('proceedToCheckoutButtonLabel', 'Checkout'), 'Checkout');
 });
 
 test('absent or incomplete Blocks API is a bounded no-op without timers or DOM dependencies', () => {
