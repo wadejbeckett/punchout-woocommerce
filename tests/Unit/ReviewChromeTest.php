@@ -48,8 +48,17 @@ final class ReviewChromeTest extends TestCase {
 	public function test_the_request_decision_reads_the_method_and_the_filter(): void {
 		$_SERVER['REQUEST_METHOD'] = 'GET';
 		self::assertTrue( ReviewChrome::wraps_request() );
+		// 0.4.21: the cart's Punchout button posts no action; the handler reads that as a review, so it is drawn in the theme.
 		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$_POST = [ 'pow_mode' => 'cart', 'pow_nonce' => 'x' ];
+		self::assertTrue( ReviewChrome::wraps_request() );
+		$_POST = [ 'pow_delivery_action' => 'submit' ];
 		self::assertFalse( ReviewChrome::wraps_request() );
+		$_POST = [ 'pow_delivery_action' => 'back' ];
+		self::assertFalse( ReviewChrome::wraps_request() );
+		$_POST = [ 'pow_address_refresh' => '1' ];
+		self::assertTrue( ReviewChrome::wraps_request() );
+		$_POST = [];
 		unset( $_SERVER['REQUEST_METHOD'] );
 	}
 }

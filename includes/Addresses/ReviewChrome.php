@@ -20,8 +20,17 @@ final class ReviewChrome {
 		$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
 		$block  = function_exists( 'wp_is_block_theme' ) && wp_is_block_theme();
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- routing only; the handler verifies the nonce.
-		$action = isset( $_POST['pow_delivery_action'] ) && is_string( $_POST['pow_delivery_action'] ) ? $_POST['pow_delivery_action'] : ( isset( $_POST['pow_address_refresh'] ) ? 'add_address' : null );
+		$action = self::post_action( $_POST );
 		return self::decide( $method, $block, (bool) apply_filters( self::FILTER, true ), $action );
+	}
+
+	/**
+	 * The review action a POST asks for, read exactly as the handler reads it (0.4.21): the named action, else
+	 * "add_address" for the country refresh, else "review" (the cart's Punchout button posts no action).
+	 */
+	public static function post_action( array $post ): string {
+		if ( isset( $post['pow_delivery_action'] ) ) { return is_string( $post['pow_delivery_action'] ) ? $post['pow_delivery_action'] : ''; }
+		return isset( $post['pow_address_refresh'] ) ? 'add_address' : 'review';
 	}
 
 	/**

@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.20
+Stable tag: 0.4.21
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,9 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.21 =
+* Fix: the cart's Punchout button (a POST with no review action) opened the review on the plain document, because the in-theme rule only recognised POSTs that named an action. The rule now reads the action exactly as the handler does (none = review), so entering the review from the cart draws it inside the theme. `ReviewChrome::post_action()`.
 
 = 0.4.20 =
 * Recalculating the delivery (a changed address or method) and adding an address now redraw the review inside the theme too, not on the plain document; only "Submit for approval" (the handoff) and "Back to cart" keep the dedicated route.
