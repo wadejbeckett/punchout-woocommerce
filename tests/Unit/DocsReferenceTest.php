@@ -131,6 +131,23 @@ final class DocsReferenceTest extends TestCase {
 		self::assertFalse( str_contains( $text, 'their own login and cart' ) );
 	}
 
+	/** 0.4.23 removed the review's own preferred date: the reference describes it as history, not as a current field. */
+	public function test_delivery_workflow_describes_the_preferred_date_as_removed(): void {
+		$text = implode( ' ', $this->reference()->delivery_workflow() );
+
+		self::assertStringNotContainsString( 'The optional preferred delivery date stays in the shop', $text );
+		self::assertStringContainsString( 'Since 0.4.23 the review has no preferred delivery date field of its own; a delivery date belongs to the shop’s checkout.', $text );
+		self::assertStringContainsString( 'Quotes created before 0.4.23 keep their date in the order meta, their note and the store e-mail. It never reached the PunchOutOrderMessage.', $text );
+	}
+
+	/** 0.4.23: with the delivery line off the buyer sees no delivery amount and no tax wording; with it on, the tax sentence is a setting, off by default. */
+	public function test_delivery_workflow_says_what_the_buyer_sees_with_the_delivery_line_off(): void {
+		$text = implode( ' ', $this->reference()->delivery_workflow() );
+
+		self::assertStringContainsString( 'With emit_delivery_line off, the review shows each delivery method by its title only, no delivery estimate and no tax sentence; its total is the merchandise.', $text );
+		self::assertStringContainsString( 'With it on, the review adds the estimate and, only when the Review tax sentence setting is on, one sentence saying amounts exclude tax.', $text );
+	}
+
 	/**
 	 * The unbound connection and the open-visit cap both answer cXML 500.
 	 * Neither clears on a retry, so the 500 copy may not tell a buyer to
