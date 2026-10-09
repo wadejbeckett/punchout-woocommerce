@@ -55,6 +55,9 @@ class Settings {
 		// the buyer in, so a mail scanner that fetches the link does not use it up. 'yes' leaves out the automatic
 		// submit: the buyer presses the button once, for scanners that also run scripts.
 		'start_link_click'     => 'no',
+		// 0.4.23: the label of that page's button. Blank = the translated default "Open the catalog"; the filter
+		// punchout_start_link_button_label runs last (Http\StartEndpoint::button_label()).
+		'start_link_button_label' => '',
 
 		// /punchout/setup downstream limit per (partner|unknown-sender, IP). Public construction uses 30 for nonpositive settings.
 		'rate_limit_per_min'   => 30,

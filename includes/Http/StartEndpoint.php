@@ -39,6 +39,12 @@ defined( 'ABSPATH' ) || exit;
  * real click when the "Login link needs a click" setting is on. A token that is
  * not even well-formed is refused for every method before anything is read.
  *
+ * That page sends its form once (a double click is one POST), runs only its own
+ * inline script and style (named by hash in its Content-Security-Policy), cannot
+ * be framed, and its button label is a setting. A repeat POST from the browser
+ * that redeemed the link, still signed in to that visit, is sent to the landing
+ * page again instead of the expired page; every other repeat stays refused.
+ *
  * The login is the connection's own customer account, so a redeem creates
  * nothing and owns nothing on that account: it mints a visit. Every
  * PunchOutSetupRequest gets its own WordPress session token, its own auth
@@ -48,6 +54,15 @@ defined( 'ABSPATH' ) || exit;
  * authorisation question here is asked of the user.
  */
 final class StartEndpoint {
+
+	/** The setting holding the start page's button label (0.4.23); blank uses the translated default. */
+	public const BUTTON_LABEL = 'start_link_button_label';
+
+	/** Runs last on the resolved button label; a blank result keeps the default. */
+	public const BUTTON_LABEL_FILTER = 'punchout_start_link_button_label';
+
+	/** The page's only style, named by its hash in the page's policy. */
+	private const STYLE = 'body{font-family:sans-serif;max-width:36em;margin:4em auto;padding:0 1em}';
 
 	public function __construct(
 		private Store $sessions,
@@ -69,13 +84,44 @@ final class StartEndpoint {
 	}
 
 	/**
-	 * The headers of the page a GET or HEAD gets (0.4.23): HTML, never cached, indexed or sniffed, and no referrer,
-	 * so the address carrying the token is not passed on to anything the page leads to.
+	 * The headers of the page a GET or HEAD gets (0.4.23): HTML, never cached, transformed, indexed, sniffed or
+	 * framed, and no referrer, so the address carrying the token is not passed on to anything the page leads to.
+	 * No proxy may rewrite the page (no-transform), because its policy names the inline script and style by hash:
+	 * nothing else runs, and the form posts only back to this site.
 	 *
 	 * @return list<string>
 	 */
 	public static function interstitial_headers(): array {
-		return [ 'Content-Type: text/html; charset=utf-8', ...Router::security_headers(), 'Referrer-Policy: no-referrer' ];
+		$security = array_map( static fn( string $header ): string => str_starts_with( $header, 'Cache-Control:' ) ? $header . ', no-transform' : $header, Router::security_headers() );
+		return [ 'Content-Type: text/html; charset=utf-8', ...$security, 'Referrer-Policy: no-referrer', 'X-Frame-Options: DENY', 'Content-Security-Policy: ' . self::policy() ];
+	}
+
+	/** The page's policy: nothing but its own inline script and style, a form that posts to this site, no framing and no base URL. */
+	public static function policy(): string {
+		$hash   = static fn( string $source ): string => "'sha256-" . base64_encode( hash( 'sha256', $source, true ) ) . "'";
+		$script = self::script();
+		return "default-src 'none'; script-src " . ( '' !== $script ? $hash( $script ) : "'none'" ) . '; style-src ' . $hash( self::STYLE ) . "; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+	}
+
+	/**
+	 * The page's own script (assets/js/start-link.js), inlined: it sends the form once, by itself when the form says
+	 * data-pow-start="auto", otherwise on the buyer's press. '' when the file cannot be read; the button still works.
+	 */
+	public static function script(): string {
+		$file   = dirname( __DIR__, 2 ) . '/assets/js/start-link.js';
+		$source = is_readable( $file ) ? (string) file_get_contents( $file ) : '';
+		return str_contains( strtolower( $source ), '</script' ) ? '' : $source;
+	}
+
+	/**
+	 * The start page's button label: the saved setting when it is not blank, else "Open the catalog", then the
+	 * punchout_start_link_button_label filter. A blank filter result keeps the default.
+	 */
+	public static function button_label( ?Settings $settings = null ): string {
+		$default = __( 'Open the catalog', 'punchout-woocommerce' );
+		$label   = Settings::resolve_label( null !== $settings ? $settings->get( self::BUTTON_LABEL, '' ) : '', $default );
+		if ( function_exists( 'apply_filters' ) ) { $label = apply_filters( self::BUTTON_LABEL_FILTER, $label ); }
+		return Settings::resolve_label( $label, $default );
 	}
 
 	/**
@@ -96,14 +142,15 @@ final class StartEndpoint {
 		$action = Transport::supplier_url( home_url( '/punchout/start/' . $token ) );
 		$copy   = $click
 			? __( 'Press the button to open the catalog.', 'punchout-woocommerce' )
-			: __( 'Opening the catalog. If nothing happens, press the button.', 'punchout-woocommerce' );
+			: __( 'If the catalog has not opened after a few seconds, press the button.', 'punchout-woocommerce' );
+		$script = self::script();
 
 		echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><title>';
 		echo esc_html__( 'Open the catalog', 'punchout-woocommerce' );
-		echo '</title></head><body style="font-family:sans-serif;max-width:36em;margin:4em auto;padding:0 1em">';
-		echo '<form method="post" action="' . esc_url( $action ) . '" id="pow-start-form"><p>' . esc_html( $copy ) . '</p>';
-		echo '<button type="submit">' . esc_html__( 'Open the catalog', 'punchout-woocommerce' ) . '</button></form>';
-		if ( ! $click ) { echo "<script>document.getElementById( 'pow-start-form' ).submit();</script>"; }
+		echo '</title><style>' . self::STYLE . '</style></head><body>';
+		echo '<form method="post" action="' . esc_url( $action ) . '" id="pow-start-form" data-pow-start="' . ( $click ? 'click' : 'auto' ) . '"><p>' . esc_html( $copy ) . '</p>';
+		echo '<button type="submit">' . esc_html( self::button_label( $this->settings ) ) . '</button></form>';
+		if ( '' !== $script ) { echo '<script>' . $script . '</script>'; } // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the plugin's own file, named by hash in the policy.
 		echo '</body></html>';
 	}
 
@@ -117,9 +164,12 @@ final class StartEndpoint {
 	private function redeem( string $token ): void {
 		$session = null;
 		$logged_in = false;
+		$replay = null;
 		try {
 			$located = $this->sessions->find_by_token_hash( Tokens::hash( $token ) );
-			if ( $located ) {
+			if ( $located && $this->redeemed_by_this_browser( $located ) ) {
+				$replay = $located;
+			} elseif ( $located ) {
 				$this->registry->with_partner_lock( $located->partner_id, function () use ( $token, $located, &$session, &$logged_in ) {
 					$pending = $this->sessions->find_by_token_hash( Tokens::hash( $token ) );
 					$partner = $this->registry->find( $located->partner_id );
@@ -187,6 +237,11 @@ final class StartEndpoint {
 				} );
 			}
 		} catch ( \Throwable $e ) { /* No unconfirmed token is exposed; recorded references support recovery. */ }
+		if ( null !== $replay ) {
+			// Already this browser's visit: nothing is redeemed, written or logged again.
+			$this->land( $replay );
+			return;
+		}
 		try {
 			// A refused token is an unauthenticated request: its row counts against the per-IP budget (0.4.22). A
 			// redeemed login is always recorded.
@@ -198,6 +253,25 @@ final class StartEndpoint {
 		finally { $this->anonymous?->done(); }
 		if ( ! $logged_in || ! $session ) { $this->deny(); return; }
 
+		$this->land( $session );
+	}
+
+	/**
+	 * A repeat POST of a link this same browser redeemed (0.4.23): the visit is active and unexpired, and the
+	 * request is signed in as its account with the visit's own login token, which only the redeem's cookie carries
+	 * (the HandoffReplay idea). Another browser, a colleague's visit on the same account, a visit that has returned
+	 * or expired, or a token that was never redeemed are all refused as before.
+	 */
+	private function redeemed_by_this_browser( \POW\Sessions\Session $visit ): bool {
+		if ( \POW\Sessions\Session::ACTIVE !== $visit->status || '' === $visit->wp_session_token || ! $visit->expires || $visit->expires <= gmdate( 'Y-m-d H:i:s' ) ) { return false; }
+		$user_id = (int) get_current_user_id();
+		$login   = (string) wp_get_session_token();
+		if ( $user_id <= 0 || $user_id !== $visit->user_id || '' === $login || ! hash_equals( $visit->wp_session_token, $login ) ) { return false; }
+		return $this->sessions->login_valid_checked( $visit );
+	}
+
+	/** Send the visit's browser to where it shops: the SelectedItem deep link or the landing page, after the filter. */
+	private function land( \POW\Sessions\Session $session ): void {
 		$target = $this->redirect_target( $session->selected_item );
 
 		/**

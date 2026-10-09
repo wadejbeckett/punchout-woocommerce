@@ -173,7 +173,33 @@ final class Page {
 			self::SLUG
 		);
 
-		$fields = [
+		foreach ( $this->fields() as $key => $field ) {
+			[ $label, $type, $help ] = $field;
+
+			add_settings_field(
+				'pow_' . $key,
+				$label,
+				[ $this, 'render_field' ],
+				self::SLUG,
+				'pow_main',
+				[
+					'key'       => $key,
+					'type'      => $type,
+					'help'      => $help,
+					'options'   => $field[3] ?? [],
+					'label_for' => 'pow_' . $key,
+				]
+			);
+		}
+	}
+
+	/**
+	 * The settings screen's fields: key => [ label, type, help, options ].
+	 *
+	 * @return array<string, array<int, mixed>>
+	 */
+	private function fields(): array {
+		return [
 			'enabled'              => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
 			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
 			'return_button_label'  => [ __( 'Punchout button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button that sends the cart back to the buyer\'s purchasing system. Blank uses the default: “Punchout”.', 'punchout-woocommerce' ) ],
@@ -193,6 +219,7 @@ final class Page {
 			'review_total_label'   => [ __( 'Review total label', 'punchout-woocommerce' ), 'text', __( 'Label of the amount sent to the purchasing system on the review page. Blank uses the default: “Total”.', 'punchout-woocommerce' ) ],
 			'review_tax_note'      => [ __( 'Review tax sentence', 'punchout-woocommerce' ), 'checkbox', __( 'Add one sentence, “Amounts exclude tax.”, under the review page’s totals. It shows only for connections that send the delivery cost; otherwise the review names tax nowhere. Off by default.', 'punchout-woocommerce' ) ],
 			'start_link_click'     => [ __( 'Login link needs a click', 'punchout-woocommerce' ), 'checkbox', __( 'The login link opens a short page that continues to the catalog by itself, so a mail scanner that only fetches the link does not use it up. Tick this to make the buyer press a button on that page instead, for scanners that also run scripts. Off by default.', 'punchout-woocommerce' ) ],
+			'start_link_button_label' => [ __( 'Login link button', 'punchout-woocommerce' ), 'text', __( 'Text on the button of the short page the login link opens. Blank uses the default: “Open the catalog”.', 'punchout-woocommerce' ) ],
 			'token_ttl'            => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300. At most 604800 (7 days).', 'punchout-woocommerce' ) ],
 			'session_ttl'          => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). At most 604800 (7 days). Each customer connection can override both TTLs, within the same cap.', 'punchout-woocommerce' ) ],
 			'rate_limit_per_min'   => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 uses the default (30); the public self-test uses 10 when this is 0.', 'punchout-woocommerce' ) ],
@@ -211,25 +238,6 @@ final class Page {
 			],
 			'quote_retention_days' => [ __( 'Quote retention (days)', 'punchout-woocommerce' ), 'number', __( 'Punchout Quote orders not converted within this many days are cancelled by the housekeeping job (never deleted). 0 keeps them for ever.', 'punchout-woocommerce' ) ],
 		];
-
-		foreach ( $fields as $key => $field ) {
-			[ $label, $type, $help ] = $field;
-
-			add_settings_field(
-				'pow_' . $key,
-				$label,
-				[ $this, 'render_field' ],
-				self::SLUG,
-				'pow_main',
-				[
-					'key'       => $key,
-					'type'      => $type,
-					'help'      => $help,
-					'options'   => $field[3] ?? [],
-					'label_for' => 'pow_' . $key,
-				]
-			);
-		}
 	}
 
 	/**
@@ -326,6 +334,7 @@ final class Page {
 			'review_total_label'   => \POW\Addresses\ReviewLabels::sanitise( $input['review_total_label'] ?? '' ),
 			'review_tax_note'      => ( isset( $input['review_tax_note'] ) && 'yes' === $input['review_tax_note'] ) ? 'yes' : 'no',
 			'start_link_click'     => ( isset( $input['start_link_click'] ) && 'yes' === $input['start_link_click'] ) ? 'yes' : 'no',
+			'start_link_button_label' => \POW\Addresses\ReviewLabels::sanitise( $input['start_link_button_label'] ?? '' ),
 			'token_ttl'            => \POW\Partners\Partner::clamp_ttl( (int) ( $input['token_ttl'] ?? 300 ), 30 ),
 			'session_ttl'          => \POW\Partners\Partner::clamp_ttl( (int) ( $input['session_ttl'] ?? 14400 ), 300 ),
 			'rate_limit_per_min'   => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
