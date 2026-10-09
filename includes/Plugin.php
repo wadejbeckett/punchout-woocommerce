@@ -225,7 +225,13 @@ final class Plugin {
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
 		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book, $attachments, $account_book );
 
-		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser ) )->register();
+		// 0.5.0: WooCommerce's classic checkout is the visit's Review step and PunchOut its only payment method;
+		// Submit hands the placed order back through the GET handoff.
+		$handoff    = new Checkout\Handoff( $this->sessions, $this->audit );
+		$submission = new Checkout\Submission( $this, $this->registry, $this->sessions, $builder, $this->audit, $this->settings );
+		( new Checkout\PaymentMethod( $this, $this->registry, $submission ) )->register();
+
+		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser, $handoff ) )->register();
 		$chooser->register();
 		$return_endpoint->register();
 

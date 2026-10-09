@@ -11,6 +11,7 @@ declare( strict_types = 1 );
 namespace POW;
 
 use POW\Account\VisitEndpoints;
+use POW\Checkout\PaymentMethod;
 use POW\Orders\QuoteOrder;
 use POW\Partners\Registry;
 use POW\Sessions\Session;
@@ -93,10 +94,12 @@ final class RouteGuard {
 		add_filter( 'wp_pre_insert_user_data', [ $this, 'refuse_user_creation' ], PHP_INT_MAX, 4 );
 		add_filter( 'get_user_option_default_password_nag', [ $this, 'hide_temporary_password' ], PHP_INT_MAX );
 
+		// Classic checkout (0.5.0): a visit checks out with the PunchOut method and nothing else, and nobody else
+		// checks out with it. The Store API, order-pay and payment contexts below still refuse every visit.
 		add_action( 'woocommerce_checkout_process', [ $this, 'block_checkout_process' ] );
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', [ $this, 'block_store_api_checkout' ] );
-		add_action( 'woocommerce_checkout_create_order', [ $this, 'enforce_order' ], PHP_INT_MAX );
-		add_action( 'woocommerce_checkout_order_processed', [ $this, 'enforce_order' ], PHP_INT_MAX );
+		add_action( 'woocommerce_checkout_create_order', [ $this, 'enforce_classic_order' ], PHP_INT_MAX );
+		add_action( 'woocommerce_checkout_order_processed', [ $this, 'enforce_classic_order' ], PHP_INT_MAX );
 		add_action( 'woocommerce_store_api_checkout_update_order_meta', [ $this, 'enforce_order' ], PHP_INT_MAX );
 		add_action( 'woocommerce_store_api_checkout_order_processed', [ $this, 'enforce_order' ], PHP_INT_MAX );
 		add_action( 'woocommerce_rest_checkout_process_payment_with_context', [ $this, 'enforce_payment_context' ], -9999 );
@@ -147,15 +150,8 @@ final class RouteGuard {
 			}
 		}
 
-		// The visible checkout block. It runs for every request, not only
-		// inside a visit, so an ordinary shopper — and the bound account on
-		// its own password login — still reaches /checkout.
-		if ( function_exists( 'is_checkout' ) && is_checkout() && 0 === $endpoint_order_id && $this->checkout_blocked_for_visit() ) {
-			$target = function_exists( 'wc_get_cart_url' ) ? wc_get_cart_url() : $this->settings->landing_url();
-			$this->explain( $this->checkout_blocked_message() );
-			wp_safe_redirect( $target, 302 );
-			exit;
-		}
+		// 0.5.0: the checkout page itself opens inside a visit. It is the visit's Review step, PunchOut is its only
+		// payment method (Checkout\PaymentMethod), and the order boundaries below refuse any other.
 
 		// 0.4.22: the site's front page, inside an active visit, sends the
 		// buyer to the landing page the StartPage login sends her to. Not a
@@ -736,9 +732,54 @@ final class RouteGuard {
 		wp_die( esc_html( $message ), '', [ 'response' => 403 ] ); // Unreachable on any Woo new enough to serve the Store API.
 	}
 
+	/** Classic checkout's own validation step: the posted payment method, judged before any order exists. */
 	public function block_checkout_process(): void {
-		if ( $this->checkout_blocked_for_visit() && function_exists( 'wc_add_notice' ) ) {
-			wc_add_notice( $this->checkout_blocked_message(), 'error' );
+		$posted = $_POST['payment_method'] ?? ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- WooCommerce verified its checkout nonce before this hook.
+		$method = is_string( $posted ) ? sanitize_text_field( wp_unslash( $posted ) ) : '';
+		if ( $this->checkout_refused( $method ) && function_exists( 'wc_add_notice' ) ) {
+			wc_add_notice( $this->checkout_refused_message( $method ), 'error' );
+		}
+	}
+
+	/**
+	 * Whether classic checkout must refuse this payment method for this request (0.5.0).
+	 *
+	 * Inside a visit the PunchOut method is the only way out, so it alone is admitted. Outside a visit it is never
+	 * admitted (a forged choice), and an order that carries PunchOut provenance stays unpayable. A request whose
+	 * visit cannot be established is refused whatever it chose.
+	 */
+	public function checkout_refused( string $payment_method, ?\WC_Order $order = null ): bool {
+		try {
+			$visit = $this->plugin->current_session();
+		} catch ( \Throwable $e ) {
+			return true;
+		}
+
+		if ( null !== $visit ) {
+			return PaymentMethod::ID !== $payment_method;
+		}
+
+		return PaymentMethod::ID === $payment_method || ( null !== $order && $this->checkout_blocked_for_visit( $order ) );
+	}
+
+	/** Why classic checkout refused that payment method. */
+	private function checkout_refused_message( string $payment_method ): string {
+		if ( $this->inside_visit() ) {
+			return __( 'This catalog session sends your order to your purchasing system. No other payment method can be used.', 'punchout-woocommerce' );
+		}
+		if ( PaymentMethod::ID === $payment_method ) {
+			return __( 'PunchOut can be used only in a catalog session opened from your purchasing system.', 'punchout-woocommerce' );
+		}
+		return $this->checkout_blocked_message();
+	}
+
+	/** Classic checkout's order boundaries (creation and processed): the order's own payment method decides. */
+	public function enforce_classic_order( $order ): void {
+		if ( is_numeric( $order ) ) { $order = wc_get_order( (int) $order ); }
+		$order  = $order instanceof \WC_Order ? $order : null;
+		$method = null !== $order ? (string) $order->get_payment_method() : '';
+		if ( $this->checkout_refused( $method, $order ) ) {
+			throw new \Exception( $this->checkout_refused_message( $method ) );
 		}
 	}
 
@@ -884,12 +925,15 @@ final class RouteGuard {
 	}
 
 	/**
-	 * Whether checkout must be refused for this request.
+	 * Whether paying must be refused for this request: the Store API
+	 * checkout, order-pay and payment contexts. Classic checkout asks
+	 * checkout_refused() instead (0.5.0: a visit checks out there with the
+	 * PunchOut method only).
 	 *
-	 * Punchout is the only exit: a visit returns its basket to the
-	 * purchasing system and never pays, so a live visit is refused
-	 * unconditionally — no company setting, no per-buyer setting, nothing
-	 * a request can carry makes it payable. Outside a visit this is an
+	 * A visit returns its basket to the purchasing system and never pays,
+	 * so a live visit is refused here unconditionally — no company
+	 * setting, no per-buyer setting, nothing a request can carry makes it
+	 * payable. Outside a visit this is an
 	 * ordinary shopper (the bound customer account included) and the only
 	 * refusal left is a punchout quote order, which belongs to the visit
 	 * that created it and is not payable anywhere.

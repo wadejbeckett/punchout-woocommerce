@@ -290,14 +290,55 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		}
 	}
 
-	public function test_classic_checkout_redirects_to_the_cart_only_inside_a_visit(): void {
+	/** 0.5.0 (inverted from "redirects to the cart inside a visit"): the visit's Review step is WooCommerce's own checkout. */
+	public function test_classic_checkout_opens_inside_a_visit_and_for_an_ordinary_shopper(): void {
 		$GLOBALS['pow_route_guard_test']['checkout'] = true;
 
 		self::assertNull( $this->guarded( $this->guard( null ) ), 'An ordinary shopper reaches /checkout' );
+		self::assertNull( $this->guarded( $this->guard( $this->visit() ) ), 'A visit reaches /checkout, where PunchOut is its only payment method' );
+	}
 
-		$redirect = $this->guarded( $this->guard( $this->visit() ) );
-		self::assertNotNull( $redirect, 'A visit is turned away from /checkout' );
-		self::assertSame( 'https://shop.example.test/cart/', $redirect->url );
+	/** 0.5.0: classic checkout in a visit admits the PunchOut method and nothing else; outside a visit it never admits PunchOut. */
+	public function test_a_visit_checks_out_only_with_the_punchout_method(): void {
+		$visit = $this->guard( $this->visit() );
+		self::assertFalse( $visit->checkout_refused( 'punchout' ), 'PunchOut is the visit\'s way out' );
+		self::assertTrue( $visit->checkout_refused( 'other' ), 'Another payment method is refused in a visit' );
+		self::assertTrue( $visit->checkout_refused( '' ), 'No payment method is refused in a visit' );
+
+		$ordinary = $this->guard( null );
+		self::assertFalse( $ordinary->checkout_refused( 'other' ), 'An ordinary shopper pays as usual' );
+		self::assertTrue( $ordinary->checkout_refused( 'punchout' ), 'A forged PunchOut choice outside a visit is refused' );
+
+		$GLOBALS['pow_test_current_user_id'] = self::ACCOUNT;
+		$store = new RouteGuardStore();
+		$store->unreachable = true;
+		self::assertTrue( $this->guard( null, $store )->checkout_refused( 'punchout' ), 'An unproven request cannot check out with anything' );
+	}
+
+	/** 0.5.0: the classic order boundary judges the order's own payment method; the Store API and order-pay stay refused in a visit. */
+	public function test_the_classic_order_boundary_admits_only_a_punchout_order_in_a_visit(): void {
+		$guard = $this->guard( $this->visit() );
+		$punchout = new WC_Order( 601 );
+		$punchout->payment_method = 'punchout';
+		$GLOBALS['pow_test_orders'][601] = $punchout;
+		$guard->enforce_classic_order( $punchout );
+		$guard->enforce_classic_order( 601 );
+
+		$other = new WC_Order( 602 );
+		$other->payment_method = 'other';
+		try { $guard->enforce_classic_order( $other ); self::fail( 'Another method must be refused in a visit' ); }
+		catch ( Exception $error ) { self::assertStringContainsString( 'catalog session', $error->getMessage() ); }
+
+		$outside = $this->guard( null );
+		$ordinary = new WC_Order( 603 );
+		$ordinary->payment_method = 'other';
+		$outside->enforce_classic_order( $ordinary );
+		try { $outside->enforce_classic_order( $punchout ); self::fail( 'PunchOut outside a visit must be refused' ); }
+		catch ( Exception $error ) { self::assertStringContainsString( 'PunchOut', $error->getMessage() ); }
+		$quote = $this->quote_order( 604, 99 );
+		$quote->payment_method = 'other';
+		try { $outside->enforce_classic_order( $quote ); self::fail( 'A PunchOut order is never payable outside its visit' ); }
+		catch ( Exception $error ) { self::assertStringContainsString( 'PunchOut', $error->getMessage() ); }
 	}
 
 	public function test_order_and_payment_boundaries_refuse_inside_a_visit(): void {
@@ -460,15 +501,27 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertSame( [], $this->notices() );
 	}
 
-	public function test_the_checkout_refusal_explains_itself_on_the_cart(): void {
-		WC()->session = new stdClass();
-		$GLOBALS['pow_route_guard_test']['checkout'] = true;
+	/** 0.5.0 (replaces "the checkout refusal explains itself on the cart"): the refusal now names the payment method. */
+	public function test_another_payment_method_in_a_visit_is_refused_with_a_plain_message(): void {
+		$saved = $_POST;
+		try {
+			$_POST = [ 'payment_method' => 'other' ];
+			$this->guard( $this->visit() )->block_checkout_process();
+			self::assertCount( 1, $this->notices() );
+			self::assertSame( 'error', $this->notices()[0][0] );
+			self::assertStringContainsString( 'catalog session', $this->notices()[0][1] );
 
-		$redirect = $this->guarded( $this->guard( $this->visit() ) );
-		self::assertSame( 'https://shop.example.test/cart/', $redirect->url );
-		self::assertCount( 1, $this->notices() );
-		self::assertSame( 'notice', $this->notices()[0][0] );
-		self::assertStringContainsString( 'Checkout is not available', $this->notices()[0][1] );
+			$GLOBALS['pow_route_guard_test']['notices'] = [];
+			$_POST = [ 'payment_method' => 'punchout' ];
+			$this->guard( $this->visit() )->block_checkout_process();
+			self::assertSame( [], $this->notices(), 'PunchOut goes through' );
+
+			$_POST = [ 'payment_method' => 'other' ];
+			$this->guard( null )->block_checkout_process();
+			self::assertSame( [], $this->notices(), 'An ordinary shopper is never refused' );
+		} finally {
+			$_POST = $saved;
+		}
 	}
 
 	public function test_without_a_shop_session_a_refusal_redirects_silently(): void {

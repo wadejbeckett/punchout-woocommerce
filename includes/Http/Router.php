@@ -43,6 +43,7 @@ final class Router {
 		private StartEndpoint $start,
 		private ReturnEndpoint $return_endpoint,
 		private ?\POW\Addresses\Chooser $delivery = null,
+		private ?\POW\Checkout\Handoff $handoff = null,
 	) {}
 
 	public function register(): void {
@@ -97,6 +98,14 @@ final class Router {
 		if ( '/punchout/return' === $path ) {
 			$this->harden_headers();
 			$this->return_endpoint->handle();
+			exit;
+		}
+
+		if ( '/punchout/handoff' === $path && null !== $this->handoff ) {
+			// 0.5.0: the page checkout's Submit redirects to. Theme-free; served once to the browser and visit that
+			// won the return, and it adds no-referrer, because the address carries the order key.
+			$this->harden_headers();
+			$this->handoff->handle();
 			exit;
 		}
 

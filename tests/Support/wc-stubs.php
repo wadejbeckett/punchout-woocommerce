@@ -15,7 +15,7 @@
  * the price-format getters (wc_get_price_decimal_separator,
  * wc_get_price_thousand_separator, get_woocommerce_price_format,
  * get_woocommerce_currency_symbol) and the classes WC_Order, WC_Order_Item_Product,
- * WC_Product, WC_Customer and the WC() container. The WordPress surface,
+ * WC_Product, WC_Customer, WC_Payment_Gateway and the WC() container. The WordPress surface,
  * apply_filters and WP_Error included, belongs to Support/wp-stubs.php,
  * which loads first. Check the other file before adding anything to
  * either.
@@ -159,6 +159,9 @@ if ( ! class_exists( 'WC_Order' ) ) {
 		public int $customer_id    = 0;
 		public bool $saved         = false;
 
+		/** The gateway id checkout recorded ('' for none). */
+		public string $payment_method = '';
+
 		/** Set by a test to prove the callers survive a failing save. */
 		public bool $save_throws = false;
 
@@ -209,6 +212,10 @@ if ( ! class_exists( 'WC_Order' ) ) {
 
 		public function set_currency( string $currency ): void {
 			$this->currency = $currency;
+		}
+
+		public function get_payment_method(): string {
+			return $this->payment_method;
 		}
 
 		public function set_customer_id( int $id ): void {
@@ -397,6 +404,71 @@ if ( ! class_exists( 'WC_Customer' ) ) {
 		 */
 		public function get_shipping(): array {
 			return $this->shipping;
+		}
+	}
+}
+
+if ( ! class_exists( 'WC_Payment_Gateway' ) ) {
+	/**
+	 * WooCommerce's payment gateway base, as far as a gateway's own settings and availability go: the settings
+	 * API's init_settings() and get_option() as WooCommerce 11.2 writes them (abstract-wc-settings-api.php,
+	 * abstract-wc-payment-gateway.php), and is_available() without the cart's maximum-amount check.
+	 */
+	abstract class WC_Payment_Gateway { // phpcs:ignore
+		public $plugin_id          = 'woocommerce_';
+		public $id                 = '';
+		public $enabled            = 'yes';
+		public $title              = '';
+		public $description        = '';
+		public $order_button_text  = null;
+		public $method_title       = '';
+		public $method_description = '';
+		public $has_fields         = false;
+		public $supports           = [ 'products' ];
+		public $form_fields        = [];
+		public $settings           = [];
+
+		public function get_option_key(): string {
+			return $this->plugin_id . $this->id . '_settings';
+		}
+
+		public function get_form_fields(): array {
+			return $this->form_fields;
+		}
+
+		public function init_settings(): void {
+			$this->settings = get_option( $this->get_option_key(), null );
+			if ( ! is_array( $this->settings ) ) {
+				$this->settings = [];
+				foreach ( $this->get_form_fields() as $key => $field ) { $this->settings[ $key ] = $field['default'] ?? ''; }
+			}
+			$this->enabled = ! empty( $this->settings['enabled'] ) && 'yes' === $this->settings['enabled'] ? 'yes' : 'no';
+		}
+
+		public function get_option( $key, $empty_value = null ) {
+			if ( empty( $this->settings ) ) { $this->init_settings(); }
+			if ( ! isset( $this->settings[ $key ] ) ) {
+				$fields                 = $this->get_form_fields();
+				$this->settings[ $key ] = isset( $fields[ $key ] ) && ! empty( $fields[ $key ]['default'] ) ? $fields[ $key ]['default'] : '';
+			}
+			if ( null !== $empty_value && '' === $this->settings[ $key ] ) { $this->settings[ $key ] = $empty_value; }
+			return $this->settings[ $key ];
+		}
+
+		public function is_available() {
+			return 'yes' === $this->enabled;
+		}
+
+		public function get_title() {
+			return $this->title;
+		}
+
+		public function supports( $feature ) {
+			return in_array( $feature, $this->supports, true );
+		}
+
+		public function process_payment( $order_id ) {
+			return [];
 		}
 	}
 }

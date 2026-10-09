@@ -21,10 +21,12 @@ use POW\Support\Templates;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Renders the "send to your purchasing system" button — the one exit a
- * punchout visit has. Checkout is blocked inside every visit (RouteGuard
- * owns the block and the confirmation endpoint owns the return), so inside
- * a visit this surface shows the return control and nothing else.
+ * The cart's controls inside a visit. Since 0.5.0 the cart's proceed
+ * button and the Cart widget's checkout button lead to WooCommerce's
+ * classic checkout, where PunchOut is the only payment method; they carry
+ * the "Checkout button label" setting (maybe_unhook_checkout_button()).
+ * The "send to your purchasing system" return control, which opens the
+ * older review page, still renders until that page is retired.
  *
  * Outside a visit nothing here applies. Ordinary shoppers — including the
  * connection's own bound account on a password login — keep WooCommerce's
@@ -32,8 +34,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * The two cart templates need opposite treatment:
  *
- * - Classic cart: Woo's proceed-to-checkout button is unhooked for the
- *   visit and the return control renders in its place.
+ * - Classic cart: Woo's proceed-to-checkout hook is cleared for the visit
+ *   and only the labelled proceed button is put back; the return control
+ *   renders after the cart totals.
  * - Block cart: the native wrapper is left untouched, because Cart's React
  *   render recreates its button whatever PHP does to the markup. Woo's
  *   public label/link filters (assets/js/cart-blocks.js, configured by
@@ -83,7 +86,6 @@ final class Surface {
 		add_action( 'woocommerce_after_cart_totals', [ $this, 'render_cart_button' ], 5 );
 		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
-		add_action( 'wp_enqueue_scripts', [ $this, 'enqueue_visit_styles' ] );
 		add_filter( 'body_class', [ $this, 'visit_body_class' ] );
 	}
 
@@ -361,21 +363,15 @@ final class Surface {
 	}
 
 	/**
-	 * Inside a visit the cart page and the mini-cart show no checkout button
-	 * at all: PunchOut is the visit's only exit and the return control takes
-	 * the button's place.
+	 * Inside a visit the cart page and the mini-cart lead to WooCommerce's checkout (0.5.0), where PunchOut is the
+	 * only payment method, through buttons labelled by the "Checkout button label" setting.
 	 *
-	 * Whatever the theme or another plugin hung on these two hooks is
-	 * presentation for a shopper who can check out. Naming Woo's own
-	 * callback and priority would only ever remove Woo's button, and the
-	 * plugin knows nothing about who else replaced it or at what priority,
-	 * so the hooks are cleared whole and only what a visit may show is put
-	 * back: "View cart" in the mini-cart. The return control is not put
-	 * back here: it renders at woocommerce_after_cart_totals, outside the
-	 * proceed-to-checkout container, because a theme or page-builder cart
-	 * element that hides that container (to draw its own button) would
-	 * otherwise hide the visit's only exit with it. Presentation only —
-	 * RouteGuard owns the actual block.
+	 * Whatever the theme or another plugin hung on these two hooks is presentation for a shopper who pays: its own
+	 * checkout button, express-pay buttons. Naming Woo's own callback and priority would only ever remove Woo's
+	 * button, and the plugin knows nothing about who else replaced it or at what priority, so the hooks are cleared
+	 * whole and only what a visit may show is put back: the labelled proceed button on the cart, and "View cart" and
+	 * the labelled checkout button in the mini-cart. Presentation only; RouteGuard and the payment method decide.
+	 * A theme whose cart draws its own buttons without these hooks places the visit's button itself.
 	 */
 	public function maybe_unhook_checkout_button(): void {
 		if ( null === $this->plugin->current_session() ) {
@@ -383,37 +379,37 @@ final class Surface {
 		}
 
 		remove_all_actions( 'woocommerce_proceed_to_checkout' );
+		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_checkout_button' ], 20 );
 
 		remove_all_actions( 'woocommerce_widget_shopping_cart_buttons' );
 		if ( function_exists( 'woocommerce_widget_shopping_cart_button_view_cart' ) ) {
 			add_action( 'woocommerce_widget_shopping_cart_buttons', 'woocommerce_widget_shopping_cart_button_view_cart', 10 );
 		}
+		add_action( 'woocommerce_widget_shopping_cart_buttons', [ $this, 'render_widget_checkout_button' ], 20 );
 	}
 
-	/**
-	 * Hide every link to the checkout page inside a visit, wherever it came
-	 * from: a page-builder button in the site's own cart layout, a theme
-	 * mini-cart, a widget. None of those pass through a hook this plugin
-	 * can clear, and the plugin is not allowed to know which theme or
-	 * builder drew them, so the one thing they all share — the checkout
-	 * URL — is what the stylesheet keys on. Presentation only; RouteGuard
-	 * still refuses the page itself.
-	 */
-	public function enqueue_visit_styles(): void {
+	/** The cart page's proceed button inside a live visit. */
+	public function render_checkout_button(): void {
+		echo $this->checkout_link( $this->button_classes( 'checkout-button' ) . ' wc-forward' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in checkout_link().
+	}
+
+	/** The Cart widget's checkout button inside a live visit. */
+	public function render_widget_checkout_button(): void {
+		echo $this->checkout_link( 'button checkout wc-forward wp-element-button' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in checkout_link().
+	}
+
+	/** A link to WooCommerce's checkout carrying the Checkout button label; '' unless a live visit is being served. */
+	private function checkout_link( string $classes ): string {
 		$session = $this->plugin->current_session();
 		if ( null === $session || ! $this->visit_is_live( $session ) ) {
-			return;
+			return '';
 		}
 
-		$checkout = rtrim( (string) wc_get_checkout_url(), '/' );
-		$checkout = str_replace( [ '\\', '"' ], [ '\\\\', '\\"' ], $checkout );
-		// Never the wc-proceed-to-checkout wrapper itself: with its hooks
-		// cleared it holds exactly one thing, this plugin's return control.
-		// The class selectors come from the one list the extra-class setting refuses, so an operator's class can never hide the exit.
-		$selectors = array_merge( [ 'a[href^="' . $checkout . '"]' ], Settings::VISIT_HIDDEN_SELECTORS );
-
-		wp_register_style( 'pow-visit', false, [], defined( 'POW\\VERSION' ) ? \POW\VERSION : false );
-		wp_enqueue_style( 'pow-visit' );
-		wp_add_inline_style( 'pow-visit', implode( ',', $selectors ) . '{display:none !important;}' );
+		return sprintf(
+			'<a href="%s" class="%s">%s</a>',
+			esc_url( wc_get_checkout_url() ),
+			esc_attr( $classes ),
+			esc_html( $this->plugin->settings()->checkout_button_label() )
+		);
 	}
 }

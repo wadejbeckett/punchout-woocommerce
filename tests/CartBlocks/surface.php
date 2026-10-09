@@ -184,30 +184,53 @@ namespace {
 		public function test_classic_and_shortcode_keep_mains_confirmation_route(): void {
 			$html = $this->surface->shortcode();
 			self::assertStringContainsString( '/punchout/confirm', $html ); self::assertStringContainsString( 'fixture-pow_confirm_delivery', $html );
-			// A theme or another plugin may have replaced Woo's own button on the same hook at any priority: inside a visit every callback goes, and only the return control comes back.
-			$GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'][] = static function (): void { echo '<a class="checkout-button">Proceed to checkout</a>'; };
+		}
+		/**
+		 * 0.5.0 (inverted from "the mini-cart loses every checkout button"): in a visit the cart's way out is WooCommerce's
+		 * checkout, so its proceed button and the Cart widget's checkout button come back, labelled by the Checkout button
+		 * label. A theme or another plugin may have hung its own button (or express-pay buttons) on the same hooks at any
+		 * priority: every callback goes and only these come back.
+		 */
+		public function test_a_visit_gets_the_proceed_and_widget_checkout_buttons_back_and_nothing_else(): void {
+			$GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'][] = static function (): void { echo '<a class="checkout-button">Proceed to checkout</a><div class="express-pay"></div>'; };
 			$GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'][] = static function (): void { echo '<a class="checkout">Checkout</a>'; };
 			$this->surface->maybe_unhook_checkout_button();
 			self::assertSame( [ 'woocommerce_proceed_to_checkout', 'woocommerce_widget_shopping_cart_buttons' ], $GLOBALS['pow_blocks_removed_all'] );
-			self::assertSame( [], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'] ?? [], 'Nothing is put back inside the proceed-to-checkout container: themes hide or replace it wholesale' );
-			self::assertSame( [ [ $this->surface, 'render_cart_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_after_cart_totals'] ?? [], 'The return control renders after the cart totals, outside that container, so it survives a theme that hides it' );
-			self::assertSame( [ 'woocommerce_widget_shopping_cart_button_view_cart' ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'], 'The mini-cart keeps View cart and loses every checkout button' );
+			self::assertSame( [ [ $this->surface, 'render_checkout_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'] ?? [], 'Only the labelled proceed button: no express-pay buttons in a visit' );
+			self::assertSame( [ 'woocommerce_widget_shopping_cart_button_view_cart', [ $this->surface, 'render_widget_checkout_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'], 'The mini-cart keeps View cart and gets the labelled checkout button' );
 		}
-		public function test_a_visit_hides_every_link_to_the_checkout_page_whoever_rendered_it(): void {
-			// A page-builder button, a theme mini-cart or a widget can all carry the checkout URL outside any hook; inside a visit none may show.
-			self::assertContains( [ $this->surface, 'enqueue_visit_styles' ], $GLOBALS['pow_blocks_hooks']['action']['wp_enqueue_scripts'] ?? [] );
-			$this->surface->enqueue_visit_styles();
-			self::assertSame( [ 'pow-visit' ], $GLOBALS['pow_blocks_styles']['enqueued'] ?? [] );
-			$css = implode( '', $GLOBALS['pow_blocks_styles']['inline']['pow-visit'] ?? [] );
-			self::assertStringContainsString( 'a[href^="https://shop.example.test/checkout"]', $css );
-			self::assertStringContainsString( '.checkout-button', $css );
-			// The stylesheet hides exactly the shared list the extra-class setting refuses.
-			foreach ( \POW\Settings::VISIT_HIDDEN_SELECTORS as $selector ) { self::assertStringContainsString( $selector, $css ); }
-			self::assertStringContainsString( '.wc-block-mini-cart__footer-checkout', $css );
-			self::assertStringContainsString( 'display:none!important', str_replace( ' ', '', $css ) );
-			self::assertStringNotContainsString( 'punchout/confirm', $css, 'The return control is never hidden' );
-			self::assertStringNotContainsString( 'wc-proceed-to-checkout', $css, 'Woo wraps the return control in that container; hiding it hides the visit\'s only exit' );
-			self::assertStringNotContainsString( 'pow-return', $css );
+		public function test_the_checkout_buttons_carry_the_checkout_button_label_and_lead_to_checkout(): void {
+			$GLOBALS['pow_test_options'][ \POW\Settings::OPTION_KEY ]['checkout_button_label'] = 'Review';
+			( new ReflectionProperty( $this->plugin, 'settings' ) )->setValue( $this->plugin, new POW\Settings() );
+			ob_start(); $this->surface->render_checkout_button(); $proceed = (string) ob_get_clean();
+			ob_start(); $this->surface->render_widget_checkout_button(); $widget = (string) ob_get_clean();
+			self::assertSame( 1, preg_match( '#<a href="https://shop\.example\.test/checkout/" class="([^"]*)">Review</a>#', $proceed, $proceed_classes ), $proceed );
+			self::assertContains( 'checkout-button', explode( ' ', $proceed_classes[1] ) );
+			self::assertContains( 'wc-forward', explode( ' ', $proceed_classes[1] ) );
+			self::assertSame( 1, preg_match( '#<a href="https://shop\.example\.test/checkout/" class="([^"]*)">Review</a>#', $widget, $widget_classes ), $widget );
+			self::assertContains( 'checkout', explode( ' ', $widget_classes[1] ) );
+			self::assertContains( 'wc-forward', explode( ' ', $widget_classes[1] ) );
+		}
+		public function test_the_checkout_buttons_default_to_proceed_to_checkout_and_escape_a_filtered_label(): void {
+			ob_start(); $this->surface->render_checkout_button(); $proceed = (string) ob_get_clean();
+			self::assertStringContainsString( '>Proceed to checkout</a>', $proceed );
+			$GLOBALS['pow_test_filters'][ \POW\Settings::CHECKOUT_BUTTON_FILTER ] = static fn(): string => '<b>Review</b>';
+			ob_start(); $this->surface->render_widget_checkout_button(); $widget = (string) ob_get_clean();
+			self::assertStringNotContainsString( '<b>', $widget );
+			self::assertStringContainsString( '&lt;b&gt;Review&lt;/b&gt;', $widget );
+		}
+		public function test_a_visit_that_is_not_live_draws_no_checkout_button(): void {
+			$this->db->partners[ self::PARTNER_A ]['status'] = 'inactive';
+			ob_start(); $this->surface->render_checkout_button(); $this->surface->render_widget_checkout_button();
+			self::assertSame( '', (string) ob_get_clean() );
+		}
+		/** 0.5.0 (inverted from "a visit hides every link to the checkout page"): checkout is the visit's Review step, so no link to it is hidden. */
+		public function test_a_visit_hides_no_link_to_the_checkout_page(): void {
+			foreach ( $GLOBALS['pow_blocks_hooks']['action']['wp_enqueue_scripts'] ?? [] as $callback ) {
+				self::assertFalse( is_array( $callback ) && $callback[0] === $this->surface, 'The surface adds no visit stylesheet' );
+			}
+			self::assertFalse( method_exists( $this->surface, 'enqueue_visit_styles' ), 'The stylesheet that hid checkout links is gone' );
+			self::assertSame( [], $GLOBALS['pow_blocks_styles'] );
 		}
 		public function test_a_visit_adds_the_pow_visit_body_class_for_themes_and_builders(): void {
 			self::assertContains( [ $this->surface, 'visit_body_class' ], $GLOBALS['pow_blocks_hooks']['filter']['body_class'] ?? [] );
@@ -218,11 +241,6 @@ namespace {
 		public function test_an_ordinary_shopper_gets_no_body_class(): void {
 			$this->set_session( null );
 			self::assertSame( [ 'home' ], $this->surface->visit_body_class( [ 'home' ] ) );
-		}
-		public function test_an_ordinary_shopper_gets_no_visit_stylesheet(): void {
-			$this->set_session( null );
-			$this->surface->enqueue_visit_styles();
-			self::assertSame( [], $GLOBALS['pow_blocks_styles'] );
 		}
 		public function test_an_ordinary_shopper_keeps_woos_own_proceed_button(): void {
 			$this->set_session( null );

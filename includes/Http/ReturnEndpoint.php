@@ -218,7 +218,7 @@ final class ReturnEndpoint {
 
 			// Prepare the complete response before consuming the session. The same mapped
 			// snapshot supplies both the winning quote and this already-built document.
-			$markup = $this->handoff_markup( $session, $partner, $poom_xml, $notices );
+			$markup = self::handoff_markup( $session, $partner, $poom_xml, $notices );
 		} catch ( \Throwable $error ) {
 			$this->audit_best_effort( 'return_build_failed', [ 'partner_id' => $partner->id, 'session_id' => $session->id, 'result' => 'error' ] );
 			$this->review_page( new \WP_Error( 'return_build_failed', __( 'Your cart could not be prepared for your purchasing system because some of its text cannot be sent (for example a special character pasted into an address or the notes). Review the delivery details and notes, then submit again.', 'punchout-woocommerce' ) ) );
@@ -373,7 +373,13 @@ final class ReturnEndpoint {
 		}
 	}
 
-	private function handoff_markup( Session $session, Partner $partner, string $poom_xml, array $notices ): string {
+	/**
+	 * The theme-free page that posts the cXML to the visit's BrowserFormPost (handoff template, pow_handoff_copy).
+	 * Also the page the checkout path keeps for its GET handoff (0.5.0, Checkout\Submission).
+	 *
+	 * @param list<string> $notices Per-line notices (lines left out, for example).
+	 */
+	public static function handoff_markup( Session $session, Partner $partner, string $poom_xml, array $notices ): string {
 		$field = FormPack::field(
 			$poom_xml,
 			'urlencoded' === $partner->return_encoding ? FormPack::ENCODING_URLENCODED : FormPack::ENCODING_BASE64

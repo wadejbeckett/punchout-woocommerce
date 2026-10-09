@@ -28,6 +28,9 @@ class Settings {
 
 	public const OPTION_KEY = 'pow_settings';
 
+	/** Filter over the cart's checkout-button label in a visit (0.5.0), applied to the saved setting or the default. */
+	public const CHECKOUT_BUTTON_FILTER = 'punchout_checkout_button_label';
+
 	/**
 	 * What the visit stylesheet hides with display:none, each selector
 	 * ending in the class it hides. Cart\Surface emits exactly these, and
@@ -77,6 +80,11 @@ class Settings {
 		// run last, so code can override either one.
 		'return_button_label'  => '',
 		'abandon_button_label' => '',
+
+		// 0.5.0: the cart's proceed button and the Cart widget's checkout button in a visit, which lead to
+		// WooCommerce's checkout. Blank = the translated default "Proceed to checkout"; filter
+		// punchout_checkout_button_label runs last.
+		'checkout_button_label' => '',
 
 		// The site's own button classes, space-separated, added to the exit
 		// controls and the review page's primary actions so they match the
@@ -227,6 +235,13 @@ class Settings {
 		$stored = is_string( $stored ) ? trim( $stored ) : '';
 
 		return '' !== $stored ? $stored : $default;
+	}
+
+	/** The visit's checkout-button label: a non-blank saved value, else "Proceed to checkout"; the filter runs last and a blank result keeps the default. */
+	public function checkout_button_label(): string {
+		$default = __( 'Proceed to checkout', 'punchout-woocommerce' );
+		$label   = trim( (string) apply_filters( self::CHECKOUT_BUTTON_FILTER, $this->button_label( 'checkout_button_label', $default ) ) );
+		return '' !== $label ? $label : $default;
 	}
 
 	/** True when the review shows its one tax sentence under the totals (0.4.23; off by default, and never while the connection sends no delivery line). */

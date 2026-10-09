@@ -178,6 +178,7 @@ final class Page {
 			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
 			'return_button_label'  => [ __( 'Punchout button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button that sends the cart back to the buyer\'s purchasing system. Blank uses the default: “Punchout”.', 'punchout-woocommerce' ) ],
 			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Return without a cart”.', 'punchout-woocommerce' ) ],
+			'checkout_button_label' => [ __( 'Checkout button label', 'punchout-woocommerce' ), 'text', __( 'During a visit, text on the cart’s proceed button and the Cart widget’s checkout button, which open checkout with PunchOut as the only payment method. Blank uses the default: “Proceed to checkout”.', 'punchout-woocommerce' ) ],
 			'extra_button_classes' => [ __( 'Extra button classes', 'punchout-woocommerce' ), 'text', sprintf(
 				/* translators: %s: comma-separated CSS classes the visit stylesheet hides. */
 				__( 'Space-separated CSS classes added to the Punchout exit button, the “Return without a cart” control, the delivery review page’s Submit and Update buttons and the add-address form’s “Add and use this address” button, so they match the site’s own button styles. Plugin classes (pow-…) and the classes a visit hides (%s) are ignored. The Cart block draws its own button and does not receive them.', 'punchout-woocommerce' ),
@@ -315,6 +316,7 @@ final class Page {
 			'landing_page_id'      => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
 			'return_button_label'  => sanitize_text_field( (string) ( $input['return_button_label'] ?? '' ) ),
 			'abandon_button_label' => sanitize_text_field( (string) ( $input['abandon_button_label'] ?? '' ) ),
+			'checkout_button_label' => \POW\Addresses\ReviewLabels::sanitise( $input['checkout_button_label'] ?? '' ),
 			'extra_button_classes' => implode( ' ', \POW\Settings::button_class_tokens( $input['extra_button_classes'] ?? '' ) ),
 			'attachment_enabled'   => ( isset( $input['attachment_enabled'] ) && 'yes' === $input['attachment_enabled'] ) ? 'yes' : 'no',
 			'attachment_label'     => sanitize_text_field( (string) ( $input['attachment_label'] ?? '' ) ),
