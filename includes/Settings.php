@@ -87,6 +87,9 @@ class Settings {
 		'attachment_label'     => '',
 		'attachment_help'      => '',
 
+		// 0.4.19: the sentence shown with every delivery estimate and sent with the returned cart. Blank = the translated default.
+		'delivery_estimate_note' => '',
+
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends
 		// it to the item description (scope §4.3).

@@ -28,6 +28,7 @@ printf(
 	<?php if ( '' !== $delivery_code ) : ?><li><?php esc_html_e( 'Delivery address code:', 'punchout-woocommerce' ); ?> <strong><?php echo esc_html( $delivery_code ); ?></strong></li><?php endif; ?>
 	<?php if ( '' !== $preferred_date ) : ?><li><?php esc_html_e( 'Preferred delivery date:', 'punchout-woocommerce' ); ?> <strong><?php echo esc_html( $preferred_date ); ?></strong></li><?php endif; ?>
 	<?php if ( '' !== $delivery_notes ) : ?><li><?php esc_html_e( 'Buyer notes:', 'punchout-woocommerce' ); ?> <?php echo esc_html( $delivery_notes ); ?></li><?php endif; ?>
+	<?php if ( ! empty( $delivery_estimate_note ) ) : ?><li><?php echo esc_html( $delivery_estimate_note ); ?></li><?php endif; ?>
 	<?php if ( ! empty( $attachment ) ) : ?><li><?php esc_html_e( 'Attachment:', 'punchout-woocommerce' ); ?> <a href="<?php echo esc_url( $attachment['url'] ); ?>"><?php echo esc_html( $attachment['name'] ); ?></a> (<?php echo esc_html( $attachment['size'] ); ?>)</li><?php endif; ?>
 </ul>
 

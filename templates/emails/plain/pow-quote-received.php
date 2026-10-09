@@ -19,6 +19,7 @@ echo "\n" . esc_html__( 'Delivery', 'punchout-woocommerce' ) . "\n";
 if ( '' !== $delivery_code ) { echo esc_html__( 'Delivery address code:', 'punchout-woocommerce' ) . ' ' . esc_html( $delivery_code ) . "\n"; }
 if ( '' !== $preferred_date ) { echo esc_html__( 'Preferred delivery date:', 'punchout-woocommerce' ) . ' ' . esc_html( $preferred_date ) . "\n"; }
 if ( '' !== $delivery_notes ) { echo esc_html__( 'Buyer notes:', 'punchout-woocommerce' ) . ' ' . esc_html( $delivery_notes ) . "\n"; }
+if ( ! empty( $delivery_estimate_note ) ) { echo esc_html( $delivery_estimate_note ) . "\n"; }
 if ( ! empty( $attachment ) ) { echo esc_html__( 'Attachment:', 'punchout-woocommerce' ) . ' ' . esc_html( $attachment['name'] ) . ' (' . esc_html( $attachment['size'] ) . ') ' . esc_url( $attachment['url'] ) . "\n"; }
 echo "\n";
 do_action( 'woocommerce_email_order_meta', $order, $sent_to_admin, $plain_text, $email );
