@@ -30,6 +30,7 @@ run directory, mode 700.
 import argparse
 import base64
 import copy
+import html as htmllib
 import http.cookiejar
 import http.server
 import json
@@ -123,12 +124,66 @@ def cart_exit(html, base_url):
     return None
 
 
+def at_least(version, floor):
+    """True when the release number `version` ('0.4.23') is `floor` ((0, 4, 23)) or later."""
+    return tuple(int(p) for p in re.findall(r'\d+', version)[:3]) >= floor
+
+
 def path_for(version, flag):
     """Which exit a release takes: the review (0.4.x) or WooCommerce checkout (0.5.0 and later)."""
     if flag in ('review', 'checkout'):
         return flag
-    parts = tuple(int(p) for p in re.findall(r'\d+', version)[:3])
-    return 'checkout' if parts >= (0, 5, 0) else 'review'
+    return 'checkout' if at_least(version, (0, 5, 0)) else 'review'
+
+
+def start_page_findings(status, headers, body, url):
+    """0.4.23 and later: a GET of the start link answers a page that posts itself back, never stored or indexed. [(check, ok, detail)]"""
+    kind, _ = start_outcome(status, headers, body, url)
+    cache = (headers.get('Cache-Control') or '').lower()
+    robots = (headers.get('X-Robots-Tag') or '').lower()
+    return [
+        ('a_get_of_the_start_link_answers_a_page_that_posts_itself_back', kind == 'post', {'http': status, 'outcome': kind}),
+        ('the_start_page_is_not_stored', 'no-store' in cache, {'cache_control': cache}),
+        ('the_start_page_is_not_indexed', 'noindex' in robots, {'x_robots_tag': robots}),
+    ]
+
+
+def _text(fragment):
+    return re.sub(r'\s+', ' ', htmllib.unescape(re.sub(r'<[^>]+>', '', fragment))).strip()
+
+
+def review_findings(page, labels, freight, priced_titles):
+    """0.4.23 and later, the review page: its words are the settings, it has no date field, and when the connection
+    sends no delivery line (`freight` False) it shows no estimate row, no amount beside a delivery method and no tax
+    wording, while still offering each priced method by its own title. [(check, ok, detail)]"""
+    start = page.find('class="pow-confirmation')
+    end = page.find('</form>', start)
+    area = page[start:end if end > start else len(page)] if start >= 0 else ''
+    submit = re.search(r'<button type="submit" name="pow_delivery_action" value="submit"[^>]*>([^<]*)</button>', area)
+    items = re.search(r'<h2 id="pow-items-title">([^<]*)</h2>', area)
+    total = re.search(r'<dt class="pow-confirmation__total">([^<]*)</dt>', area)
+    shown = {key: _text(match.group(1)) if match else None for key, match in (('submit', submit), ('items', items), ('total', total))}
+    lowered = page.lower()
+    findings = [
+        ('review_submit_label_is_the_setting', shown['submit'] == labels['submit'], {'shown': shown['submit'], 'setting': labels['submit']}),
+        ('review_items_heading_is_the_setting', shown['items'] == labels['items'], {'shown': shown['items'], 'setting': labels['items']}),
+        ('review_total_label_is_the_setting', shown['total'] == labels['total'], {'shown': shown['total'], 'setting': labels['total']}),
+        ('review_has_no_date_input', 'type="date"' not in lowered and 'preferred_delivery_date' not in lowered, {}),
+    ]
+    if freight:
+        return findings
+    summary = re.search(r'<aside class="pow-confirmation__summary".*?</dl>', area, re.S)
+    rows = summary.group(0).count('<dt') if summary else 0
+    methods = re.findall(r'<label class="pow-confirmation__rate"><input type="radio"[^>]*>\s*<span>(.*?)</span></label>', area, re.S)
+    priced = [m for m in methods if 'Price-amount' in m or 'Price-currencySymbol' in m or re.search(r'\d[.,]\d{2}(?!\d)', _text(m))]
+    titles = [_text(m) for m in methods]
+    findings += [
+        ('review_has_no_estimate_row', 'Delivery estimate' not in area and 'pow-confirmation__estimate-note' not in area and rows == 1, {'summary_rows': rows}),
+        ('review_method_list_has_no_amount', bool(methods) and not priced, {'methods': titles, 'priced': [_text(m) for m in priced]}),
+        ('review_offers_the_priced_method_by_its_title', all(title in titles for title in priced_titles), {'methods': titles, 'expected': list(priced_titles)}),
+        ('review_has_no_tax_sentence', re.search(r'\b(tax|vat)\b', _text(area), re.I) is None, {}),
+    ]
+    return findings
 
 
 def handoff_form(html, base_url):
@@ -231,6 +286,7 @@ class Receiver:
 class Run:
     def __init__(self, args):
         self.args = args
+        self.version = '0'
         self.passed = []
         self.failed = []
         self.notes = []
@@ -282,12 +338,22 @@ class Run:
         self.must(status == 200 and code == '200' and start.startswith(url + '/punchout/start/'), 'setup_answers_200_with_a_start_page', http=status, cxml=code)
 
         mode = self.args.redeem
+        scanner_proof = at_least(self.version, (0, 4, 23))
         if mode == 'post':
             status, headers, body = browser.request(start, b'', forms.URLENCODED)
             kind = 'redeemed' if status in (302, 303) else 'refused'
             how = 'POST'
         else:
             status, headers, body = browser.request(start)
+            if scanner_proof and mode == 'auto':
+                # 0.4.23: a link scanner's GET must not use the link up. Only the page's own POST redeems.
+                for name, ok, detail in start_page_findings(status, headers, body, start):
+                    if name.startswith('a_get_'):
+                        self.must(ok, name, **detail)
+                    else:
+                        self.check(ok, name, **detail)
+                again = Browser(url).request(start)
+                self.check(start_outcome(*again, start)[0] == 'post', 'a_second_get_still_answers_the_page', http=again[0])
             kind, found = start_outcome(status, headers, body, start)
             how = 'GET'
             if kind == 'post' and mode == 'auto':
@@ -297,6 +363,10 @@ class Run:
                 how = 'POST'
         self.notes.append('start link redeemed by ' + how)
         self.must(kind == 'redeemed' and browser.logged_in(), 'start_link_redeems_and_signs_the_visit_in', method=how, http=status)
+        if scanner_proof:
+            # Single use: a second POST, from a browser that never held the visit, is refused.
+            again = Browser(url).request(start, b'', forms.URLENCODED)
+            self.check(again[0] == 403, 'a_second_post_is_refused', http=again[0])
         landing = urllib.parse.urljoin(start, headers.get('Location'))
         status, _, body, _ = browser.get(landing)
         self.check(status == 200 and re.search(r'<body[^>]*class="[^"]*\bpow-visit\b', body) is not None, 'landing_page_is_inside_the_visit', http=status)
@@ -346,6 +416,13 @@ class Run:
         self.note = 'Leave at the gate. End-to-end run ' + seed['run'] + '.'
         choose['notes'] = self.note
         self.save('review.html', page)
+        if at_least(self.version, (0, 4, 23)):
+            review_settings = seed.get('review') or {}
+            labels = review_settings.get('labels') or {}
+            priced = [title for title in [(seed.get('shipping') or {}).get('priced_title')] if title]
+            self.must(set(labels) == {'submit', 'items', 'total'} and bool(priced), 'seed_sets_the_review_words_and_a_priced_method', labels=labels, priced=priced)
+            for name, ok, detail in review_findings(page, labels, bool(seed['connection']['emit_delivery_line']), priced):
+                self.check(ok, name, **detail)
         submitter = ('pow_delivery_action', 'submit')
         self.must(submitter in review.buttons(), 'review_offers_submit')
         second = browser.clone()
@@ -415,6 +492,22 @@ def checkout_path(browser, run, seed):
     raise NotImplementedError('The 0.5.0 checkout path is not built yet; run 0.4.x releases with --path review.')
 
 
+def wait_for(url, seconds, server=None):
+    """True once something accepts connections at `url` within `seconds`; False at once if `server` (a Popen) exits."""
+    deadline = time.monotonic() + seconds
+    port = urllib.parse.urlsplit(url).port
+    while True:
+        if server is not None and server.poll() is not None:
+            return False
+        try:
+            with socket.create_connection((LOOPBACK, port), timeout=1):
+                return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.25)
+
+
 def free_port():
     with socket.socket() as s:
         s.bind((LOOPBACK, 0))
@@ -457,6 +550,7 @@ def main(argv=None):
     parser.add_argument('--redeem', choices=['auto', 'get', 'post'], default='auto', help='auto: as a browser (GET, then the page\'s own POST form)')
     parser.add_argument('--path', choices=['auto', 'review', 'checkout'], default='auto', help='auto: review below 0.5.0, checkout from 0.5.0')
     parser.add_argument('--out', type=Path, help='run directory (default: <wp-path>/../e2e-runs/run-<id>)')
+    parser.add_argument('--wait', type=float, default=20.0, help='seconds to wait for the site to accept connections (default 20)')
     args = parser.parse_args(argv)
     os.umask(0o077)
     args.out = args.out or (args.wp_path.resolve().parent / 'e2e-runs' / ('run-' + uuid.uuid4().hex[:12]))
@@ -474,18 +568,13 @@ def main(argv=None):
             log = (args.out / 'php-server.log').open('w')
             server = subprocess.Popen([args.php, '-S', '%s:%d' % (LOOPBACK, port), '-t', str(args.wp_path), str(HERE / 'router.php')], env=dict(os.environ, POW_E2E_ORIGIN=args.url, PHP_CLI_SERVER_WORKERS='4'), stdout=log, stderr=subprocess.STDOUT)
         require_loopback(args.url)
-        for _ in range(80):
-            try:
-                with socket.create_connection((LOOPBACK, urllib.parse.urlsplit(args.url).port), timeout=1):
-                    break
-            except OSError:
-                time.sleep(0.25)
+        run.must(wait_for(args.url, args.wait, server), 'site_server_answers', url=args.url, server_exit=server.poll() if server else None)
         receiver = Receiver()
 
         run.wp('seed')
         seeded = True
         seed = json.loads((args.out / 'fixture.json').read_text())
-        version = seed['versions']['plugin']
+        version = run.version = seed['versions']['plugin']
         path = path_for(version, args.path)
         print('PunchOut %s on WooCommerce %s, WordPress %s; path: %s; site %s' % (version, seed['versions']['woocommerce'], seed['versions']['wordpress'], path, args.url), flush=True)
 
@@ -528,20 +617,26 @@ def main(argv=None):
         run.check(False, 'release_path_available', reason=str(error))
     except SystemExit as stop:
         run.check(False, 'run_completed', reason=str(stop))
+    except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 - a connection error or a crash is a failed run, never an empty failure list
+        run.check(False, 'run_completed', reason=type(error).__name__ + ': ' + str(error))
     finally:
-        if seeded:
+        def cleanup(name, step):
             try:
-                run.wp('retire')
-            except SystemExit as error:
-                print(str(error), flush=True)
+                step()
+            except (Exception, SystemExit) as error:  # noqa: BLE001 - every cleanup step runs, and a failed one is reported
+                run.check(False, 'cleanup ' + name, reason=type(error).__name__ + ': ' + str(error))
+        if seeded:
+            cleanup('retire', lambda: run.wp('retire'))
         if receiver:
-            receiver.close()
+            cleanup('receiver', receiver.close)
         if server:
-            server.terminate()
-            server.wait(timeout=10)
+            def stop_server():
+                server.terminate()
+                server.wait(timeout=10)
+            cleanup('server', stop_server)
         if restore:
-            restore()
-        (args.out / 'result.json').write_text(json.dumps({'passed': len(run.passed), 'failed': [f['check'] for f in run.failed], 'notes': run.notes, 'checks': run.passed + run.failed}, indent=1, default=str))
+            cleanup('plugin_link', restore)
+        (args.out / 'result.json').write_text(json.dumps({'ok': not run.failed, 'passed': len(run.passed), 'failed': [f['check'] for f in run.failed], 'notes': run.notes, 'checks': run.passed + run.failed}, indent=1, default=str))
         print('%d passed, %d failed%s; evidence: %s' % (len(run.passed), len(run.failed), (': ' + ', '.join(f['check'] for f in run.failed)) if run.failed else '', args.out), flush=True)
     return 1 if run.failed else 0
 

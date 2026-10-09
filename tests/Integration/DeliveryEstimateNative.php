@@ -157,6 +157,8 @@ final class DeliveryEstimateNative {
 	 */
 	private function visit( POW\Sessions\Session $visit ): void {
 		$this->detach_native_hooks();
+		// The visit being left ends its request: its basket is saved to its own row, as WooCommerce does at shutdown.
+		if ( WC()->session instanceof POW\Cart\NativeSessionHandler ) { WC()->session->save_data(); }
 		$handler = pow_native_visit_handler( $visit );
 		// Guard before touching an existing cart: each visit is opened by this probe and starts empty.
 		if ( ! empty( $handler->get( 'cart', [] ) ) ) { throw new RuntimeException( 'Native fixture visit already holds a cart.' ); }

@@ -9,15 +9,21 @@
  * Steps:
  * - seed: one ordinary customer account (the connection's login) with a
  *   deliverable shipping address, one active test connection bound to it,
- *   two priced simple products. Writes the run's facts, including the
- *   generated shared secret, to POW_E2E_FIXTURE (mode 600). Prints nothing
- *   secret.
+ *   two priced simple products. For the run it also sets the review's words
+ *   to non-default values and its tax sentence on (0.4.23 settings), and adds
+ *   one priced flat-rate method to the "rest of the world" shipping zone, so
+ *   the driver can see the settings drawn and see that a connection without
+ *   the delivery line shows no amount. Writes the run's facts, including the
+ *   generated shared secret and what it changed, to POW_E2E_FIXTURE (mode
+ *   600). Prints nothing secret.
  * - inspect: reads back what the run left (POW_E2E_PAYLOAD names the visit by
  *   its setup payloadID): the visit's status, whether its login still
  *   verifies, and the orders that name the visit. Writes them to
  *   POW_E2E_RESULT.
- * - retire: disables the run's connection so a later run starts clean. The
- *   rows stay for inspection; nothing is deleted.
+ * - retire: disables the run's connection, puts the review settings back as
+ *   they were and removes the priced shipping method the seed added, so a
+ *   later run starts clean. The run's rows (account, connection, products,
+ *   visit, order) stay for inspection.
  *
  * Every name is neutral and suffixed with a random run id.
  *
@@ -40,6 +46,12 @@ require_once dirname( __DIR__ ) . '/Support/native-visits.php';
 final class PowEndToEndFixture {
 
 	private const PRODUCTS = [ 'alpha' => '11.00', 'beta' => '23.50' ];
+
+	/** The review's words for the run (0.4.23 settings), none of them a default; the tax sentence is on, which a connection without the delivery line must still never show. */
+	private const REVIEW_SETTINGS = [ 'review_submit_label' => 'Send cart', 'review_items_heading' => 'Items on order', 'review_total_label' => 'Order total', 'review_tax_note' => 'yes' ];
+
+	/** The priced method the seed adds for the run, ex tax. */
+	private const PRICED_COST = '50.00';
 
 	private POW\Partners\Registry $registry;
 
@@ -154,6 +166,7 @@ final class PowEndToEndFixture {
 		}
 
 		$checkout = (int) wc_get_page_id( 'checkout' );
+		[ $settings_before, $shipping ] = self::configure_review( $run );
 		self::write(
 			$path,
 			[
@@ -179,9 +192,56 @@ final class PowEndToEndFixture {
 				'checkout'     => [ 'page_id' => $checkout, 'classic' => $checkout > 0 && has_shortcode( (string) get_post_field( 'post_content', $checkout ), 'woocommerce_checkout' ) ],
 				// An address book found by shape, as the plugin finds it: a get_address_book() in any namespace.
 				'address_book' => [] !== array_filter( get_defined_functions()['user'], static fn( string $f ): bool => 'get_address_book' === substr( $f, -16 ) ),
+				'review'       => [
+					'labels'          => [ 'submit' => self::REVIEW_SETTINGS['review_submit_label'], 'items' => self::REVIEW_SETTINGS['review_items_heading'], 'total' => self::REVIEW_SETTINGS['review_total_label'] ],
+					'tax_note'        => 'yes' === self::REVIEW_SETTINGS['review_tax_note'],
+					// For retire: each changed setting as it was, null when it was not saved at all.
+					'settings_before' => $settings_before,
+				],
+				'shipping'     => $shipping,
 			]
 		);
 		echo 'seeded run ' . $run . ': connection ' . $partner->id . ', account ' . $account . ', ' . count( $products ) . " products\n";
+	}
+
+	/**
+	 * The run's review settings and its priced shipping method. Returns [ the changed settings as they were (null =
+	 * not saved), the method's facts ]. A failure here puts back whatever it changed before it rethrows.
+	 *
+	 * @return array{0: array<string, mixed>, 1: array{instance_id: int, priced_title: string, cost: string}}
+	 */
+	private static function configure_review( string $run ): array {
+		$stored = get_option( POW\Settings::OPTION_KEY, [] );
+		$stored = is_array( $stored ) ? $stored : [];
+		$before = [];
+		foreach ( self::REVIEW_SETTINGS as $key => $value ) { $before[ $key ] = $stored[ $key ] ?? null; }
+		$zone     = new WC_Shipping_Zone( 0 );
+		$instance = 0;
+		try {
+			update_option( POW\Settings::OPTION_KEY, array_replace( $stored, self::REVIEW_SETTINGS ) );
+			$instance = (int) $zone->add_shipping_method( 'flat_rate' );
+			$method   = $instance > 0 ? WC_Shipping_Zones::get_shipping_method( $instance ) : false;
+			if ( ! $method instanceof WC_Shipping_Flat_Rate ) { throw new RuntimeException( 'The priced shipping method could not be added.' ); }
+			$title = 'Courier E2E ' . $run;
+			update_option( $method->get_instance_option_key(), [ 'title' => $title, 'tax_status' => 'none', 'cost' => self::PRICED_COST ] );
+			WC_Cache_Helper::get_transient_version( 'shipping', true );
+		} catch ( Throwable $error ) {
+			self::restore_settings( $before );
+			if ( $instance > 0 ) { $zone->delete_shipping_method( $instance ); }
+			throw $error;
+		}
+		return [ $before, [ 'instance_id' => $instance, 'priced_title' => $title, 'cost' => self::PRICED_COST ] ];
+	}
+
+	/** @param array<string, mixed> $before Each changed setting as it was; null = not saved. */
+	private static function restore_settings( array $before ): void {
+		$stored = get_option( POW\Settings::OPTION_KEY, [] );
+		$stored = is_array( $stored ) ? $stored : [];
+		foreach ( $before as $key => $value ) {
+			if ( ! array_key_exists( $key, self::REVIEW_SETTINGS ) ) { continue; }
+			if ( null === $value ) { unset( $stored[ $key ] ); } else { $stored[ $key ] = $value; }
+		}
+		update_option( POW\Settings::OPTION_KEY, $stored );
 	}
 
 	public function inspect(): void {
@@ -226,6 +286,17 @@ final class PowEndToEndFixture {
 		$id   = (int) $seed['connection']['id'];
 		$ok   = (bool) $this->registry->with_partner_lock( $id, fn(): bool => $this->registry->transition_status( $id, POW\Partners\Partner::STATUS_ACTIVE, [ 'status' => POW\Partners\Partner::STATUS_DISABLED ] ) );
 		echo 'connection ' . $id . ( $ok ? ' disabled' : ' left as it was' ) . "\n";
+		if ( isset( $seed['review']['settings_before'] ) && is_array( $seed['review']['settings_before'] ) ) {
+			self::restore_settings( $seed['review']['settings_before'] );
+			echo "review settings put back\n";
+		}
+		$instance = (int) ( $seed['shipping']['instance_id'] ?? 0 );
+		$method   = $instance > 0 ? WC_Shipping_Zones::get_shipping_method( $instance ) : false;
+		// Only the method this run added, still carrying this run's title.
+		if ( $method instanceof WC_Shipping_Flat_Rate && ( $seed['shipping']['priced_title'] ?? null ) === $method->get_option( 'title' ) ) {
+			$zone = WC_Shipping_Zones::get_zone_by( 'instance_id', $instance );
+			echo 'priced shipping method ' . $instance . ( $zone && $zone->delete_shipping_method( $instance ) ? ' removed' : ' left as it was' ) . "\n";
+		}
 	}
 }
 

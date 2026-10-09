@@ -173,9 +173,14 @@ final class AddressProviderNative {
 		$wpdb->update( POW\Installer::partners_table(), [ 'owner_user_id' => $f['owner'] ], [ 'id' => $f['id'] ] );
 		$duplicate = $this->registry->insert( [ 'name' => 'Ambiguous owner', 'owner_user_id' => $f['owner'], 'status' => 'active', 'sender_domain' => 'NetworkID', 'sender_identity' => 'ambiguous-' . $suffix, 'from_domain' => 'NetworkID', 'from_identity' => 'ambiguous-' . $suffix, 'to_domain' => 'NetworkID', 'to_identity' => 'supplier', 'cxml_version' => '1.2.008' ] );
 		$this->check( $duplicate > 0 && 0 === $this->resolver->storage_user_id( $f['owner'] ), 'two connections naming one account refuse to resolve either' );
-		$this->check( $this->error_code( $this->active( $session, $choice ), 'address_unavailable' ), 'an ambiguous bound account is not an authorization' );
+		// Since the one-account model (T9b) the registry treats two connections naming one account as a fault it
+		// cannot resolve (find_by_owner throws), which the resolver reports as an unverifiable state rather than an
+		// unavailable entry. Either refusal is right; what matters is that the choice is not accepted.
+		$ambiguous = $this->active( $session, $choice );
+		$this->check( $this->error_code( $ambiguous, 'address_unavailable' ) || $this->error_code( $ambiguous, 'address_state_unavailable' ), 'an ambiguous bound account is not an authorization' );
 		$this->check( $this->registry->delete( $duplicate ), 'the ambiguous connection fixture is withdrawn' );
-		$viewer = $this->user(); ( new WP_User( $viewer ) )->add_cap( 'manage_woocommerce' ); $this->as_owner( $viewer );
+		// A visit never creates a user (0.4.5), so the viewer account is made outside it.
+		$this->as_owner( $f['owner'] ); $viewer = $this->user(); ( new WP_User( $viewer ) )->add_cap( 'manage_woocommerce' ); $this->as_owner( $viewer );
 		$this->check( $sibling_entry['key'] === $this->provider->list_for_user( $f['owner'] )[0]['key'], 'actual cross-user grant exposes a nonempty list before revocation barrier' );
 		$this->enter( $first->id );
 		$this->check( [] === $this->provider->list_for_user( $other['owner'] ), 'a visit never reads another connection book, whatever the account holds' );
