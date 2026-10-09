@@ -391,7 +391,7 @@ Before deploying, verify conversion on staging for each configured target: the s
 | `_pow_delivery_choice` | Exact stored destination-choice JSON from the return winner |
 | `_pow_delivery_confirmation` | Exact stored confirmation JSON, including cart/policy binding and notes; Quotes created before 0.4.23 may carry a preferred delivery date (schema 2) |
 | `_pow_delivery_notes` | Confirmed plain notes, also copied to the native order customer note |
-| `_pow_preferred_delivery_date` | The buyer's optional preferred delivery date (Y-m-d) from a schema-2 confirmation. Written only when set, checked against the confirmation at attach, never sent in the PunchOutOrderMessage. Since 0.4.23 the review offers no date, so only Quotes created before it carry this key; they still show it |
+| `_pow_preferred_delivery_date` | The buyer's preferred delivery date (Y-m-d) on a Quote created before 0.4.23, copied from its schema-2 confirmation. 0.4.23 writes none, even from a confirmation that still carries a date. Checked against the confirmation at attach, never sent in the PunchOutOrderMessage; old Quotes still show it |
 | `_pow_buyer_identity` | The buyer's e-mail or identity from the cXML request (`UserEmail`, `UniqueUsername`, `UniqueName`, `Contact/Email`); written empty when the request named nobody, and absent altogether on a quote taken before 0.4.0 |
 | `_pow_buyer_name` | The buyer's own spelling of their name (`UserPrintableName`, `UserFullName`, `User`); written empty when the request sent no name, and absent altogether on a quote taken before 0.4.0 |
 | `_pow_buyer_cookie` | The BuyerCookie of the visit, the purchasing system's own correlator |

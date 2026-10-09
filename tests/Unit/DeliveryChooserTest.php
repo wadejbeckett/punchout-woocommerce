@@ -135,6 +135,13 @@ final class DeliveryChooserTest extends TestCase {
 			self::assertStringNotContainsString( 'Preferred delivery date', $html );
 		}
 	}
+	/** The stylesheet keeps no rule for the removed date field (0.4.23). */
+	public function test_the_stylesheet_has_no_date_field_rule(): void {
+		$css = (string) file_get_contents( dirname( __DIR__, 2 ) . '/assets/css/delivery-confirmation.css' );
+		self::assertStringNotContainsString( 'type=date', $css );
+		self::assertStringNotContainsString( 'preferred', $css );
+		self::assertStringContainsString( '.pow-confirmation select,.pow-confirmation textarea{', $css, 'The select and textarea keep their rule.' );
+	}
 	public function test_collection_labels_the_method_section(): void {
 		$html = $this->render( self::physical( [ 'collection' => true ] ) );
 		self::assertStringContainsString( '<h2 id="pow-shipping-title">Collection</h2>', $html );
