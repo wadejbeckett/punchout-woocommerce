@@ -358,12 +358,12 @@ final class ReturnIntegrationTest extends TestCase {
 		$this->db->partner_fields=['allcaps_transform'=>true,'emit_delivery_line'=>true,'emit_ship_to'=>true,'delivery_notes_policy'=>'item_detail_extrinsic','cxml_version'=>'1.2.008'];
 		$xml=$this->xml($this->response());
 		self::assertSame('EXAMPLE ITEM',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="SKU-1001"]/ItemDetail/Description/ShortName)'));
-		self::assertSame('PARCEL ONE; PARCEL TWO',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
+		self::assertSame('PARCEL ONE; PARCEL TWO — THE DELIVERY CHARGE IS AN ESTIMATE; THE SUPPLIER CONFIRMS THE FINAL AMOUNT BEFORE DISPATCH.',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
 		self::assertSame('FREIGHT',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Classification)'));
 		self::assertSame('supplier',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Classification/@domain)'),'A domain is an identifier, not text');
 		self::assertSame('EA',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitOfMeasure)'));
 		self::assertSame('35.00',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitPrice/Money)'));
-		self::assertSame('Gate & bell Call on arrival',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="SKU-1001"]/ItemDetail/Extrinsic[@name="DeliveryInstructions"])'),'notes keep the buyer\'s case (the builder only folds the line break)');
+		self::assertSame('The delivery charge is an estimate; the supplier confirms the final amount before dispatch. Gate & bell Call on arrival',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="SKU-1001"]/ItemDetail/Extrinsic[@name="DeliveryInstructions"])'),'the estimate note goes first (0.4.19); notes keep the buyer\'s case (the builder only folds the line breaks)');
 		self::assertSame('Pretoria',$xml->evaluate('string(//ShipTo/Address/PostalAddress/City)'));
 		$order=array_values($GLOBALS['pow_test_orders'])[0];
 		self::assertSame('Pretoria',$order->props['shipping_city']);
@@ -374,7 +374,8 @@ final class ReturnIntegrationTest extends TestCase {
 		$this->set_delivery(true,true);
 		$this->db->partner_fields=['allcaps_transform'=>false,'emit_delivery_line'=>true,'cxml_version'=>'1.2.008'];
 		$xml=$this->xml($this->response());
-		self::assertSame('Parcel one; Parcel two',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
+		// 0.4.19: the delivery-estimate note rides on the freight line's description, after the method label, in the label's own case.
+		self::assertSame('Parcel one; Parcel two — The delivery charge is an estimate; the supplier confirms the final amount before dispatch.',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
 		self::assertSame('freight',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Classification)'));
 	}
 

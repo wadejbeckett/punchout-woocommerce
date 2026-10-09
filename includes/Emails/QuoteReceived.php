@@ -80,6 +80,7 @@ final class QuoteReceived extends \WC_Email {
 			'delivery_code'      => (string) $order->get_meta( QuoteOrder::META_DELIVERY_CODE ),
 			'preferred_date'     => (string) $order->get_meta( QuoteOrder::META_PREFERRED_DELIVERY_DATE ),
 			'delivery_notes'     => (string) $order->get_customer_note(),
+			'delivery_estimate_note' => \POW\Addresses\EstimateNote::text( \POW\Plugin::instance()->settings() ),
 			'edit_url'           => $order->get_edit_order_url(),
 			'attachment'         => self::attachment_vars( $order ),
 		];

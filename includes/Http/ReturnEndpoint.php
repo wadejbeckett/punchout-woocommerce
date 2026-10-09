@@ -160,6 +160,8 @@ final class ReturnEndpoint {
 				// CAPS connection gets it in capitals too (its description is
 				// a requisition line name beside the merchandise). Wire copy
 				// only; the Quote keeps the shop's own method title.
+				$estimate_note = \POW\Addresses\EstimateNote::text( \POW\Plugin::instance()->settings() );
+				if ( null !== $freight ) { $freight['description'] = \POW\Addresses\EstimateNote::line_description( (string) $freight['description'], $estimate_note ); }
 				if ( null !== $freight && $partner->allcaps_transform ) { $freight = PoomMapper::uppercase_items( [ $freight ] )[0]; }
 				if ( null !== $freight ) { $wire_items[] = $freight; }
 				$destination = $mapped['delivery_destination'];
@@ -169,7 +171,7 @@ final class ReturnEndpoint {
 					'emit_delivery_code' => $partner->emit_delivery_code,
 					'delivery_code' => $destination['code'] ?? '',
 					'delivery_code_extrinsic_name' => $partner->delivery_code_extrinsic_name,
-					'delivery_notes' => $mapped['delivery_notes'],
+					'delivery_notes' => \POW\Addresses\EstimateNote::compose( $estimate_note, (string) $mapped['delivery_notes'] ),
 					'delivery_notes_policy' => $partner->delivery_notes_policy,
 				];
 			} catch ( \Throwable $error ) { $this->review_page(); return; }
