@@ -566,6 +566,8 @@ final class Registry {
 			'visit_endpoints',
 			'buyer_addresses',
 			'owner_settings',
+			'line_description',
+			'order_details',
 		];
 
 		$data = array_intersect_key( $data, array_flip( $allowed ) );
@@ -614,6 +616,15 @@ final class Registry {
 		// Only known owner actions ever reach the column, whoever writes it.
 		if ( array_key_exists( 'owner_settings', $data ) ) {
 			$data['owner_settings'] = Partner::normalise_owner_settings( is_string( $data['owner_settings'] ) ? $data['owner_settings'] : '' );
+		}
+
+		// Schema 10: a known line description mode only, and the order details as canonical JSON of their
+		// well-formed entries ('' for none), whoever writes them.
+		if ( array_key_exists( 'line_description', $data ) ) {
+			$data['line_description'] = Partner::normalise_line_description( $data['line_description'] );
+		}
+		if ( array_key_exists( 'order_details', $data ) ) {
+			$data['order_details'] = Partner::normalise_order_details( $data['order_details'] );
 		}
 
 		// Leave lifecycle fields on their existing path; delivery flags reach wpdb as explicit 0/1.

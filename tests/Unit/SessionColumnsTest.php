@@ -107,8 +107,8 @@ namespace {
 			'created', 'expires',
 		];
 
-		/** The partners columns schemas eight and nine need; the rest of that table is not under test. */
-		public const PARTNER_COLUMNS = [ 'id', 'name', 'status', 'owner_user_id', 'sender_domain', 'sender_identity', 'visit_endpoints', 'buyer_addresses', 'owner_settings' ];
+		/** The partners columns schemas eight, nine and ten need; the rest of that table is not under test. */
+		public const PARTNER_COLUMNS = [ 'id', 'name', 'status', 'owner_user_id', 'sender_domain', 'sender_identity', 'visit_endpoints', 'buyer_addresses', 'owner_settings', 'line_description', 'order_details' ];
 
 		/** Key name => Non_unique, as SHOW INDEX answers it. */
 		public const INDEXES = [
@@ -278,7 +278,7 @@ namespace {
 		public function test_a_migration_that_landed_records_the_schema_version(): void {
 			$this->upgrade();
 
-			self::assertSame( '9', $this->recorded_version() );
+			self::assertSame( '10', $this->recorded_version() );
 			self::assertSame( [], $GLOBALS['pow_installer_log'], 'A clean upgrade says nothing.' );
 			self::assertCount( 3, $GLOBALS['pow_installer_ddl'], 'One statement per table.' );
 		}
@@ -362,14 +362,14 @@ namespace {
 			$this->db->columns = InstallerSchemaDatabase::COLUMNS;
 			$this->upgrade();
 
-			self::assertSame( '9', $this->recorded_version(), 'The retry is what a stuck version marker would have prevented.' );
+			self::assertSame( '10', $this->recorded_version(), 'The retry is what a stuck version marker would have prevented.' );
 			self::assertCount( 6, $GLOBALS['pow_installer_ddl'], 'The second run really did re-issue the schema.' );
 			self::assertCount( 1, $GLOBALS['pow_installer_log'], 'The successful retry adds no line of its own.' );
 		}
 
 		/** A recorded version is never re-migrated: the upgrade is idempotent by marker. */
 		public function test_a_current_version_marker_issues_no_schema_statement(): void {
-			$GLOBALS['pow_installer_options']['pow_db_version'] = '9';
+			$GLOBALS['pow_installer_options']['pow_db_version'] = '10';
 
 			$this->upgrade();
 
@@ -396,7 +396,7 @@ namespace {
 			$this->db->partner_columns = InstallerSchemaDatabase::PARTNER_COLUMNS;
 			$this->upgrade();
 
-			self::assertSame( '9', $this->recorded_version() );
+			self::assertSame( '10', $this->recorded_version() );
 			self::assertSame( 0, $this->db->closeout_reads, 'Schema seven\'s close-out never runs over a site already at seven' );
 		}
 
@@ -423,8 +423,40 @@ namespace {
 			$this->db->partner_columns = InstallerSchemaDatabase::PARTNER_COLUMNS;
 			$this->upgrade();
 
-			self::assertSame( '9', $this->recorded_version() );
+			self::assertSame( '10', $this->recorded_version() );
 			self::assertSame( 0, $this->db->closeout_reads );
+		}
+
+		/**
+		 * Schema ten over a live schema-nine site (0.5.0): the two columns the cXML from the order reads are added and
+		 * read back, nothing else changes, and the marker stays at nine until both are there. 0.4.23 never names them,
+		 * so a rollback to it needs no data change.
+		 */
+		public function test_schema_ten_over_nine_adds_and_reads_back_the_order_message_columns(): void {
+			$GLOBALS['pow_installer_options']['pow_db_version'] = '9';
+			$this->db->partner_columns = array_values( array_diff( InstallerSchemaDatabase::PARTNER_COLUMNS, [ 'line_description', 'order_details' ] ) );
+
+			$this->upgrade();
+
+			self::assertSame( '9', $this->recorded_version(), 'Both columns are missing, so the migration is not done' );
+			self::assertCount( 1, $GLOBALS['pow_installer_log'] );
+			self::assertStringContainsString( 'fixture_pow_partners: column line_description is missing', $GLOBALS['pow_installer_log'][0] );
+			self::assertStringContainsString( 'fixture_pow_partners: column order_details is missing', $GLOBALS['pow_installer_log'][0] );
+			self::assertStringContainsString( "line_description VARCHAR(32) NOT NULL DEFAULT 'name'", $GLOBALS['pow_installer_ddl'][0] );
+			self::assertStringContainsString( 'order_details TEXT NULL', $GLOBALS['pow_installer_ddl'][0] );
+
+			$this->db->partner_columns = array_values( array_diff( InstallerSchemaDatabase::PARTNER_COLUMNS, [ 'order_details' ] ) );
+			$this->upgrade();
+			self::assertSame( '9', $this->recorded_version(), 'order_details is still missing' );
+
+			$this->db->partner_columns = InstallerSchemaDatabase::PARTNER_COLUMNS;
+			$this->upgrade();
+
+			self::assertSame( '10', $this->recorded_version() );
+			self::assertSame( 0, $this->db->closeout_reads, 'Open visits are left alone' );
+			foreach ( $GLOBALS['pow_installer_ddl'] as $statement ) {
+				self::assertStringNotContainsString( 'DROP', strtoupper( $statement ), 'The upgrade only adds' );
+			}
 		}
 
 		/** Activation answers to the same read-back as the upgrade path. */

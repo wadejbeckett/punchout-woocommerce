@@ -17,6 +17,8 @@ use POW\Account\VisitEndpoints;
 use POW\Addresses\Fields;
 use POW\Audit\Log;
 use POW\Http\RateLimiter;
+use POW\Checkout\OrderMessage;
+use POW\Partners\OrderDetails;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
 use POW\Settings;
@@ -598,6 +600,61 @@ final class Page {
 			)
 		);
 
+		// What the purchasing system receives from a placed order (0.5.0, schema 10).
+		$this->form_row(
+			__( 'Send delivery cost', 'punchout-woocommerce' ),
+			$this->flag_field(
+				'emit_delivery_line',
+				(bool) ( $partner->emit_delivery_line ?? false ),
+				__( 'Send the order’s delivery charge as a freight line', 'punchout-woocommerce' ),
+				__( 'Off by default. Off, the cart returned to the purchasing system carries the products only and its total is the products’ total; the order in WooCommerce keeps its shipping line either way. Ticked, the order’s shipping total (before tax) is added as one freight line named after the shipping method, with the delivery estimate note.', 'punchout-woocommerce' )
+			)
+		);
+
+		$this->form_row(
+			__( 'Send ShipTo', 'punchout-woocommerce' ),
+			$this->flag_field(
+				'emit_ship_to',
+				(bool) ( $partner->emit_ship_to ?? false ),
+				__( 'Send the order’s shipping address as the cXML ShipTo', 'punchout-woocommerce' ),
+				__( 'Off by default.', 'punchout-woocommerce' )
+			)
+		);
+
+		$this->form_row(
+			__( 'Line description', 'punchout-woocommerce' ),
+			$this->select(
+				'line_description',
+				[
+					Partner::LINE_DESCRIPTION_NAME           => __( 'Product name', 'punchout-woocommerce' ),
+					Partner::LINE_DESCRIPTION_NAME_AND_SHORT => __( 'Product name and short description', 'punchout-woocommerce' ),
+				],
+				$partner->line_description ?? Partner::LINE_DESCRIPTION_NAME
+			) . '<p class="description">' . esc_html(
+				sprintf(
+					/* translators: %d: the longest line description sent, in characters */
+					__( 'What each line’s Description says. ShortName is always the product name. The short description is sent as plain text: tags removed, entities decoded, spaces collapsed, left out when it only repeats the name, and shortened so the whole description fits in %d characters.', 'punchout-woocommerce' ),
+					OrderMessage::DESCRIPTION_LIMIT
+				)
+			) . '</p>'
+		);
+
+		$this->form_row(
+			__( 'Order details sent', 'punchout-woocommerce' ),
+			sprintf(
+				'<textarea name="order_details" rows="4" class="large-text code" spellcheck="false" placeholder="%s">%s</textarea><p class="description">%s</p>',
+				esc_attr( '_example_meta_key | Example label | text' ),
+				esc_textarea( OrderDetails::lines( $partner->order_details ?? '' ) ),
+				esc_html(
+					sprintf(
+						/* translators: %d: the most order details a connection sends */
+						__( 'One per line, at most %d: order meta key | label | format. The format is text, or unix_date for a Unix timestamp, sent as its calendar day in UTC (YYYY-MM-DD). Each one with a value is added to DeliveryInstructions after the buyer’s note as “label: value”. DeliveryInstructions are sent only while this connection’s delivery_notes_policy is item_detail_extrinsic.', 'punchout-woocommerce' ),
+						OrderDetails::MAX_ENTRIES
+					)
+				)
+			)
+		);
+
 		$cidrs = null !== $partner && null !== $partner->ip_allowlist ? implode( "\n", $partner->ip_cidrs() ) : '';
 
 		$this->form_row(
@@ -956,6 +1013,20 @@ final class Page {
 		}
 
 		return ( '' !== (string) ( $parts['path'] ?? '' ) ? (string) $parts['path'] : '/' ) . ( '' !== (string) ( $parts['query'] ?? '' ) ? '?' . $parts['query'] : '' );
+	}
+
+	/**
+	 * A checkbox that always posts: a hidden 0 first, so an unticked box arrives as 0 and a form without the field
+	 * sends nothing (Actions::save_partner() then keeps the stored value).
+	 */
+	private function flag_field( string $name, bool $on, string $label, string $help ): string {
+		return sprintf(
+			'<input type="hidden" name="%1$s" value="0" /><label><input type="checkbox" name="%1$s" value="1" %2$s /> %3$s</label><p class="description">%4$s</p>',
+			esc_attr( $name ),
+			checked( true, $on, false ),
+			esc_html( $label ),
+			esc_html( $help )
+		);
 	}
 
 	private function form_row( string $label, string $control_html ): void {

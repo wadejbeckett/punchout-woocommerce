@@ -47,7 +47,7 @@ final class DocsReferenceTest extends TestCase {
 			if ( $parameter->isDefaultValueAvailable() ) { $defaults[$parameter->getName()] = $parameter->getDefaultValue(); }
 		}
 		$rows = $this->reference()->delivery_settings();
-		foreach ( [ 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'delivery_unknown_policy', 'delivery_notes_policy', 'delivery_code_prefix', 'delivery_code_extrinsic_name', 'freight_supplier_part_id', 'freight_uom', 'freight_classification_domain', 'freight_classification' ] as $key ) {
+		foreach ( [ 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'delivery_unknown_policy', 'delivery_notes_policy', 'delivery_code_prefix', 'delivery_code_extrinsic_name', 'freight_supplier_part_id', 'freight_uom', 'freight_classification_domain', 'freight_classification', 'line_description', 'order_details' ] as $key ) {
 			self::assertArrayHasKey( $key, $rows );
 			self::assertSame( $defaults[$key], $rows[$key]['default'] );
 			self::assertNotSame( '', $rows[$key]['note'] );

@@ -15,6 +15,8 @@ use POW\Support\Transport;
 use POW\Account\VisitEndpoints;
 use POW\Audit\Log;
 use POW\Installer;
+use POW\Partners\OrderDetails;
+use POW\Partners\Partner;
 use POW\Partners\Registry;
 use POW\Partners\Registration;
 use POW\Partners\Secrets;
@@ -111,6 +113,36 @@ final class Actions {
 				$this->finish( 'partners', sprintf( __( 'Not saved, and no other change on the form was kept either. The ticked My Account pages must fit in %d characters; untick some.', 'punchout-woocommerce' ), VisitEndpoints::MAX_LENGTH ), 'error' );
 			}
 			$data['visit_endpoints'] = implode( ',', $endpoints['endpoints'] );
+		}
+
+		// What the purchasing system receives from a placed order (0.5.0, schema 10). Each only when the form sent
+		// it, so an older form never changes it. The two checkboxes arrive behind a hidden 0, so unticked arrives
+		// as 0 and absent means the form did not have the field. The order details are one entry per line; a line
+		// the form cannot read refuses the whole save and is named, like the endpoint list.
+		foreach ( [ 'emit_delivery_line', 'emit_ship_to' ] as $flag ) {
+			if ( array_key_exists( $flag, $posted ) ) { $data[ $flag ] = '1' === (string) $posted[ $flag ] ? 1 : 0; }
+		}
+		if ( array_key_exists( 'line_description', $posted ) ) {
+			$data['line_description'] = Partner::normalise_line_description( sanitize_key( (string) $posted['line_description'] ) );
+		}
+		if ( array_key_exists( 'order_details', $posted ) ) {
+			$details = OrderDetails::parse_lines( (string) $posted['order_details'] );
+			if ( [] !== $details['rejected'] ) {
+				$this->finish(
+					'partners',
+					sprintf(
+						/* translators: %s: the refused lines, separated by semicolons */
+						__( 'Not saved, and no other change on the form was kept either. Each line of Order details sent is "meta key | label | text" or "meta key | label | unix_date", with each meta key once. These lines are not: %s', 'punchout-woocommerce' ),
+						implode( '; ', $details['rejected'] )
+					),
+					'error'
+				);
+			}
+			if ( $details['too_many'] ) {
+				/* translators: %d: the most order details a connection sends */
+				$this->finish( 'partners', sprintf( __( 'Not saved, and no other change on the form was kept either. Order details sent holds at most %d lines; remove some.', 'punchout-woocommerce' ), OrderDetails::MAX_ENTRIES ), 'error' );
+			}
+			$data['order_details'] = OrderDetails::encode( $details['entries'] );
 		}
 
 		$issued = '';

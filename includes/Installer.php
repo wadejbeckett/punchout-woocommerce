@@ -30,7 +30,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Installer {
 
-	public const DB_VERSION     = '9';
+	public const DB_VERSION     = '10';
 	public const DB_VERSION_KEY = 'pow_db_version';
 	// Routing changes independently of the table schema.
 	public const REWRITE_VERSION = '1';
@@ -60,11 +60,17 @@ final class Installer {
 	private const SESSIONS_INDEXES = [ 'wc_session_key' => true, 'partner_buyer' => false, 'login' => false ];
 
 	/**
-	 * The partner columns schemas eight and nine add, read back for the same
-	 * reason: the connection form writes them, and a save naming a column
+	 * The partner columns schemas eight, nine and ten add, read back for the
+	 * same reason: the connection form writes them, and a save naming a column
 	 * that is not there fails every time.
+	 *
+	 * Schema ten (0.5.0) only adds `line_description` and `order_details`.
+	 * Rollback: 0.4.23 and earlier never name either column and read the
+	 * connection row by column name, so going back needs no data change; the
+	 * two columns and `pow_db_version` = '10' stay, and re-installing 0.5.0
+	 * finds them in place and issues no further DDL.
 	 */
-	private const PARTNERS_COLUMNS = [ 'visit_endpoints', 'buyer_addresses', 'owner_settings' ];
+	private const PARTNERS_COLUMNS = [ 'visit_endpoints', 'buyer_addresses', 'owner_settings', 'line_description', 'order_details' ];
 
 	public static function partners_table(): string {
 		global $wpdb;
@@ -249,6 +255,10 @@ final class Installer {
 		// entry to its company delivery book; owner_settings (schema 9) is
 		// the comma list of actions the bound account may take for itself
 		// (Partner::OWNER_ACTIONS). Both default to off.
+		// line_description and order_details (schema 10) shape the cXML built
+		// from a placed order: the line Description mode ('name' or
+		// 'name_short_description') and the "Order details sent" list
+		// (Partners\OrderDetails, JSON, NULL or '' for none).
 		$sql_partners = "CREATE TABLE {$partners} (
 			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 			name VARCHAR(190) NOT NULL,
@@ -289,6 +299,8 @@ final class Installer {
 			visit_endpoints VARCHAR(255) NOT NULL DEFAULT '',
 			buyer_addresses TINYINT(1) NOT NULL DEFAULT 0,
 			owner_settings VARCHAR(64) NOT NULL DEFAULT '',
+			line_description VARCHAR(32) NOT NULL DEFAULT 'name',
+			order_details TEXT NULL,
 			created DATETIME NULL,
 			updated DATETIME NULL,
 			PRIMARY KEY  (id),
@@ -463,7 +475,7 @@ final class Installer {
 	}
 
 	/**
-	 * What schemas eight and nine asked of the partners table and it does not have.
+	 * What schemas eight, nine and ten asked of the partners table and it does not have.
 	 * The connection form reads it too, to say why a save failed.
 	 *
 	 * @return list<string>

@@ -40,6 +40,16 @@ defined( 'ABSPATH' ) || exit;
  * of actions the bound customer account may take for itself, drawn from
  * OWNER_ACTIONS and normalised by normalise_owner_settings() on the way in
  * and again here. owner_may() is the one question callers ask of it.
+ *
+ * `line_description` and `order_details` (schema 10, 0.5.0) shape the cXML
+ * built from a placed order. `line_description` is LINE_DESCRIPTIONS[0]
+ * (`name`, the default: each line's Description is the product name) or
+ * `name_short_description` (the name, then its short description as plain
+ * text); ShortName is the name either way. `order_details` is the "Order
+ * details sent" list (OrderDetails: order meta key, label, text or
+ * unix_date) as canonical JSON, '' for none; order_detail_list() reads it.
+ * Both are normalised on the way in and again here; a row from before
+ * schema 10 reads as the name and no details.
  */
 final class Partner {
 
@@ -51,6 +61,11 @@ final class Partner {
 
 	/** The actions an administrator can grant the bound account in owner_settings. */
 	public const OWNER_ACTIONS = [ 'reset_connection' ];
+
+	/** What each cXML line's Description carries: the product name (the default), or the name and its short description. */
+	public const LINE_DESCRIPTION_NAME            = 'name';
+	public const LINE_DESCRIPTION_NAME_AND_SHORT  = 'name_short_description';
+	public const LINE_DESCRIPTIONS                = [ self::LINE_DESCRIPTION_NAME, self::LINE_DESCRIPTION_NAME_AND_SHORT ];
 
 	public function __construct(
 		public readonly int $id,
@@ -92,6 +107,8 @@ final class Partner {
 		public readonly string $visit_endpoints = '',
 		public readonly bool $buyer_addresses = false,
 		public readonly string $owner_settings = '',
+		public readonly string $line_description = self::LINE_DESCRIPTION_NAME,
+		public readonly string $order_details = '',
 	) {}
 
 	/**
@@ -155,7 +172,29 @@ final class Partner {
 			// Both absent before schema 9, which reads as off.
 			buyer_addresses: ! empty( $row['buyer_addresses'] ),
 			owner_settings: self::normalise_owner_settings( (string) ( $row['owner_settings'] ?? '' ) ),
+			// Both absent before schema 10: the name, and no order details.
+			line_description: self::normalise_line_description( $row['line_description'] ?? '' ),
+			order_details: self::normalise_order_details( $row['order_details'] ?? '' ),
 		);
+	}
+
+	/** A known line description mode; anything else is the name. */
+	public static function normalise_line_description( mixed $raw ): string {
+		return is_string( $raw ) && in_array( $raw, self::LINE_DESCRIPTIONS, true ) ? $raw : self::LINE_DESCRIPTION_NAME;
+	}
+
+	/** The "Order details sent" list as stored: canonical JSON of its well-formed entries, '' for none. */
+	public static function normalise_order_details( mixed $raw ): string {
+		return OrderDetails::encode( $raw );
+	}
+
+	/**
+	 * The "Order details sent" list.
+	 *
+	 * @return list<array{meta_key: string, label: string, format: string}>
+	 */
+	public function order_detail_list(): array {
+		return OrderDetails::normalise( $this->order_details );
 	}
 
 	/**
