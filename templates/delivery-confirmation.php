@@ -2,7 +2,7 @@
 /**
  * Theme-overridable delivery confirmation; all choices and amounts are prepared server-side.
  *
- * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $labels (0.4.23: {submit, items, total}, the site's words for the Submit button, the item heading and the total; missing or blank keys use the defaults), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $script_url (0.4.22: the review script where the page has not enqueued it, else ''), $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
+ * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $labels (0.4.23: {submit, items, total}, the site's words for the Submit button, the item heading and the total; missing or blank keys use the defaults; $view['delivery_line'] false = the connection sends no delivery line), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $script_url (0.4.22: the review script where the page has not enqueued it, else ''), $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
  *
  * @package POW @license AGPL-3.0-or-later
  */
@@ -22,7 +22,7 @@ $button_extra = '' !== $button_extra ? ' ' . $button_extra : '';
 $estimate_note = isset( $estimate_note ) && is_string( $estimate_note ) ? $estimate_note : '';
 $labels = \POW\Addresses\ReviewLabels::complete( $labels ?? null );
 // 0.4.23: a connection that sends no delivery cost shows no estimate and no tax sentence; the total is the merchandise.
-$freight_off = $delivery && 'disabled' === ( $delivery['status'] ?? null );
+$freight_off = ( array_key_exists( 'delivery_line', $view ) && false === $view['delivery_line'] ) || ( $delivery && 'disabled' === ( $delivery['status'] ?? null ) );
 if ( $document ) : ?>
 <!doctype html><html <?php language_attributes(); ?>><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title><?php echo esc_html__( 'Review your cart', 'punchout-woocommerce' ); ?> — <?php echo esc_html( $shop_name ); ?></title></head><body>
 <?php endif; ?>
