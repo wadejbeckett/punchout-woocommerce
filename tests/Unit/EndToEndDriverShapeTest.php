@@ -61,6 +61,22 @@ namespace {
 			self::assertStringContainsString( 'require_loopback(args.url)', $source, 'The driver checks its target before the first request' );
 		}
 
+		/** A run that cannot finish is a failed run: never a result with an empty failure list. */
+		public function test_a_run_that_cannot_finish_is_reported_as_failed(): void {
+			$source = $this->source( 'driver.py' );
+			self::assertStringContainsString( "'site_server_answers'", $source, 'The run fails when the site never comes up' );
+			self::assertStringContainsString( 'except (Exception, KeyboardInterrupt) as error:', $source, 'A connection error or a crash is a failed run' );
+			self::assertStringContainsString( "run.check(False, 'cleanup ' + name", $source, 'A failed cleanup step is reported' );
+		}
+
+		/** The seed's run-only changes to the shop (review settings, a priced shipping method) are put back by retire. */
+		public function test_the_fixture_puts_back_what_the_seed_changed(): void {
+			$source = $this->source( 'fixture.php' );
+			$retire = substr( $source, (int) strpos( $source, 'public function retire()' ) );
+			self::assertStringContainsString( 'self::restore_settings(', $retire );
+			self::assertStringContainsString( 'delete_shipping_method(', $retire );
+		}
+
 		public function test_the_driver_never_prints_the_connection_secret(): void {
 			$source = $this->source( 'driver.py' );
 			self::assertSame( 0, preg_match( '/print\([^)]*secret/i', $source ), 'No print call names the secret' );
