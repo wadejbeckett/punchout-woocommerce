@@ -2,7 +2,7 @@
 
 An AGPLv3 WordPress plugin that makes a WooCommerce store a **cXML PunchOut supplier site** for direct-cXML procurement buyers, configured independently per company.
 
-A buyer opens the store from their procurement system. It sends a cXML `PunchOutSetupRequest`; the plugin authenticates the customer, opens a new visit on that customer's one bound WooCommerce account and returns a one-time StartPage login URL. The buyer shops the ordinary WooCommerce cart at that account's prices, reviews the destination, native shipping methods and notes, then returns a cXML `PunchOutOrderMessage` for requisition/RFQ approval. Checkout is blocked inside the visit.
+A buyer opens the store from their procurement system. It sends a cXML `PunchOutSetupRequest`; the plugin authenticates the customer, opens a new visit on that customer's one bound WooCommerce account and returns a one-time StartPage login URL. The buyer shops the ordinary WooCommerce cart at that account's prices, reviews the destination, native shipping methods and notes, then returns the cart to the purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines). Checkout is blocked inside the visit.
 
 **Status: supplier implementation; release acceptance and receiver certification are separate gates.** The generated samples are checked against the exact offline cXML 1.2.008 and 1.2.071 DTDs. This does not establish consumption by a buyer system, including Dynamics 365. See [Receiver acceptance](#receiver-acceptance) before onboarding.
 

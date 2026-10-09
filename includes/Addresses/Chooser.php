@@ -184,7 +184,7 @@ final class Chooser {
 	 * @return array{0: int, 1: string}|null
 	 */
 	private function respond_post( bool $document ): ?array {
-		// 0.4.22: a repeated "Submit for approval" (a double click) after this browser's cart has already returned gets that same handoff again, not an error page.
+		// 0.4.22: a repeated "Submit" (a double click) after this browser's cart has already returned gets that same handoff again, not an error page.
 		if ( $this->replayed_submit() ) { return null; }
 		try {
 			[ $session, $partner ] = $this->context();
@@ -251,7 +251,7 @@ final class Chooser {
 	}
 
 	/**
-	 * A "Submit for approval" POST that repeats one whose cart has already returned: the return endpoint sends that
+	 * A "Submit" POST that repeats one whose cart has already returned: the return endpoint sends that
 	 * first handoff again when this browser's login and this review form's return nonce match it. False when the POST
 	 * is not a submit or nothing matches.
 	 */

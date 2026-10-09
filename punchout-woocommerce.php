@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       PunchOut for WooCommerce
  * Plugin URI:        https://github.com/wadejbeckett/punchout-woocommerce
- * Description:       Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first). Multi-tenant customer registry, one bound customer account per connection, one-time StartPage login, and a "send for approval" cart exit that returns the cart as an RFQ (PunchOutOrderMessage).
+ * Description:       Add cXML PunchOut to WooCommerce for enterprise procurement buyers (Microsoft Dynamics 365 F&O/SCM first). Multi-tenant customer registry, one bound customer account per connection, one-time StartPage login, and a cart exit that sends the cart to the buyer’s purchasing system as an RFQ (PunchOutOrderMessage).
  * Version:           0.4.23
  * Requires at least: 6.4
  * Requires PHP:      8.2

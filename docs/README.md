@@ -1,6 +1,6 @@
 # PunchOut for WooCommerce documentation
 
-Turn a WooCommerce store into an external purchasing catalog. Employees enter from their purchasing system, shop and return product and price information for organizational approval.
+Turn a WooCommerce store into an external purchasing catalog. Employees enter from their purchasing system, shop and return product and price information to their purchasing system.
 
 Each customer connection is bound to one ordinary WooCommerce customer account that you create, group and price: every employee of that customer shops as that account and sees exactly what it sees, while each punchout visit keeps its own basket, delivery selection and returned quote. These documents are written for store administrators. There is no buyer- or customer-facing management screen to configure: everything is at **WooCommerce > PunchOut**.
 
