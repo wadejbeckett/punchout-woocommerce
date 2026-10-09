@@ -12,8 +12,6 @@ namespace POW\Http;
 
 use POW\Support\Transport;
 
-use POW\Sessions\Tokens;
-
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -73,19 +71,11 @@ final class Router {
 		}
 
 		if ( str_starts_with( $path, '/punchout/start/' ) ) {
-			$token = substr( $path, strlen( '/punchout/start/' ) );
-
-			if ( Tokens::looks_valid( $token ) ) {
-				$this->harden_headers();
-				$this->start->handle( $token );
-				exit;
-			}
-
-			// Malformed token: plain 403, same as an expired one — no
-			// detail an attacker can learn from (scope §9.2). Junk that
-			// does not even look like a token still gets the same page.
+			// Every method reaches the endpoint: it refuses a malformed token (plain 403, same as an expired one, no
+			// detail an attacker can learn from, scope §9.2) before any lookup, answers GET and HEAD with the page
+			// that posts itself back, and redeems only on POST (0.4.23).
 			$this->harden_headers();
-			$this->start->deny();
+			$this->start->handle( substr( $path, strlen( '/punchout/start/' ) ) );
 			exit;
 		}
 

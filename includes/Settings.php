@@ -51,6 +51,11 @@ class Settings {
 		'token_ttl'            => 300,     // StartPage token, seconds (~5 min).
 		'session_ttl'          => 14400,   // Punchout login, seconds (4 h).
 
+		// 0.4.23: a GET of the StartPage link shows a small page that posts itself back, and only that POST signs
+		// the buyer in, so a mail scanner that fetches the link does not use it up. 'yes' leaves out the automatic
+		// submit: the buyer presses the button once, for scanners that also run scripts.
+		'start_link_click'     => 'no',
+
 		// /punchout/setup downstream limit per (partner|unknown-sender, IP). Public construction uses 30 for nonpositive settings.
 		'rate_limit_per_min'   => 30,
 
@@ -212,6 +217,11 @@ class Settings {
 		$stored = is_string( $stored ) ? trim( $stored ) : '';
 
 		return '' !== $stored ? $stored : $default;
+	}
+
+	/** True when the StartPage link waits for one real click instead of submitting itself (0.4.23; off by default). */
+	public function start_link_click(): bool {
+		return 'yes' === $this->get( 'start_link_click', 'no' );
 	}
 
 	/**

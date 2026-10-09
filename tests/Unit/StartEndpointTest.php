@@ -143,11 +143,33 @@ final class StartEndpointTest extends TestCase {
 		return $token;
 	}
 
+	/** The buyer's POST to the start link (0.4.23: the only method that redeems). */
 	private function redeem( string $token ): string {
+		return $this->visit( $token, 'POST' );
+	}
+
+	/** One request to /punchout/start/{token} with the given method, and what it printed. */
+	private function visit( string $token, string $method ): string {
+		$_SERVER['REQUEST_METHOD'] = $method;
 		$level = ob_get_level();
 		ob_start();
 		try { $this->endpoint->handle( $token ); return (string) ob_get_contents(); }
 		finally { while ( ob_get_level() > $level ) { ob_end_clean(); } }
+	}
+
+	/** @return list<string> */
+	private function headers_sent(): array {
+		return $GLOBALS['pow_test_setup_io']['headers'] ?? [];
+	}
+
+	/** A settings reader with only the start-link click setting saved. */
+	private function click_settings( string $value ): \POW\Settings {
+		return new class( $value ) extends \POW\Settings {
+			public function __construct( private string $click ) {}
+			public function get( string $key, mixed $default = null ): mixed {
+				return 'start_link_click' === $key ? $this->click : $default;
+			}
+		};
 	}
 
 	/** @return list<string> */
@@ -227,6 +249,131 @@ final class StartEndpointTest extends TestCase {
 		self::assertSame( $second[1], $this->db->sessions[42]['wc_session_key'] );
 		self::assertSame( Session::ACTIVE, $this->db->sessions[42]['status'] );
 		self::assertSame( 'ok', $this->audited( 'token_redeem' )['result'] );
+	}
+
+	// ------------------------------------- link scanners (0.4.23): only POST redeems
+
+	/**
+	 * A mail scanner fetches every link in a message. A GET of the start link
+	 * shows a small page that posts itself back to the same address, and
+	 * touches nothing: no lookup, no write, no audit row.
+	 */
+	public function test_a_get_shows_a_self_submitting_page_and_leaves_the_link_unused(): void {
+		$token = $this->claim( 42 );
+
+		$page = $this->visit( $token, 'GET' );
+
+		$url = 'https://shop.example.test/punchout/start/' . $token;
+		self::assertStringContainsString( '<form method="post" action="' . $url . '" id="pow-start-form">', $page );
+		self::assertSame( 1, preg_match( '#<button type="submit"[^>]*>[^<]+</button>#', $page ), 'A visible button for a browser without scripting.' );
+		self::assertStringContainsString( "<script>document.getElementById( 'pow-start-form' ).submit();</script>", $page );
+		self::assertStringContainsString( '<meta name="robots" content="noindex,nofollow">', $page );
+		self::assertStringContainsString( '<meta name="referrer" content="no-referrer">', $page );
+		self::assertSame( [ 200 ], $GLOBALS['pow_test_status_headers'] ?? [] );
+		foreach ( [ 'Content-Type: text/html; charset=utf-8', 'Cache-Control: private, no-store', 'X-Robots-Tag: noindex, nofollow', 'X-Content-Type-Options: nosniff', 'Referrer-Policy: no-referrer' ] as $header ) {
+			self::assertContains( $header, $this->headers_sent(), $header );
+		}
+
+		self::assertSame( Session::PENDING, $this->db->sessions[42]['status'] );
+		self::assertSame( [], $this->db->queries, 'No lookup and no write.' );
+		self::assertSame( [], $this->db->audits, 'No audit row.' );
+		self::assertSame( [], $GLOBALS['pow_test_auth_cookies'] ?? [] );
+		self::assertSame( [], $GLOBALS['pow_start_redirects'] ?? [] );
+	}
+
+	public function test_a_head_sends_the_same_headers_and_no_body(): void {
+		$token = $this->claim( 42 );
+
+		self::assertSame( '', $this->visit( $token, 'HEAD' ) );
+
+		self::assertSame( [ 200 ], $GLOBALS['pow_test_status_headers'] ?? [] );
+		foreach ( [ 'Cache-Control: private, no-store', 'X-Robots-Tag: noindex, nofollow', 'X-Content-Type-Options: nosniff', 'Referrer-Policy: no-referrer' ] as $header ) {
+			self::assertContains( $header, $this->headers_sent(), $header );
+		}
+		self::assertSame( Session::PENDING, $this->db->sessions[42]['status'] );
+		self::assertSame( [], $this->db->queries );
+		self::assertSame( [], $this->db->audits );
+	}
+
+	/** What the scanner saw is still a link the buyer can use: the page's own POST redeems it, once. */
+	public function test_after_a_scan_the_post_redeems_and_a_second_post_is_refused(): void {
+		$token = $this->claim( 42 );
+		$this->visit( $token, 'GET' );
+		$this->visit( $token, 'HEAD' );
+
+		self::assertSame( '', $this->redeem( $token ) );
+		self::assertSame( Session::ACTIVE, $this->db->sessions[42]['status'] );
+		self::assertSame( [ [ 'https://shop.example.test/', 302 ] ], $GLOBALS['pow_start_redirects'] );
+		$login = $this->db->sessions[42]['wp_session_token'];
+		$GLOBALS['pow_test_status_headers'] = [];
+
+		$again = $this->redeem( $token );
+
+		self::assertStringContainsString( 'This catalog link has expired', $again );
+		self::assertSame( [ 403 ], $GLOBALS['pow_test_status_headers'] );
+		self::assertSame( $login, $this->db->sessions[42]['wp_session_token'], 'The first visit keeps its login.' );
+		self::assertCount( 1, $GLOBALS['pow_test_auth_cookies'], 'One login cookie, from the first POST.' );
+		self::assertCount( 1, $GLOBALS['pow_start_redirects'] );
+		self::assertSame( '403', $this->audited( 'token_reject' )['result'] );
+	}
+
+	public function test_a_malformed_token_is_refused_for_every_method_before_any_lookup(): void {
+		foreach ( [ 'GET', 'HEAD', 'POST', 'PUT', 'OPTIONS' ] as $method ) {
+			foreach ( [ 'short', str_repeat( 'a', 44 ), str_pad( 'bad token', 43, 'x' ), str_pad( 'quote"', 43, 'x' ) ] as $token ) {
+				$this->tearDown();
+				$this->setUp();
+
+				$response = $this->visit( $token, $method );
+
+				self::assertSame( [ 403 ], $GLOBALS['pow_test_status_headers'] ?? [], $method . ' ' . $token );
+				self::assertStringContainsString( 'This catalog link has expired', $response, $method );
+				self::assertStringNotContainsString( '<form', $response, $method );
+				self::assertSame( [], $this->db->queries, $method );
+				self::assertSame( [], $GLOBALS['pow_test_auth_cookies'] ?? [], $method );
+			}
+		}
+	}
+
+	public function test_a_method_other_than_get_head_or_post_neither_redeems_nor_looks_up(): void {
+		foreach ( [ 'PUT', 'DELETE', 'OPTIONS', 'PATCH' ] as $method ) {
+			$this->tearDown();
+			$this->setUp();
+			$token = $this->claim( 42 );
+
+			$this->visit( $token, $method );
+
+			self::assertSame( [ 405 ], $GLOBALS['pow_test_status_headers'] ?? [], $method );
+			self::assertContains( 'Allow: GET, HEAD, POST', $this->headers_sent(), $method );
+			self::assertSame( Session::PENDING, $this->db->sessions[42]['status'], $method );
+			self::assertSame( [], $this->db->queries, $method );
+			self::assertSame( [], $this->db->audits, $method );
+		}
+	}
+
+	/** Off by default; on, the page waits for one real click, for scanners that also run scripts. */
+	public function test_the_one_click_setting_drops_the_automatic_submit(): void {
+		$token = $this->claim( 42 );
+		$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->click_settings( 'yes' ), new Log( new QuoteOrderTestLogger() ) );
+
+		$page = $this->visit( $token, 'GET' );
+
+		self::assertStringContainsString( '<form method="post" action="https://shop.example.test/punchout/start/' . $token . '" id="pow-start-form">', $page );
+		self::assertSame( 1, preg_match( '#<button type="submit"[^>]*>[^<]+</button>#', $page ) );
+		self::assertStringNotContainsString( '<script', $page );
+		self::assertSame( Session::PENDING, $this->db->sessions[42]['status'] );
+
+		// Any other saved value is the default: the page submits itself.
+		$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->click_settings( 'no' ), new Log( new QuoteOrderTestLogger() ) );
+		self::assertStringContainsString( '.submit();</script>', $this->visit( $token, 'GET' ) );
+	}
+
+	public function test_the_click_setting_is_off_by_default_and_saved_as_yes_or_no(): void {
+		self::assertFalse( ( new \POW\Settings() )->start_link_click() );
+		$admin = ( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor();
+		( new ReflectionProperty( $admin, 'settings' ) )->setValue( $admin, new \POW\Settings() );
+		self::assertSame( 'no', $admin->sanitize_settings( [] )['start_link_click'] );
+		self::assertSame( 'yes', $admin->sanitize_settings( [ 'start_link_click' => 'yes' ] )['start_link_click'] );
+		self::assertSame( 'no', $admin->sanitize_settings( [ 'start_link_click' => '1' ] )['start_link_click'] );
 	}
 
 	// ------------------------------------------------ the bound-login re-proof
