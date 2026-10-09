@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.22
+Stable tag: 0.4.23
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,12 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.23 =
+* Login links survive mail scanners. Opening a login link (a GET) now shows a small page that continues to the catalog by itself; only that page's POST signs the buyer in, so a scanner that fetches every link in an e-mail no longer uses the link up. The page is never cached, indexed or sniffed and passes on no referrer, and it has a visible button for a browser without scripting. A HEAD request gets the headers only. A malformed link is refused whatever the method, and nothing is looked up, written or logged until the POST. New setting "Login link needs a click" (off by default) leaves out the automatic step, for scanners that also run scripts. The setup response and the login link's address are unchanged. Tools that open login links directly must now POST to them.
+* The review page's words are settings: "Review Submit button" (default "Submit"), "Review items heading" (default "Items") and "Review total label" (default "Total"), with filters `punchout_review_submit_label`, `punchout_review_items_heading` and `punchout_review_total_label`. The buyer no longer reads anything about approval: the page says "Sends this cart to your purchasing system."
+* When a connection does not send the delivery line, the review shows no delivery estimate, no estimate note and no tax sentence, and its total is the merchandise. With the delivery line on, the tax sentence reads "Amounts exclude tax." once.
+* The review's own preferred-delivery-date field is gone; a delivery date belongs to the shop's checkout. A date an older page still posts is ignored. Quotes created before this version keep their date on the order screen, in their note and in the "PunchOut order received" e-mail. A visit confirmed with a date on 0.4.22 and not yet sent asks the buyer to review once more. The cXML sent to the purchasing system is unchanged. No schema change (stays 9).
 
 = 0.4.22 =
 * The review page now calls itself "Review" while it is drawn inside the theme. It still uses the Cart page's layout, but the title bar, the last breadcrumb and the browser tab say "Review" instead of "Cart", for that page only: the menu's Cart link, the Cart page itself and the review's own "Cart" step are unchanged. New setting "Review page title" (blank = "Review") and filter `punchout_review_title` (`''` turns it off). It reaches anything that reads the page title the WordPress way (WooCommerce and most theme breadcrumbs and title bars); a title typed into a page layout as fixed text does not change.
