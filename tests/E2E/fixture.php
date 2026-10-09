@@ -40,8 +40,18 @@
  * - start_click: sets the start page's "Login link needs a click" setting to
  *   POW_E2E_START_CLICK ('yes' or 'no') for one case of the browser run
  *   (tests/E2E/browser.py); the seed records the setting as it was.
+ * - states: for the 0.5.0 state page and leave-confirmation leg (ticket 77),
+ *   makes sure one page draws [punchout_state] (slug pow-e2e-state, one title
+ *   overridden as an attribute and a button_url) and one draws
+ *   [punchout_abandon_button] with a question attribute (slug pow-e2e-leave),
+ *   both left in place, then chooses the state page and turns "Ask before
+ *   leaving" on with non-default labels for the run (the seed records each as
+ *   it was). Writes the pages and the words to POW_E2E_RESULT.
+ * - end_visit: ends the visit POW_E2E_PAYLOAD names as logout, the clean-up
+ *   and the master switch end one (Store::expire_and_destroy()): its row
+ *   expired and its login destroyed, its browser left holding the cookie.
  * - retire: disables the run's connection, puts the run's settings (the
- *   plugin's review and start page settings and the payment method's) back
+ *   plugin's review, start page and state page settings and the payment method's) back
  *   as they were, removes the priced shipping method the seed added and moves
  *   the run's coupon to the bin, so a later run starts clean. The run's rows (account, connection, products,
  *   visit, order) stay for inspection.
@@ -89,6 +99,16 @@ final class PowEndToEndFixture {
 
 	/** The review's words for the run (0.4.23 settings), none of them a default; the tax sentence is on, which a connection without the delivery line must still never show. */
 	private const REVIEW_SETTINGS = [ 'review_submit_label' => 'Send cart', 'review_items_heading' => 'Items on order', 'review_total_label' => 'Order total', 'review_tax_note' => 'yes', 'checkout_button_label' => 'Review' ];
+
+	/**
+	 * The state page and leave-confirmation settings the `states` step turns on (0.5.0, ticket 77), none of them a
+	 * default; state_page_id is the page the step finds or makes. Recorded at seed, put back by retire.
+	 */
+	private const STATE_SETTINGS = [ 'state_button_label' => 'Continue (e2e)', 'leave_confirmation' => 'yes', 'leave_confirm_label' => 'Leave (e2e)', 'leave_stay_label' => 'Stay (e2e)', 'abandon_button_label' => 'Cancel and return (e2e)' ];
+
+	/** The two pages of the `states` step, found by slug or made once, and what they draw. */
+	private const STATE_PAGE = [ 'slug' => 'pow-e2e-state', 'title' => 'Visit state (end-to-end)', 'content' => '[punchout_state sent_title="Sent (e2e)" button_url="/"]', 'sent_title' => 'Sent (e2e)' ];
+	private const LEAVE_PAGE = [ 'slug' => 'pow-e2e-leave', 'title' => 'Leave (end-to-end)', 'content' => '[punchout_abandon_button question="Leave without sending (e2e)?"]', 'question' => 'Leave without sending (e2e)?' ];
 
 	/** The PunchOut payment method's own settings for the run (0.5.0): its place-order label, not the default. */
 	private const GATEWAY_OPTION   = 'woocommerce_punchout_settings';
@@ -361,6 +381,9 @@ final class PowEndToEndFixture {
 		foreach ( self::REVIEW_SETTINGS as $key => $value ) { $before[ $key ] = $stored[ $key ] ?? null; }
 		// Not changed by the seed; recorded so that retire can undo a start_click step.
 		$before['start_link_click'] = $stored['start_link_click'] ?? null;
+		// Not changed by the seed either; recorded so that retire can undo a states step (0.5.0, ticket 77).
+		foreach ( array_keys( self::STATE_SETTINGS ) as $key ) { $before[ $key ] = $stored[ $key ] ?? null; }
+		$before['state_page_id'] = $stored['state_page_id'] ?? null;
 		$zone     = new WC_Shipping_Zone( 0 );
 		$instance = 0;
 		try {
@@ -405,7 +428,7 @@ final class PowEndToEndFixture {
 		$stored = get_option( POW\Settings::OPTION_KEY, [] );
 		$stored = is_array( $stored ) ? $stored : [];
 		foreach ( $before as $key => $value ) {
-			if ( ! array_key_exists( $key, self::REVIEW_SETTINGS ) && 'start_link_click' !== $key ) { continue; }
+			if ( ! array_key_exists( $key, self::REVIEW_SETTINGS ) && ! array_key_exists( $key, self::STATE_SETTINGS ) && ! in_array( $key, [ 'start_link_click', 'state_page_id' ], true ) ) { continue; }
 			if ( null === $value ) { unset( $stored[ $key ] ); } else { $stored[ $key ] = $value; }
 		}
 		update_option( POW\Settings::OPTION_KEY, $stored );
@@ -458,6 +481,46 @@ final class PowEndToEndFixture {
 		echo 'start page: ' . ( 'yes' === $stored['start_link_click'] ? 'waits for a press' : 'posts itself' ) . "\n";
 	}
 
+	/** One published page drawing $page['content'], found by its slug or made once (left in place). */
+	private static function content_page( array $page ): int {
+		$found = get_page_by_path( $page['slug'], OBJECT, 'page' );
+		if ( $found instanceof WP_Post && 'publish' === $found->post_status && $page['content'] === trim( (string) $found->post_content ) ) { return (int) $found->ID; }
+		if ( $found instanceof WP_Post ) { throw new RuntimeException( 'A page with the slug ' . $page['slug'] . ' already exists with other content; refusing to change it.' ); }
+		$id = wp_insert_post( [ 'post_type' => 'page', 'post_status' => 'publish', 'post_name' => $page['slug'], 'post_title' => $page['title'], 'post_content' => $page['content'] ], true );
+		if ( $id instanceof WP_Error || (int) $id <= 0 ) { throw new RuntimeException( 'The page ' . $page['slug'] . ' could not be made.' ); }
+		return (int) $id;
+	}
+
+	/** The state page and leave-confirmation leg (0.5.0, ticket 77): its two pages, and its settings turned on for the run. */
+	public function states(): void {
+		$seed = self::read( self::path( 'POW_E2E_FIXTURE' ) );
+		if ( ! array_key_exists( 'state_page_id', (array) ( $seed['review']['settings_before'] ?? [] ) ) ) { throw new RuntimeException( 'This seed cannot put the state page settings back.' ); }
+		$state = self::content_page( self::STATE_PAGE );
+		$leave = self::content_page( self::LEAVE_PAGE );
+		$stored = get_option( POW\Settings::OPTION_KEY, [] );
+		$stored = is_array( $stored ) ? $stored : [];
+		update_option( POW\Settings::OPTION_KEY, array_replace( $stored, self::STATE_SETTINGS, [ 'state_page_id' => $state ] ) );
+		self::write(
+			self::path( 'POW_E2E_RESULT' ),
+			[
+				'state_page' => [ 'id' => $state, 'url' => get_permalink( $state ), 'sent_title' => self::STATE_PAGE['sent_title'] ],
+				'leave_page' => [ 'id' => $leave, 'url' => get_permalink( $leave ), 'question' => self::LEAVE_PAGE['question'] ],
+				'labels'     => [ 'state_button' => self::STATE_SETTINGS['state_button_label'], 'cancel' => self::STATE_SETTINGS['abandon_button_label'], 'leave' => self::STATE_SETTINGS['leave_confirm_label'], 'stay' => self::STATE_SETTINGS['leave_stay_label'] ],
+			]
+		);
+		echo 'state page ' . $state . ' chosen, leave page ' . $leave . ", asking before leaving\n";
+	}
+
+	/** End the visit POW_E2E_PAYLOAD names as logout, the clean-up and the master switch do; its browser keeps its cookie. */
+	public function end_visit(): void {
+		$seed    = self::read( self::path( 'POW_E2E_FIXTURE' ) );
+		$plugin  = POW\Plugin::instance();
+		$visit   = $plugin->sessions()?->find_by_payload( (int) $seed['connection']['id'], (string) getenv( 'POW_E2E_PAYLOAD' ) );
+		if ( ! $visit ) { throw new RuntimeException( 'No visit for that payloadID.' ); }
+		if ( ! $plugin->sessions()->expire_and_destroy( $visit, $this->registry ) ) { throw new RuntimeException( 'The visit could not be ended.' ); }
+		echo 'visit ' . $visit->id . " ended\n";
+	}
+
 	public function retire(): void {
 		$seed = self::read( self::path( 'POW_E2E_FIXTURE' ) );
 		$id   = (int) $seed['connection']['id'];
@@ -465,7 +528,7 @@ final class PowEndToEndFixture {
 		echo 'connection ' . $id . ( $ok ? ' disabled' : ' left as it was' ) . "\n";
 		if ( isset( $seed['review']['settings_before'] ) && is_array( $seed['review']['settings_before'] ) ) {
 			self::restore_settings( $seed['review']['settings_before'] );
-			echo "review and start page settings put back\n";
+			echo "review, start page and state page settings put back\n";
 		}
 		if ( isset( $seed['checkout'] ) && is_array( $seed['checkout'] ) && array_key_exists( 'gateway_before', $seed['checkout'] ) ) {
 			self::restore_gateway( is_array( $seed['checkout']['gateway_before'] ) ? $seed['checkout']['gateway_before'] : null );
@@ -487,5 +550,5 @@ final class PowEndToEndFixture {
 
 $step    = (string) getenv( 'POW_E2E_STEP' );
 $fixture = new PowEndToEndFixture();
-if ( ! in_array( $step, [ 'seed', 'inspect', 'start_click', 'retire' ], true ) ) { throw new RuntimeException( 'POW_E2E_STEP must be seed, inspect, start_click or retire.' ); }
+if ( ! in_array( $step, [ 'seed', 'inspect', 'start_click', 'states', 'end_visit', 'retire' ], true ) ) { throw new RuntimeException( 'POW_E2E_STEP must be seed, inspect, start_click, states, end_visit or retire.' ); }
 $fixture->{ $step }();

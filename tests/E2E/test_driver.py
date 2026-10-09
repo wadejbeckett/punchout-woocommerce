@@ -550,6 +550,68 @@ class OrderMessageLeg(unittest.TestCase):
         self.assertEqual(expected['delivery_instructions'], 'The delivery charge is an estimate. | Leave at the gate. | Exempt: no')
 
 
+class StatePages(unittest.TestCase):
+    """0.5.0 (ticket 77): the state page as the driver reads it, and Cancel and return asking first."""
+
+    PAGE = (
+        '<html><body class="page-template-default page page-id-77 logged-out">'
+        '<div class="pow-state pow-state--not-sent"><h2 class="pow-state__title">Not &amp; sent</h2>'
+        '<p class="pow-state__text">Your cart was <em>not</em> sent.</p>'
+        '<div class="pow-state__actions"><a class="pow-state__button" href="/">Continue</a></div></div></body></html>'
+    )
+    HEADERS = {'Cache-Control': 'private, no-store', 'X-Robots-Tag': 'noindex, nofollow', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer'}
+
+    def test_each_part_of_a_state_is_read_by_its_class(self):
+        self.assertEqual(driver.state_page(self.PAGE), 'not-sent')
+        self.assertEqual(driver.state_text(self.PAGE, 'title'), 'Not & sent')
+        self.assertEqual(driver.state_text(self.PAGE, 'text'), 'Your cart was not sent.')
+        self.assertEqual(driver.state_text(self.PAGE, 'button'), 'Continue')
+        self.assertIsNone(driver.state_text('<p>nothing</p>', 'title'))
+
+    def test_a_state_page_drawn_in_the_theme_passes_every_finding(self):
+        found = {name: ok for name, ok, _ in driver.state_findings(200, self.HEADERS, self.PAGE, 'not-sent', 77)}
+        self.assertEqual(found, {'answers_200': True, 'shows_the_not-sent_state': True, 'has_a_title_and_text': True,
+                                 'is_not_stored_indexed_or_sniffed': True, 'sends_no_referrer': True, 'draws_inside_the_theme': True})
+
+    def test_a_plain_page_another_state_or_cacheable_headers_fail(self):
+        found = {name: ok for name, ok, _ in driver.state_findings(200, dict(self.HEADERS, **{'Cache-Control': 'max-age=60'}), self.PAGE, 'sent', 78)}
+        self.assertFalse(found['shows_the_sent_state'])
+        self.assertFalse(found['is_not_stored_indexed_or_sniffed'])
+        self.assertFalse(found['draws_inside_the_theme'])
+        self.assertNotIn('sends_no_referrer', {name for name, _, _ in driver.state_findings(200, self.HEADERS, self.PAGE, 'not-sent')}, 'A plain page is not asked about the theme')
+
+    def test_a_state_address_names_its_page_and_state(self):
+        self.assertEqual(driver.state_location(BASE + '/?page_id=77&pow_state=ended'), (77, 'ended'))
+        self.assertEqual(driver.state_location('/?pow_state=sent&page_id=77'), (77, 'sent'))
+        self.assertEqual(driver.state_location(BASE + '/punchout/sent'), (None, None))
+        self.assertEqual(driver.state_location(None), (None, None))
+
+    def test_the_cancel_control_and_its_dialog(self):
+        page = (
+            '<form method="post" action="/punchout/return" class="pow-abandon-form" data-pow-leave="pow-leave-1">'
+            '<input type="hidden" name="pow_mode" value="empty" /><input type="hidden" name="pow_nonce" value="n" />'
+            '<button type="submit" class="pow-abandon-button">Cancel and return</button></form>'
+            '<dialog id="pow-leave-1" class="pow-leave" aria-labelledby="pow-leave-1-question" open>'
+            '<form method="post" action="/punchout/return" class="pow-leave__form"><input type="hidden" name="pow_mode" value="empty" />'
+            '<input type="hidden" name="pow_nonce" value="n" /><input type="hidden" name="pow_leave" value="confirmed" />'
+            '<p class="pow-leave__question" id="pow-leave-1-question">Leave &amp; go?</p><div class="pow-leave__actions">'
+            '<button type="submit" class="pow-leave__confirm">\n Leave\n</button>'
+            '<button type="submit" formmethod="dialog" formnovalidate class="pow-leave__stay" autofocus>Stay</button></div></form></dialog>'
+        )
+        cancel, confirm, dialog = driver.leave_controls(page, BASE + '/?page_id=9')
+        self.assertEqual(cancel.action, BASE + '/punchout/return')
+        self.assertIn(('pow_leave', 'confirmed'), [(c.name, c.value) for c in confirm.controls if c.name], 'Only the dialog carries the answer')
+        self.assertNotIn('pow_leave', [c.name for c in cancel.controls])
+        self.assertEqual(dialog, {'id': 'pow-leave-1', 'open': True, 'question': 'Leave & go?', 'confirm': 'Leave', 'stay': 'Stay', 'cancel': 'Cancel and return'})
+        closed = page.replace('-question" open>', '-question">')
+        self.assertFalse(driver.leave_controls(closed, BASE)[2]['open'])
+        at_once = page.split('<dialog')[0].replace(' data-pow-leave="pow-leave-1"', '')
+        cancel, confirm, dialog = driver.leave_controls(at_once, BASE)
+        self.assertIsNotNone(cancel)
+        self.assertEqual((confirm, dialog), (None, None))
+        self.assertEqual(driver.leave_controls('<p>no control</p>', BASE), (None, None, None))
+
+
 class _Closer:
     """A loopback listener that accepts and hangs up at once: the site came up, then every request fails."""
 

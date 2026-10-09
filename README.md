@@ -308,6 +308,11 @@ wp punchout generate-key
 | Log retention | 400 days | Audit-table trim horizon |
 | Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |
 | Cancel button label | "Return without a cart" | Text on the abandon control; blank = the default |
+| Ask before leaving | off | 0.5.0: during a visit, the abandon control asks first when the cart has items (see "Leaving without a cart"); the question is the shortcode's `question` attribute |
+| Leave button label | "Return without sending" | 0.5.0: the question's button that leaves without sending; blank = the default; filter `punchout_leave_confirm_label` |
+| Stay button label | "Keep shopping" | 0.5.0: the question's button that closes it; blank = the default; filter `punchout_leave_stay_label` |
+| State page | none | 0.5.0: a page holding `[punchout_state]`; with one chosen, the visit's end draws inside the theme (see "State page"); none keeps the plain pages |
+| State page button label | "Continue to your purchasing system" | 0.5.0: the fallback button of the plain page that posts the cart, and the state page's button when its shortcode names a `button_url`; blank = the default; filter `punchout_state_button_label` |
 | Extra button classes | empty | Space-separated classes added to the Punchout exit, the abandon control, the review page's Submit/Update buttons and the add-address form's Add and use this address button; pow-* and the classes a visit hides (checkout-button, checkout, wc-block-mini-cart__footer-checkout) are ignored; the Cart block's own button does not receive them |
 | Default UNSPSC | empty | Classification fallback for unmapped SKUs |
 | Convert quotes to | Pending payment | Status the order action moves a Punchout Quote to |
@@ -369,7 +374,23 @@ Label: the **Punchout button label** setting (blank = "Punchout"), or the `pow_r
 
 `[punchout_abandon_button]` (or `pow_abandon_button();`) renders the mid-session abandon control — a POST of an empty PunchOutOrderMessage, the cXML cancel semantic, so the buyer's procurement application learns the session ended with no items. Same endpoint, same nonce and the same authorisation checks as the cart return; it has no automatic placement, because no core hook means "the session chrome". Label: the **Cancel button label** setting, or the `pow_abandon_button_label` filter, which runs after it.
 
+**Ask before leaving (0.5.0).** With the setting on and a line in the cart, the control also draws a `<dialog class="pow-leave">` that asks first: `[punchout_abandon_button question="Return without sending?"]` (default "Return without sending your cart?"), with the **Leave button label** (`.pow-leave__confirm`) and the **Stay button label** (`.pow-leave__stay`, focused; it closes the dialog without a script, `formmethod="dialog"`). Pressing the control opens the dialog through the plugin's own script (`assets/js/leave-confirmation.js`); only the dialog's own form carries `pow_leave=confirmed`, and only that post leaves. Without the script, the control's post comes back to the page it came from with `?pow_leave=ask`, where the dialog is drawn open (`Cart\LeaveConfirmation`, checked again by `/punchout/return`). An empty cart leaves at once, and so does every cancel while the setting is off. The page Cancel and return answers with stays plain (it posts the empty message) and carries `pow-state pow-state--not-sent`. A theme override of `abandon-button.php` must keep the dialog, or the buyer is asked again and again.
+
 Both controls are submit buttons inside real forms, never links, and both are placed in a builder's global header or footer as often as on the cart — i.e. outside the `.woocommerce` wrapper most themes hang their button styling off. The plugin therefore adds a generic default-button class for the active theme where one exists; `pow_button_classes` replaces the whole list.
+
+## State page (0.5.0)
+
+A visit ends on a page the site chooses: create a normal page holding `[punchout_state]` and pick it as **State page**. The browser is then sent there, so the end of a visit draws inside the theme instead of on a plain page:
+
+| State | Modifier | When the browser is sent there |
+|---|---|---|
+| Sending | `pow-state--sending` | Never: the page that posts the cart stays plain, because it holds the cXML and the visit's BuyerCookie. That page carries these classes too (and Cancel and return's carries `--not-sent`); the shortcode draws Sending only for a layout's preview |
+| Sent | `pow-state--sent` | A Submit after the cart has gone (a second tab, a double click), the handoff fetched again after it was served, a page from the browser after a return |
+| Not sent | `pow-state--not-sent` | A handoff whose cart went to the store but never reached the browser (its page expired first), a page or Submit from the browser after Cancel and return |
+| Link expired | `pow-state--expired` | A start link that is used, expired or malformed |
+| Session ended | `pow-state--ended` | A return or Cancel and return after the visit ended, a Submit or a page from the browser of a visit that ended (its time ran out, it was ended, the store was switched off); the dead login cookie is cleared on the way, once |
+
+The markup is `<div class="pow-state pow-state--<state>">` with `pow-state__title`, `pow-state__text` and, only when the shortcode names a `button_url`, `pow-state__actions` holding the link `pow-state__button` (label: **State page button label**). By then the visit's login has ended, so style these classes, not `pow-visit`. Titles and text are neutral, translatable defaults; a layout overrides them as attributes: `sending_title`, `sending_text`, `sent_title`, `sent_text`, `not_sent_title`, `not_sent_text`, `expired_title`, `expired_text`, `ended_title`, `ended_text` (an empty attribute draws nothing). The address names the state (`?pow_state=sent`); without one the page shows the `state` attribute (a preview) or Session ended. The page sends no-store, noindex, nosniff and no-referrer on `template_redirect`, before it renders, as does any page whose content holds the shortcode. It carries no cXML and no secret. Without a chosen page every plain page stays as it was. Template: `templates/state.php` (`pow_template_state`).
 
 ## Punchout Quote orders
 
@@ -434,9 +455,11 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 | `pow_return_button_label` | filter | RFQ button text (applied after the setting) |
 | `pow_abandon_button_label` | filter | "Return without a cart" text (applied after the setting) |
 | `pow_button_classes` | filter | Class list of either exit control (`$classes, $base, $themed`) |
-| `pow_template_{return-button,abandon-button,handoff,docs/page,docs/self-test,account/dashboard}` | filter | Replace any buyer-facing template |
+| `pow_template_{return-button,abandon-button,handoff,state,docs/page,docs/self-test,account/dashboard}` | filter | Replace any buyer-facing template |
 | `pow_delivery_codes_enabled` | filter | Legacy custom-docs-template display hint; the bundled docs show all delivery settings, and this filter does not control emission |
-| `pow_handoff_copy` / `pow_expired_token_message` | filter | Buyer-facing strings |
+| `pow_handoff_copy` / `pow_expired_token_message` | filter | Buyer-facing strings (0.5.0: `pow_handoff_copy` also gets the state, `sending` or `not-sent`) |
+| `punchout_state_button_label`, `punchout_leave_confirm_label`, `punchout_leave_stay_label` | filter | 0.5.0: the state page's button and the leave question's two buttons (applied after the settings; a blank result keeps the default) |
+| `shortcode_atts_punchout_state`, `shortcode_atts_punchout_abandon_button` | filter | 0.5.0: WordPress's own attribute filters for the state page's words and the leave question |
 | `pow_start_redirect` | filter | Post-login destination |
 | `punchout_visit_front_page_redirect` | filter | Where the site's front page sends a buyer inside an active visit (`$url, $visit`); default the landing page, `''` keeps the front page. Never for administrators or shop managers, outside a visit or when the landing page is the front page |
 | `punchout_review_title` | filter | The review page's title while drawn inside the theme (applied after the setting); `''` turns the relabel off. It reaches anything that reads `get_the_title()`/`single_post_title()` for the posed page (WooCommerce and most theme breadcrumbs and title bars), not SEO-plugin breadcrumbs that keep their own stored titles |

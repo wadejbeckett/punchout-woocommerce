@@ -403,6 +403,63 @@ def state_page(html):
     return match.group(1) if match else None
 
 
+def state_text(html, part):
+    """The text of the first element carrying `pow-state__<part>` (title, text, actions, button), tags removed and
+    entities decoded; None when there is none."""
+    match = re.search(r'<(\w+)[^>]*\bclass="[^"]*\bpow-state__' + re.escape(part) + r'\b[^"]*"[^>]*>(.*?)</\1>', html or '', re.S)
+    return _text(match.group(2)) if match else None
+
+
+def state_findings(status, headers, body, state, page_id=None):
+    """0.5.0 (ticket 77), a state the plugin drew: the state's modifier, a title and a text, and headers that keep it
+    out of caches, indexes and sniffing. With `page_id`, the site's state page: drawn inside the theme as that page
+    (the theme's body class names it) and giving away no referrer. [(check, ok, detail)]"""
+    def header(name):
+        return (headers.get(name) or '').lower() if headers is not None else ''
+    found = [
+        ('answers_200', status == 200, {'http': status}),
+        ('shows_the_' + state + '_state', state_page(body) == state, {'state': state_page(body)}),
+        ('has_a_title_and_text', bool(state_text(body, 'title')) and bool(state_text(body, 'text')), {'title': state_text(body, 'title'), 'text': state_text(body, 'text')}),
+        ('is_not_stored_indexed_or_sniffed', 'no-store' in header('Cache-Control') and 'noindex' in header('X-Robots-Tag') and header('X-Content-Type-Options') == 'nosniff',
+         {'cache_control': header('Cache-Control'), 'robots': header('X-Robots-Tag'), 'nosniff': header('X-Content-Type-Options')}),
+    ]
+    if page_id is not None:
+        found.append(('sends_no_referrer', header('Referrer-Policy') == 'no-referrer', {'referrer_policy': header('Referrer-Policy')}))
+        found.append(('draws_inside_the_theme', re.search(r'<body[^>]*class="[^"]*\bpage-id-%d\b' % int(page_id), body or '') is not None, {'page_id': page_id}))
+    return found
+
+
+def state_location(url):
+    """(page id, state) a state page address names (?page_id=N&pow_state=S); (None, None) for anything else."""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url or '').query)
+    if 'pow_state' not in query:
+        return None, None
+    page = query.get('page_id', [None])[0]
+    return (int(page) if page and page.isdigit() else None), query['pow_state'][0]
+
+
+def leave_controls(html, base_url):
+    """0.5.0 (ticket 77): the cancel control's form, its dialog's form and the dialog's facts ({id, open, question,
+    confirm, stay, cancel}); (form, None, None) when the control leaves at once; (None, None, None) without it."""
+    found = forms.parse_forms(html or '', base_url)
+    cancel = next((f for f in found if 'pow-abandon-form' in (f.attrs.get('class') or '').split()), None)
+    if cancel is None:
+        return None, None, None
+    dialog_id = cancel.attrs.get('data-pow-leave')
+    match = re.search(r'<dialog id="' + re.escape(dialog_id) + r'"([^>]*)>(.*?)</dialog>', html, re.S) if dialog_id else None
+    if not match:
+        return cancel, None, None
+    attrs, inner = match.groups()
+    confirm = next((f for f in forms.parse_forms(inner, base_url) if 'pow-leave__form' in (f.attrs.get('class') or '').split()), None)
+    question = re.search(r'class="pow-leave__question"[^>]*>(.*?)</p>', inner, re.S)
+    buttons = {name: _text(text) for name, text in re.findall(r'<button[^>]*class="pow-leave__(confirm|stay)"[^>]*>(.*?)</button>', inner, re.S)}
+    label = re.search(r'<form[^>]*class="pow-abandon-form"[^>]*>.*?<button[^>]*>(.*?)</button>', html, re.S)
+    return cancel, confirm, {
+        'id': dialog_id, 'open': re.search(r'\sopen(\s|=|$)', attrs) is not None, 'question': _text(question.group(1)) if question else None,
+        'confirm': buttons.get('confirm'), 'stay': buttons.get('stay'), 'cancel': _text(label.group(1)) if label else None,
+    }
+
+
 def login_cookie_cleared(set_cookies):
     """Whether any of an answer's Set-Cookie headers expires the WordPress login cookie in the browser."""
     for header in set_cookies or []:
@@ -704,7 +761,7 @@ class Run:
             quantities[key] = quantity
             # The Cart widget as WooCommerce redraws it after the add (0.5.0 checks its checkout button).
             mini_cart = (answer.get('fragments') or {}).get('div.widget_shopping_cart_content') or ''
-        visit = {'payload': payload, 'cookie': cookie, 'quantities': quantities, 'mini_cart': mini_cart}
+        visit = {'payload': payload, 'cookie': cookie, 'quantities': quantities, 'mini_cart': mini_cart, 'start': start}
         if not label:
             self.payload, self.cookie, self.quantities, self.mini_cart = payload, cookie, quantities, mini_cart
         return visit
@@ -826,6 +883,8 @@ class Run:
         self.check(status == 200, 'the_handoff_answers', http=status)
         self.check('no-store' in (headers.get('Cache-Control') or '').lower(), 'the_handoff_is_not_stored', cache_control=headers.get('Cache-Control'))
         self.check((headers.get('Referrer-Policy') or '').lower() == 'no-referrer', 'the_handoff_sends_no_referrer', referrer_policy=headers.get('Referrer-Policy'))
+        # 0.5.0 (ticket 77): the page that posts the cart stays plain and carries the Sending state's classes.
+        self.check(state_page(handoff) == 'sending' and bool(state_text(handoff, 'title')) and state_text(handoff, 'button') is not None, 'the_handoff_page_is_the_sending_state', state=state_page(handoff))
         return handoff
 
     def post_checkout(self, browser, form, note, extra=None, headers=None, shipping=None):
@@ -1001,6 +1060,137 @@ class Run:
         self.check(result['orders'] == [] and result['trashed'] == [] and (result['visit'] or {}).get('status') == 'active', label + ': the_refusal_leaves_no_order_and_the_visit_open', orders=[(o['id'], o['status']) for o in result['orders']], visit=result['visit'])
         self.check(posts_for(receiver.captured, visit['cookie']) == 0, label + ': nothing_is_posted')
         self.quiet_orders += [o['id'] for o in result['orders'] + result['trashed']]
+
+    def states_leg(self, seed, receiver):
+        """0.5.0 (ticket 77), with a state page chosen and "Ask before leaving" on (fixture step `states`; retire puts
+        both back). Each case in a visit of its own, its checks prefixed `states:`:
+
+        - Sending and Sent: the page that posts the cart is the Sending state, its button the state page button
+          label; fetched again it sends the browser to Sent on the state page, drawn inside the theme, not stored,
+          indexed or sniffed, its title the shortcode attribute; a late Submit reaches the same Sent;
+        - Link expired: the used start link, posted again, sends the browser to Link expired;
+        - Session ended: once the visit is ended (fixture step `end_visit`), its Cancel and return and its next page
+          go to Session ended, the dead login cookie is cleared with that redirect, and the page after is an
+          ordinary guest page;
+        - Not sent and asking first: with a line in the cart the cancel control names a closed dialog (the question
+          attribute, the two button settings, the plugin's script); posted without the script it goes back to its
+          page with the dialog open and leaves nothing; the dialog's answer leaves with the plain Not sent page,
+          which posts an empty message; a tab still holding the cookie is sent to Not sent on the state page;
+        - an empty cart leaves at once, with no dialog."""
+        url, label = self.args.url, 'states'
+        out = self.args.out / 'states.json'
+        self.wp('states', POW_E2E_RESULT=str(out))
+        states = json.loads(out.read_text())
+        page_id, leave_id = states['state_page']['id'], states['leave_page']['id']
+        labels = states['labels']
+        leave_url = url + '/?page_id=' + str(leave_id)
+        shop_url = url + '/?page_id=' + str(seed['pages']['shop'])
+        first_sku, first = next(iter(seed['products'].items()))
+
+        def state_page_check(name, response, state, title=None):
+            status, headers, body = response
+            self.save('states-' + name + '.html', body)
+            for check, ok, detail in state_findings(status, headers, body, state, page_id):
+                self.check(ok, label + ': ' + name + ' ' + check, **detail)
+            if title is not None:
+                self.check(state_text(body, 'title') == title, label + ': ' + name + ' title', title=state_text(body, 'title'), expected=title)
+            return body
+
+        def redirected(name, response, state):
+            status, headers = response[0], response[1]
+            where = urllib.parse.urljoin(url + '/', headers.get('Location') or '')
+            self.check(status in (302, 303) and state_location(where) == (page_id, state), label + ': ' + name, http=status, location=where)
+            return where
+
+        # Sending, then Sent.
+        browser = Browser(url)
+        visit = self.punch_in(browser, seed, receiver, items=[(first_sku, first['id'], 1)], label=label, redeem='post')
+        _, form = self.open_checkout(browser, seed, label)
+        answer = self.post_checkout(browser, form, 'State page run ' + seed['run'] + '.')
+        self.must(answer['result'] == 'success' and isinstance(answer['redirect'], str) and '/punchout/handoff' in answer['redirect'], label + ': submit_answers_with_the_handoff', result=answer['result'], messages=answer['messages'])
+        status, headers, page = browser.request(answer['redirect'])
+        self.save('states-sending.html', page)
+        handoff = handoff_form(page, url)
+        self.check(status == 200 and state_page(page) == 'sending' and handoff is not None and 'pow-state__actions' in (handoff.attrs.get('class') or ''), label + ': the_page_that_posts_the_cart_is_the_sending_state', http=status, state=state_page(page))
+        self.check(state_text(page, 'button') == labels['state_button'], label + ': its_button_is_the_state_page_button_label', shown=state_text(page, 'button'), setting=labels['state_button'])
+        self.must(handoff is not None, label + ': handoff_form')
+        self.capture_leg(browser, handoff, receiver, visit, label)
+        where = redirected('a_served_handoff_sends_the_browser_to_sent', browser.request(answer['redirect']), 'sent')
+        body = state_page_check('sent', browser.request(where), 'sent', states['state_page']['sent_title'])
+        self.check(state_text(body, 'button') == labels['state_button'] and re.search(r'class="pow-state__button" href="/"', body) is not None, label + ': the_state_page_button_carries_the_setting', shown=state_text(body, 'button'))
+        late = self.post_checkout(browser, form, 'Late.')
+        self.check(late['result'] == 'success' and state_location(late['redirect']) == (page_id, 'sent'), label + ': a_late_submit_reaches_sent_on_the_state_page', result=late['result'], redirect=late['redirect'], messages=late['messages'])
+        self.check(posts_for(receiver.captured, visit['cookie']) == 1, label + ': one_post', posts=posts_for(receiver.captured, visit['cookie']))
+        result = self.inspect(visit['payload'], label)
+        self.quote_orders += [o['id'] for o in result['orders']]
+        self.quiet_orders += [t['id'] for t in result['trashed']]
+
+        # Link expired.
+        where = redirected('a_used_start_link_sends_the_browser_to_link_expired', Browser(url).request(visit['start'], b'', forms.URLENCODED), 'expired')
+        state_page_check('expired', Browser(url).request(where), 'expired', 'Link expired')
+
+        # Session ended.
+        ended = Browser(url)
+        gone = self.punch_in(ended, seed, receiver, items=[(first_sku, first['id'], 1)], label=label + ' ended', redeem='post')
+        status, _, page, page_url = ended.get(leave_url)
+        cancel, _, _ = leave_controls(page, page_url)
+        self.must(status == 200 and cancel is not None, label + ': ended: the_cancel_control_is_on_the_page', http=status)
+        self.wp('end_visit', POW_E2E_PAYLOAD=gone['payload'])
+        redirected('ended: cancel_and_return_after_the_end_goes_to_session_ended', ended.submit(cancel), 'ended')
+        response = ended.request(shop_url)
+        where = redirected('ended: the_next_page_goes_to_session_ended', response, 'ended')
+        self.check(login_cookie_cleared(response[1].get_all('Set-Cookie') or []) and not ended.logged_in(), label + ': ended: the_dead_login_cookie_is_cleared_on_the_way')
+        state_page_check('ended', ended.request(where), 'ended', 'Session ended')
+        status, _, body, final = ended.get(shop_url)
+        self.check(status == 200 and state_location(final) == (None, None) and re.search(r'<body[^>]*class="[^"]*\bpow-visit\b', body) is None, label + ': ended: the_page_after_is_an_ordinary_guest_page', http=status, url=final)
+
+        # Asking first, then Not sent.
+        leaver = Browser(url)
+        leaving = self.punch_in(leaver, seed, receiver, items=[(first_sku, first['id'], 1)], label=label + ' leave', redeem='post')
+        status, _, page, page_url = leaver.get(leave_url)
+        self.save('states-leave.html', page)
+        cancel, confirm, dialog = leave_controls(page, page_url)
+        self.must(cancel is not None, label + ': leave: the_cancel_control_is_on_the_page', http=status)
+        expected = {'id': (dialog or {}).get('id'), 'open': False, 'question': states['leave_page']['question'], 'confirm': labels['leave'], 'stay': labels['stay'], 'cancel': labels['cancel']}
+        self.check(confirm is not None and dialog == expected, label + ': leave: with_items_the_cancel_control_names_a_closed_dialog', dialog=dialog, expected=expected)
+        self.check('assets/js/leave-confirmation.js' in page, label + ': leave: the_plugins_own_script_opens_it')
+        body, content_type = forms.encode(cancel.submission(), cancel.enctype)
+        status, headers, _ = leaver.request(cancel.action, body, content_type, extra_headers={'Referer': page_url})
+        asked = urllib.parse.urljoin(url + '/', headers.get('Location') or '')
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(asked).query)
+        self.check(status in (302, 303) and query.get('page_id') == [str(leave_id)] and query.get('pow_leave') == ['ask'], label + ': leave: without_the_script_it_goes_back_to_its_page_to_ask', http=status, location=asked)
+        result = self.inspect(leaving['payload'], label + '-leave-asked')
+        self.check((result['visit'] or {}).get('status') == 'active' and posts_for(receiver.captured, leaving['cookie']) == 0, label + ': leave: asking_sends_nothing_and_keeps_the_visit', visit=result['visit'])
+        status, _, page, page_url = leaver.get(asked)
+        _, confirm, dialog = leave_controls(page, page_url)
+        self.check(confirm is not None and bool(dialog) and dialog['open'], label + ': leave: the_page_draws_the_dialog_open', dialog=dialog)
+        self.must(confirm is not None, label + ': leave: dialog_form')
+        tab = leaver.clone()
+        status, _, page = leaver.submit(confirm)
+        self.save('states-leave-not-sent.html', page)
+        handoff = handoff_form(page, url)
+        self.check(status == 200 and state_page(page) == 'not-sent' and handoff is not None, label + ': leave: the_answer_leaves_with_the_not_sent_state', http=status, state=state_page(page))
+        self.must(handoff is not None, label + ': leave: handoff_form')
+        xml, _, _ = self.capture_leg(leaver, handoff, receiver, leaving, label + ' leave')
+        root = poom.parse_xml(xml)
+        self.check(root.find('.//PunchOutOrderMessage') is not None and not root.findall('.//ItemIn'), label + ': leave: an_empty_message_is_posted', items=len(root.findall('.//ItemIn')))
+        result = self.inspect(leaving['payload'], label + '-leave')
+        self.check((result['visit'] or {}).get('status') == 'closed' and result['orders'] == [], label + ': leave: the_visit_is_closed_with_no_order', visit=result['visit'], orders=len(result['orders']))
+        where = redirected('leave: a_tab_still_holding_the_cookie_goes_to_not_sent', tab.request(shop_url), 'not-sent')
+        state_page_check('not-sent', tab.request(where), 'not-sent', 'Not sent')
+
+        # An empty cart leaves at once.
+        empty = Browser(url)
+        nothing = self.punch_in(empty, seed, receiver, items=[], label=label + ' empty', redeem='post')
+        status, _, page, page_url = empty.get(leave_url)
+        cancel, confirm, dialog = leave_controls(page, page_url)
+        self.check(cancel is not None and confirm is None and dialog is None, label + ': empty: an_empty_cart_draws_no_dialog', dialog=dialog)
+        if cancel is not None:
+            status, _, page = empty.submit(cancel)
+            handoff = handoff_form(page, url)
+            self.check(status == 200 and state_page(page) == 'not-sent' and handoff is not None, label + ': empty: an_empty_cart_leaves_at_once', http=status, state=state_page(page))
+            if handoff is not None:
+                self.capture_leg(empty, handoff, receiver, nothing, label + ' empty')
 
     def mail_checks(self, seed):
         """Exactly one e-mail per Punchout Quote, the store's Quote e-mail; none for a binned or refused order; no
@@ -1201,6 +1391,10 @@ def main(argv=None):
                 run.quote_orders.append(order['id'])
         if path == 'checkout':
             run.second_leg(seed, receiver)
+            try:
+                run.states_leg(seed, receiver)
+            except SystemExit as stop:
+                run.check(False, 'states: case_completed', reason=str(stop))
             run.mail_checks(seed)
             stock = run.inspect(run.payload, 'stock')['stock']
             run.check(all(quantity == seed['stock'] for quantity in stock.values()), 'punchout_quotes_move_no_stock', stock=stock, seeded=seed['stock'])

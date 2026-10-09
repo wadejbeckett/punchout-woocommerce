@@ -67,6 +67,18 @@ class Watch(unittest.TestCase):
         self.assertIn('inline script', seen['policy'][0])
 
 
+class Returns(unittest.TestCase):
+    """0.5.0 (ticket 77): what the page sends to /punchout/return while the buyer answers the leave question."""
+
+    def test_only_requests_to_the_return_endpoint_count_by_method(self):
+        page = _Page()
+        sent = browser.returns(page)
+        page.fire('request', _Request('http://127.0.0.1:8080/punchout/return', 'POST'))
+        page.fire('request', _Request('http://127.0.0.1:8080/?page_id=9', 'GET'))
+        page.fire('request', _Request('http://127.0.0.1:8080/punchout/return/', 'GET'))
+        self.assertEqual(sent, ['POST', 'GET'])
+
+
 class Arguments(unittest.TestCase):
 
     def test_the_run_refuses_to_start_without_a_local_chromium(self):
