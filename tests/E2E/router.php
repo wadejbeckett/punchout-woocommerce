@@ -6,8 +6,9 @@
  *
  * The driver starts this itself. The site answers on the loopback origin it is
  * served on (WP_HOME and WP_SITEURL for these requests only; the database's
- * own home URL is left alone), static files are served as they are, a request
- * for a PHP file inside the root runs that file, and everything else runs
+ * own home URL is left alone), static files are served as they are (also the
+ * candidate plugin's, through its symlink), a request for a PHP file inside the
+ * root runs that file, and everything else runs
  * WordPress's index.php, as a rewrite-less web server would.
  *
  * @package POW
@@ -25,6 +26,14 @@ if ( 1 !== preg_match( '#\Ahttp://127\.0\.0\.1:\d{2,5}\z#', $pow_e2e_origin ) ) 
 
 $pow_e2e_root = rtrim( (string) realpath( (string) $_SERVER['DOCUMENT_ROOT'] ), '/' );
 $pow_e2e_path = rawurldecode( (string) parse_url( (string) ( $_SERVER['REQUEST_URI'] ?? '/' ), PHP_URL_PATH ) );
+
+// A static file under the root, also one reached through the plugin's symlink to the candidate checkout (its
+// scripts and styles): the built-in server sends it. A path with a dot segment or a NUL byte is never served so.
+$pow_e2e_lexical = ( '' !== $pow_e2e_path && ! str_contains( $pow_e2e_path, "\0" ) && 1 !== preg_match( '#(^|/)\.\.?(/|$)#', $pow_e2e_path ) ) ? $pow_e2e_root . $pow_e2e_path : '';
+if ( '' !== $pow_e2e_lexical && is_file( $pow_e2e_lexical ) && ! str_ends_with( strtolower( $pow_e2e_lexical ), '.php' ) ) {
+	return false;
+}
+
 $pow_e2e_file = realpath( $pow_e2e_root . $pow_e2e_path );
 if ( false !== $pow_e2e_file && ! str_starts_with( $pow_e2e_file, $pow_e2e_root . '/' ) && $pow_e2e_file !== $pow_e2e_root ) { $pow_e2e_file = false; }
 if ( false !== $pow_e2e_file && is_dir( $pow_e2e_file ) ) { $pow_e2e_file = is_file( $pow_e2e_file . '/index.php' ) ? $pow_e2e_file . '/index.php' : false; }

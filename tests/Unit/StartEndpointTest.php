@@ -172,6 +172,26 @@ final class StartEndpointTest extends TestCase {
 		};
 	}
 
+	/** A settings reader with the given values saved and every other key at its default. */
+	private function settings_with( array $values ): \POW\Settings {
+		return new class( $values ) extends \POW\Settings {
+			public function __construct( private array $values ) {}
+			public function get( string $key, mixed $default = null ): mixed {
+				return array_key_exists( $key, $this->values ) ? $this->values[ $key ] : $default;
+			}
+		};
+	}
+
+	/**
+	 * The text of every inline element of one kind on the page.
+	 *
+	 * @return list<string>
+	 */
+	private function inline( string $page, string $element ): array {
+		preg_match_all( '#<' . $element . '>(.*?)</' . $element . '>#s', $page, $found );
+		return $found[1];
+	}
+
 	/** @return list<string> */
 	private function session_updates(): array {
 		return array_values( array_filter( $this->db->queries, static fn( string $sql ): bool => str_starts_with( $sql, 'UPDATE' ) && str_contains( $sql, 'wc_session_key = ' ) ) );
@@ -264,15 +284,17 @@ final class StartEndpointTest extends TestCase {
 		$page = $this->visit( $token, 'GET' );
 
 		$url = 'https://shop.example.test/punchout/start/' . $token;
-		self::assertStringContainsString( '<form method="post" action="' . $url . '" id="pow-start-form">', $page );
-		self::assertSame( 1, preg_match( '#<button type="submit"[^>]*>[^<]+</button>#', $page ), 'A visible button for a browser without scripting.' );
-		self::assertStringContainsString( "<script>document.getElementById( 'pow-start-form' ).submit();</script>", $page );
+		self::assertStringContainsString( '<form method="post" action="' . $url . '" id="pow-start-form" data-pow-start="auto">', $page );
+		self::assertSame( 1, preg_match( '#<button type="submit">Open the catalog</button>#', $page ), 'A visible button for a browser without scripting.' );
+		self::assertSame( [ StartEndpoint::script() ], $this->inline( $page, 'script' ), 'One inline script: the page\'s own.' );
+		self::assertStringContainsString( 'If the catalog has not opened after a few seconds, press the button.', $page );
 		self::assertStringContainsString( '<meta name="robots" content="noindex,nofollow">', $page );
 		self::assertStringContainsString( '<meta name="referrer" content="no-referrer">', $page );
 		self::assertSame( [ 200 ], $GLOBALS['pow_test_status_headers'] ?? [] );
-		foreach ( [ 'Content-Type: text/html; charset=utf-8', 'Cache-Control: private, no-store', 'X-Robots-Tag: noindex, nofollow', 'X-Content-Type-Options: nosniff', 'Referrer-Policy: no-referrer' ] as $header ) {
+		foreach ( [ 'Content-Type: text/html; charset=utf-8', 'Cache-Control: private, no-store, no-transform', 'X-Robots-Tag: noindex, nofollow', 'X-Content-Type-Options: nosniff', 'Referrer-Policy: no-referrer', 'X-Frame-Options: DENY' ] as $header ) {
 			self::assertContains( $header, $this->headers_sent(), $header );
 		}
+		self::assertSame( [ 'Cache-Control: private, no-store, no-transform' ], array_values( array_filter( $this->headers_sent(), static fn( string $h ): bool => str_starts_with( $h, 'Cache-Control:' ) ) ), 'One Cache-Control, so a proxy cannot rewrite the hashed script.' );
 
 		self::assertSame( Session::PENDING, $this->db->sessions[42]['status'] );
 		self::assertSame( [], $this->db->queries, 'No lookup and no write.' );
@@ -281,13 +303,55 @@ final class StartEndpointTest extends TestCase {
 		self::assertSame( [], $GLOBALS['pow_start_redirects'] ?? [] );
 	}
 
+	/**
+	 * The page runs its own inline script and style and nothing else: the policy names each by its hash, allows no
+	 * other source, posts only back to this site, and cannot be framed.
+	 */
+	public function test_the_start_page_policy_allows_only_its_own_script_and_style(): void {
+		foreach ( [ 'no', 'yes' ] as $click ) {
+			$this->tearDown();
+			$this->setUp();
+			$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->click_settings( $click ), new Log( new QuoteOrderTestLogger() ) );
+			$page = $this->visit( $this->claim( 42 ), 'GET' );
+
+			$policies = array_values( array_filter( $this->headers_sent(), static fn( string $h ): bool => str_starts_with( $h, 'Content-Security-Policy:' ) ) );
+			self::assertCount( 1, $policies, $click );
+			$directives = [];
+			foreach ( array_filter( array_map( 'trim', explode( ';', substr( $policies[0], strlen( 'Content-Security-Policy:' ) ) ) ) ) as $directive ) {
+				$parts = preg_split( '/\s+/', $directive );
+				$directives[ array_shift( $parts ) ] = $parts;
+			}
+			$hash = static fn( string $source ): string => "'sha256-" . base64_encode( hash( 'sha256', $source, true ) ) . "'";
+			$scripts = $this->inline( $page, 'script' );
+			$styles  = $this->inline( $page, 'style' );
+			self::assertCount( 1, $scripts, $click );
+			self::assertCount( 1, $styles, $click );
+			self::assertSame(
+				[
+					'default-src'     => [ "'none'" ],
+					'script-src'      => [ $hash( $scripts[0] ) ],
+					'style-src'       => [ $hash( $styles[0] ) ],
+					'form-action'     => [ "'self'" ],
+					'frame-ancestors' => [ "'none'" ],
+					'base-uri'        => [ "'none'" ],
+				],
+				$directives,
+				$click
+			);
+			self::assertStringNotContainsString( 'unsafe', $policies[0] );
+			self::assertSame( 0, preg_match( '/\sstyle="/', $page ), 'No style attribute: the policy allows the one style element only.' );
+			self::assertSame( 0, preg_match( '/\son[a-z]+=/i', $page ), 'No inline event handler.' );
+		}
+	}
+
 	public function test_a_head_sends_the_same_headers_and_no_body(): void {
 		$token = $this->claim( 42 );
 
 		self::assertSame( '', $this->visit( $token, 'HEAD' ) );
 
 		self::assertSame( [ 200 ], $GLOBALS['pow_test_status_headers'] ?? [] );
-		foreach ( [ 'Cache-Control: private, no-store', 'X-Robots-Tag: noindex, nofollow', 'X-Content-Type-Options: nosniff', 'Referrer-Policy: no-referrer' ] as $header ) {
+		self::assertNotSame( [], array_filter( $this->headers_sent(), static fn( string $h ): bool => str_starts_with( $h, 'Content-Security-Policy:' ) ) );
+		foreach ( [ 'Cache-Control: private, no-store, no-transform', 'X-Robots-Tag: noindex, nofollow', 'X-Content-Type-Options: nosniff', 'Referrer-Policy: no-referrer', 'X-Frame-Options: DENY' ] as $header ) {
 			self::assertContains( $header, $this->headers_sent(), $header );
 		}
 		self::assertSame( Session::PENDING, $this->db->sessions[42]['status'] );
@@ -315,6 +379,84 @@ final class StartEndpointTest extends TestCase {
 		self::assertCount( 1, $GLOBALS['pow_test_auth_cookies'], 'One login cookie, from the first POST.' );
 		self::assertCount( 1, $GLOBALS['pow_start_redirects'] );
 		self::assertSame( '403', $this->audited( 'token_reject' )['result'] );
+	}
+
+	/** This browser as the redeem left it: signed in to the account with the visit's own login token. */
+	private function as_the_browser_of( int $visit ): void {
+		$GLOBALS['pow_test_current_user_id'] = (int) $this->db->sessions[ $visit ]['user_id'];
+		$GLOBALS['pow_test_login_token'] = (string) $this->db->sessions[ $visit ]['wp_session_token'];
+	}
+
+	/**
+	 * The browser that redeemed the link posts it again (its Back button on the click page, a second press that
+	 * slipped through): it is still that visit, so it is sent to the landing page again, and nothing is redeemed,
+	 * written, logged or signed in a second time.
+	 */
+	public function test_a_repeat_post_from_the_browser_that_redeemed_lands_again(): void {
+		$token = $this->claim( 42 );
+		$this->redeem( $token );
+		$this->as_the_browser_of( 42 );
+		$row = $this->db->sessions[42];
+		[ $queries, $audits ] = [ count( array_filter( $this->db->queries, static fn( string $sql ): bool => ! str_starts_with( $sql, 'SELECT' ) ) ), count( $this->db->audits ) ];
+		$GLOBALS['pow_test_status_headers'] = [];
+
+		self::assertSame( '', $this->redeem( $token ) );
+
+		self::assertSame( [ [ 'https://shop.example.test/', 302 ], [ 'https://shop.example.test/', 302 ] ], $GLOBALS['pow_start_redirects'] );
+		self::assertSame( [], $GLOBALS['pow_test_status_headers'], 'No 403' );
+		self::assertSame( $row, $this->db->sessions[42], 'The visit is as the first POST left it.' );
+		self::assertSame( $queries, count( array_filter( $this->db->queries, static fn( string $sql ): bool => ! str_starts_with( $sql, 'SELECT' ) ) ), 'No write.' );
+		self::assertSame( $audits, count( $this->db->audits ), 'No second audit row.' );
+		self::assertCount( 1, $GLOBALS['pow_test_auth_cookies'], 'No second login cookie.' );
+		self::assertSame( [ [ 'add', 'auth_cookie_expiration', 999 ], [ 'remove', 'auth_cookie_expiration', 999 ] ], $GLOBALS['pow_start_hooks'] );
+	}
+
+	/** The repeat lands where the first POST did, deep link and filter included. */
+	public function test_a_repeat_post_lands_where_the_first_one_did(): void {
+		$GLOBALS['pow_test_filters']['pow_start_redirect'] = static fn( string $target, Session $session ): string => $target . '?visit=' . $session->id;
+		$token = $this->claim( 42 );
+		$this->redeem( $token );
+		$this->as_the_browser_of( 42 );
+
+		$this->redeem( $token );
+
+		self::assertSame( [ [ 'https://shop.example.test/?visit=42', 302 ], [ 'https://shop.example.test/?visit=42', 302 ] ], $GLOBALS['pow_start_redirects'] );
+		unset( $GLOBALS['pow_test_filters']['pow_start_redirect'] );
+	}
+
+	/**
+	 * @return array<string, callable(): void>
+	 */
+	private function other_repeats(): array {
+		return [
+			'another browser, signed out'      => function (): void { unset( $GLOBALS['pow_test_current_user_id'], $GLOBALS['pow_test_login_token'] ); },
+			'a colleague on the same account'  => function (): void { $this->redeem( $this->claim( 43 ) ); $this->as_the_browser_of( 43 ); },
+			'the account without this login'   => function (): void { $GLOBALS['pow_test_login_token'] = str_repeat( 'q', 43 ); },
+			'this login on another account'    => function (): void { $GLOBALS['pow_test_current_user_id'] = self::ACCOUNT + 1; },
+			'a login but no user'              => function (): void { $GLOBALS['pow_test_current_user_id'] = 0; },
+			'the visit has returned'           => function (): void { $this->db->sessions[42]['status'] = Session::RETURNED; },
+			'the visit has expired'            => function (): void { $this->db->sessions[42]['status'] = Session::EXPIRED; },
+			'the visit ran out of time'        => function (): void { $this->db->sessions[42]['expires'] = gmdate( 'Y-m-d H:i:s', time() - 1 ); },
+		];
+	}
+
+	public function test_every_other_repeat_post_stays_refused(): void {
+		foreach ( $this->other_repeats() as $label => $change ) {
+			$this->tearDown();
+			$this->setUp();
+			$token = $this->claim( 42 );
+			$this->redeem( $token );
+			$this->as_the_browser_of( 42 );
+			$change();
+			$GLOBALS['pow_test_status_headers'] = [];
+			$redirects = count( $GLOBALS['pow_start_redirects'] );
+
+			$response = $this->redeem( $token );
+
+			self::assertStringContainsString( 'This catalog link has expired', $response, $label );
+			self::assertSame( [ 403 ], $GLOBALS['pow_test_status_headers'], $label );
+			self::assertCount( $redirects, $GLOBALS['pow_start_redirects'], $label );
+		}
 	}
 
 	public function test_a_malformed_token_is_refused_for_every_method_before_any_lookup(): void {
@@ -357,14 +499,67 @@ final class StartEndpointTest extends TestCase {
 
 		$page = $this->visit( $token, 'GET' );
 
-		self::assertStringContainsString( '<form method="post" action="https://shop.example.test/punchout/start/' . $token . '" id="pow-start-form">', $page );
-		self::assertSame( 1, preg_match( '#<button type="submit"[^>]*>[^<]+</button>#', $page ) );
-		self::assertStringNotContainsString( '<script', $page );
+		self::assertStringContainsString( '<form method="post" action="https://shop.example.test/punchout/start/' . $token . '" id="pow-start-form" data-pow-start="click">', $page );
+		self::assertSame( 1, preg_match( '#<button type="submit">Open the catalog</button>#', $page ) );
+		self::assertStringContainsString( 'Press the button to open the catalog.', $page );
+		// The same script in both modes, so one hash: here it only sends the form once, on the buyer's click.
+		self::assertSame( [ StartEndpoint::script() ], $this->inline( $page, 'script' ) );
 		self::assertSame( Session::PENDING, $this->db->sessions[42]['status'] );
 
 		// Any other saved value is the default: the page submits itself.
 		$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->click_settings( 'no' ), new Log( new QuoteOrderTestLogger() ) );
-		self::assertStringContainsString( '.submit();</script>', $this->visit( $token, 'GET' ) );
+		self::assertStringContainsString( 'id="pow-start-form" data-pow-start="auto">', $this->visit( $token, 'GET' ) );
+	}
+
+	/** The script sends the form at most once in either mode; the mode is the form's own attribute, not script text. */
+	public function test_the_script_submits_only_an_auto_form_and_guards_against_a_second_submit(): void {
+		$script = StartEndpoint::script();
+		self::assertStringContainsString( "getElementById( 'pow-start-form' )", $script );
+		self::assertStringContainsString( "'auto' === form.getAttribute( 'data-pow-start' )", $script );
+		self::assertStringContainsString( 'preventDefault', $script );
+		self::assertStringContainsString( 'disabled', $script );
+		self::assertStringNotContainsString( '</script', strtolower( $script ) );
+		self::assertSame( $script, StartEndpoint::script(), 'Fixed text: its hash is stable.' );
+	}
+
+	// ------------------------------------------ the start page's button label (0.4.23)
+
+	public function test_the_button_label_is_a_setting_with_a_neutral_default_and_a_filter(): void {
+		self::assertSame( 'start_link_button_label', StartEndpoint::BUTTON_LABEL );
+		self::assertSame( 'punchout_start_link_button_label', StartEndpoint::BUTTON_LABEL_FILTER );
+		self::assertSame( 'Open the catalog', StartEndpoint::button_label() );
+		self::assertSame( 'Open the catalog', StartEndpoint::button_label( new \POW\Settings() ), 'Saved blank by default' );
+		self::assertSame( '', ( new \POW\Settings() )->get( 'start_link_button_label', 'unset' ), 'A known setting, blank by default' );
+		self::assertSame( 'Continue', StartEndpoint::button_label( $this->settings_with( [ 'start_link_button_label' => "  Continue\n" ] ) ) );
+		self::assertSame( 'Open the catalog', StartEndpoint::button_label( $this->settings_with( [ 'start_link_button_label' => '   ' ] ) ) );
+		self::assertSame( 'Open the catalog', StartEndpoint::button_label( $this->settings_with( [ 'start_link_button_label' => [ 'x' ] ] ) ) );
+
+		$GLOBALS['pow_test_filters']['punchout_start_link_button_label'] = static fn( string $label ): string => $label . ' now';
+		self::assertSame( 'Continue now', StartEndpoint::button_label( $this->settings_with( [ 'start_link_button_label' => 'Continue' ] ) ), 'The filter runs last' );
+		$GLOBALS['pow_test_filters']['punchout_start_link_button_label'] = static fn(): string => ' ';
+		self::assertSame( 'Open the catalog', StartEndpoint::button_label(), 'A blank filter result keeps the default' );
+		unset( $GLOBALS['pow_test_filters']['punchout_start_link_button_label'] );
+	}
+
+	public function test_the_page_draws_the_label_escaped_in_both_modes(): void {
+		foreach ( [ 'no', 'yes' ] as $click ) {
+			$this->tearDown();
+			$this->setUp();
+			$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->settings_with( [ 'start_link_click' => $click, 'start_link_button_label' => 'Shop <now>' ] ), new Log( new QuoteOrderTestLogger() ) );
+
+			$page = $this->visit( $this->claim( 42 ), 'GET' );
+
+			self::assertStringContainsString( '<button type="submit">Shop &lt;now&gt;</button>', $page, $click );
+		}
+	}
+
+	public function test_the_admin_saves_the_button_label_as_plain_text(): void {
+		$admin = ( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor();
+		( new ReflectionProperty( $admin, 'settings' ) )->setValue( $admin, new \POW\Settings() );
+		self::assertSame( '', $admin->sanitize_settings( [] )['start_link_button_label'] );
+		self::assertSame( 'Continue', $admin->sanitize_settings( [ 'start_link_button_label' => ' <b>Continue</b> ' ] )['start_link_button_label'] );
+		self::assertSame( 100, mb_strlen( $admin->sanitize_settings( [ 'start_link_button_label' => str_repeat( 'x', 300 ) ] )['start_link_button_label'] ) );
+		self::assertArrayHasKey( 'start_link_button_label', ( new ReflectionMethod( $admin, 'fields' ) )->invoke( $admin ) );
 	}
 
 	public function test_the_click_setting_is_off_by_default_and_saved_as_yes_or_no(): void {
