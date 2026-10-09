@@ -200,21 +200,32 @@ final class DeliveryChooserTest extends TestCase {
 		self::assertStringNotContainsString( 'Delivery estimate', $html );
 		self::assertStringNotContainsString( 'tax', strtolower( $html ) );
 		self::assertStringContainsString( '<dl><dt class="pow-confirmation__total">Total</dt><dd class="pow-confirmation__total">' . $money( 161986 ) . '</dd></dl>', $html );
-		// The same virtual cart on a connection that sends the line keeps the full summary.
+		// The same virtual cart on a connection that sends the line keeps the full summary; even the switched-on tax sentence stays off without it.
 		$html = $this->render( self::two_items() + [ 'delivery_line' => true ] );
 		self::assertStringContainsString( '<dt>Delivery estimate</dt><dd>Not included</dd>', $html );
-		self::assertStringContainsString( 'Amounts exclude tax.', $html );
+		self::assertStringNotContainsString( 'tax', strtolower( $html ) );
+		self::assertStringNotContainsString( 'tax', strtolower( $this->render( self::two_items() + [ 'delivery_line' => false ], [ 'tax_note' => true ] ) ) );
 	}
-	public function test_freight_on_keeps_the_estimate_row_and_one_tax_sentence(): void {
+	/** 0.4.23: the tax sentence is off by default ("none by default"); the review names tax nowhere. */
+	public function test_freight_on_keeps_the_estimate_row_and_names_no_tax_by_default(): void {
 		$money = static fn( int $cents ): string => \POW\Addresses\ReviewFormat::money( $cents, 'ZAR' );
 		$on = self::physical( [ 'merchandise_total_cents' => 161986, 'total_cents' => 166986, 'items' => self::two_items()['items'] ] );
 		$html = $this->render( $on, [ 'estimate_note' => 'The delivery charge is an estimate.' ] );
 		self::assertStringContainsString( '<dt>Delivery estimate</dt><dd>' . $money( 5000 ) . '</dd>', $html );
 		self::assertStringContainsString( '<dt>Merchandise</dt><dd>' . $money( 161986 ) . '</dd>', $html );
 		self::assertStringContainsString( '<dt class="pow-confirmation__total">Total</dt><dd class="pow-confirmation__total">' . $money( 166986 ) . '</dd>', $html );
-		self::assertSame( 1, substr_count( strtolower( $html ), 'tax' ), 'Tax is named once' );
-		self::assertStringContainsString( 'Amounts exclude tax.', $html );
+		self::assertStringNotContainsString( 'tax', strtolower( $html ) );
 		self::assertStringContainsString( 'The delivery charge is an estimate.', $html );
+		self::assertStringNotContainsString( 'tax', strtolower( $this->render( $on, [ 'tax_note' => 'yes' ] ) ), 'Only a real true switches it on' );
+	}
+	/** Switched on, the sentence shows once, and only while the connection sends the delivery line. */
+	public function test_the_switched_on_tax_sentence_shows_once_with_the_delivery_line(): void {
+		$on = self::physical( self::two_items() );
+		$html = $this->render( $on, [ 'tax_note' => true ] );
+		self::assertSame( 1, substr_count( strtolower( $html ), 'tax' ), 'Tax is named once' );
+		self::assertStringContainsString( '<p class="pow-confirmation__hint">Amounts exclude tax.</p>', $html );
+		$off = self::physical( [ 'delivery' => [ 'status' => 'disabled', 'amount_cents' => 5000, 'emit' => false ] ] + self::two_items() );
+		self::assertStringNotContainsString( 'tax', strtolower( $this->render( $off, [ 'tax_note' => true ] ) ) );
 	}
 	/** Dynamics, not this page, does the approving: the buyer reads where the cart goes, and nothing about approval. */
 	public function test_the_buyer_reads_no_approval_wording(): void {
