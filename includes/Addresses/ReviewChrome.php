@@ -26,4 +26,23 @@ final class ReviewChrome {
 	public static function decide( string $method, bool $block_theme, bool $enabled ): bool {
 		return 'GET' === strtoupper( $method ) && ! $block_theme && $enabled;
 	}
+
+	public const PAGE_FILTER = 'punchout_review_page_id';
+
+	/**
+	 * The page the review poses as while the theme draws it (0.4.18). WordPress parses the plugin route as
+	 * "nothing found"; themes that pick a layout, header and footer by the current page then draw their
+	 * bare fallback. Posing as the shop's cart page (the step the review follows) makes those themes treat the
+	 * review as that page. 0 keeps the request as it is. Filter `punchout_review_page_id` to choose another
+	 * page or 0.
+	 */
+	public static function pose_as_page_id(): int {
+		$cart = function_exists( 'wc_get_page_id' ) ? (int) wc_get_page_id( 'cart' ) : 0;
+		return self::page_to_pose( (int) apply_filters( self::PAGE_FILTER, $cart ) );
+	}
+
+	/** A positive page id, or 0 for "do not pose". WooCommerce answers -1 for an unset page. */
+	public static function page_to_pose( int $id ): int {
+		return $id > 0 ? $id : 0;
+	}
 }

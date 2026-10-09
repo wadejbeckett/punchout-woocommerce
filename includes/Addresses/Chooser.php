@@ -90,10 +90,42 @@ final class Chooser {
 		// WordPress parsed this plugin route as "nothing found"; the page it is about to draw is found.
 		global $wp_query;
 		if ( $wp_query instanceof \WP_Query ) { $wp_query->is_404 = false; }
+		self::pose_as_page( ReviewChrome::pose_as_page_id() );
 		get_header();
 		echo '<div class="pow-confirmation-page__content">' . $html . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
 		get_footer();
 		exit;
+	}
+
+	/** `wp` action, priority 0: pose before the theme resolves which layout, header and footer this request gets. */
+	public function pose_for_theme(): void {
+		self::pose_as_page( ReviewChrome::pose_as_page_id() );
+	}
+
+	/**
+	 * Make the current request look like the given published page to the theme (layout, header, footer,
+	 * body classes), without loading that page's template or content. 0 or an unpublished page: no change.
+	 */
+	private static function pose_as_page( int $page_id ): void {
+		if ( $page_id <= 0 ) { return; }
+		$page = get_post( $page_id );
+		if ( ! $page instanceof \WP_Post || 'publish' !== $page->post_status ) { return; }
+		global $wp_query, $post;
+		if ( ! $wp_query instanceof \WP_Query ) { return; }
+		$post                        = $page;
+		$wp_query->post              = $page;
+		$wp_query->posts             = [ $page ];
+		$wp_query->post_count        = 1;
+		$wp_query->found_posts       = 1;
+		$wp_query->queried_object    = $page;
+		$wp_query->queried_object_id = $page->ID;
+		$wp_query->is_404            = false;
+		$wp_query->is_page           = true;
+		$wp_query->is_singular       = true;
+		$wp_query->is_home           = false;
+		$wp_query->is_archive        = false;
+		$wp_query->is_search         = false;
+		setup_postdata( $page );
 	}
 
 	/**
