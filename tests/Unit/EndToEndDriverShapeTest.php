@@ -77,6 +77,31 @@ namespace {
 			self::assertStringContainsString( 'delete_shipping_method(', $retire );
 		}
 
+		/** The browser run's one setting change, the start page's click mode, is recorded at seed and put back by retire. */
+		public function test_the_fixture_puts_back_the_start_link_mode(): void {
+			$source = $this->source( 'fixture.php' );
+			self::assertStringContainsString( "'start_click'", $source, 'A step that sets the start page mode for one case' );
+			$configure = substr( $source, (int) strpos( $source, 'private static function configure_review(' ), 1200 );
+			self::assertStringContainsString( "'start_link_click'", $configure, 'The seed records the mode as it was' );
+			$restore = substr( $source, (int) strpos( $source, 'private static function restore_settings(' ), 900 );
+			self::assertStringContainsString( 'start_link_click', $restore, 'Retire may put the mode back' );
+		}
+
+		/**
+		 * The real-browser run (tests/E2E/browser.py) keeps the driver's rails: loopback only, no secret printed,
+		 * and a local Chromium named on the command line, headless, never a download.
+		 */
+		public function test_the_browser_run_keeps_the_drivers_rails(): void {
+			$source = $this->source( 'browser.py' );
+			self::assertStringContainsString( 'require_loopback(args.url)', $source );
+			self::assertStringContainsString( 'executable_path=', $source );
+			self::assertStringContainsString( 'headless=True', $source );
+			self::assertSame( 0, preg_match( '/print\([^)]*secret/i', $source ), 'No print call names the secret' );
+			self::assertStringNotContainsString( 'playwright install', $source );
+			self::assertStringContainsString( "run.wp('retire')", $source, 'The fixture is retired' );
+			self::assertStringContainsString( 'restore', $source, 'The plugin link is put back' );
+		}
+
 		public function test_the_driver_never_prints_the_connection_secret(): void {
 			$source = $this->source( 'driver.py' );
 			self::assertSame( 0, preg_match( '/print\([^)]*secret/i', $source ), 'No print call names the secret' );
