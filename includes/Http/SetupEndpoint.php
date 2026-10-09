@@ -76,6 +76,12 @@ final class SetupEndpoint {
 	/** @var array<string, mixed> Safe request identifiers for terminal failure audit. */
 	private array $failure_context = [];
 
+	/** Whether this request's sender has proved its shared secret (0.4.22: its rows are then outside the anonymous budget). */
+	private bool $authenticated = false;
+
+	/** @var array{archive: string, body: string, ip: string}|null The setup_rx row, written just before this request's first other row. */
+	private ?array $pending_archive = null;
+
 	/** @var array<int, string> Canonical Status/@text for each code. */
 	public const STATUS_REASONS = [
 		self::STATUS_OK           => 'success',
@@ -95,6 +101,7 @@ final class SetupEndpoint {
 		private RateLimiter $rate_limiter,
 		private Log $audit,
 		private RateLimiter $edge_limiter,
+		private ?AnonymousAudit $anonymous = null,
 	) {}
 
 	public function handle(): void {
@@ -129,6 +136,12 @@ final class SetupEndpoint {
 			);
 			$this->respond( $this->status_doc( self::STATUS_INTERNAL, 'Internal error' ) );
 		} finally {
+			// A path that answered without any other row (an unknown sender over its downstream budget) still
+			// leaves its archive row, within the anonymous budget when unauthenticated.
+			if ( null !== $this->pending_archive && ( $this->authenticated || $this->anonymous_allowed() ) ) { $this->flush_archive(); }
+			$this->pending_archive = null;
+			$this->authenticated = false;
+			$this->anonymous?->done();
 			$this->failure_context = [];
 		}
 	}
@@ -138,14 +151,22 @@ final class SetupEndpoint {
 	 */
 	public function not_implemented(): void {
 		if ( ! Transport::request_allowed() ) { $this->transport_denied(); return; }
-		$this->audit_event(
-			'po_rx',
-			[
-				'direction' => 'in',
-				'result'    => '450',
-				'ip'        => $this->client_ip(),
-			]
-		);
+		$ip = $this->client_ip();
+		$this->failure_context = [ 'ip' => $ip ];
+		try {
+			// Nobody authenticates here: the row counts against the anonymous budget (0.4.22).
+			$this->audit_event(
+				'po_rx',
+				[
+					'direction' => 'in',
+					'result'    => '450',
+					'ip'        => $ip,
+				]
+			);
+		} finally {
+			$this->anonymous?->done();
+			$this->failure_context = [];
+		}
 		$this->respond( $this->status_doc( self::STATUS_UNSUPPORTED, 'Not implemented' ) );
 	}
 
@@ -176,24 +197,18 @@ final class SetupEndpoint {
 
 		$body = $this->read_body();
 
-		// Pre-auth archive: this row is written before the sender is
-		// authenticated, so an anonymous client must not be able to store
-		// 2 MB per request. Real setup requests are a few KB; 64 KB keeps
-		// full evidence for anything legitimate. The buyer's identity is
-		// blanked first, because the log is read by more people than the
-		// orders screen is and this row is the one place the raw address
-		// would otherwise outlive the request. Redaction precedes the cap:
-		// truncating first can cut a closing tag and leave the address the
-		// pattern was going to blank.
-		$archive = self::redact_identities( $body );
-		$this->audit_event(
-			'setup_rx',
-			[
-				'direction' => 'in',
-				'xml'       => strlen( $archive ) > 65536 ? substr( $archive, 0, 65536 ) . "\n<!-- pow: pre-auth archive capped at 64 KB -->" : $archive,
-				'ip'        => $ip,
-			]
-		);
+		// The request archive (setup_rx). The buyer's identity and the
+		// shared secret are blanked first, because the log is read by more
+		// people than the orders screen is and this row is the one place the
+		// raw address would otherwise outlive the request. Redaction precedes
+		// any cut: truncating first can cut a closing tag and leave the value
+		// the pattern was going to blank. Since 0.4.22 the row is written just
+		// before this request's first other row, once it is known whether the
+		// sender authenticated: an authenticated body keeps up to 64 KB (real
+		// setup requests are a few KB), an unauthenticated one an excerpt
+		// within the per-IP anonymous budget (AnonymousAudit), so an anonymous
+		// client cannot fill the log.
+		$this->pending_archive = [ 'archive' => Log::redact_xml( self::redact_identities( $body ) ), 'body' => $body, 'ip' => $ip ];
 
 		$message   = $this->parser->parse( $body );
 		$body_hash = hash( 'sha256', $body );
@@ -242,6 +257,8 @@ final class SetupEndpoint {
 			$this->deny_auth( $message, $ip, 'bad secret', $partner );
 			return;
 		}
+
+		$this->authenticated = true;
 
 		if ( SetupMessage::KIND_PROFILE === $message->kind ) {
 			$response = $this->builder->profile_response(
@@ -716,7 +733,32 @@ final class SetupEndpoint {
 	}
 
 	private function audit_event( string $event, array $context ): void {
+		// Before the sender has authenticated, this request's rows are written only within the per-IP budget.
+		if ( ! $this->authenticated && ! $this->anonymous_allowed() ) {
+			$this->pending_archive = null;
+			return;
+		}
+		$this->flush_archive();
 		try { $this->audit->write_checked( $event, $context ); }
+		catch ( \Throwable $e ) { /* Diagnostics cannot undo a confirmed setup result. */ }
+	}
+
+	/** Whether this unauthenticated request may still write audit rows (always, without a budget). */
+	private function anonymous_allowed(): bool {
+		return null === $this->anonymous || $this->anonymous->allow( (string) ( $this->failure_context['ip'] ?? '' ) );
+	}
+
+	/** Write the pending setup_rx row: the 64 KB archive once authenticated, else the anonymous excerpt. */
+	private function flush_archive(): void {
+		if ( null === $this->pending_archive ) {
+			return;
+		}
+		[ 'archive' => $archive, 'body' => $body, 'ip' => $ip ] = $this->pending_archive;
+		$this->pending_archive = null;
+		$xml = $this->authenticated
+			? ( strlen( $archive ) > 65536 ? mb_strcut( $archive, 0, 65536, 'UTF-8' ) . "\n<!-- pow: archive capped at 64 KB -->" : $archive )
+			: AnonymousAudit::excerpt( $archive, $body );
+		try { $this->audit->write_checked( 'setup_rx', [ 'direction' => 'in', 'xml' => $xml, 'ip' => $ip ] ); }
 		catch ( \Throwable $e ) { /* Diagnostics cannot undo a confirmed setup result. */ }
 	}
 

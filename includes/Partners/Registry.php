@@ -599,7 +599,8 @@ final class Registry {
 
 		foreach ( [ 'session_ttl', 'token_ttl' ] as $int_col ) {
 			if ( isset( $data[ $int_col ] ) ) {
-				$data[ $int_col ] = max( 0, (int) $data[ $int_col ] );
+				// 0 stays 0 (the column default applies on read); anything longer than 7 days is stored as 7 days.
+				$data[ $int_col ] = min( Partner::MAX_TTL, max( 0, (int) $data[ $int_col ] ) );
 			}
 		}
 

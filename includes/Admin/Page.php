@@ -187,8 +187,9 @@ final class Page {
 			'attachment_label'     => [ __( 'Attachment label', 'punchout-woocommerce' ), 'text', __( 'Label of the file field on the review page. Blank uses the default: “Attachment”.', 'punchout-woocommerce' ) ],
 			'attachment_help'      => [ __( 'Attachment help text', 'punchout-woocommerce' ), 'text', __( 'Shown under the file field. Blank uses the default: “Optional: a sheet or document for this order.”', 'punchout-woocommerce' ) ],
 			'delivery_estimate_note' => [ __( 'Delivery estimate note', 'punchout-woocommerce' ), 'text', __( 'One sentence shown with the delivery estimate on the review page, sent with the returned cart (on the delivery line and in the delivery instructions) and included in the “PunchOut order received” e-mail. Blank uses the default: “The delivery charge is an estimate; the supplier confirms the final amount before dispatch.”', 'punchout-woocommerce' ) ],
-			'token_ttl'            => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300.', 'punchout-woocommerce' ) ],
-			'session_ttl'          => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). Each customer connection can override both TTLs.', 'punchout-woocommerce' ) ],
+			'review_title'         => [ __( 'Review page title', 'punchout-woocommerce' ), 'text', __( 'Shown as the page title and last breadcrumb while the review is drawn inside your theme. Blank uses the default: “Review”.', 'punchout-woocommerce' ) ],
+			'token_ttl'            => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300. At most 604800 (7 days).', 'punchout-woocommerce' ) ],
+			'session_ttl'          => [ __( 'Session lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'Punchout login TTL. Default 14400 (4 h). At most 604800 (7 days). Each customer connection can override both TTLs, within the same cap.', 'punchout-woocommerce' ) ],
 			'rate_limit_per_min'   => [ __( 'Setup rate limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per customer+IP on /punchout/setup. 0 uses the default (30); the public self-test uses 10 when this is 0.', 'punchout-woocommerce' ) ],
 			'edge_rate_limit_per_min' => [ __( 'Setup edge limit / min', 'punchout-woocommerce' ), 'number', __( 'Requests per minute per IP on /punchout/setup, counted before the sender is resolved. 0 uses the default (120).', 'punchout-woocommerce' ) ],
 			'log_retention_days'   => [ __( 'Log retention (days)', 'punchout-woocommerce' ), 'number', __( 'Audit rows older than this are trimmed by the hourly housekeeping job.', 'punchout-woocommerce' ) ],
@@ -314,8 +315,9 @@ final class Page {
 			'attachment_label'     => sanitize_text_field( (string) ( $input['attachment_label'] ?? '' ) ),
 			'attachment_help'      => sanitize_text_field( (string) ( $input['attachment_help'] ?? '' ) ),
 			'delivery_estimate_note' => sanitize_text_field( (string) ( $input['delivery_estimate_note'] ?? '' ) ),
-			'token_ttl'            => max( 30, (int) ( $input['token_ttl'] ?? 300 ) ),
-			'session_ttl'          => max( 300, (int) ( $input['session_ttl'] ?? 14400 ) ),
+			'review_title'         => \POW\Addresses\ReviewTitle::sanitise( $input['review_title'] ?? '' ),
+			'token_ttl'            => \POW\Partners\Partner::clamp_ttl( (int) ( $input['token_ttl'] ?? 300 ), 30 ),
+			'session_ttl'          => \POW\Partners\Partner::clamp_ttl( (int) ( $input['session_ttl'] ?? 14400 ), 300 ),
 			'rate_limit_per_min'   => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
 			'edge_rate_limit_per_min' => max( 0, (int) ( $input['edge_rate_limit_per_min'] ?? 120 ) ),
 			'log_retention_days'   => max( 1, (int) ( $input['log_retention_days'] ?? 400 ) ),
@@ -616,9 +618,11 @@ final class Page {
 		$this->form_row(
 			__( 'Token TTL / session TTL (s)', 'punchout-woocommerce' ),
 			sprintf(
-				'<input type="number" class="small-text" name="token_ttl" value="%d" min="30" /> / <input type="number" class="small-text" name="session_ttl" value="%d" min="300" />',
+				'<input type="number" class="small-text" name="token_ttl" value="%1$d" min="30" max="%3$d" /> / <input type="number" class="small-text" name="session_ttl" value="%2$d" min="300" max="%3$d" /><p class="description">%4$s</p>',
 				(int) ( $partner->token_ttl ?? 300 ),
-				(int) ( $partner->session_ttl ?? 14400 )
+				(int) ( $partner->session_ttl ?? 14400 ),
+				\POW\Partners\Partner::MAX_TTL,
+				esc_html__( 'Each is capped at 604800 seconds (7 days); a longer value is saved and used as 7 days.', 'punchout-woocommerce' )
 			)
 		);
 

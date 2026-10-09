@@ -156,6 +156,73 @@ final class RouteGuard {
 			wp_safe_redirect( $target, 302 );
 			exit;
 		}
+
+		// 0.4.22: the site's front page, inside an active visit, sends the
+		// buyer to the landing page the StartPage login sends her to. Not a
+		// refusal, so no notice.
+		$front = $this->front_page_redirect( $visit );
+		if ( '' !== $front ) {
+			wp_safe_redirect( $front, 302 );
+			exit;
+		}
+	}
+
+	/** Filter for the front-page redirect inside a visit: the target URL, '' keeps the front page. */
+	public const FRONT_PAGE_FILTER = 'punchout_visit_front_page_redirect';
+
+	/**
+	 * Where this request for the front page goes inside a visit, or '' to let it through.
+	 *
+	 * The target is the landing page the StartPage login redirects to (setting "Landing page", else the shop
+	 * page), filtered by `punchout_visit_front_page_redirect` (string $url, Session $visit); '' turns the
+	 * redirect off, another URL sends the buyer there instead.
+	 */
+	private function front_page_redirect( ?Session $visit ): string {
+		if ( null === $visit || ! function_exists( 'is_front_page' ) || ! is_front_page() ) {
+			return '';
+		}
+		if ( function_exists( 'is_feed' ) && is_feed() ) {
+			return '';
+		}
+		$target = apply_filters( self::FRONT_PAGE_FILTER, $this->settings->landing_url(), $visit );
+
+		return self::front_page_target(
+			true,
+			(string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ),
+			$visit,
+			Registry::privileged( wp_get_current_user() ),
+			is_string( $target ) ? $target : '',
+			home_url( '/' )
+		);
+	}
+
+	/**
+	 * Pure rule for the front-page redirect (0.4.22): the front page, a GET or HEAD, an active visit, a
+	 * signed-in account that is not an administrator or shop manager, and a target that is not the front page
+	 * itself (same host and path as the home URL, query ignored, so a landing page that is the front page
+	 * never loops). Returns the target, or '' to let the request through.
+	 */
+	public static function front_page_target( bool $front_page, string $method, ?Session $visit, bool $privileged, string $target, string $home ): string {
+		if ( ! $front_page || ! in_array( strtoupper( $method ), [ 'GET', 'HEAD' ], true ) || null === $visit || Session::ACTIVE !== $visit->status || $privileged ) {
+			return '';
+		}
+		$target = trim( $target );
+		if ( '' === $target || self::same_place( $target, $home ) ) {
+			return '';
+		}
+
+		return $target;
+	}
+
+	/** Same host (case-insensitive) and path (trailing slash ignored); scheme and query are ignored. */
+	private static function same_place( string $a, string $b ): bool {
+		$place = static function ( string $url ): string {
+			$parts = parse_url( $url );
+			if ( ! is_array( $parts ) ) { return $url; }
+			return strtolower( (string) ( $parts['host'] ?? '' ) ) . '|' . rtrim( (string) ( $parts['path'] ?? '' ), '/' );
+		};
+
+		return $place( $a ) === $place( $b );
 	}
 
 	/**

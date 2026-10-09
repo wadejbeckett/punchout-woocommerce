@@ -297,6 +297,24 @@ namespace {
 				self::assertSame( '', $this->surface->cart_exits_shortcode(), "A {$status} visit renders no exit" );
 			}
 		}
+		public function test_on_the_theme_drawn_review_the_punchout_button_draws_nothing(): void {
+			// 0.4.22: the button opens the review, so on the review itself (a theme header, visit bar or cart
+			// layout that carries it) it would only reload the page. The review's own Submit is the exit there.
+			self::assertStringContainsString( 'class="pow-return-form"', $this->surface->shortcode() );
+			POW\Addresses\ReviewChrome::mark_review_request();
+			try {
+				self::assertTrue( POW\Addresses\ReviewChrome::is_review_request() );
+				self::assertSame( '', $this->surface->shortcode(), 'The shortcode draws nothing on the review' );
+				self::assertSame( '', $this->surface->markup(), 'Nor does the PHP helper' );
+				self::assertSame( '', $this->surface->cart_exits_shortcode(), 'Nor the complete cart control' );
+				ob_start(); $this->surface->render_cart_button(); self::assertSame( '', (string) ob_get_clean() );
+				self::assertStringContainsString( 'pow-abandon-button', $this->surface->abandon_markup(), 'Leaving with nothing is still offered' );
+			} finally {
+				POW\Addresses\ReviewChrome::mark_review_request( false );
+			}
+			self::assertFalse( POW\Addresses\ReviewChrome::is_review_request() );
+			self::assertStringContainsString( 'class="pow-return-form"', $this->surface->shortcode(), 'Every other page keeps the button' );
+		}
 		public function test_no_exit_policy_and_no_account_id_decide_anything_here(): void {
 			$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/Cart/Surface.php' );
 			self::assertStringNotContainsString( 'ExitPolicy', $source, 'PunchOut is the only exit a visit has' );

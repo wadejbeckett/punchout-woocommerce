@@ -301,6 +301,16 @@ if ( ! function_exists( 'set_transient' ) ) {
 	}
 }
 
+if ( ! function_exists( 'delete_transient' ) ) {
+	/** Removes the key from pow_test_transients, as WordPress removes the transient. */
+	function delete_transient( string $key ): bool { // phpcs:ignore
+		$existed = array_key_exists( $key, $GLOBALS['pow_test_transients'] ?? [] );
+		unset( $GLOBALS['pow_test_transients'][ $key ] );
+
+		return $existed;
+	}
+}
+
 if ( ! function_exists( 'wp_mail' ) ) {
 	/**
 	 * Records the message rather than sending it, so a test can count

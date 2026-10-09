@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.21
+Stable tag: 0.4.22
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,18 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.22 =
+* The review page now calls itself "Review" while it is drawn inside the theme. It still uses the Cart page's layout, but the title bar, the last breadcrumb and the browser tab say "Review" instead of "Cart", for that page only: the menu's Cart link, the Cart page itself and the review's own "Cart" step are unchanged. New setting "Review page title" (blank = "Review") and filter `punchout_review_title` (`''` turns it off). It reaches anything that reads the page title the WordPress way (WooCommerce and most theme breadcrumbs and title bars); a title typed into a page layout as fixed text does not change.
+* On the review page the theme's Punchout button no longer appears: there it would only reload the review. "Submit for approval" is the way out.
+* Inside a punchout visit, opening the site's home page takes the buyer to the landing page (the page the purchasing system's login lands on, normally the shop). Not for administrators, never outside a visit, and not when the landing page is the home page. Filter `punchout_visit_front_page_redirect` changes the target or (`''`) turns it off.
+* Fix: a double click on "Submit for approval" could lose the cart. The button and "Back to cart" are now disabled after the first click (and enabled again if the buyer comes back with the browser's Back button), and a second request that still arrives is answered with the same handoff page as the first instead of an error, for up to two minutes. Nothing is sent, quoted or e-mailed twice.
+* Fix: a note pasted from Word or PowerPoint could carry an invisible control character that made every Submit fail with a misleading "session expired" page. Notes now turn a pasted line break into a line break and drop other control characters. If the purchasing-system message still cannot be built, the buyer sees a clear message with a link back to the review, never an error page.
+* Security: login links and visits now last at most 7 days, whatever a connection or the settings say (a 72-hour visit is unaffected).
+* Security: the attachment download only serves a file whose stored name is a plain file name inside the attachment's own folder.
+* Security: requests nobody has authenticated (setup from an unknown or wrong sender, refused login links, the order endpoint) write audit rows only for 60 requests per address per hour, and keep only the first 4 KB of a setup body (with its length and checksum); the shared secret is blanked before any cut. Authenticated requests are logged as before.
+* Security: every PunchOut response says `X-Content-Type-Options: nosniff`. Tested with WooCommerce 11.2.
+* The review page's script (one submission per click, instant recalculation) now also runs on the plain review page, not only inside the theme. No schema change (stays 9).
 
 = 0.4.21 =
 * Fix: the cart's Punchout button (a POST with no review action) opened the review on the plain document, because the in-theme rule only recognised POSTs that named an action. The rule now reads the action exactly as the handler does (none = review), so entering the review from the cart draws it inside the theme. `ReviewChrome::post_action()`.

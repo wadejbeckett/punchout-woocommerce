@@ -27,7 +27,12 @@ final class Current {
 
 final class ReturnEndpoint {
 	public int $handoffs = 0;
+	/** @var list<array{string, string}> Each replay the Chooser asked for: [return nonce, mode]. */
+	public array $replays = [];
+	/** fn(int $call): bool — whether a kept handoff was sent for the n-th replay request (0.4.22). */
+	public mixed $replayable = null;
 	public function handle(): void { ++$this->handoffs; }
+	public function replay( string $nonce, string $mode = 'cart' ): bool { $this->replays[] = [ $nonce, $mode ]; return is_callable( $this->replayable ) && ( $this->replayable )( count( $this->replays ) ); }
 }
 
 final class Templates {
@@ -188,6 +193,48 @@ final class DeliveryChooserFlowTest extends TestCase {
 		self::assertSame( 0, $this->state->store->writes );
 		self::assertNull( $this->state->store->session->delivery_confirmation_json );
 		self::assertSame( 0, $this->return_endpoint->handoffs );
+	}
+
+	public function test_a_repeated_submit_after_the_cart_returned_gets_the_handoff_again_not_an_error_page(): void {
+		// The other click won: this visit has left active, so this request has no review to draw.
+		$this->state->store->session = Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 99, 'wp_session_token' => 'exact-token', 'status' => 'returned', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ), 'wc_session_key' => self::KEY ] );
+		$this->return_endpoint->replayable = static fn(): bool => true;
+		$GLOBALS['pow_test_status_headers'] = [];
+		self::assertSame( [], $this->request( [ 'pow_delivery_action' => 'submit' ] ), 'Nothing of the review is drawn' );
+		self::assertSame( [ [ 'nonce-pow_return', 'cart' ] ], $this->return_endpoint->replays, 'Asked once, with this form\'s return nonce' );
+		self::assertSame( [], $GLOBALS['pow_test_status_headers'], 'No 403' );
+		$this->assert_no_consent_or_handoff();
+	}
+
+	public function test_without_a_kept_handoff_a_returned_visit_still_gets_the_expired_page(): void {
+		$this->state->store->session = Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 99, 'wp_session_token' => 'exact-token', 'status' => 'returned', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ), 'wc_session_key' => self::KEY ] );
+		$view = $this->request( [ 'pow_delivery_action' => 'submit' ] );
+		self::assertSame( 'delivery_unavailable', $view['error']->get_error_code() );
+		self::assertCount( 2, $this->return_endpoint->replays, 'Asked before and after the visit could not be resolved' );
+	}
+
+	public function test_a_submit_that_lost_to_the_other_click_while_confirming_gets_the_winners_handoff(): void {
+		$first = $this->initial_review();
+		// Nothing kept yet when this request starts; the other click has won by the time its consent is refused.
+		$this->return_endpoint->replayable = static fn( int $call ): bool => $call >= 2;
+		$view = $this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:coast', 'rates' => [ 0 => 'flat:1' ], 'review_digest' => $first['review_digest'] ] );
+		self::assertSame( [], $view, 'The refused consent is not drawn: the handoff was sent instead' );
+		self::assertCount( 2, $this->return_endpoint->replays );
+		$this->assert_no_consent_or_handoff();
+	}
+
+	public function test_a_pasted_control_character_in_the_notes_never_reaches_the_review_or_the_cart(): void {
+		// 0.4.22: what Word pastes for a line break (a vertical tab) and a stray bell, through the real review model.
+		$view = $this->request( [ 'notes' => "Gate\x0Bbell\x07 at the back" ] );
+		self::assertNull( $view['error'] );
+		self::assertSame( "Gate\nbell at the back", $view['notes'] );
+		self::assertTrue( $view['can_confirm'] );
+	}
+
+	public function test_only_a_submit_ever_asks_for_a_repeated_handoff(): void {
+		$this->return_endpoint->replayable = static fn(): bool => true;
+		foreach ( [ 'review', 'back' ] as $action ) { $this->request( [ 'pow_delivery_action' => $action ] ); }
+		self::assertSame( [], $this->return_endpoint->replays );
 	}
 
 	public function test_address_change_reviews_new_native_default_without_storing_consent(): void {

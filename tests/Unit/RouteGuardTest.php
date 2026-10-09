@@ -19,6 +19,9 @@ namespace {
 	if ( ! function_exists( 'is_checkout' ) ) { function is_checkout(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['checkout'] ?? false ); } }
 	if ( ! function_exists( 'is_wc_endpoint_url' ) ) { function is_wc_endpoint_url( string $endpoint = '' ): bool { return '' !== $endpoint && $endpoint === ( $GLOBALS['pow_route_guard_test']['endpoint'] ?? '' ); } }
 	if ( ! function_exists( 'wc_get_cart_url' ) ) { function wc_get_cart_url(): string { return 'https://shop.example.test/cart/'; } }
+	// WordPress's front-page and feed answers for the 0.4.22 front-page redirect.
+	if ( ! function_exists( 'is_front_page' ) ) { function is_front_page(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['front'] ?? false ); } }
+	if ( ! function_exists( 'is_feed' ) ) { function is_feed(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['feed'] ?? false ); } }
 	// WooCommerce's notice queue, recorded per test. A refusal tells the buyer why only when the shop's session is up.
 	if ( ! function_exists( 'wc_add_notice' ) ) { function wc_add_notice( string $message, string $type = 'success', array $data = [] ): void { $GLOBALS['pow_route_guard_test']['notices'][] = [ $type, $message ]; } }
 	if ( ! function_exists( 'wc_has_notice' ) ) { function wc_has_notice( string $message, string $type = 'success' ): bool { return in_array( [ $type, $message ], $GLOBALS['pow_route_guard_test']['notices'] ?? [], true ); } }
@@ -1231,6 +1234,78 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		sort( $files );
 
 		return $files;
+	}
+
+	/** The front page inside a request with the given method; the redirect guard() produced, or null. */
+	private function front_page( ?POW\Sessions\Session $visit, string $method = 'GET' ): ?RouteGuardRedirect {
+		$before = $_SERVER['REQUEST_METHOD'] ?? null;
+		$_SERVER['REQUEST_METHOD'] = $method;
+		$GLOBALS['pow_route_guard_test']['front'] = true;
+		try { return $this->guarded( $this->guard( $visit ) ); }
+		finally {
+			if ( null === $before ) { unset( $_SERVER['REQUEST_METHOD'] ); } else { $_SERVER['REQUEST_METHOD'] = $before; }
+		}
+	}
+
+	public function test_the_front_page_inside_an_active_visit_goes_to_the_landing_page(): void {
+		$GLOBALS['pow_test_filters'][ POW\RouteGuard::FRONT_PAGE_FILTER ] = static fn( string $url, POW\Sessions\Session $visit ): string => 'https://shop.example.test/shop/';
+
+		$redirect = $this->front_page( $this->visit() );
+		self::assertNotNull( $redirect, 'The front page inside a visit redirects' );
+		self::assertSame( 'https://shop.example.test/shop/', $redirect->url );
+		self::assertSame( 302, $redirect->status );
+
+		self::assertNull( $this->front_page( null ), 'Outside a visit the front page is the front page' );
+		self::assertNull( $this->front_page( $this->visit( self::VISIT, 'ordered' ) ), 'Only an active visit is redirected' );
+		self::assertNull( $this->front_page( $this->visit(), 'POST' ), 'A form posted to the front page is not redirected' );
+		self::assertNotNull( $this->front_page( $this->visit(), 'HEAD' ) );
+
+		$GLOBALS['pow_route_guard_test']['feed'] = true;
+		self::assertNull( $this->front_page( $this->visit() ), 'The site feed is never redirected' );
+		$GLOBALS['pow_route_guard_test']['feed'] = false;
+
+		$GLOBALS['pow_route_guard_test']['front'] = false;
+		self::assertNull( $this->guarded( $this->guard( $this->visit() ) ), 'Any other page is left alone' );
+	}
+
+	public function test_the_default_target_is_the_start_page_landing_and_never_loops_onto_the_front_page(): void {
+		// The StartPage login sends the buyer to Settings::landing_url(); with no landing page and no shop page
+		// that is the home URL itself, so the front page must be left alone rather than redirected to itself.
+		self::assertSame( 'https://shop.example.test/', $this->landing() );
+		self::assertNull( $this->front_page( $this->visit() ) );
+
+		foreach ( [ 'https://shop.example.test', 'http://SHOP.example.test/', 'https://shop.example.test/?utm=x' ] as $same ) {
+			$GLOBALS['pow_test_filters'][ POW\RouteGuard::FRONT_PAGE_FILTER ] = static fn(): string => $same;
+			self::assertNull( $this->front_page( $this->visit() ), $same . ' is the front page itself' );
+		}
+	}
+
+	public function test_the_front_page_redirect_is_filterable_and_can_be_turned_off(): void {
+		$seen = null;
+		$GLOBALS['pow_test_filters'][ POW\RouteGuard::FRONT_PAGE_FILTER ] = static function ( string $url, POW\Sessions\Session $visit ) use ( &$seen ): string { $seen = $visit->id; return ''; };
+		self::assertNull( $this->front_page( $this->visit() ), "'' keeps the front page" );
+		self::assertSame( self::VISIT, $seen, 'The filter is told which visit' );
+
+		$GLOBALS['pow_test_filters'][ POW\RouteGuard::FRONT_PAGE_FILTER ] = static fn(): string => 'https://shop.example.test/catalogue/';
+		self::assertSame( 'https://shop.example.test/catalogue/', $this->front_page( $this->visit() )?->url );
+
+		$GLOBALS['pow_test_filters'][ POW\RouteGuard::FRONT_PAGE_FILTER ] = static fn(): mixed => false;
+		self::assertNull( $this->front_page( $this->visit() ), 'A non-string answer turns it off' );
+	}
+
+	public function test_the_front_page_rule_never_redirects_an_administrator(): void {
+		$visit = $this->visit();
+		$shop  = 'https://shop.example.test/shop/';
+		$home  = 'https://shop.example.test/';
+		self::assertSame( $shop, POW\RouteGuard::front_page_target( true, 'GET', $visit, false, $shop, $home ) );
+		self::assertSame( '', POW\RouteGuard::front_page_target( true, 'GET', $visit, true, $shop, $home ), 'An administrator or shop manager keeps the front page' );
+		self::assertSame( '', POW\RouteGuard::front_page_target( false, 'GET', $visit, false, $shop, $home ) );
+		self::assertSame( '', POW\RouteGuard::front_page_target( true, 'GET', null, false, $shop, $home ) );
+		self::assertSame( '', POW\RouteGuard::front_page_target( true, 'PUT', $visit, false, $shop, $home ) );
+		self::assertSame( '', POW\RouteGuard::front_page_target( true, 'get', $visit, false, '  ', $home ) );
+		// A subdirectory site: the landing page is under the home path, not the home path itself.
+		self::assertSame( 'https://example.test/store/shop/', POW\RouteGuard::front_page_target( true, 'get', $visit, false, 'https://example.test/store/shop/', 'https://example.test/store/' ) );
+		self::assertSame( '', POW\RouteGuard::front_page_target( true, 'get', $visit, false, 'https://example.test/store', 'https://example.test/store/' ) );
 	}
 
 	public function test_no_site_glue_hook_and_no_exit_policy_remain_in_the_guard(): void {

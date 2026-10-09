@@ -34,14 +34,23 @@ final class WooCompatibilityTest extends TestCase {
 		return $found[1];
 	}
 
+	/**
+	 * The WooCommerce releases the session-handler shape has been verified on. 11.1 is where it was first read;
+	 * 11.2 is a production store running visits on 0.4.21 (the runtime shape check refuses every visit with a 409
+	 * where the shape is missing). A release added here must have been verified the same way.
+	 */
+	private const VERIFIED = [ '11.1', '11.2' ];
+
 	public function test_the_declared_minimum_is_not_older_than_the_version_verified(): void {
 		$minimum = $this->header( 'WC requires at least' );
 		$tested  = $this->header( 'WC tested up to' );
 
 		self::assertTrue(
-			version_compare( $minimum, $tested, '>=' ),
-			'WC requires at least ' . $minimum . ' promises a store the session bypass was never verified on (tested up to ' . $tested . '); a visit there is refused with a 409 on every request.'
+			in_array( $minimum, self::VERIFIED, true ) && version_compare( $minimum, self::VERIFIED[0], '>=' ),
+			'WC requires at least ' . $minimum . ' promises a store the session bypass was never verified on (verified: ' . implode( ', ', self::VERIFIED ) . '); a visit there is refused with a 409 on every request.'
 		);
+		self::assertTrue( in_array( $tested, self::VERIFIED, true ), 'WC tested up to ' . $tested . ' names a release the session bypass was never verified on.' );
+		self::assertTrue( version_compare( $minimum, $tested, '<=' ), 'The minimum cannot be newer than the release tested.' );
 	}
 
 	public function test_the_readme_installation_step_names_the_same_minimum(): void {

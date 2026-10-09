@@ -108,6 +108,28 @@ final class Attachment {
 		return '' === $ext ? $stem : $stem . '.' . strtolower( $ext );
 	}
 
+	/**
+	 * Whether a stored name is one plain file name (0.4.22): not empty, valid UTF-8, no directory separator, not "."
+	 * or "..", no control character. Every name store() writes passes; a name edited into order meta to reach
+	 * another file does not.
+	 */
+	public static function safe_name( string $name ): bool {
+		return '' !== $name && strlen( $name ) <= 255 && 1 === preg_match( '//u', $name ) && ! in_array( $name, [ '.', '..' ], true ) && 1 !== preg_match( '#[/\\\\\x00-\x1f\x7f]#', $name );
+	}
+
+	/**
+	 * The real path of the file $name directly inside $dir, or null when the name is not a plain file name or the
+	 * file resolves anywhere else (a link out of the directory, a missing file) (0.4.22).
+	 */
+	public static function contained_path( string $dir, string $name ): ?string {
+		if ( ! self::safe_name( $name ) ) { return null; }
+		$real_dir = realpath( $dir );
+		if ( false === $real_dir || ! is_dir( $real_dir ) ) { return null; }
+		$real = realpath( $real_dir . DIRECTORY_SEPARATOR . $name );
+		if ( false === $real || ! is_file( $real ) || dirname( $real ) !== $real_dir ) { return null; }
+		return $real;
+	}
+
 	/** "2.3 MB" style, without WordPress. */
 	public static function format_size( int $bytes ): string {
 		if ( $bytes >= MB_IN_BYTES ) { return rtrim( rtrim( number_format( $bytes / MB_IN_BYTES, 1, '.', '' ), '0' ), '.' ) . ' MB'; }
@@ -264,7 +286,7 @@ final class Attachment {
 		$json = (string) $order->get_meta( self::META );
 		if ( '' === $json ) { return null; }
 		$data = json_decode( $json, true );
-		if ( ! is_array( $data ) || ! is_string( $data['id'] ?? null ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/', $data['id'] ) || ! is_string( $data['name'] ?? null ) ) { return null; }
+		if ( ! is_array( $data ) || ! is_string( $data['id'] ?? null ) || 1 !== preg_match( '/\A[a-f0-9]{32}\z/', $data['id'] ) || ! is_string( $data['name'] ?? null ) || ! self::safe_name( $data['name'] ) ) { return null; }
 		return [ 'id' => $data['id'], 'name' => $data['name'], 'size' => (int) ( $data['size'] ?? 0 ), 'type' => (string) ( $data['type'] ?? '' ), 'attached_at' => (string) ( $data['attached_at'] ?? '' ) ];
 	}
 
@@ -290,8 +312,9 @@ final class Attachment {
 		if ( isset( $_GET['_wpnonce'] ) && ! wp_verify_nonce( sanitize_key( wp_unslash( $_GET['_wpnonce'] ) ), self::DOWNLOAD_ACTION . '-' . $order_id ) ) { wp_die( esc_html__( 'This link has expired. Open the order and use its attachment link.', 'punchout-woocommerce' ), '', [ 'response' => 403 ] ); }
 		$order = $order_id > 0 ? wc_get_order( $order_id ) : false;
 		$attachment = $order instanceof \WC_Order ? self::for_order( $order ) : null;
-		$path = null !== $attachment ? self::dir( $attachment['id'] ) . '/' . $attachment['name'] : '';
-		if ( null === $attachment || '' === $id || ! hash_equals( $attachment['id'], $id ) || ! is_file( $path ) ) { wp_die( esc_html__( 'No such attachment.', 'punchout-woocommerce' ), '', [ 'response' => 404 ] ); }
+		// 0.4.22: the stored name must be a plain file name that resolves inside the attachment's own directory.
+		$path = null !== $attachment ? self::contained_path( self::dir( $attachment['id'] ), $attachment['name'] ) : null;
+		if ( null === $attachment || '' === $id || ! hash_equals( $attachment['id'], $id ) || null === $path ) { wp_die( esc_html__( 'No such attachment.', 'punchout-woocommerce' ), '', [ 'response' => 404 ] ); }
 		nocache_headers();
 		header( 'X-Content-Type-Options: nosniff' );
 		header( 'Content-Type: ' . ( '' !== $attachment['type'] ? $attachment['type'] : 'application/octet-stream' ) );
@@ -355,7 +378,7 @@ final class Attachment {
 	/* ---------------------------------------------------------------- the visit's carry */
 
 	private static function carry_shape( array $carry ): bool {
-		return is_int( $carry['visit'] ?? null ) && is_string( $carry['key'] ?? null ) && SessionKey::is_visit_key( $carry['key'] ) && is_string( $carry['id'] ?? null ) && 1 === preg_match( '/\A[a-f0-9]{32}\z/', $carry['id'] ) && is_string( $carry['name'] ?? null ) && '' !== $carry['name'] && is_int( $carry['size'] ?? null ) && is_string( $carry['type'] ?? null );
+		return is_int( $carry['visit'] ?? null ) && is_string( $carry['key'] ?? null ) && SessionKey::is_visit_key( $carry['key'] ) && is_string( $carry['id'] ?? null ) && 1 === preg_match( '/\A[a-f0-9]{32}\z/', $carry['id'] ) && is_string( $carry['name'] ?? null ) && self::safe_name( $carry['name'] ) && is_int( $carry['size'] ?? null ) && is_string( $carry['type'] ?? null );
 	}
 
 	/** The pending file of this visit, read only from the WooCommerce session this request holds and only when that is the visit's own basket. */

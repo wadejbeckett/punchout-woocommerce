@@ -25,9 +25,9 @@ defined( 'ABSPATH' ) || exit;
  * before template_redirect keeps every canonical plugin out of the path.
  * Anything else under /punchout/ falls through to WP and 404s.
  *
- * Every matched route sends no-store + noindex headers before its handler
- * runs — punchout responses are price-bearing and must never be cached or
- * indexed (scope §7, L4).
+ * Every matched route sends no-store, noindex and nosniff headers before its
+ * handler runs — punchout responses are price-bearing and must never be
+ * cached, indexed or sniffed as another type (scope §7, L4).
  */
 final class Router {
 
@@ -95,6 +95,7 @@ final class Router {
 				// A GET of the review inside the active theme: WordPress parses the request on,
 				// and the page is drawn at template_redirect, before any guard or redirect runs.
 				// Pose as the shop's cart page before the theme resolves its layout for this request (0.4.18).
+				\POW\Addresses\ReviewChrome::mark_review_request();
 				add_action( 'wp', [ $this->delivery, 'pose_for_theme' ], 0 );
 				add_action( 'template_redirect', [ $this->delivery, 'handle_in_theme' ], 0 );
 				return;
@@ -137,13 +138,24 @@ final class Router {
 		return '/' . trim( $path, '/' );
 	}
 
+	/**
+	 * The headers every matched route sends after nocache_headers(): no caching, no indexing and (0.4.22) no MIME
+	 * sniffing, so a browser never reinterprets a punchout response as another type.
+	 *
+	 * @return list<string>
+	 */
+	public static function security_headers(): array {
+		return [ 'Cache-Control: private, no-store', 'X-Robots-Tag: noindex, nofollow', 'X-Content-Type-Options: nosniff' ];
+	}
+
 	private function harden_headers(): void {
 		if ( ! defined( 'DONOTCACHEPAGE' ) ) {
 			define( 'DONOTCACHEPAGE', true );
 		}
 
 		nocache_headers();
-		header( 'Cache-Control: private, no-store' );
-		header( 'X-Robots-Tag: noindex, nofollow' );
+		foreach ( self::security_headers() as $header ) {
+			header( $header );
+		}
 	}
 }

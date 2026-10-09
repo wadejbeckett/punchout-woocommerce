@@ -67,8 +67,12 @@ final class SetupEdgeLimitTest extends TestCase {
 		}
 	}
 
-	private function endpoint( int $edge_limit, int $downstream_limit = 10 ): SetupEndpoint {
+	/** Per-IP budget counters of the anonymous audit limiter, when a test gives the endpoint one. */
+	private array $anonymous = [];
+
+	private function endpoint( int $edge_limit, int $downstream_limit = 10, ?int $anonymous_per_hour = null ): SetupEndpoint {
 		$edge = [];
+		$budget = null === $anonymous_per_hour ? null : new \POW\Http\AnonymousAudit( new RateLimiter( $anonymous_per_hour, fn( string $key ): int => $this->anonymous[ $key ] ?? 0, function ( string $key, int $count ): void { $this->anonymous[ $key ] = $count; }, 3600 ) );
 		return new SetupEndpoint(
 			new Registry( new Secrets( str_repeat( 't', 32 ) ) ),
 			new Store(),
@@ -76,7 +80,8 @@ final class SetupEdgeLimitTest extends TestCase {
 			new Builder(),
 			new RateLimiter( $downstream_limit, fn( string $key ): int => $this->downstream[ $key ] ?? 0, function ( string $key, int $count ): void { $this->downstream[ $key ] = $count; } ),
 			$this->audit,
-			new RateLimiter( $edge_limit, static function ( string $key ) use ( &$edge ): int { return $edge[ $key ] ?? 0; }, static function ( string $key, int $count ) use ( &$edge ): void { $edge[ $key ] = $count; } )
+			new RateLimiter( $edge_limit, static function ( string $key ) use ( &$edge ): int { return $edge[ $key ] ?? 0; }, static function ( string $key, int $count ) use ( &$edge ): void { $edge[ $key ] = $count; } ),
+			$budget
 		);
 	}
 
@@ -335,6 +340,59 @@ final class SetupEdgeLimitTest extends TestCase {
 		self::assertStringNotContainsString( 'jdoe@example.test', (string) wp_json_encode( array_column( $this->audit->rows, 1 ) ), 'The raw buyer e-mail is never logged' );
 	}
 
+	public function test_unauthenticated_requests_write_audit_rows_only_within_the_per_ip_budget(): void {
+		$endpoint = $this->endpoint( 50, 50, 2 );
+		// One permit per request, however many rows it writes.
+		self::assertSame( 401, $this->request( $endpoint, $this->valid_body( 'stranger-1' ) ) );
+		self::assertSame( [ 'setup_rx', 'setup_fail' ], array_column( $this->audit->rows, 0 ) );
+		self::assertSame( 401, $this->request( $endpoint, $this->valid_body( 'stranger-2' ) ) );
+		self::assertCount( 4, $this->audit->rows );
+		// Over budget: still answered, no row at all. A known sender with a wrong secret is unauthenticated too.
+		self::assertSame( 401, $this->request( $endpoint, $this->valid_body( 'stranger-3' ) ) );
+		$this->connect();
+		$this->bind_account();
+		self::assertSame( 401, $this->request( $endpoint, str_replace( 'fixture-secret', 'wrong-secret', $this->valid_body( 'known', 'bad-secret' ) ) ) );
+		self::assertSame( 406, $this->request( $endpoint, '<cXML><broken' ) );
+		self::assertCount( 4, $this->audit->rows );
+		// Another address has its own budget.
+		self::assertSame( 401, $this->request( $endpoint, str_replace( 'fixture-secret', 'wrong-secret', $this->valid_body( 'known', 'elsewhere' ) ), '198.51.100.7' ) );
+		self::assertCount( 6, $this->audit->rows );
+		// An authenticated sender is never counted: its archive and outcome are written whatever the budget.
+		self::assertSame( SetupEndpoint::STATUS_OK, $this->request( $endpoint, $this->valid_body( 'known', 'paid-for' ) ) );
+		self::assertSame( [ 'setup_rx', 'setup_ok' ], array_slice( array_column( $this->audit->rows, 0 ), 6 ) );
+		self::assertSame( 2, array_values( $this->anonymous )[0] ?? null, 'The first address used exactly its two permits' );
+	}
+
+	public function test_an_unauthenticated_body_is_kept_as_a_short_excerpt_with_its_hash_and_never_its_secret(): void {
+		$plain = $this->valid_body( 'stranger' );
+		// Pad so that, unredacted, the 4 KB cut would fall inside the shared secret's value.
+		$at = strpos( $plain, '<SharedSecret>' ) + strlen( '<SharedSecret>' );
+		$body = '<!--' . str_repeat( 'x', \POW\Http\AnonymousAudit::EXCERPT_BYTES - 4 - 7 - $at ) . '-->' . $plain;
+		self::assertSame( 'fixt', substr( $body, \POW\Http\AnonymousAudit::EXCERPT_BYTES - 4, 4 ) );
+		$this->request( $this->endpoint( 10 ), $body );
+		$archive = (string) $this->audit->rows[0][1]['xml'];
+		self::assertSame( 'setup_rx', $this->audit->rows[0][0] );
+		self::assertStringStartsWith( substr( $body, 0, 100 ), $archive );
+		self::assertStringNotContainsString( 'fixt', $archive, 'Not even part of the secret survives the cut' );
+		self::assertStringContainsString( strlen( $body ) . ' bytes, sha256 ' . hash( 'sha256', $body ), $archive );
+		self::assertTrue( strlen( $archive ) < \POW\Http\AnonymousAudit::EXCERPT_BYTES + 200 );
+
+		// A short unauthenticated body is kept whole (secret blanked); an authenticated one keeps up to 64 KB.
+		self::assertSame( \POW\Http\AnonymousAudit::excerpt( 'short', 'short' ), 'short' );
+		$this->connect();
+		$this->bind_account();
+		$long = str_replace( '<BuyerCookie>cookie</BuyerCookie>', '<BuyerCookie>cookie</BuyerCookie><!--' . str_repeat( 'y', 20000 ) . '-->', $this->valid_body( 'known', 'long' ) );
+		$this->request( $this->endpoint( 10 ), $long );
+		self::assertStringContainsString( str_repeat( 'y', 20000 ), (string) $this->audit->rows[2][1]['xml'] );
+	}
+
+	public function test_the_order_endpoint_row_is_inside_the_same_budget(): void {
+		$endpoint = $this->endpoint( 10, 10, 1 );
+		$_SERVER['REMOTE_ADDR'] = '203.0.113.9';
+		foreach ( [ 1, 2, 3 ] as $ignored ) { ob_start(); try { $endpoint->not_implemented(); } finally { ob_end_clean(); } }
+		self::assertSame( [ 'po_rx' ], array_column( $this->audit->rows, 0 ) );
+	}
+
 	public function test_the_pre_auth_archive_keeps_the_request_but_never_its_raw_e_mail(): void {
 		$this->connect();
 		$this->bind_account();
@@ -358,7 +416,10 @@ final class SetupEdgeLimitTest extends TestCase {
 		self::assertStringContainsString( '<BuyerCookie>cookie</BuyerCookie>', $archive );
 		self::assertStringContainsString( 'https://buyer.example.test/return', $archive );
 		self::assertStringContainsString( '<Extrinsic name="UserPrintableName">Jane Doe</Extrinsic>', $archive );
-		self::assertSame( 4, substr_count( $archive, '[redacted]' ), 'Each identity-bearing element is blanked, and nothing else is' );
+		// 0.4.22: the shared secret is blanked in the archive itself, before any cut, not only when the row is written.
+		self::assertStringContainsString( '<SharedSecret>[redacted]</SharedSecret>', $archive );
+		self::assertStringNotContainsString( 'fixture-secret', $archive );
+		self::assertSame( 4, substr_count( str_replace( '<SharedSecret>[redacted]</SharedSecret>', '', $archive ), '[redacted]' ), 'Each identity-bearing element is blanked, and nothing else is' );
 		$doc = new DOMDocument();
 		self::assertTrue( $doc->loadXML( $archive ), 'A redacted archive is still a readable document' );
 
@@ -388,7 +449,7 @@ final class SetupEdgeLimitTest extends TestCase {
 		self::assertStringContainsString( '<Extrinsic name="User email">[redacted]</Extrinsic>', $archive );
 		self::assertStringContainsString( '<Extrinsic name="user_full_name">Jane Doe</Extrinsic>', $archive, 'A name is not an identity and stays readable' );
 		self::assertStringContainsString( '<Extrinsic name="Cost centre">CC-100</Extrinsic>', $archive, 'Unrelated extrinsics are untouched' );
-		self::assertSame( 1, substr_count( $archive, '[redacted]' ) );
+		self::assertSame( 1, substr_count( str_replace( '<SharedSecret>[redacted]</SharedSecret>', '', $archive ), '[redacted]' ) );
 
 		$visit = $this->visits()[0];
 		self::assertSame( 'jane.doe@buyer.example.com', $visit['buyer_identity'] );
@@ -406,7 +467,7 @@ final class SetupEdgeLimitTest extends TestCase {
 		$archive = (string) $this->audit->rows[0][1]['xml'];
 		self::assertStringContainsString( '<Extrinsic name="UserEmail"/>', $archive );
 		self::assertStringContainsString( '<Extrinsic name="UserPrintableName">Jane Doe</Extrinsic>', $archive );
-		self::assertStringNotContainsString( '[redacted]', $archive, 'An empty element has nothing to blank' );
+		self::assertStringNotContainsString( '[redacted]', str_replace( '<SharedSecret>[redacted]</SharedSecret>', '', $archive ), 'An empty element has nothing to blank' );
 	}
 
 	public function test_setup_ok_records_a_name_sent_without_an_e_mail(): void {

@@ -46,7 +46,8 @@ class Settings {
 		// one customer connection and flipped it on.
 		'enabled'              => 'no',
 
-		// Default TTLs; each partner row can override its own.
+		// Default TTLs; each partner row can override its own. Both are capped at
+		// Partners\Partner::MAX_TTL (7 days) wherever they are read or saved.
 		'token_ttl'            => 300,     // StartPage token, seconds (~5 min).
 		'session_ttl'          => 14400,   // Punchout login, seconds (4 h).
 
@@ -89,6 +90,10 @@ class Settings {
 
 		// 0.4.19: the sentence shown with every delivery estimate and sent with the returned cart. Blank = the translated default.
 		'delivery_estimate_note' => '',
+
+		// 0.4.22: the title the theme-drawn review answers with while it poses as the Cart page (title bar, last
+		// breadcrumb, document title). Blank = the translated default "Review"; filter punchout_review_title.
+		'review_title'         => '',
 
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends

@@ -95,6 +95,18 @@ final class Partner {
 	) {}
 
 	/**
+	 * The longest a StartPage login link or a visit may live, in seconds (0.4.22): 7 days. A hard cap with no
+	 * filter, applied when a lifetime is saved (connection form, plugin settings, the registry) and again when a
+	 * connection row is read, so a longer value stored by an earlier version is used as 7 days.
+	 */
+	public const MAX_TTL = 7 * 24 * 3600;
+
+	/** A lifetime in seconds within [$floor, MAX_TTL]. */
+	public static function clamp_ttl( int $seconds, int $floor ): int {
+		return min( self::MAX_TTL, max( $floor, $seconds ) );
+	}
+
+	/**
 	 * @param array<string, mixed> $row Raw wpdb row.
 	 */
 	public static function from_row( array $row ): self {
@@ -122,8 +134,8 @@ final class Partner {
 			gateway_allowlist: isset( $row['gateway_allowlist'] ) && '' !== (string) $row['gateway_allowlist'] ? (string) $row['gateway_allowlist'] : null,
 			company_profile: isset( $row['company_profile'] ) && '' !== (string) $row['company_profile'] ? (string) $row['company_profile'] : null,
 			ip_allowlist: isset( $row['ip_allowlist'] ) && '' !== (string) $row['ip_allowlist'] ? (string) $row['ip_allowlist'] : null,
-			session_ttl: max( 60, (int) ( $row['session_ttl'] ?? 14400 ) ),
-			token_ttl: max( 30, (int) ( $row['token_ttl'] ?? 300 ) ),
+			session_ttl: self::clamp_ttl( (int) ( $row['session_ttl'] ?? 14400 ), 60 ),
+			token_ttl: self::clamp_ttl( (int) ( $row['token_ttl'] ?? 300 ), 30 ),
 			owner_user_id: (int) ( $row['owner_user_id'] ?? 0 ),
 			delivery_code_prefix: $delivery['delivery_code_prefix'] ?? '',
 			delivery_code_extrinsic_name: $delivery['delivery_code_extrinsic_name'] ?? 'DeliveryAddressCode',
