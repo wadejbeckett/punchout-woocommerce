@@ -25,14 +25,26 @@ defined( 'ABSPATH' ) || exit;
  *
  * The page is kept under a hash of the visit's login token and the order key, and only for TTL seconds. It is
  * served once, with no-store, noindex, nosniff and no-referrer, to a GET that presents that same login cookie and
- * that order, and only when the visit row it names has returned with that login and that order. Serving it clears
- * the login cookie in that browser (the login itself was ended when the visit won). Anything else gets a short page
- * with no form, so a refresh, a back button or a second tab never posts the cart twice.
+ * that order, and only when the visit row it names has returned with that login and that order: the request whose
+ * delete removes the kept page is the one that serves it, so two GETs at once cannot both post the cart. Serving it
+ * clears the login cookie in that browser (the login itself was ended when the visit won) and leaves a small marker
+ * cookie naming the visit, keyed so it cannot be forged, by which a later Submit from a stale tab is recognised.
+ * Anything else gets a short page with no form, so a refresh, a back button or a second tab never posts the cart
+ * twice.
+ *
+ * The Sent state (GET /punchout/sent) is where a Submit that arrives after the visit has returned is sent: a
+ * theme-free page with the `pow-state` classes and no form (0.5.0, ticket 74).
  */
 final class Handoff {
 
 	/** Seconds the prepared page waits for its browser. */
 	public const TTL = 300;
+
+	/** The cookie serving the page leaves behind: the visit id and its key. Carries no secret. */
+	public const SENT_MARKER = 'pow_visit_sent';
+
+	/** How long the marker lasts: as long as WooCommerce's checkout nonce a stale tab could still hold. */
+	private const MARKER_TTL = 86400;
 
 	private const PREFIX = 'pow_checkout_handoff_';
 
@@ -64,12 +76,57 @@ final class Handoff {
 		if ( '' === $key ) { return null; }
 		try {
 			$record = get_transient( $key );
-			delete_transient( $key );
+			// The delete is the claim: of two requests that read the page at once, only the one whose delete removed
+			// it may serve it.
+			if ( false === $record || true !== delete_transient( $key ) ) { return null; }
 		} catch ( \Throwable $error ) {
 			return null;
 		}
 		if ( ! is_array( $record ) || ! is_int( $record['session_id'] ?? null ) || ! is_int( $record['order_id'] ?? null ) || ! is_string( $record['markup'] ?? null ) || '' === $record['markup'] ) { return null; }
 		return [ 'session_id' => $record['session_id'], 'order_id' => $record['order_id'], 'markup' => $record['markup'] ];
+	}
+
+	/** Whether a page is still kept for this login and order (never served, not expired). Takes nothing. */
+	public static function kept( string $login_token, string $order_key ): bool {
+		$key = self::key( $login_token, $order_key );
+		if ( '' === $key ) { return false; }
+		try {
+			return is_array( get_transient( $key ) );
+		} catch ( \Throwable $error ) {
+			return false;
+		}
+	}
+
+	/**
+	 * Where a browser goes once its visit has returned: the handoff of the order the visit sent, while its page is
+	 * still kept for this browser's login (the answer that named it may never have reached a browser, and the page is
+	 * served only once), else the Sent state.
+	 */
+	public static function after_return( Session $returned, string $login_token ): string {
+		try {
+			$order = $returned->order_id > 0 && '' !== $login_token && hash_equals( $returned->wp_session_token, $login_token ) ? wc_get_order( $returned->order_id ) : null;
+			$key   = $order instanceof \WC_Order ? (string) $order->get_order_key() : '';
+			if ( '' !== $key && self::kept( $login_token, $key ) ) { return self::url( $returned->order_id, $key ); }
+		} catch ( \Throwable $error ) {
+			// The Sent state carries nothing a failed lookup could expose.
+		}
+		return self::sent_url();
+	}
+
+	/** The Sent state: no form, nothing posted. */
+	public static function sent_url(): string {
+		return Transport::supplier_url( home_url( '/punchout/sent' ) );
+	}
+
+	/** The marker's value for a visit: its id and a key over it. */
+	private static function marker( int $session_id ): string {
+		return $session_id . '.' . substr( hash_hmac( 'sha256', 'pow-visit-sent|' . $session_id, wp_salt( 'auth' ) ), 0, 32 );
+	}
+
+	/** The visit a marker names when its key holds, else 0. */
+	public static function marked_visit( string $value ): int {
+		if ( 1 !== preg_match( '/\A([1-9][0-9]{0,18})\.[0-9a-f]{32}\z/', $value, $match ) ) { return 0; }
+		return hash_equals( self::marker( (int) $match[1] ), $value ) ? (int) $match[1] : 0;
 	}
 
 	/** Drop a page kept for a return this request then lost. */
@@ -113,6 +170,9 @@ final class Handoff {
 		}
 
 		wp_clear_auth_cookie();
+		if ( function_exists( 'wc_setcookie' ) ) {
+			wc_setcookie( self::SENT_MARKER, self::marker( $visit->id ), time() + self::MARKER_TTL, is_ssl(), true );
+		}
 		try {
 			$this->audit?->write_checked( 'handoff_served', [ 'partner_id' => $visit->partner_id, 'session_id' => $visit->id, 'user_id' => $visit->user_id, 'order_id' => $order_id, 'direction' => 'out', 'result' => 'ok' ] );
 		} catch ( \Throwable $error ) {
@@ -120,6 +180,19 @@ final class Handoff {
 		}
 		self::html_headers( 200 );
 		echo $kept['markup']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the handoff template, escaped within.
+	}
+
+	/** GET /punchout/sent: the Sent state, theme-free and with no form. */
+	public function sent(): void {
+		Transport::private_headers();
+		self::html_headers( 200 );
+		echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1"><title>';
+		echo esc_html__( 'Sent', 'punchout-woocommerce' );
+		echo '</title></head><body><main class="pow-state pow-state--sent" style="font-family:sans-serif;max-width:36em;margin:4em auto;padding:0 1em"><h1 class="pow-state__title">';
+		echo esc_html__( 'Sent', 'punchout-woocommerce' );
+		echo '</h1><p class="pow-state__text">';
+		echo esc_html__( 'Your cart has been sent to your purchasing system. Return there to continue.', 'punchout-woocommerce' );
+		echo '</p></main></body></html>';
 	}
 
 	private static function html_headers( int $status ): void {

@@ -302,10 +302,18 @@ if ( ! function_exists( 'set_transient' ) ) {
 }
 
 if ( ! function_exists( 'delete_transient' ) ) {
-	/** Removes the key from pow_test_transients, as WordPress removes the transient. */
+	/**
+	 * Removes the key from pow_test_transients, as WordPress removes the transient. With pow_test_transient_delete_lost
+	 * set, the next delete answers false as WordPress does when another request deleted the row first (the flag is
+	 * used up).
+	 */
 	function delete_transient( string $key ): bool { // phpcs:ignore
 		$existed = array_key_exists( $key, $GLOBALS['pow_test_transients'] ?? [] );
 		unset( $GLOBALS['pow_test_transients'][ $key ] );
+		if ( ! empty( $GLOBALS['pow_test_transient_delete_lost'] ) ) {
+			unset( $GLOBALS['pow_test_transient_delete_lost'] );
+			return false;
+		}
 
 		return $existed;
 	}
@@ -329,10 +337,15 @@ if ( ! function_exists( 'wp_mail' ) ) {
 }
 
 if ( ! class_exists( 'WP_Error' ) ) {
-	/** Just enough of the WordPress error object to carry a message. */
+	/** Just enough of the WordPress error object to carry messages: the first code and message, and add(). */
 	class WP_Error { // phpcs:ignore
 
-		public function __construct( private string $code = '', private string $message = '' ) {}
+		/** @var array<string, list<string>> Messages by code, as WordPress keeps them. */
+		public array $errors = [];
+
+		public function __construct( private string $code = '', private string $message = '' ) {
+			if ( '' !== $code ) { $this->errors[ $code ][] = $message; }
+		}
 
 		public function get_error_code(): string {
 			return $this->code;
@@ -341,6 +354,27 @@ if ( ! class_exists( 'WP_Error' ) ) {
 		public function get_error_message(): string {
 			return $this->message;
 		}
+
+		public function add( string|int $code, string $message, mixed $data = '' ): void {
+			if ( '' === $this->code ) {
+				$this->code    = (string) $code;
+				$this->message = $message;
+			}
+			$this->errors[ (string) $code ][] = $message;
+		}
+
+		/** @return list<string> */
+		public function get_error_messages( string|int $code = '' ): array {
+			if ( '' !== $code ) { return $this->errors[ (string) $code ] ?? []; }
+			return array_merge( [], ...array_values( $this->errors ) );
+		}
+	}
+}
+
+if ( ! function_exists( 'wp_salt' ) ) {
+	/** A fixed salt per scheme: enough to prove a value is keyed, never a secret. */
+	function wp_salt( string $scheme = 'auth' ): string { // phpcs:ignore
+		return 'pow-test-salt-' . $scheme;
 	}
 }
 

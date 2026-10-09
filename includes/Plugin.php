@@ -150,6 +150,8 @@ final class Plugin {
 		( new \POW\Orders\Status() )->register();
 		// The store hears about each returned cart: WooCommerce's own order e-mails never fire for the custom status.
 		( new \POW\Emails\Notifications() )->register();
+		// 0.5.0: WooCommerce's unpaid-order clean-up (cron) never cancels a PunchOut order, whatever the master switch says.
+		Checkout\Lifecycle::register_unpaid_rule();
 		// The buyer's optional file: claimed by the Quote before the e-mail, downloadable by staff from the order screen.
 		$attachments = new \POW\Orders\Attachment( $this->settings );
 		$attachments->register();
@@ -227,9 +229,14 @@ final class Plugin {
 
 		// 0.5.0: WooCommerce's classic checkout is the visit's Review step and PunchOut its only payment method;
 		// Submit hands the placed order back through the GET handoff.
-		$handoff    = new Checkout\Handoff( $this->sessions, $this->audit );
-		$submission = new Checkout\Submission( $this, $this->registry, $this->sessions, $builder, $this->audit, $this->settings );
-		( new Checkout\PaymentMethod( $this, $this->registry, $submission ) )->register();
+		$handoff        = new Checkout\Handoff( $this->sessions, $this->audit );
+		$submission     = new Checkout\Submission( $this, $this->registry, $this->sessions, $builder, $this->audit, $this->settings );
+		$payment_method = new Checkout\PaymentMethod( $this, $this->registry, $submission );
+		$payment_method->register();
+		// The order lifecycle around Submit: refusals before an order exists, zero-total carts, a Submit after the return.
+		( new Checkout\Validation( $payment_method ) )->register();
+		( new Checkout\Lifecycle( $payment_method ) )->register();
+		( new Checkout\LateSubmit( $this, $this->sessions ) )->register();
 
 		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser, $handoff ) )->register();
 		$chooser->register();

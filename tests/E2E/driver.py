@@ -277,10 +277,11 @@ def checkout_findings(page, form, place_order_label):
     ]
 
 
-def checkout_submission(form, note):
+def checkout_submission(form, note, extra=None):
     """What WooCommerce's checkout script posts: the form serialised (no button, as jQuery's serialize()), with the
-    PunchOut method chosen, the buyer's note, and a phone typed in when the shop asks for one and the account has none."""
-    choose = {'payment_method': 'punchout', 'order_comments': note}
+    PunchOut method chosen, the buyer's note, and a phone typed in when the shop asks for one and the account has none.
+    `extra` holds further choices the buyer made on the page (a shipping method, say)."""
+    choose = dict(extra or {}, payment_method='punchout', order_comments=note)
     if any(c.name == 'billing_phone' for c in form.controls) and not form.value('billing_phone'):
         choose['billing_phone'] = '0100000000'
     return [(name, '' if value is None else value) for name, value in form.submission(None, choose)]
@@ -294,7 +295,11 @@ def checkout_answer(status, body):
         return 'unreadable', None, [_text(body)[:300]]
     if not isinstance(answer, dict):
         return 'unreadable', None, []
-    messages = [_text(m) for m in re.findall(r'<li[^>]*>(.*?)</li>', answer.get('messages') or '', re.S)]
+    notices = answer.get('messages') or ''
+    # A classic theme lists each notice; a block theme's banner lists several, or holds one as its content.
+    messages = [_text(m) for m in re.findall(r'<li[^>]*>(.*?)</li>', notices, re.S)]
+    if not messages:
+        messages = [_text(m) for m in re.findall(r'<div class="wc-block-components-notice-banner__content">(.*?)</div>', notices, re.S)]
     return answer.get('result'), answer.get('redirect'), messages
 
 
@@ -307,6 +312,74 @@ def order_lines_match(order_lines, message_lines):
         want[line['sku']] = {'qty': quantity, 'unit': (Decimal(str(line['total'])) / quantity).quantize(Decimal('0.01'))}
     got = {sku: {'qty': Decimal(str(v['qty'])), 'unit': Decimal(str(v['unit']))} for sku, v in message_lines.items()}
     return want == got, {'order': {k: {'qty': str(v['qty']), 'unit': str(v['unit'])} for k, v in want.items()}, 'message': message_lines}
+
+
+def state_page(html):
+    """The state a PunchOut state page shows ('sent', 'not-sent', ...), from its `pow-state--<state>` class; None."""
+    match = re.search(r'class="[^"]*\bpow-state--([a-z-]+)', html)
+    return match.group(1) if match else None
+
+
+def login_cookie_cleared(set_cookies):
+    """Whether any of an answer's Set-Cookie headers expires the WordPress login cookie in the browser."""
+    for header in set_cookies or []:
+        name, _, rest = header.partition('=')
+        if not name.strip().startswith('wordpress_logged_in_'):
+            continue
+        value = rest.split(';')[0].strip()
+        lowered = header.lower()
+        if 'max-age=0' in lowered or value in ('', '+', 'deleted') or re.search(r'expires=[^;]*\b19[0-9]{2}\b', lowered):
+            return True
+    return False
+
+
+def apply_coupon_nonce(html):
+    """The nonce WooCommerce's checkout script sends with wc-ajax=apply_coupon, or None."""
+    match = re.search(r'"apply_coupon_nonce"\s*:\s*"([0-9a-f]+)"', html)
+    return match.group(1) if match else None
+
+
+def shipping_choice(form, prefix):
+    """{shipping_method[i]: rate id} choosing, in each package, the rate whose id starts with `prefix`; None when a
+    package offers none."""
+    groups = {}
+    for control in form.controls:
+        if control.type == 'radio' and (control.name or '').startswith('shipping_method['):
+            groups.setdefault(control.name, []).append(control.value or '')
+    choice = {}
+    for name, values in groups.items():
+        wanted = [v for v in values if v.startswith(prefix)]
+        if not wanted:
+            return None
+        choice[name] = wanted[0]
+    return choice or None
+
+
+def mail_counts(log, order_ids=None):
+    """{e-mail id: count} from the run's e-mail log (one JSON object per line), for the given orders or all."""
+    counts = {}
+    for line in (log or '').splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if order_ids is not None and entry.get('order') not in order_ids:
+            continue
+        counts[entry.get('id')] = counts.get(entry.get('id'), 0) + 1
+    return counts
+
+
+_NOT_XML = re.compile('[^\t\n\r\x20-퟿-�\U00010000-\U0010ffff]')
+
+
+def cleaned_note(note, limit=2000):
+    """The buyer's note as the purchasing system must receive it: characters outside XML removed, trimmed, capped."""
+    clean = _NOT_XML.sub('', note).strip()
+    return clean[:limit].rstrip() if len(clean) > limit else clean
+
+
+def posts_for(captured, cookie):
+    """How many cXML posts the receiver took at one visit's punchback address (which ends in its encoded cookie)."""
+    return sum(1 for post in captured if post['path'].endswith(urllib.parse.quote(cookie, safe='')))
 
 
 def connection_freight_sku(seed):
@@ -343,9 +416,9 @@ class Browser:
             jar.set_cookie(copy.copy(cookie))
         return Browser(self.origin, jar)
 
-    def request(self, url, data=None, content_type=None, method=None, accept='text/html'):
+    def request(self, url, data=None, content_type=None, method=None, accept='text/html', extra_headers=None):
         require_loopback(url)
-        headers = {'User-Agent': USER_AGENT, 'Accept': accept}
+        headers = dict(extra_headers or {}, **{'User-Agent': USER_AGENT, 'Accept': accept})
         if data is not None:
             headers['Origin'] = self.origin
             if content_type:
@@ -417,6 +490,8 @@ class Run:
         self.passed = []
         self.failed = []
         self.notes = []
+        self.quote_orders = []  # Punchout Quotes the run made: each must have had exactly one e-mail, the Quote e-mail
+        self.quiet_orders = []  # binned or refused orders: no e-mail at all
 
     def check(self, ok, name, **detail):
         (self.passed if ok else self.failed).append({'check': name, 'detail': detail})
@@ -445,26 +520,33 @@ class Run:
 
     # -- the shared front half: setup, redeem, cart ---------------------------
 
-    def punch_in(self, browser, seed, receiver):
+    def punch_in(self, browser, seed, receiver, items=None, label='', redeem=None):
+        """Setup request, start link, cart. Returns the visit: its payloadID, BuyerCookie, cart quantities and the Cart
+        widget as the last add redrew it. The main leg (no `label`) also keeps them on the run; the second leg's visits
+        prefix their check names with their label. `items` is [(key, product id, quantity)], by default every seeded
+        product (2 of the first, 1 of each other)."""
         url = self.args.url
         connection = seed['connection']
-        self.payload = '{' + str(uuid.uuid4()).upper() + '}'
-        self.cookie = '{' + str(uuid.uuid4()).upper() + '}'
+        prefix = label + ': ' if label else ''
+        payload = '{' + str(uuid.uuid4()).upper() + '}'
+        cookie = '{' + str(uuid.uuid4()).upper() + '}'
         xml = setup_request(
-            payload_id=self.payload, timestamp=time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()), buyer=connection['buyer'], supplier=connection['supplier'],
-            secret=seed['secret'], email='buyer.one@buyer.example.com', cookie=self.cookie, supplier_setup=url + '/punchout/setup', receiver=receiver.url + '/punchout/cxml/',
+            payload_id=payload, timestamp=time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()), buyer=connection['buyer'], supplier=connection['supplier'],
+            secret=seed['secret'], email='buyer.one@buyer.example.com', cookie=cookie, supplier_setup=url + '/punchout/setup', receiver=receiver.url + '/punchout/cxml/',
         )
-        self.save('setup-request.xml', xml.replace(seed['secret'], '[REDACTED]'))
+        if not label:
+            self.save('setup-request.xml', xml.replace(seed['secret'], '[REDACTED]'))
         status, _, body = browser.request(url + '/punchout/setup', xml.encode('utf-8'), 'text/xml', accept='text/xml')
-        self.save('setup-response.xml', body)
+        if not label:
+            self.save('setup-response.xml', body)
         try:
             root = poom.parse_xml(body)
             code, start = root.find('.//Status').get('code'), (root.findtext('.//StartPage/URL') or '').strip()
         except Exception as error:  # noqa: BLE001 - any unreadable answer is the same failure
             code, start = repr(error), ''
-        self.must(status == 200 and code == '200' and start.startswith(url + '/punchout/start/'), 'setup_answers_200_with_a_start_page', http=status, cxml=code)
+        self.must(status == 200 and code == '200' and start.startswith(url + '/punchout/start/'), prefix + 'setup_answers_200_with_a_start_page', http=status, cxml=code)
 
-        mode = self.args.redeem
+        mode = redeem or self.args.redeem
         scanner_proof = at_least(self.version, (0, 4, 23))
         if mode == 'post':
             status, headers, body = browser.request(start, b'', forms.URLENCODED)
@@ -488,10 +570,11 @@ class Run:
                 status, headers, body = browser.submit(found)
                 kind = 'redeemed' if status in (302, 303) else 'refused'
                 how = 'POST'
-        self.notes.append('start link redeemed by ' + how)
-        self.must(kind == 'redeemed' and browser.logged_in(), 'start_link_redeems_and_signs_the_visit_in', method=how, http=status)
+        if not label:
+            self.notes.append('start link redeemed by ' + how)
+        self.must(kind == 'redeemed' and browser.logged_in(), prefix + 'start_link_redeems_and_signs_the_visit_in', method=how, http=status)
         landing = urllib.parse.urljoin(start, headers.get('Location'))
-        if scanner_proof:
+        if scanner_proof and not label:
             # Single use: a second POST, from a browser that never held the visit, is refused.
             again = Browser(url).request(start, b'', forms.URLENCODED)
             self.check(again[0] == 403, 'a_second_post_is_refused', http=again[0])
@@ -500,20 +583,26 @@ class Run:
             where = urllib.parse.urljoin(start, repeat[1].get('Location') or '')
             self.check(repeat[0] in (302, 303) and where == landing, 'a_repeat_post_from_the_same_browser_lands_again', http=repeat[0], location=where, landing=landing)
         status, _, body, _ = browser.get(landing)
-        self.check(status == 200 and re.search(r'<body[^>]*class="[^"]*\bpow-visit\b', body) is not None, 'landing_page_is_inside_the_visit', http=status)
+        self.check(status == 200 and re.search(r'<body[^>]*class="[^"]*\bpow-visit\b', body) is not None, prefix + 'landing_page_is_inside_the_visit', http=status)
 
-        self.quantities = {}
-        for index, (sku, product) in enumerate(seed['products'].items()):
-            quantity = 2 if index == 0 else 1
-            status, _, body = browser.request(url + '/?wc-ajax=add_to_cart', forms.encode([('product_id', str(product['id'])), ('quantity', str(quantity))], forms.URLENCODED)[0], forms.URLENCODED, accept='application/json')
+        if items is None:
+            items = [(sku, product['id'], 2 if index == 0 else 1) for index, (sku, product) in enumerate(seed['products'].items())]
+        quantities = {}
+        mini_cart = ''
+        for key, product_id, quantity in items:
+            status, _, body = browser.request(url + '/?wc-ajax=add_to_cart', forms.encode([('product_id', str(product_id)), ('quantity', str(quantity))], forms.URLENCODED)[0], forms.URLENCODED, accept='application/json')
             try:
                 answer = json.loads(body)
             except ValueError:
                 answer = {'error': True}
-            self.must(status == 200 and not answer.get('error') and 'cart_hash' in answer, 'wc_ajax_add_to_cart ' + sku, http=status)
-            self.quantities[sku] = quantity
+            self.must(status == 200 and not answer.get('error') and 'cart_hash' in answer, prefix + 'wc_ajax_add_to_cart ' + key, http=status)
+            quantities[key] = quantity
             # The Cart widget as WooCommerce redraws it after the add (0.5.0 checks its checkout button).
-            self.mini_cart = (answer.get('fragments') or {}).get('div.widget_shopping_cart_content') or ''
+            mini_cart = (answer.get('fragments') or {}).get('div.widget_shopping_cart_content') or ''
+        visit = {'payload': payload, 'cookie': cookie, 'quantities': quantities, 'mini_cart': mini_cart}
+        if not label:
+            self.payload, self.cookie, self.quantities, self.mini_cart = payload, cookie, quantities, mini_cart
+        return visit
 
     # -- 0.4.x: the cart's Punchout exit and the review -------------------------
 
@@ -569,9 +658,9 @@ class Run:
     def checkout_path(self, browser, seed):
         """Leave through WooCommerce's classic checkout and return the handoff page, as `review_path` does.
 
-        Still to come with the later 0.5.0 tickets (spec "Testing Decisions"): the shipping section opened on the
-        default saved address, a date, a file, no delivery amount on the page, and the second leg (a repeated or
-        racing Submit, a zero-total cart, refusals outside a visit)."""
+        The order lifecycle's second leg (ticket 74) is `late_submits` and `second_leg`. Still to come with the later
+        0.5.0 tickets (spec "Testing Decisions"): the shipping section opened on the default saved address, a date, a
+        file, no delivery amount on the page, and the refusals outside a visit."""
         url = self.args.url
         checkout = seed.get('checkout') or {}
         labels = checkout.get('labels') or {}
@@ -598,11 +687,13 @@ class Run:
                 self.check(ok, name, **detail)
 
         self.note = 'Leave at the gate. End-to-end run ' + seed['run'] + '.'
-        body, content_type = forms.encode(checkout_submission(form, self.note), forms.URLENCODED)
-        status, _, answer = browser.request(url + '/?wc-ajax=checkout', body, content_type, accept='application/json')
-        self.save('checkout-answer.json', answer)
-        result, redirect, messages = checkout_answer(status, answer)
-        self.must(result == 'success' and isinstance(redirect, str) and redirect.startswith(url + '/punchout/'), 'submit_answers_success_with_the_handoff_address', http=status, result=result, redirect=redirect, messages=messages)
+        self.checkout_form = form
+        answer = self.post_checkout(browser, form, self.note)
+        self.save('checkout-answer.json', answer['raw'])
+        redirect = answer['redirect']
+        self.must(answer['result'] == 'success' and isinstance(redirect, str) and redirect.startswith(url + '/punchout/'), 'submit_answers_success_with_the_handoff_address', http=answer['status'], result=answer['result'], redirect=redirect, messages=answer['messages'])
+        # 0.5.0 (ticket 74): the checkout answer never clears the login cookie; the handoff, keyed to it, does.
+        self.check(not login_cookie_cleared(answer['set_cookies']) and browser.logged_in(), 'the_checkout_answer_keeps_the_login_cookie', set_cookies=[c.split('=')[0] for c in answer['set_cookies']])
 
         # A second browser holding this one's cookies as they are now asks for the handoff again afterwards.
         self.handoff_again = (browser.clone(), redirect)
@@ -612,6 +703,185 @@ class Run:
         self.check('no-store' in (headers.get('Cache-Control') or '').lower(), 'the_handoff_is_not_stored', cache_control=headers.get('Cache-Control'))
         self.check((headers.get('Referrer-Policy') or '').lower() == 'no-referrer', 'the_handoff_sends_no_referrer', referrer_policy=headers.get('Referrer-Policy'))
         return handoff
+
+    def post_checkout(self, browser, form, note, extra=None, headers=None):
+        """POST the checkout form as WooCommerce's script does (`?wc-ajax=checkout`) and read the answer."""
+        body, content_type = forms.encode(checkout_submission(form, note, extra), forms.URLENCODED)
+        status, answer_headers, raw = browser.request(self.args.url + '/?wc-ajax=checkout', body, content_type, accept='application/json', extra_headers=headers)
+        result, redirect, messages = checkout_answer(status, raw)
+        return {'status': status, 'result': result, 'redirect': redirect, 'messages': messages, 'raw': raw, 'set_cookies': answer_headers.get_all('Set-Cookie') or []}
+
+    def open_checkout(self, browser, seed, label):
+        """GET the shop's classic checkout page inside the visit: (page, form)."""
+        status, _, page, page_url = browser.get(self.args.url + '/?page_id=' + str(seed['checkout']['page_id']))
+        form = checkout_form(page, page_url)
+        self.must(status == 200 and form is not None, label + ': checkout_opens_in_the_visit', http=status, url=page_url)
+        return page, form
+
+    def inspect(self, payload, name):
+        out = self.args.out / ('inspect-' + name + '.json')
+        self.wp('inspect', POW_E2E_PAYLOAD=payload, POW_E2E_RESULT=str(out))
+        return json.loads(out.read_text())
+
+    def follow(self, browser, answer):
+        """Where a successful checkout answer sends the browser: (page, state, handoff form or None)."""
+        redirect = answer['redirect']
+        if answer['result'] != 'success' or not isinstance(redirect, str) or not redirect.startswith(self.args.url + '/punchout/'):
+            return '', None, None
+        _, _, page = browser.request(redirect)
+        return page, state_page(page), handoff_form(page, self.args.url)
+
+    def late_submits(self, after, before, receiver):
+        """A Submit after the visit has returned (ticket 74), from the browser as the handoff left it (no login cookie)
+        and as the checkout answer left it (the login cookie, whose login has ended): each reaches the Sent state, with
+        no auto-posting form, and nothing is posted again."""
+        posts = len(receiver.captured)
+        for name, browser in (('after_the_handoff', after), ('with_the_ended_login_cookie', before)):
+            answer = self.post_checkout(browser, self.checkout_form, self.note)
+            page, state, form = self.follow(browser, answer)
+            self.save('late-submit-' + name + '.html', page)
+            self.check(state == 'sent' and form is None, 'a_submit_' + name + '_reaches_the_sent_state', result=answer['result'], redirect=answer['redirect'], messages=answer['messages'], state=state, form=form is not None)
+        self.check(len(receiver.captured) == posts, 'a_submit_after_the_return_posts_nothing_again', posts=len(receiver.captured) - posts)
+
+    def capture_leg(self, browser, form, receiver, visit, label):
+        """Post a second-leg visit's handoff form as the browser's auto-post would; the decoded cXML."""
+        self.must(form.action.endswith(urllib.parse.quote(visit['cookie'], safe='')), label + ': handoff_posts_to_the_visits_punchback_url', action=form.action)
+        entries = form.submission()
+        field, value = entries[0] if entries else (None, '')
+        before = len(receiver.captured)
+        browser.submit(form)
+        posted = receiver.captured[before] if len(receiver.captured) > before else {'fields': {}, 'content_type': ''}
+        self.must(posted['fields'].get(field) == [value], label + ': the_browser_post_carries_the_page_field', field=field)
+        return poom.decode_field(field, value), field, posted
+
+    def second_leg(self, seed, receiver):
+        """The order lifecycle's second leg (ticket 74), each case in a visit of its own: two racing Submits, a
+        zero-total cart (with a currency refusal first, and a note cXML cannot carry as typed), and a line without a
+        SKU."""
+        for label, leg in (('race', self.race_leg), ('zero', self.zero_total_leg), ('sku', self.skuless_leg)):
+            try:
+                leg(seed, receiver)
+            except SystemExit as stop:
+                self.check(False, label + ': case_completed', reason=str(stop))
+
+    def race_leg(self, seed, receiver):
+        """Two Submits from one visit, the first held after WooCommerce created its order so the second overtakes it.
+        One handoff and one post; the overtaken Submit trashes its own order, releases its holds and reaches Sent."""
+        url, label = self.args.url, 'race'
+        first = Browser(url)
+        visit = self.punch_in(first, seed, receiver, label=label, redeem='post')
+        _, form = self.open_checkout(first, seed, label)
+        second = first.clone()
+        note = 'Race run ' + seed['run'] + '.'
+        answers = {}
+        held = threading.Thread(target=lambda: answers.__setitem__('held', self.post_checkout(first, form, note, headers={'X-Pow-E2E-Pause': '6'})), daemon=True)
+        held.start()
+        time.sleep(2.5)
+        fast = self.post_checkout(second, form, note)
+        page, state, handoff = self.follow(second, fast)
+        served = 0
+        if handoff is not None:
+            served += 1
+            second.submit(handoff)
+        self.check(handoff is not None, label + ': the_overtaking_submit_gets_the_handoff', result=fast['result'], redirect=fast['redirect'], messages=fast['messages'], state=state)
+        held.join(90)
+        late = answers.get('held') or {'result': None, 'redirect': None, 'messages': ['no answer']}
+        page, state, handoff = self.follow(first, late)
+        self.save('race-overtaken.html', page)
+        if handoff is not None:
+            served += 1
+            first.submit(handoff)
+        self.check(state == 'sent' and handoff is None, label + ': the_overtaken_submit_reaches_the_sent_state', result=late['result'], redirect=late['redirect'], messages=late['messages'], state=state)
+        self.check(served == 1 and posts_for(receiver.captured, visit['cookie']) == 1, label + ': one_handoff_and_one_post', served=served, posts=posts_for(receiver.captured, visit['cookie']))
+
+        result = self.inspect(visit['payload'], label)
+        orders, trashed = result['orders'], result['trashed']
+        self.check(len(orders) == 1 and orders[0]['status'] == 'punchout-quote', label + ': exactly_one_order_a_punchout_quote', orders=[(o['id'], o['status']) for o in orders])
+        self.check(bool(orders) and (result['visit'] or {}).get('order_id') == orders[0]['id'], label + ': the_visit_names_that_order', visit=result['visit'])
+        self.check(len(trashed) == 1 and all(t['reserved_stock'] == 0 and t['coupon_holds'] == 0 for t in trashed), label + ': the_overtaken_order_is_in_the_bin_with_its_holds_released', trashed=trashed)
+        self.check(all(o['reserved_stock'] == 0 and not o['auto_cancel'] for o in orders), label + ': the_order_holds_no_stock_and_is_never_auto_cancelled', orders=orders)
+        self.quote_orders += [o['id'] for o in orders]
+        self.quiet_orders += [t['id'] for t in trashed]
+
+    def zero_total_leg(self, seed, receiver):
+        """A cart a 100% coupon brings to zero, with free shipping: PunchOut is still offered and the cart still hands
+        off. First a Submit priced in another currency is refused before any order exists. The note carries a control
+        character and runs past 2,000 characters: the cXML carries it cleaned and capped."""
+        url, label = self.args.url, 'zero'
+        browser = Browser(url)
+        sku, product = next(iter(seed['products'].items()))
+        visit = self.punch_in(browser, seed, receiver, items=[(sku, product['id'], 1)], label=label, redeem='post')
+        page, form = self.open_checkout(browser, seed, label)
+        nonce = apply_coupon_nonce(page)
+        body = forms.encode([('security', nonce or ''), ('coupon_code', seed['coupon']['code'])], forms.URLENCODED)[0]
+        status, _, applied = browser.request(url + '/?wc-ajax=apply_coupon', body, forms.URLENCODED)
+        self.must(status == 200 and nonce is not None and 'woocommerce-error' not in applied, label + ': the_coupon_applies', http=status, answer=_text(applied)[:200])
+        page, form = self.open_checkout(browser, seed, label)
+        self.save('zero-checkout.html', page)
+        choice = shipping_choice(form, 'free_shipping:')
+        self.must(choice is not None, label + ': free_shipping_is_offered')
+        offered = [c.value for c in form.controls if c.name == 'payment_method' and c.type == 'radio']
+        self.must(offered == ['punchout'], label + ': a_zero_total_checkout_offers_the_punchout_method', offered=offered)
+
+        other = 'USD' if seed['currency'] != 'USD' else 'EUR'
+        refused = self.post_checkout(browser, form, 'Currency check.', choice, headers={'X-Pow-E2E-Currency': other})
+        self.check(refused['result'] == 'failure' and any(other in m and seed['currency'] in m for m in refused['messages']), label + ': a_cart_priced_in_another_currency_is_refused', result=refused['result'], messages=refused['messages'])
+        result = self.inspect(visit['payload'], label + '-refused')
+        self.check(result['orders'] == [] and result['trashed'] == [] and (result['visit'] or {}).get('status') == 'active', label + ': the_currency_refusal_leaves_no_order_and_the_visit_open', orders=len(result['orders']), visit=result['visit'])
+
+        note = 'Gate\x01 code 7.' + ' Use the rear entrance.' * 100
+        answer = self.post_checkout(browser, form, note, choice)
+        page, state, handoff = self.follow(browser, answer)
+        self.must(handoff is not None, label + ': a_zero_total_cart_hands_off', result=answer['result'], redirect=answer['redirect'], messages=answer['messages'], state=state)
+        xml, field, posted = self.capture_leg(browser, handoff, receiver, visit, label)
+        self.save('zero-poom.xml', xml)
+        connection = seed['connection']
+        expected = {
+            'buyer_cookie': visit['cookie'], 'buyer': connection['buyer'], 'supplier': connection['supplier'], 'deployment_mode': connection['deployment_mode'],
+            'currency': seed['currency'], 'shared_secret': seed['secret'], 'lines': {sku: {'qty': 1, 'unit': '0.00', 'aux': '%d|0' % product['id']}},
+            'freight': None, 'freight_sku': connection['freight_supplier_part_id'], 'ship_to_contains': None, 'notes': None,
+        }
+        for check in poom.check(xml, expected, capture={'field': field, 'content_type': posted['content_type']}):
+            self.check(check['ok'], label + ': cxml ' + check['check'], **({} if check['ok'] else check['detail']))
+
+        result = self.inspect(visit['payload'], label)
+        orders = result['orders']
+        self.check(len(orders) == 1 and orders[0]['status'] == 'punchout-quote' and float(orders[0]['total']) == 0.0, label + ': one_zero_total_punchout_quote', orders=[(o['id'], o['status'], o['total']) for o in orders])
+        self.check(all(o['reserved_stock'] == 0 and o['coupon_holds'] == 0 and not o['auto_cancel'] for o in orders) and result['coupon_holds'] == 0, label + ': stock_and_coupon_holds_released', orders=orders, coupon_holds=result['coupon_holds'])
+        if orders:
+            instructions = [e.text or '' for e in poom.parse_xml(xml).iter('Extrinsic') if e.get('name') == 'DeliveryInstructions']
+            want = cleaned_note(orders[0]['customer_note'])
+            self.check(bool(instructions) and all(i == want for i in instructions) and len(want) == 2000 and '\x01' not in want, label + ': the_note_reaches_the_cxml_cleaned_and_capped', got=[len(i) for i in instructions], want=len(want))
+        self.quote_orders += [o['id'] for o in orders]
+        self.quiet_orders += [t['id'] for t in result['trashed']]
+
+    def skuless_leg(self, seed, receiver):
+        """A cart holding a product without a SKU: Submit is refused, naming the product, before any order exists."""
+        label = 'sku'
+        browser = Browser(self.args.url)
+        sku, product = next(iter(seed['products'].items()))
+        skuless = seed['skuless']
+        visit = self.punch_in(browser, seed, receiver, items=[(sku, product['id'], 1), ('without a SKU', skuless['id'], 1)], label=label, redeem='post')
+        _, form = self.open_checkout(browser, seed, label)
+        answer = self.post_checkout(browser, form, 'SKU check.')
+        self.check(answer['result'] == 'failure' and any(skuless['name'].lower() in m.lower() for m in answer['messages']), label + ': a_line_without_a_sku_is_refused_by_name', result=answer['result'], redirect=answer['redirect'], messages=answer['messages'])
+        result = self.inspect(visit['payload'], label)
+        self.check(result['orders'] == [] and result['trashed'] == [] and (result['visit'] or {}).get('status') == 'active', label + ': the_refusal_leaves_no_order_and_the_visit_open', orders=[(o['id'], o['status']) for o in result['orders']], visit=result['visit'])
+        self.check(posts_for(receiver.captured, visit['cookie']) == 0, label + ': nothing_is_posted')
+        self.quiet_orders += [o['id'] for o in result['orders'] + result['trashed']]
+
+    def mail_checks(self, seed):
+        """Exactly one e-mail per Punchout Quote, the store's Quote e-mail; none for a binned or refused order; no
+        failed or cancelled order e-mail anywhere in the run."""
+        log_path = self.args.out / 'mail.log'
+        log = log_path.read_text() if log_path.exists() else ''
+        for order_id in self.quote_orders:
+            counts = mail_counts(log, [order_id])
+            self.check(counts == {'pow_quote_received': 1}, 'exactly_one_email_for_order_%d_the_quote_email' % order_id, emails=counts)
+        quiet = mail_counts(log, self.quiet_orders)
+        self.check(quiet == {}, 'no_email_for_a_binned_or_refused_order', emails=quiet)
+        everything = mail_counts(log)
+        self.check(not any(everything.get(kind) for kind in ('failed_order', 'customer_failed_order', 'cancelled_order', 'customer_cancelled_order')), 'no_failed_or_cancelled_email_in_the_run', emails=everything)
 
     @staticmethod
     def review_form(page, base):
@@ -724,7 +994,8 @@ def main(argv=None):
             port = free_port()
             args.url = 'http://%s:%d' % (LOOPBACK, port)
             log = (args.out / 'php-server.log').open('w')
-            server = subprocess.Popen([args.php, '-S', '%s:%d' % (LOOPBACK, port), '-t', str(args.wp_path), str(HERE / 'router.php')], env=dict(os.environ, POW_E2E_ORIGIN=args.url, PHP_CLI_SERVER_WORKERS='4'), stdout=log, stderr=subprocess.STDOUT)
+            # The router records each WooCommerce e-mail the site sends (or tries to, while the fixture blocks mail).
+            server = subprocess.Popen([args.php, '-S', '%s:%d' % (LOOPBACK, port), '-t', str(args.wp_path), str(HERE / 'router.php')], env=dict(os.environ, POW_E2E_ORIGIN=args.url, PHP_CLI_SERVER_WORKERS='4', POW_E2E_MAIL_LOG=str(args.out / 'mail.log')), stdout=log, stderr=subprocess.STDOUT)
         require_loopback(args.url)
         run.must(wait_for(args.url, args.wait, server), 'site_server_answers', url=args.url, server_exit=server.poll() if server else None)
         receiver = Receiver()
@@ -754,6 +1025,7 @@ def main(argv=None):
             status, _, again = second.request(handoff_url)
             run.save('handoff-again.html', again)
             run.check(handoff_form(again, args.url) is None, 'the_handoff_is_served_once', http=status)
+            run.late_submits(browser, second, receiver)
 
         if replay is not None:
             second, review, submitter, choose = replay
@@ -764,8 +1036,7 @@ def main(argv=None):
         status, _, body, _ = browser.get(args.url + '/?page_id=' + str(seed['pages']['shop']))
         run.check(re.search(r'<body[^>]*class="[^"]*\bpow-visit\b', body) is None, 'after_the_return_the_browser_is_no_longer_in_the_visit', http=status)
 
-        run.wp('inspect', POW_E2E_PAYLOAD=run.payload, POW_E2E_RESULT=str(args.out / 'inspect.json'))
-        state = json.loads((args.out / 'inspect.json').read_text())
+        state = run.inspect(run.payload, 'main')
         visit, orders = state['visit'] or {}, state['orders']
         run.check(visit.get('status') == 'returned', 'visit_is_returned', status=visit.get('status'))
         run.check(visit.get('login_live') is False, 'visit_login_is_dead')
@@ -782,6 +1053,16 @@ def main(argv=None):
                 ok, detail = order_lines_match(order['lines'], poom.lines(xml, connection_freight_sku(seed)))
                 run.check(ok, 'cxml_lines_equal_the_orders_lines', **detail)
                 run.check(order['customer_note'] == run.note, 'order_keeps_the_buyers_note', note=order['customer_note'])
+                # 0.5.0 (ticket 74): checkout's stock hold is released, and the unpaid-order clean-up leaves the order alone.
+                run.check(order['reserved_stock'] == 0 and order['coupon_holds'] == 0, 'order_holds_no_stock_and_no_coupon', reserved_stock=order['reserved_stock'], coupon_holds=order['coupon_holds'])
+                run.check(order['auto_cancel'] is False, 'order_is_never_auto_cancelled')
+                run.check(state['trashed'] == [], 'nothing_of_the_visit_is_in_the_bin', trashed=state['trashed'])
+                run.quote_orders.append(order['id'])
+        if path == 'checkout':
+            run.second_leg(seed, receiver)
+            run.mail_checks(seed)
+            stock = run.inspect(run.payload, 'stock')['stock']
+            run.check(all(quantity == seed['stock'] for quantity in stock.values()), 'punchout_quotes_move_no_stock', stock=stock, seeded=seed['stock'])
     except SystemExit as stop:
         run.check(False, 'run_completed', reason=str(stop))
     except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 - a connection error or a crash is a failed run, never an empty failure list

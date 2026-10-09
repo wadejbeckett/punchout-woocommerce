@@ -346,6 +346,10 @@ class CheckoutAnswer(unittest.TestCase):
         body = '{"result":"failure","messages":"<ul class=\\"woocommerce-error\\"><li>Invalid payment method.<\\/li><\\/ul>","refresh":false,"reload":false}'
         self.assertEqual(driver.checkout_answer(200, body), ('failure', None, ['Invalid payment method.']))
 
+    def test_a_block_themes_single_notice_banner_is_read_as_text(self):
+        body = json.dumps({'result': 'failure', 'messages': '<div class="wc-block-components-notice-banner is-error" role="alert"><svg><path d="M1"></path></svg><div class="wc-block-components-notice-banner__content">\n\t&quot;Widget&quot; has no product code.\t</div></div>'})
+        self.assertEqual(driver.checkout_answer(200, body), ('failure', None, ['"Widget" has no product code.']))
+
     def test_a_page_that_is_not_json_is_a_failure(self):
         self.assertEqual(driver.checkout_answer(500, '<html>error</html>')[0], 'unreadable')
 
@@ -362,6 +366,55 @@ class OrderAgainstMessage(unittest.TestCase):
         self.assertFalse(driver.order_lines_match(order, {'E2E-ALPHA': {'qty': '2', 'unit': '10.00'}})[0])
         self.assertFalse(driver.order_lines_match(order, {'E2E-ALPHA': {'qty': '1', 'unit': '11.00'}})[0])
         self.assertFalse(driver.order_lines_match(order, {'E2E-ALPHA': {'qty': '2', 'unit': '11.00'}, 'X': {'qty': '1', 'unit': '1.00'}})[0])
+
+
+class Lifecycle(unittest.TestCase):
+    """0.5.0 order lifecycle (ticket 74): what the second leg reads from pages, answers and the run's e-mail log."""
+
+    def test_a_state_page_is_named_by_its_modifier_class(self):
+        page = '<main class="pow-state pow-state--sent"><h1 class="pow-state__title">Sent</h1></main>'
+        self.assertEqual(driver.state_page(page), 'sent')
+        self.assertIsNone(driver.state_page('<p>This page has already been used.</p>'))
+
+    def test_a_cleared_login_cookie_is_seen_in_the_answers_set_cookie_headers(self):
+        cleared = ['wordpress_logged_in_abc=+; expires=Thu, 09 Oct 2025 10:00:00 GMT; Max-Age=0; path=/']
+        self.assertTrue(driver.login_cookie_cleared(cleared))
+        self.assertTrue(driver.login_cookie_cleared(['wordpress_logged_in_abc=deleted; expires=Thu, 01 Jan 1970 00:00:01 GMT; path=/']))
+        self.assertFalse(driver.login_cookie_cleared(['woocommerce_items_in_cart=1; path=/', 'wordpress_logged_in_abc=user%7C1%7Ctoken%7Chmac; path=/; HttpOnly']))
+        self.assertFalse(driver.login_cookie_cleared([]))
+
+    def test_the_apply_coupon_nonce_is_read_from_the_checkout_script_parameters(self):
+        page = '<script>var wc_checkout_params = {"ajax_url":"\\/wp-admin\\/admin-ajax.php","apply_coupon_nonce":"0a1b2c3d4e","remove_coupon_nonce":"ffff"};</script>'
+        self.assertEqual(driver.apply_coupon_nonce(page), '0a1b2c3d4e')
+        self.assertIsNone(driver.apply_coupon_nonce('<p>no script</p>'))
+
+    def test_a_shipping_method_is_chosen_by_its_rate_id_prefix(self):
+        page = CHECKOUT.replace('</form>', '<input type="radio" name="shipping_method[0]" value="flat_rate:3" checked="checked"><input type="radio" name="shipping_method[0]" value="free_shipping:1"></form>')
+        form = driver.checkout_form(page, BASE)
+        self.assertEqual(driver.shipping_choice(form, 'free_shipping:'), {'shipping_method[0]': 'free_shipping:1'})
+        self.assertIsNone(driver.shipping_choice(form, 'local_pickup:'))
+
+    def test_the_submission_takes_further_choices(self):
+        page = CHECKOUT.replace('</form>', '<input type="radio" name="shipping_method[0]" value="flat_rate:3" checked="checked"><input type="radio" name="shipping_method[0]" value="free_shipping:1"></form>')
+        entries = driver.checkout_submission(driver.checkout_form(page, BASE), 'Note', {'shipping_method[0]': 'free_shipping:1'})
+        self.assertIn(('shipping_method[0]', 'free_shipping:1'), entries)
+        self.assertNotIn(('shipping_method[0]', 'flat_rate:3'), entries)
+
+    def test_e_mails_are_counted_by_kind_for_the_orders_asked_about(self):
+        log = '{"id":"pow_quote_received","order":7}\n{"id":"new_order","order":9}\n{"id":"pow_quote_received","order":9}\n\n{"id":"cancelled_order","order":7}\n'
+        self.assertEqual(driver.mail_counts(log, [7]), {'pow_quote_received': 1, 'cancelled_order': 1})
+        self.assertEqual(driver.mail_counts(log), {'pow_quote_received': 2, 'new_order': 1, 'cancelled_order': 1})
+        self.assertEqual(driver.mail_counts('', [7]), {})
+
+    def test_the_expected_note_is_cleaned_of_characters_cxml_cannot_carry_and_capped(self):
+        self.assertEqual(driver.cleaned_note('  Gate\x01 code\x0b 7  '), 'Gate code 7')
+        self.assertEqual(len(driver.cleaned_note('x' * 2100)), 2000)
+        self.assertEqual(driver.cleaned_note('Line one\nLine two\ttab'), 'Line one\nLine two\ttab')
+
+    def test_the_receivers_posts_are_counted_for_one_visits_punchback_address(self):
+        captured = [{'path': '/punchout/cxml/%7BA%7D'}, {'path': '/punchout/cxml/%7BB%7D'}, {'path': '/punchout/cxml/%7BA%7D'}]
+        self.assertEqual(driver.posts_for(captured, '{A}'), 2)
+        self.assertEqual(driver.posts_for(captured, '{C}'), 0)
 
 
 class _Closer:

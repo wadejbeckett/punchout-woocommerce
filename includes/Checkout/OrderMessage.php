@@ -166,8 +166,17 @@ final class OrderMessage {
 
 	/** The buyer's note as cXML can carry it: characters outside XML removed, at most 2,000 characters. */
 	public static function note( string $note ): string {
+		return self::clean_note( $note ) ?? '';
+	}
+
+	/**
+	 * The buyer's note made valid for cXML (control and other non-XML characters removed, trimmed, capped at 2,000
+	 * characters), or null when it cannot be (it is not UTF-8). Checkout refuses such a note before any order exists.
+	 */
+	public static function clean_note( string $note ): ?string {
 		$clean = preg_replace( self::NOT_XML, '', $note );
-		$clean = trim( is_string( $clean ) ? $clean : '' );
+		if ( ! is_string( $clean ) ) { return null; }
+		$clean = trim( $clean );
 		return mb_strlen( $clean ) > self::NOTE_LIMIT ? rtrim( mb_substr( $clean, 0, self::NOTE_LIMIT ) ) : $clean;
 	}
 }
