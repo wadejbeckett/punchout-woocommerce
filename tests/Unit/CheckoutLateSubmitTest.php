@@ -171,6 +171,28 @@ namespace {
 			self::assertNull( $this->late()->target() );
 		}
 
+		/** 0.5.0 (ticket 77): with a state page chosen, a Submit from a visit that ended without sending goes there too. */
+		public function test_with_a_state_page_a_submit_after_the_visit_ended_or_left_without_sending_goes_there(): void {
+			$saved = [ $GLOBALS['pow_test_options'] ?? null, $GLOBALS['pow_test_posts'] ?? null ];
+			$GLOBALS['pow_test_posts'][314] = [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/visit/' ];
+			$GLOBALS['pow_test_options'][ POW\Settings::OPTION_KEY ] = [ 'state_page_id' => 314 ];
+			try {
+				self::assertSame( 'https://shop.example.test/visit/?pow_state=sent', $this->late()->target(), 'Returned: Sent, on the page' );
+				$this->store->rows[42]['status'] = 'expired';
+				self::assertSame( 'https://shop.example.test/visit/?pow_state=ended', $this->late()->target() );
+				$this->store->rows[42]['status'] = 'closed';
+				self::assertSame( 'https://shop.example.test/visit/?pow_state=not-sent', $this->late()->target(), 'Cancel and return sent nothing' );
+				$this->store->rows[42] = [ 'status' => 'active', 'expires' => gmdate( 'Y-m-d H:i:s', time() - 60 ) ] + $this->store->rows[42];
+				self::assertSame( 'https://shop.example.test/visit/?pow_state=ended', $this->late()->target(), 'Its time ran out before the clean-up marked it' );
+				$this->store->rows[42]['expires'] = gmdate( 'Y-m-d H:i:s', time() + 600 );
+				self::assertNull( $this->late()->target(), 'A visit that is still live is not this rule\'s' );
+			} finally {
+				[ $options, $posts ] = $saved;
+				if ( null === $options ) { unset( $GLOBALS['pow_test_options'] ); } else { $GLOBALS['pow_test_options'] = $options; }
+				if ( null === $posts ) { unset( $GLOBALS['pow_test_posts'] ); } else { $GLOBALS['pow_test_posts'] = $posts; }
+			}
+		}
+
 		public function test_the_checkout_script_gets_success_with_that_address(): void {
 			try {
 				$this->late()->catch_ajax();

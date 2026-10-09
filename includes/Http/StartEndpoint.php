@@ -293,8 +293,17 @@ final class StartEndpoint {
 	/**
 	 * Plain 403 page, deliberately detail-free, with the buyer-facing
 	 * guidance copy (scope §9.2).
+	 *
+	 * With a state page chosen (0.5.0), the browser is sent to its Link expired state instead, drawn inside the theme;
+	 * the redirect says no more than the plain page does.
 	 */
 	public function deny(): void {
+		$expired = ( new StatePage( $this->settings ) )->url( StatePage::EXPIRED );
+		if ( null !== $expired ) {
+			wp_safe_redirect( $expired, 303 );
+			return;
+		}
+
 		status_header( 403 );
 		header( 'Content-Type: text/html; charset=utf-8' );
 

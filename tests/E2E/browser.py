@@ -18,6 +18,14 @@ seeds the fixture as the driver does (tests/E2E/fixture.php), serves the site on
      "Update delivery". Submit then hands the cart to the punchback URL once, and the visit is returned.
      Only on a build that still leaves through the review: one with the PunchOut payment method (0.5.0) has no way
      from the cart to it, and its checkout is driver.py's checkout leg (`steps_for`).
+  4. states (0.5.0, ticket 77; fixture step `states` chooses a state page and turns "Ask before leaving" on, retire
+     puts both back): a start link used once and opened in another browser lands on the state page's Link expired,
+     drawn in the theme; once a visit is ended (fixture step `end_visit`), its next page lands on Session ended and
+     the browser is signed out, and the page after is an ordinary page.
+  5. leave: with a line in the cart, pressing Cancel and return opens the question as a modal dialog (the plugin's
+     own script) with "Keep shopping" focused, and sends nothing; Keep shopping closes it and the visit stays open;
+     the dialog's leave button then answers with the plain Not sent page, which posts one empty message to the
+     punchback URL, and the visit is closed.
 
 It talks to nothing but 127.0.0.1, prints no secret, and writes its evidence to a private run directory (mode 700).
 """
@@ -87,6 +95,18 @@ def steps_for(seed):
     payment_method = bool((seed.get('checkout') or {}).get('payment_method'))
     steps = ['auto', 'double_click']
     return steps + ['review'] if driver.path_for(seed['versions']['plugin'], 'auto', payment_method) == 'review' else steps
+
+
+def returns(page):
+    """The methods of the requests the page sends to /punchout/return, in order (0.5.0: the leave question)."""
+    sent = []
+
+    def request(req):
+        if urllib.parse.urlsplit(req.url).path.rstrip('/').endswith('/punchout/return'):
+            sent.append(req.method)
+
+    page.on('request', request)
+    return sent
 
 
 def signed_in(context):
@@ -252,6 +272,127 @@ class BrowserRun(driver.Run):
         return posted
 
 
+class StateRun(BrowserRun):
+    """0.5.0 (ticket 77): the state page and the leave question, in Chromium."""
+
+    def states(self, chromium, seed, receiver):
+        out = self.args.out / 'states-browser.json'
+        self.wp('states', POW_E2E_RESULT=str(out))
+        states = json.loads(out.read_text())
+        url = self.args.url
+        page_id = states['state_page']['id']
+
+        context = chromium.new_context()
+        other = chromium.new_context()
+        try:
+            page = context.new_page()
+            start, payload = self.setup(seed, receiver, 'states', 'buyer.four')
+            page.goto(start, wait_until='commit')
+            leave_start(page)
+            self.must(in_visit(page), 'states: the_link_lands_inside_the_visit', url=page.url)
+
+            # Link expired: the same link, opened in another browser.
+            elsewhere = other.new_page()
+            elsewhere.goto(start, wait_until='commit')
+            try:
+                elsewhere.wait_for_url(lambda u: 'pow_state=expired' in u, timeout=SECONDS * 1000)
+            except Exception:  # noqa: BLE001 - Playwright's timeout: checked below
+                pass
+            elsewhere.wait_for_load_state('load')
+            self.save('states-expired-browser.html', elsewhere.content())
+            shown = elsewhere.locator('.pow-state--expired .pow-state__title')
+            self.check(driver.state_location(elsewhere.url) == (page_id, 'expired') and shown.count() == 1 and shown.is_visible() and shown.inner_text().strip() == 'Link expired', 'states: a_used_link_lands_on_link_expired_in_the_theme', url=elsewhere.url)
+            self.check(elsewhere.evaluate('(id) => document.body.classList.contains("page-id-" + id)', page_id), 'states: link_expired_is_the_chosen_page')
+
+            # Session ended: the visit is ended while its browser is still on the shop.
+            self.wp('end_visit', POW_E2E_PAYLOAD=payload)
+            page.goto(url + '/?page_id=' + str(seed['pages']['shop']), wait_until='load')
+            self.save('states-ended-browser.html', page.content())
+            shown = page.locator('.pow-state--ended .pow-state__title')
+            self.check(driver.state_location(page.url) == (page_id, 'ended') and shown.count() == 1 and shown.is_visible() and shown.inner_text().strip() == 'Session ended', 'states: the_next_page_lands_on_session_ended', url=page.url)
+            self.check(not signed_in(context), 'states: the_browser_is_signed_out')
+            page.goto(url + '/?page_id=' + str(seed['pages']['shop']), wait_until='load')
+            self.check(driver.state_location(page.url) == (None, None) and not in_visit(page), 'states: the_page_after_is_an_ordinary_page', url=page.url)
+        finally:
+            other.close()
+            context.close()
+        return states
+
+    def leave(self, chromium, seed, receiver, states):
+        url = self.args.url
+        labels = states['labels']
+        context = chromium.new_context()
+        try:
+            page = context.new_page()
+            start, payload = self.setup(seed, receiver, 'leave', 'buyer.five')
+            page.goto(start, wait_until='commit')
+            leave_start(page)
+            self.must(in_visit(page), 'leave: the_link_lands_inside_the_visit', url=page.url)
+            sku, product = next(iter(seed['products'].items()))
+            answer = context.request.post(url + '/?wc-ajax=add_to_cart', form={'product_id': str(product['id']), 'quantity': '1'})
+            self.must(answer.status == 200, 'leave: add_to_cart ' + sku, http=answer.status)
+
+            page.goto(url + '/?page_id=' + str(states['leave_page']['id']), wait_until='load')
+            sent = returns(page)
+            dialog = page.locator('dialog.pow-leave')
+            self.must(page.locator('form.pow-abandon-form button[type="submit"]').count() == 1 and dialog.count() == 1, 'leave: the_cancel_control_and_its_dialog_are_on_the_page')
+            self.check(not dialog.is_visible(), 'leave: the_dialog_starts_closed')
+            page.click('form.pow-abandon-form button[type="submit"]')
+            dialog.wait_for(state='visible', timeout=SECONDS * 1000)
+            page.wait_for_timeout(300)
+            modal = page.evaluate("() => document.querySelector('dialog.pow-leave').matches(':modal')")
+            self.check(modal and sent == [], 'leave: pressing_cancel_and_return_opens_the_question_and_sends_nothing', modal=modal, sent=sent)
+            self.check(dialog.locator('.pow-leave__question').inner_text().strip() == states['leave_page']['question']
+                       and dialog.locator('.pow-leave__confirm').inner_text().strip() == labels['leave']
+                       and dialog.locator('.pow-leave__stay').inner_text().strip() == labels['stay'], 'leave: the_question_and_its_buttons_are_the_sites_words')
+            focused = page.evaluate("() => !!document.activeElement && document.activeElement.classList.contains('pow-leave__stay')")
+            self.check(focused, 'leave: keep_shopping_has_the_focus')
+            self.save('leave-browser.html', page.content())
+
+            page.click('dialog.pow-leave .pow-leave__stay')
+            page.wait_for_timeout(300)
+            self.check(not dialog.is_visible() and sent == [], 'leave: keep_shopping_closes_it_and_sends_nothing', sent=sent)
+            visit = self.visit_state(payload, 'leave-kept')['visit'] or {}
+            self.check(visit.get('status') == 'active', 'leave: the_visit_stays_open', status=visit.get('status'))
+
+            before = len(receiver.captured)
+            page.click('form.pow-abandon-form button[type="submit"]')
+            dialog.wait_for(state='visible', timeout=SECONDS * 1000)
+            # The Not sent page posts itself away at once, so its answer is read on the way through.
+            answered = []
+
+            def through(route):
+                response = route.fetch()
+                answered.append((response.status, response.text()))
+                route.fulfill(response=response)
+
+            page.route('**/punchout/return', through)
+            page.click('dialog.pow-leave .pow-leave__confirm')
+            deadline = time.monotonic() + SECONDS
+            while not answered and time.monotonic() < deadline:
+                page.wait_for_timeout(100)
+            status, body = answered[0] if answered else (None, '')
+            self.save('leave-not-sent-browser.html', body)
+            self.check(status == 200 and driver.state_page(body) == 'not-sent', 'leave: the_answer_leaves_with_the_not_sent_state', http=status, state=driver.state_page(body))
+            deadline = time.monotonic() + SECONDS
+            while len(receiver.captured) == before and time.monotonic() < deadline:
+                page.wait_for_timeout(250)
+            page.wait_for_timeout(500)
+            posted = receiver.captured[before:]
+            items = None
+            if len(posted) == 1:
+                fields = posted[0]['fields']
+                field = next((name for name in ('cxml-base64', 'cxml-urlencoded') if name in fields), None)
+                xml = poom.decode_field(field, fields[field][0]) if field else ''
+                root = poom.parse_xml(xml) if xml else None
+                items = len(root.findall('.//ItemIn')) if root is not None and root.find('.//PunchOutOrderMessage') is not None else None
+            self.check(len(posted) == 1 and items == 0 and sent == ['POST'], 'leave: one_empty_message_reaches_the_punchback_url', posts=len(posted), items=items, sent=sent)
+            visit = self.visit_state(payload, 'leave')['visit'] or {}
+            self.check(visit.get('status') == 'closed' and visit.get('login_live') is False, 'leave: the_visit_is_closed', status=visit.get('status'), login_live=visit.get('login_live'))
+        finally:
+            context.close()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--wp-path', type=Path, required=True, help='WordPress root of the disposable fixture')
@@ -272,7 +413,7 @@ def main(argv=None):
     args.out.mkdir(parents=True, exist_ok=False)
     os.environ['POW_E2E_PHP'] = args.php
 
-    run = BrowserRun(args)
+    run = StateRun(args)
     restore = driver.link_plugin(args.wp_path, args.link_plugin) if args.link_plugin else None
     server = receiver = None
     seeded = False
@@ -306,6 +447,8 @@ def main(argv=None):
                 else:
                     run.notes.append('review step not run: this build leaves the cart through checkout (driver.py, checkout leg)')
                 context.close()
+                states = run.states(chromium, seed, receiver)
+                run.leave(chromium, seed, receiver, states)
             finally:
                 chromium.close()
     except SystemExit as stop:

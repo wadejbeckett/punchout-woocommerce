@@ -16,6 +16,7 @@ use POW\Audit\Log;
 use POW\Addresses\DeliveryEstimate;
 use POW\Addresses\QuoteAddress;
 use POW\Addresses\ReturnConfirmation;
+use POW\Cart\LeaveConfirmation;
 use POW\Cart\PoomMapper;
 use POW\Cart\SessionKey;
 use POW\Cxml\Builder;
@@ -23,6 +24,7 @@ use POW\Cxml\FormPack;
 use POW\Orders\QuoteOrder;
 use POW\Partners\Partner;
 use POW\Partners\Registry;
+use POW\Http\StatePage;
 use POW\Sessions\HandoffReplay;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
@@ -133,6 +135,17 @@ final class ReturnEndpoint {
 			return;
 		}
 
+		if ( 'empty' === $mode ) {
+			// 0.5.0: "Ask before leaving". A cancel without the answer, while the cart holds a line, goes back to its
+			// page with the question open; nothing is sent and the visit stays open.
+			$settings = new \POW\Settings();
+			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- the pow_return nonce was verified above.
+			if ( LeaveConfirmation::must_ask( $settings, LeaveConfirmation::cart_items(), is_string( $_POST[ LeaveConfirmation::FIELD ] ?? null ) ? sanitize_text_field( wp_unslash( $_POST[ LeaveConfirmation::FIELD ] ) ) : null ) ) {
+				wp_safe_redirect( LeaveConfirmation::ask_url( wp_get_referer(), $settings->landing_url() ), 303 );
+				return;
+			}
+		}
+
 		$notices = [];
 
 		if ( 'cart' === $mode ) {
@@ -218,7 +231,7 @@ final class ReturnEndpoint {
 
 			// Prepare the complete response before consuming the session. The same mapped
 			// snapshot supplies both the winning quote and this already-built document.
-			$markup = self::handoff_markup( $session, $partner, $poom_xml, $notices );
+			$markup = self::handoff_markup( $session, $partner, $poom_xml, $notices, 'empty' === $mode ? StatePage::NOT_SENT : StatePage::SENDING );
 		} catch ( \Throwable $error ) {
 			$this->audit_best_effort( 'return_build_failed', [ 'partner_id' => $partner->id, 'session_id' => $session->id, 'result' => 'error' ] );
 			$this->review_page( new \WP_Error( 'return_build_failed', __( 'Your cart could not be prepared for your purchasing system because some of its text cannot be sent (for example a special character pasted into an address or the notes). Review the delivery details and notes, then submit again.', 'punchout-woocommerce' ) ) );
@@ -377,33 +390,43 @@ final class ReturnEndpoint {
 	 * The theme-free page that posts the cXML to the visit's BrowserFormPost (handoff template, pow_handoff_copy).
 	 * Also the page the checkout path keeps for its GET handoff (0.5.0, Checkout\Submission).
 	 *
+	 * It carries the state classes (0.5.0): Sending for a cart, Not sent for the empty message of Cancel and return.
+	 * Its fallback button, pressed only when the page cannot post by itself, is the "State page button label".
+	 *
 	 * @param list<string> $notices Per-line notices (lines left out, for example).
+	 * @param string       $state   StatePage::SENDING (a cart) or StatePage::NOT_SENT (the empty cancel message).
 	 */
-	public static function handoff_markup( Session $session, Partner $partner, string $poom_xml, array $notices ): string {
+	public static function handoff_markup( Session $session, Partner $partner, string $poom_xml, array $notices, string $state = StatePage::SENDING ): string {
 		$field = FormPack::field(
 			$poom_xml,
 			'urlencoded' === $partner->return_encoding ? FormPack::ENCODING_URLENCODED : FormPack::ENCODING_BASE64
 		);
+		$state = StatePage::NOT_SENT === $state ? StatePage::NOT_SENT : StatePage::SENDING;
 
 		/**
 		 * Filter the buyer-facing copy on the handoff page.
 		 *
 		 * @param array<string, string> $copy    heading/copy/button strings.
 		 * @param Session               $session The closing session.
+		 * @param string                $state   'sending' (a cart) or 'not-sent' (Cancel and return), 0.5.0.
 		 */
 		$copy = apply_filters(
 			'pow_handoff_copy',
 			[
-				'heading' => __( 'Returning your cart…', 'punchout-woocommerce' ),
-				'copy'    => __( 'Your cart is being sent back to your purchasing system. You should land back in your purchasing application within a few seconds. If you see a sign-in page instead, sign in and open the catalog again from your purchasing system, quoting the support reference below.', 'punchout-woocommerce' ),
-				'button'  => __( 'Continue to your purchasing system', 'punchout-woocommerce' ),
+				'heading' => StatePage::NOT_SENT === $state ? __( 'Not sent', 'punchout-woocommerce' ) : __( 'Returning your cart…', 'punchout-woocommerce' ),
+				'copy'    => StatePage::NOT_SENT === $state
+					? __( 'Your cart was not sent. Taking you back to your purchasing system.', 'punchout-woocommerce' )
+					: __( 'Your cart is being sent back to your purchasing system. You should land back in your purchasing application within a few seconds. If you see a sign-in page instead, sign in and open the catalog again from your purchasing system, quoting the support reference below.', 'punchout-woocommerce' ),
+				'button'  => ( new \POW\Settings() )->state_button_label(),
 			],
-			$session
+			$session,
+			$state
 		);
 
 		return Templates::render(
 			'handoff',
 			[
+				'state'       => $state,
 				'action_url'  => $session->browser_form_post_url,
 				'field_name'  => $field['name'],
 				'field_value' => $field['value'],
@@ -446,9 +469,15 @@ final class ReturnEndpoint {
 	}
 
 	/**
-	 * Expired-session page (scope §9.3): no cart contents, re-punchout copy.
+	 * Expired-session page (scope §9.3): no cart contents, re-punchout copy. With a state page chosen (0.5.0), the
+	 * browser goes to its Session ended state instead, drawn inside the theme.
 	 */
 	private function expired_page(): void {
+		$ended = StatePage::link( StatePage::ENDED );
+		if ( null !== $ended ) {
+			wp_safe_redirect( $ended, 303 );
+			return;
+		}
 		$this->error_page(
 			__( 'Your punchout session has expired. Please return to your purchasing system and open the catalog again.', 'punchout-woocommerce' ),
 			403

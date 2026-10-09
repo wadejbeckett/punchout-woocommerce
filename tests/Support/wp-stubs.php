@@ -575,3 +575,65 @@ if ( ! function_exists( 'wp_timezone' ) ) {
 		return new DateTimeZone( $GLOBALS['pow_test_timezone'] ?? 'UTC' );
 	}
 }
+
+/*
+ * Pages and the main query (0.5.0 state page). A test declares pages in pow_test_posts[id] = [ 'status' => 'publish',
+ * 'permalink' => '...', 'content' => '...' ] and the request in pow_test_query = [ 'page' => id, 'singular' => bool ].
+ */
+if ( ! function_exists( 'get_post_status' ) ) {
+	function get_post_status( mixed $post = null ): string|false { // phpcs:ignore
+		return $GLOBALS['pow_test_posts'][ (int) $post ]['status'] ?? false;
+	}
+}
+
+if ( ! function_exists( 'get_permalink' ) ) {
+	function get_permalink( mixed $post = 0, bool $leavename = false ): string|false { // phpcs:ignore
+		return $GLOBALS['pow_test_posts'][ (int) $post ]['permalink'] ?? false;
+	}
+}
+
+if ( ! function_exists( 'is_page' ) ) {
+	function is_page( mixed $page = '' ): bool { // phpcs:ignore
+		$current = (int) ( $GLOBALS['pow_test_query']['page'] ?? 0 );
+		return $current > 0 && ( '' === $page || (int) $page === $current );
+	}
+}
+
+if ( ! function_exists( 'is_singular' ) ) {
+	function is_singular( mixed $post_types = '' ): bool { // phpcs:ignore
+		return (bool) ( $GLOBALS['pow_test_query']['singular'] ?? ( (int) ( $GLOBALS['pow_test_query']['page'] ?? 0 ) > 0 ) );
+	}
+}
+
+if ( ! function_exists( 'get_queried_object' ) ) {
+	function get_queried_object(): ?object { // phpcs:ignore
+		$id = (int) ( $GLOBALS['pow_test_query']['page'] ?? 0 );
+		return isset( $GLOBALS['pow_test_posts'][ $id ] ) ? (object) [ 'ID' => $id, 'post_content' => (string) ( $GLOBALS['pow_test_posts'][ $id ]['content'] ?? '' ) ] : null;
+	}
+}
+
+if ( ! function_exists( 'has_shortcode' ) ) {
+	/** WordPress's answer for a plain shortcode: the tag opens a shortcode in the content. */
+	function has_shortcode( string $content, string $tag ): bool { // phpcs:ignore
+		return 1 === preg_match( '/\[' . preg_quote( $tag, '/' ) . '[\s\]\/]/', $content );
+	}
+}
+
+if ( ! function_exists( 'shortcode_atts' ) ) {
+	/** WordPress's merge: only the known attributes, each defaulted; then the shortcode_atts_{tag} filter. */
+	function shortcode_atts( array $pairs, mixed $atts, string $shortcode = '' ): array { // phpcs:ignore
+		$atts = (array) $atts;
+		$out  = [];
+		foreach ( $pairs as $name => $default ) {
+			$out[ $name ] = array_key_exists( $name, $atts ) ? $atts[ $name ] : $default;
+		}
+		return '' !== $shortcode ? apply_filters( "shortcode_atts_{$shortcode}", $out, $pairs, $atts, $shortcode ) : $out;
+	}
+}
+
+if ( ! function_exists( 'wp_doing_ajax' ) ) {
+	/** WordPress's wp_doing_ajax(): pow_test_doing_ajax, or the route guard suite's own flag. */
+	function wp_doing_ajax(): bool { // phpcs:ignore
+		return (bool) ( $GLOBALS['pow_test_doing_ajax'] ?? $GLOBALS['pow_route_guard_test']['ajax'] ?? false );
+	}
+}

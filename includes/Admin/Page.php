@@ -207,6 +207,11 @@ final class Page {
 			'return_button_label'  => [ __( 'Punchout button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button that sends the cart back to the buyer\'s purchasing system. Blank uses the default: “Punchout”.', 'punchout-woocommerce' ) ],
 			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Return without a cart”.', 'punchout-woocommerce' ) ],
 			'checkout_button_label' => [ __( 'Checkout button label', 'punchout-woocommerce' ), 'text', __( 'During a visit, text on the cart’s proceed button and the Cart widget’s checkout button, which open checkout with PunchOut as the only payment method. Blank uses the default: “Proceed to checkout”.', 'punchout-woocommerce' ) ],
+			'leave_confirmation'   => [ __( 'Ask before leaving', 'punchout-woocommerce' ), 'checkbox', __( 'During a visit, the cancel control ([punchout_abandon_button]) asks first when the cart has items, with the shortcode’s question attribute (for example [punchout_abandon_button question="Return without sending?"]; default “Return without sending your cart?”). An empty cart leaves at once. Off by default.', 'punchout-woocommerce' ) ],
+			'leave_confirm_label'  => [ __( 'Leave button label', 'punchout-woocommerce' ), 'text', __( 'The confirmation’s button that leaves without sending the cart. Blank uses the default: “Return without sending”.', 'punchout-woocommerce' ) ],
+			'leave_stay_label'     => [ __( 'Stay button label', 'punchout-woocommerce' ), 'text', __( 'The confirmation’s button that closes it and keeps the visit. Blank uses the default: “Keep shopping”.', 'punchout-woocommerce' ) ],
+			'state_page_id'        => [ __( 'State page', 'punchout-woocommerce' ), 'page', __( 'A page holding the [punchout_state] shortcode. Once a cart has been sent, and when a link has expired or a session has ended, the buyer’s browser is sent there, so Sent, Not sent, Link expired and Session ended draw inside your theme (classes pow-state and pow-state--sent, --not-sent, --expired, --ended, --sending). Titles and text are shortcode attributes, for example [punchout_state sent_title="Sent"]. The page that posts the cart itself always stays plain. None keeps the plain pages.', 'punchout-woocommerce' ), [ 'none' => __( 'None: the plain pages (default)', 'punchout-woocommerce' ) ] ],
+			'state_button_label'   => [ __( 'State page button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button of the page that posts the cart to the purchasing system (pressed only when it cannot continue by itself), and on the state page’s button when its shortcode names a button_url. Blank uses the default: “Continue to your purchasing system”.', 'punchout-woocommerce' ) ],
 			'extra_button_classes' => [ __( 'Extra button classes', 'punchout-woocommerce' ), 'text', sprintf(
 				/* translators: %s: comma-separated CSS classes the visit stylesheet hides. */
 				__( 'Space-separated CSS classes added to the Punchout exit button, the “Return without a cart” control, the delivery review page’s Submit and Update buttons and the add-address form’s “Add and use this address” button, so they match the site’s own button styles. Plugin classes (pow-…) and the classes a visit hides (%s) are ignored. The Cart block draws its own button and does not receive them.', 'punchout-woocommerce' ),
@@ -269,7 +274,7 @@ final class Page {
 						'name'              => $name, // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped by wp_dropdown_pages.
 						'id'                => $id, // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 						'selected'          => (int) $value,
-						'show_option_none'  => esc_html__( 'Shop page (default)', 'punchout-woocommerce' ),
+						'show_option_none'  => esc_html( (string) ( $args['options']['none'] ?? __( 'Shop page (default)', 'punchout-woocommerce' ) ) ),
 						'option_none_value' => '0',
 					]
 				);
@@ -327,6 +332,11 @@ final class Page {
 			'return_button_label'  => sanitize_text_field( (string) ( $input['return_button_label'] ?? '' ) ),
 			'abandon_button_label' => sanitize_text_field( (string) ( $input['abandon_button_label'] ?? '' ) ),
 			'checkout_button_label' => \POW\Addresses\ReviewLabels::sanitise( $input['checkout_button_label'] ?? '' ),
+			'leave_confirmation'   => ( isset( $input['leave_confirmation'] ) && 'yes' === $input['leave_confirmation'] ) ? 'yes' : 'no',
+			'leave_confirm_label'  => \POW\Addresses\ReviewLabels::sanitise( $input['leave_confirm_label'] ?? '' ),
+			'leave_stay_label'     => \POW\Addresses\ReviewLabels::sanitise( $input['leave_stay_label'] ?? '' ),
+			'state_page_id'        => max( 0, (int) ( $input['state_page_id'] ?? 0 ) ),
+			'state_button_label'   => \POW\Addresses\ReviewLabels::sanitise( $input['state_button_label'] ?? '' ),
 			'extra_button_classes' => implode( ' ', \POW\Settings::button_class_tokens( $input['extra_button_classes'] ?? '' ) ),
 			'attachment_enabled'   => ( isset( $input['attachment_enabled'] ) && 'yes' === $input['attachment_enabled'] ) ? 'yes' : 'no',
 			'attachment_label'     => sanitize_text_field( (string) ( $input['attachment_label'] ?? '' ) ),

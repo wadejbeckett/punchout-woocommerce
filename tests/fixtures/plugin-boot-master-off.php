@@ -47,6 +47,8 @@ echo json_encode( [
 	'ordinary' => $ordinary,
 	'signed_in_no_visit' => $signed_in_no_visit,
 	'return_shortcode_registered' => isset( $GLOBALS['pow_boot_hooks']['shortcode']['punchout_return_button'] ),
+	'state_shortcode_registered' => isset( $GLOBALS['pow_boot_hooks']['shortcode']['punchout_state'] ),
+	'template_redirect' => array_map( static fn( mixed $callback ): string => is_array( $callback ) && is_object( $callback[0] ) ? get_class( $callback[0] ) . '::' . $callback[1] : 'other', $GLOBALS['pow_boot_hooks']['action']['template_redirect'] ?? [] ),
 	'router_registered' => isset( $GLOBALS['pow_boot_hooks']['action']['parse_request'] ),
 	'filters' => array_keys( $GLOBALS['pow_boot_hooks']['filter'] ?? [] ),
 	'actions' => array_keys( $GLOBALS['pow_boot_hooks']['action'] ?? [] ),

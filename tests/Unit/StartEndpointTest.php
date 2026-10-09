@@ -476,6 +476,33 @@ final class StartEndpointTest extends TestCase {
 		}
 	}
 
+	/** 0.5.0 (ticket 77): with a state page chosen, a refused link sends the browser to its Link expired state. */
+	public function test_a_refused_link_goes_to_the_link_expired_state_on_the_chosen_page(): void {
+		$GLOBALS['pow_test_posts'][314] = [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/visit/' ];
+		$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->settings_with( [ 'state_page_id' => 314 ] ), new Log( new QuoteOrderTestLogger() ) );
+		$expired = 'https://shop.example.test/visit/?pow_state=expired';
+
+		$token = $this->claim( 61, [ 'status' => Session::EXPIRED ] );
+		self::assertSame( '', $this->redeem( $token ), 'No plain page is drawn' );
+		self::assertSame( [ [ $expired, 303 ] ], $GLOBALS['pow_start_redirects'] ?? [], 'A link that can no longer be redeemed' );
+
+		$GLOBALS['pow_start_redirects'] = [];
+		$GLOBALS['pow_test_status_headers'] = [];
+		$page = $this->visit( 'short', 'GET' );
+		self::assertSame( '', $page, 'No plain page is drawn' );
+		self::assertSame( [ [ $expired, 303 ] ], $GLOBALS['pow_start_redirects'], 'A malformed token too' );
+		self::assertSame( [], $GLOBALS['pow_test_status_headers'] );
+	}
+
+	public function test_without_a_state_page_a_refused_link_keeps_the_plain_403_page(): void {
+		$GLOBALS['pow_test_posts'][314] = [ 'status' => 'draft', 'permalink' => 'https://shop.example.test/visit/' ];
+		$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->settings_with( [ 'state_page_id' => 314 ] ), new Log( new QuoteOrderTestLogger() ) );
+		$page = $this->visit( 'short', 'GET' );
+		self::assertStringContainsString( 'This catalog link has expired', $page );
+		self::assertSame( [ 403 ], $GLOBALS['pow_test_status_headers'] );
+		self::assertSame( [], $GLOBALS['pow_start_redirects'] ?? [] );
+	}
+
 	public function test_a_method_other_than_get_head_or_post_neither_redeems_nor_looks_up(): void {
 		foreach ( [ 'PUT', 'DELETE', 'OPTIONS', 'PATCH' ] as $method ) {
 			$this->tearDown();

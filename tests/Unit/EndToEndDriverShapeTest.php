@@ -88,6 +88,23 @@ namespace {
 		}
 
 		/**
+		 * 0.5.0 (ticket 77): the state page and the leave-confirmation settings a run turns on (step `states`) are
+		 * recorded at seed and put back by retire; a visit can be ended as an administrator would (step `end_visit`).
+		 */
+		public function test_the_fixture_puts_back_the_state_page_settings(): void {
+			$source = $this->source( 'fixture.php' );
+			self::assertStringContainsString( "'states'", $source );
+			self::assertStringContainsString( "'end_visit'", $source );
+			self::assertStringContainsString( 'expire_and_destroy(', $source, 'Ended as logout, the clean-up and the master switch end it' );
+			$configure = substr( $source, (int) strpos( $source, 'private static function configure_review(' ), 1600 );
+			self::assertStringContainsString( 'self::STATE_SETTINGS', $configure, 'The seed records the state settings as they were' );
+			self::assertStringContainsString( "'state_page_id'", $configure );
+			$restore = substr( $source, (int) strpos( $source, 'private static function restore_settings(' ), 900 );
+			self::assertStringContainsString( 'self::STATE_SETTINGS', $restore, 'Retire may put them back' );
+			self::assertStringContainsString( "'state_page_id'", $restore );
+		}
+
+		/**
 		 * The real-browser run (tests/E2E/browser.py) keeps the driver's rails: loopback only, no secret printed,
 		 * and a local Chromium named on the command line, headless, never a download.
 		 */

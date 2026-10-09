@@ -10,6 +10,8 @@ declare( strict_types = 1 );
 
 namespace POW\Checkout;
 
+use POW\Http\EndedVisit;
+use POW\Http\StatePage;
 use POW\Plugin;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
@@ -26,7 +28,9 @@ defined( 'ABSPATH' ) || exit;
  * - the login cookie the checkout answer left in the browser, whose ended login still names its visit row; or
  * - the marker the handoff leaves when it clears that cookie (Handoff::SENT_MARKER), keyed so it cannot be forged.
  * When that visit has returned, the browser is sent to the visit's handoff while its page has never been served (for
- * this login), and otherwise to the Sent state, with no auto-posting form: the cart is never posted twice. Anything
+ * this login), and otherwise to the Sent state, with no auto-posting form: the cart is never posted twice. With a
+ * state page chosen (0.5.0, ticket 77), a visit the login cookie names that ended without sending (its time ran
+ * out, it was ended, or Cancel and return closed it) sends the Submit to Session ended or Not sent there. Anything
  * else carries on to WooCommerce untouched.
  */
 final class LateSubmit {
@@ -63,13 +67,15 @@ final class LateSubmit {
 		try {
 			if ( null !== $this->plugin->current_session() ) { return null; }
 
-			$cookie = function_exists( 'wp_parse_auth_cookie' ) ? wp_parse_auth_cookie( '', 'logged_in' ) : false;
-			if ( is_array( $cookie ) && '' !== (string) ( $cookie['token'] ?? '' ) && '' !== (string) ( $cookie['username'] ?? '' ) ) {
-				$user  = get_user_by( 'login', (string) $cookie['username'] );
-				$visit = $user ? $this->sessions->find_login_any_status( (int) $user->ID, (string) $cookie['token'] ) : null;
-				if ( $visit instanceof Session && Session::RETURNED === $visit->status ) {
-					return Handoff::after_return( $visit, (string) $cookie['token'] );
+			$found = EndedVisit::from_cookie( $this->sessions );
+			if ( null !== $found ) {
+				[ $visit, $token ] = $found;
+				if ( Session::RETURNED === $visit->status ) {
+					return Handoff::after_return( $visit, $token );
 				}
+				// 0.5.0 (ticket 77): a visit that ended without sending goes to its state, on the site's state page.
+				$ended = EndedVisit::over( $visit ) ? StatePage::link( EndedVisit::state( $visit ) ) : null;
+				if ( null !== $ended ) { return $ended; }
 			}
 
 			$marker = $_COOKIE[ Handoff::SENT_MARKER ] ?? '';
