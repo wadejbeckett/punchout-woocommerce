@@ -24,7 +24,7 @@ if ( $document ) : ?>
 <?php endif; ?>
 <?php if ( '' !== (string) $stylesheet_url ) : ?><link rel="stylesheet" href="<?php echo esc_url( $stylesheet_url ); ?>"><?php endif; ?>
 <?php if ( $document ) : ?><main class="pow-confirmation woocommerce" aria-labelledby="pow-review-title"><?php else : ?><section class="pow-confirmation woocommerce" aria-labelledby="pow-review-title"><?php endif; ?>
-	<header class="pow-confirmation__header"><span class="pow-confirmation__shop"><?php if ( '' !== $logo ) { echo wp_kses_post( $logo ); } else { echo esc_html( $shop_name ); } ?></span><span><?php echo esc_html__( 'Punchout', 'punchout-woocommerce' ); ?></span></header>
+	<?php if ( $document ) : // The theme's own header stands in for this masthead when the page is drawn inside the theme. ?><header class="pow-confirmation__header"><span class="pow-confirmation__shop"><?php if ( '' !== $logo ) { echo wp_kses_post( $logo ); } else { echo esc_html( $shop_name ); } ?></span><span><?php echo esc_html__( 'Punchout', 'punchout-woocommerce' ); ?></span></header><?php endif; ?>
 	<h1 id="pow-review-title"><?php echo esc_html__( 'Review your cart', 'punchout-woocommerce' ); ?></h1>
 	<p class="pow-confirmation__intro"><?php echo esc_html__( 'Check your delivery details, then send this cart to your purchasing system for approval.', 'punchout-woocommerce' ); ?></p>
 	<ol class="pow-confirmation__steps" aria-label="<?php echo esc_attr( __( 'Shopping progress', 'punchout-woocommerce' ) ); ?>"><li><?php echo esc_html__( 'Cart', 'punchout-woocommerce' ); ?></li><li aria-current="step"><?php echo esc_html__( 'Delivery and review', 'punchout-woocommerce' ); ?></li><li><?php echo esc_html__( 'Purchasing approval', 'punchout-woocommerce' ); ?></li></ol>

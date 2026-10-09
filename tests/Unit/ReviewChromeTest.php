@@ -25,6 +25,15 @@ final class ReviewChromeTest extends TestCase {
 		self::assertFalse( ReviewChrome::decide( 'GET', false, false ) );
 	}
 
+	public function test_the_review_poses_as_the_cart_page_when_the_shop_has_one(): void {
+		self::assertSame( 12, ReviewChrome::page_to_pose( 12 ) );
+	}
+
+	public function test_an_unset_or_invalid_page_means_no_posing(): void {
+		self::assertSame( 0, ReviewChrome::page_to_pose( -1 ) );
+		self::assertSame( 0, ReviewChrome::page_to_pose( 0 ) );
+	}
+
 	public function test_the_request_decision_reads_the_method_and_the_filter(): void {
 		$_SERVER['REQUEST_METHOD'] = 'GET';
 		self::assertTrue( ReviewChrome::wraps_request() );

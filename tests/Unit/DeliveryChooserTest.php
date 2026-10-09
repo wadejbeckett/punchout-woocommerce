@@ -95,15 +95,14 @@ final class DeliveryChooserTest extends TestCase {
 			self::assertStringNotContainsString( '0123456789', $html );
 		} finally { if ( null === $before ) { unset( $GLOBALS['pow_test_wc'] ); } else { $GLOBALS['pow_test_wc'] = $before; } }
 	}
-	public function test_document_header_shows_the_site_logo_and_shortcode_keeps_the_shop_name(): void {
+	public function test_document_header_shows_the_site_logo_and_the_theme_drawn_review_has_no_masthead(): void {
 		$logo = '<a href="https://shop.example.test/" class="custom-logo-link" rel="home"><img src="https://shop.example.test/logo.png" class="custom-logo" alt="Example shop"></a>';
 		$GLOBALS['pow_test_custom_logo'] = $logo;
 		try {
 			$header = self::header_of( $this->render( [], [ 'document' => true ] ) );
 			self::assertStringContainsString( '<img src="https://shop.example.test/logo.png"', $header );
-			$header = self::header_of( $this->render( [], [ 'document' => false ] ) );
-			self::assertStringContainsString( 'Example shop', $header );
-			self::assertStringNotContainsString( 'custom-logo', $header );
+			// Inside the theme (0.4.18) the theme's own header stands in: no masthead at all.
+			self::assertStringNotContainsString( 'pow-confirmation__header', $this->render( [], [ 'document' => false ] ) );
 		} finally { unset( $GLOBALS['pow_test_custom_logo'] ); }
 		$header = self::header_of( $this->render( [], [ 'document' => true ] ) );
 		self::assertStringContainsString( '>Example shop<', $header );
