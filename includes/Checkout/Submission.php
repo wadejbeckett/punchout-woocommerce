@@ -10,6 +10,7 @@ declare( strict_types = 1 );
 
 namespace POW\Checkout;
 
+use POW\Addresses\EstimateNote;
 use POW\Audit\Log;
 use POW\Cart\SessionKey;
 use POW\Cxml\Builder;
@@ -78,7 +79,8 @@ final class Submission {
 
 		// 1. Build first. Nothing is consumed until the message and its page exist.
 		try {
-			[ $args, $skipped ] = OrderMessage::builder_args( $order, $partner, $visit, (string) $this->settings->get( 'default_unspsc', '' ), (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
+			// The estimate sentence is used only when the connection sends delivery cost.
+			[ $args, $skipped ] = OrderMessage::builder_args( $order, $partner, $visit, (string) $this->settings->get( 'default_unspsc', '' ), (string) wp_parse_url( home_url(), PHP_URL_HOST ), EstimateNote::text( $this->settings ) );
 			$poom_xml = $this->builder->poom( $args );
 			$notices  = array_map( static fn( string $name ): string => sprintf( /* translators: %s: product name */ __( '"%s" could not be included (no SKU) and was left out of the returned cart.', 'punchout-woocommerce' ), $name ), $skipped );
 			$markup   = ReturnEndpoint::handoff_markup( $visit, $partner, $poom_xml, $notices );

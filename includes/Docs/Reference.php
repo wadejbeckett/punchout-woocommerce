@@ -197,6 +197,8 @@ final class Reference {
 			'freight_uom' => [ 'default' => 'EA', 'note' => __( 'UnitOfMeasure of the quantity-one freight line.', 'punchout-woocommerce' ) ],
 			'freight_classification_domain' => [ 'default' => 'supplier', 'note' => __( 'Classification domain for freight, independent of merchandise classification.', 'punchout-woocommerce' ) ],
 			'freight_classification' => [ 'default' => 'freight', 'note' => __( 'Classification value for freight.', 'punchout-woocommerce' ) ],
+			'line_description' => [ 'default' => 'name', 'note' => __( 'name: each line’s Description is the product name. name_short_description: the name, then the product’s short description as plain text (tags stripped, entities decoded, whitespace collapsed, left out when it only repeats the name), the whole at most 2,000 characters. ShortName is always the name. Applies to the cXML built from a WooCommerce order.', 'punchout-woocommerce' ) ],
+			'order_details' => [ 'default' => '', 'note' => __( 'Order details sent: up to 10 order meta keys, each with a label and a format (text, or unix_date for a Unix timestamp sent as its UTC calendar day, YYYY-MM-DD). Each one with a value follows the buyer’s note in DeliveryInstructions as “label: value”, the parts joined by “ | ”, while delivery_notes_policy is item_detail_extrinsic.', 'punchout-woocommerce' ) ],
 		];
 	}
 

@@ -17,7 +17,11 @@ Opt-in, against a disposable local WordPress/WooCommerce only (see tests/README.
      review's Submit (0.4.x), or (0.5.0) the cart's checkout button to
      WooCommerce's classic checkout, where PunchOut is the only payment method
      and its button is the place-order label, then the GET handoff the
-     checkout answer redirects to (`Run.checkout_path`);
+     checkout answer redirects to (`Run.checkout_path`). The 0.5.0 leg also
+     sets the connection's message settings (line description with the short
+     description, "Order details sent", and with --send-delivery-cost the
+     freight line) and checks each in the cXML; --checkout-extras names the
+     fixture's own checkout fields (a delivery date) and what they must send;
   7. reads the handoff page's form, submits it to the receiver as the browser's
      auto-post would, decodes the cXML and checks it (tests/E2E/poom.py,
      exact 1.2.008 DTD through tests/E2E/dtd.php);
@@ -32,6 +36,7 @@ run directory, mode 700.
 import argparse
 import base64
 import copy
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import html as htmllib
@@ -277,14 +282,92 @@ def checkout_findings(page, form, place_order_label):
     ]
 
 
-def checkout_submission(form, note, extra=None):
+def checkout_submission(form, note, extra=None, shipping=None):
     """What WooCommerce's checkout script posts: the form serialised (no button, as jQuery's serialize()), with the
     PunchOut method chosen, the buyer's note, and a phone typed in when the shop asks for one and the account has none.
-    `extra` holds further choices the buyer made on the page (a shipping method, say)."""
-    choose = dict(extra or {}, payment_method='punchout', order_comments=note)
+    `extra` holds further fields or choices on the page (another checkout plugin's fields, a shipping method; a
+    KeyError if the page has no such field); `shipping` picks the first package's shipping method."""
+    choose = {'payment_method': 'punchout', 'order_comments': note}
     if any(c.name == 'billing_phone' for c in form.controls) and not form.value('billing_phone'):
         choose['billing_phone'] = '0100000000'
+    choose.update(extra or {})
+    if shipping is not None:
+        choose['shipping_method[0]'] = shipping
     return [(name, '' if value is None else value) for name, value in form.submission(None, choose)]
+
+
+def shipping_rate(form, instance_id):
+    """The first package's radio value for the shipping method instance `instance_id` ('<method>:<id>'), or None."""
+    for control in form.controls:
+        if control.name == 'shipping_method[0]' and (control.value or '').endswith(':' + str(instance_id)):
+            return control.value
+    return None
+
+
+# -- 0.5.0 ticket 75: what the connection screen sets, checked in the order's cXML ---------------------------
+
+EXTRAS_DEFAULT = {'date_offset_days': 7, 'fields': {}, 'order_details': [], 'instructions': []}
+_DATE_TEMPLATE = re.compile(r'\{date:([^}]*)\}')
+
+
+def delivery_date(today, offset_days):
+    """The run's delivery date: `offset_days` after `today`, moved on to the Monday when that is a weekend day."""
+    day = today + timedelta(days=offset_days)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day
+
+
+def fill_template(text, day):
+    """`text` with every {date:<strftime format>} replaced by `day` in that format."""
+    return _DATE_TEMPLATE.sub(lambda match: day.strftime(match.group(1)), text)
+
+
+def load_extras(path):
+    """The fixture's own checkout extras (--checkout-extras, a JSON file kept with the fixture, not here), so this
+    repository names no other plugin: the fields a checkout plugin draws, posted with the run's delivery date
+    ("fields": {name: template}); the order details its order meta adds to the connection ("order_details": [{meta_key,
+    label, format}]); and the text each must reach DeliveryInstructions as ("instructions": [template]). Templates may
+    hold {date:<strftime format>}; the date is "date_offset_days" (at least 2) ahead, on a weekday. None reads as no
+    extras. ValueError for anything else."""
+    if path is None:
+        return copy.deepcopy(EXTRAS_DEFAULT)
+    data = json.loads(Path(path).read_text())
+    if not isinstance(data, dict) or set(data) - set(EXTRAS_DEFAULT):
+        raise ValueError('Checkout extras must be an object with only ' + ', '.join(EXTRAS_DEFAULT))
+    extras = dict(copy.deepcopy(EXTRAS_DEFAULT), **data)
+    fields, details, lines, offset = extras['fields'], extras['order_details'], extras['instructions'], extras['date_offset_days']
+    if not isinstance(fields, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in fields.items()):
+        raise ValueError('"fields" must map field names to text')
+    if not isinstance(details, list) or not all(isinstance(d, dict) and set(d) == {'meta_key', 'label', 'format'} and all(isinstance(v, str) for v in d.values()) and d['format'] in ('text', 'unix_date') for d in details):
+        raise ValueError('"order_details" must list {meta_key, label, format text or unix_date}')
+    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+        raise ValueError('"instructions" must list text')
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 2:
+        raise ValueError('"date_offset_days" must be a whole number of days, at least 2')
+    return extras
+
+
+def checkout_expected(seed, note, extra_lines):
+    """What the order's cXML must carry under the seeded connection's settings: each line's Description (the name,
+    or the name, " - " and the product's short description as the seed says it reads in plain text) and ShortName (the
+    name), in capitals for an all-caps connection; DeliveryInstructions exactly (the estimate sentence when delivery
+    cost is sent, the note, then the extras' and the seed's order details, joined by " | "); and the freight line, the
+    priced method the run chose, only when delivery cost is sent."""
+    connection = seed['connection']
+    caps = (lambda text: text.upper()) if connection.get('allcaps') else (lambda text: text)
+    with_short = connection.get('line_description') == 'name_short_description'
+    descriptions = {}
+    for sku, product in seed['products'].items():
+        text = product['name'] + ' - ' + product['detail'] if with_short and product.get('detail') else product['name']
+        descriptions[sku] = {'description': caps(text), 'short_name': caps(product['name'])}
+    freight = bool(connection.get('emit_delivery_line'))
+    parts = ([seed['estimate_note']] if freight else []) + [note] + list(extra_lines) + list(seed.get('instructions_expected') or [])
+    expected = {'descriptions': descriptions, 'delivery_instructions': ' | '.join(part for part in parts if part), 'freight': None}
+    if freight:
+        expected['freight'] = seed['shipping']['cost']
+        expected['freight_description'] = caps(seed['shipping']['priced_title'] + ' \u2014 ' + seed['estimate_note'])
+    return expected
 
 
 def checkout_answer(status, body):
@@ -375,6 +458,25 @@ def cleaned_note(note, limit=2000):
     """The buyer's note as the purchasing system must receive it: characters outside XML removed, trimmed, capped."""
     clean = _NOT_XML.sub('', note).strip()
     return clean[:limit].rstrip() if len(clean) > limit else clean
+
+
+INSTRUCTIONS_SEPARATOR = ' | '
+
+
+def instructions_fit(text, lead, note, details, limit=2000):
+    """(ok, detail): `text` is DeliveryInstructions as 0.5.0 sends them: `lead` (the estimate sentence, or '' when no
+    freight line is sent), the buyer's note cleaned, then each order detail ("Label: value"), joined by " | ", within
+    `limit` characters, the note alone shortened to fit, and no further than two separators' room and its trailing
+    space."""
+    sep = INSTRUCTIONS_SEPARATOR
+    head = lead + sep if lead else ''
+    tail = sep + sep.join(details) if details else ''
+    clean = cleaned_note(note, limit=len(note))
+    sent = text[len(head):len(text) - len(tail)] if text.startswith(head) and text.endswith(tail) and len(text) >= len(head) + len(tail) else None
+    shortened = sent is not None and sent != clean
+    ok = (sent is not None and len(text) <= limit and bool(sent) == bool(clean)
+          and (sent == clean or (clean.startswith(sent) and len(text) >= limit - 2 * len(sep) - 1)))
+    return ok, {'length': len(text), 'shortened': shortened}
 
 
 def posts_for(captured, cookie):
@@ -492,6 +594,9 @@ class Run:
         self.notes = []
         self.quote_orders = []  # Punchout Quotes the run made: each must have had exactly one e-mail, the Quote e-mail
         self.quiet_orders = []  # binned or refused orders: no e-mail at all
+        self.path = 'review'
+        self.extras = copy.deepcopy(EXTRAS_DEFAULT)
+        self.extra_lines = []
 
     def check(self, ok, name, **detail):
         (self.passed if ok else self.failed).append({'check': name, 'detail': detail})
@@ -658,9 +763,10 @@ class Run:
     def checkout_path(self, browser, seed):
         """Leave through WooCommerce's classic checkout and return the handoff page, as `review_path` does.
 
-        The order lifecycle's second leg (ticket 74) is `late_submits` and `second_leg`. Still to come with the later
-        0.5.0 tickets (spec "Testing Decisions"): the shipping section opened on the default saved address, a date, a
-        file, no delivery amount on the page, and the refusals outside a visit."""
+        The order lifecycle's second leg (ticket 74) is `late_submits` and `second_leg`; the connection's message
+        settings (ticket 75) are checked here and in the cXML. Still to come with the later 0.5.0 tickets (spec
+        "Testing Decisions"): the shipping section opened on the default saved address, a file, no delivery amount on
+        the page, and the refusals outside a visit."""
         url = self.args.url
         checkout = seed.get('checkout') or {}
         labels = checkout.get('labels') or {}
@@ -686,9 +792,27 @@ class Run:
             else:
                 self.check(ok, name, **detail)
 
+        # Ticket 75: the connection's message settings, the fixture's own checkout fields (a date, when the extras name
+        # them) and, with delivery cost on, the priced method, so the freight line has an amount to carry.
+        connection = seed['connection']
+        details = [d for d in (connection.get('order_details') or [])]
+        self.must(connection.get('line_description') == 'name_short_description' and all(d in details for d in self.extras['order_details']) and len(details) > len(self.extras['order_details']), 'seed_sets_the_line_description_and_the_order_details', line_description=connection.get('line_description'), order_details=details)
+        day = delivery_date(datetime.now(timezone.utc).date(), self.extras['date_offset_days'])
+        fields = {name: fill_template(template, day) for name, template in self.extras['fields'].items()}
+        self.extra_lines = [fill_template(template, day) for template in self.extras['instructions']]
+        if fields:
+            self.notes.append('checkout extras posted for ' + day.isoformat() + ': ' + ', '.join(sorted(fields)))
+        shipping = None
+        if connection['emit_delivery_line']:
+            shipping = shipping_rate(form, seed['shipping']['instance_id'])
+            self.must(shipping is not None, 'checkout_offers_the_priced_method', instance=seed['shipping']['instance_id'])
+
         self.note = 'Leave at the gate. End-to-end run ' + seed['run'] + '.'
         self.checkout_form = form
-        answer = self.post_checkout(browser, form, self.note)
+        try:
+            answer = self.post_checkout(browser, form, self.note, fields, shipping=shipping)
+        except KeyError as error:
+            self.must(False, 'checkout_draws_the_extras_fields', missing=str(error))
         self.save('checkout-answer.json', answer['raw'])
         redirect = answer['redirect']
         self.must(answer['result'] == 'success' and isinstance(redirect, str) and redirect.startswith(url + '/punchout/'), 'submit_answers_success_with_the_handoff_address', http=answer['status'], result=answer['result'], redirect=redirect, messages=answer['messages'])
@@ -704,9 +828,10 @@ class Run:
         self.check((headers.get('Referrer-Policy') or '').lower() == 'no-referrer', 'the_handoff_sends_no_referrer', referrer_policy=headers.get('Referrer-Policy'))
         return handoff
 
-    def post_checkout(self, browser, form, note, extra=None, headers=None):
-        """POST the checkout form as WooCommerce's script does (`?wc-ajax=checkout`) and read the answer."""
-        body, content_type = forms.encode(checkout_submission(form, note, extra), forms.URLENCODED)
+    def post_checkout(self, browser, form, note, extra=None, headers=None, shipping=None):
+        """POST the checkout form as WooCommerce's script does (`?wc-ajax=checkout`) and read the answer. `extra` and
+        `shipping` are `checkout_submission`'s."""
+        body, content_type = forms.encode(checkout_submission(form, note, extra, shipping), forms.URLENCODED)
         status, answer_headers, raw = browser.request(self.args.url + '/?wc-ajax=checkout', body, content_type, accept='application/json', extra_headers=headers)
         result, redirect, messages = checkout_answer(status, raw)
         return {'status': status, 'result': result, 'redirect': redirect, 'messages': messages, 'raw': raw, 'set_cookies': answer_headers.get_all('Set-Cookie') or []}
@@ -910,7 +1035,7 @@ class Run:
     def expected(self, seed):
         connection = seed['connection']
         lines = {sku: {'qty': self.quantities[sku], 'unit': product['price'], 'aux': '%d|0' % product['id']} for sku, product in seed['products'].items()}
-        return {
+        base = {
             'buyer_cookie': self.cookie, 'buyer': connection['buyer'], 'supplier': connection['supplier'], 'deployment_mode': connection['deployment_mode'],
             'currency': seed['currency'], 'shared_secret': seed['secret'], 'lines': lines,
             # The fixture's only shipping method is free shipping, so an emitted freight line would be 0.00.
@@ -918,6 +1043,9 @@ class Run:
             'ship_to_contains': [seed['ship_to']['address_1'], seed['ship_to']['city']] if connection['emit_ship_to'] else None,
             'notes': self.note if connection['delivery_notes_policy'] == 'item_detail_extrinsic' else None,
         }
+        if self.path == 'checkout':
+            base.update(checkout_expected(seed, self.note, self.extra_lines))
+        return base
 
 
 def wait_for(url, seconds, server=None):
@@ -977,6 +1105,8 @@ def main(argv=None):
     parser.add_argument('--link-plugin', type=Path, help='plugin checkout to link into the fixture for this run; the old link is restored after')
     parser.add_argument('--redeem', choices=['auto', 'get', 'post'], default='auto', help='auto: as a browser (GET, then the page\'s own POST form)')
     parser.add_argument('--path', choices=['auto', 'review', 'checkout'], default='auto', help='auto: review below 0.5.0, checkout from 0.5.0')
+    parser.add_argument('--checkout-extras', type=Path, help='JSON kept with the fixture: checkout fields another plugin draws, the order details they add and the DeliveryInstructions text they must send (load_extras)')
+    parser.add_argument('--send-delivery-cost', action='store_true', help='seed the connection with Send delivery cost on and choose the priced method at checkout (0.5.0)')
     parser.add_argument('--out', type=Path, help='run directory (default: <wp-path>/../e2e-runs/run-<id>)')
     parser.add_argument('--wait', type=float, default=20.0, help='seconds to wait for the site to accept connections (default 20)')
     args = parser.parse_args(argv)
@@ -986,6 +1116,10 @@ def main(argv=None):
     os.environ['POW_E2E_PHP'] = args.php
 
     run = Run(args)
+    try:
+        run.extras = load_extras(args.checkout_extras)
+    except (OSError, ValueError) as error:
+        sys.exit('Refusing --checkout-extras: ' + str(error))
     restore = link_plugin(args.wp_path, args.link_plugin) if args.link_plugin else None
     server = receiver = None
     seeded = False
@@ -1000,11 +1134,11 @@ def main(argv=None):
         run.must(wait_for(args.url, args.wait, server), 'site_server_answers', url=args.url, server_exit=server.poll() if server else None)
         receiver = Receiver()
 
-        run.wp('seed')
+        run.wp('seed', POW_E2E_ORDER_DETAILS=json.dumps(run.extras['order_details']), POW_E2E_SEND_DELIVERY_COST='1' if args.send_delivery_cost else '0')
         seeded = True
         seed = json.loads((args.out / 'fixture.json').read_text())
         version = run.version = seed['versions']['plugin']
-        path = path_for(version, args.path)
+        path = run.path = path_for(version, args.path)
         print('PunchOut %s on WooCommerce %s, WordPress %s; path: %s; site %s' % (version, seed['versions']['woocommerce'], seed['versions']['wordpress'], path, args.url), flush=True)
 
         browser = Browser(args.url)

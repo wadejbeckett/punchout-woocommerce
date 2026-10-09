@@ -10,10 +10,12 @@ declare( strict_types = 1 );
 
 namespace POW\Checkout;
 
+use POW\Addresses\EstimateNote;
 use POW\Addresses\QuoteAddress;
 use POW\Cart\PoomMapper;
 use POW\Cxml\Builder;
 use POW\Cxml\Money;
+use POW\Partners\OrderDetails;
 use POW\Partners\Partner;
 use POW\Sessions\Session;
 
@@ -26,11 +28,23 @@ defined( 'ABSPATH' ) || exit;
  * - Lines: the product's SKU, the product and variation ids as the auxiliary id, the order's quantity, and the
  *   line total after discounts and before tax divided by the quantity as the unit price (the same rule as the
  *   cart mapper). Total is the sum of what the lines say. A line whose product has no SKU is left out and named.
- * - Text: the product's name, completed with the variation values the buyer chose, as ShortName and description;
- *   capitals when the connection asks for them. UOM EA; the classification the caller passes.
+ * - Text: the product's name, completed with the variation values the buyer chose, is the ShortName. The
+ *   Description is that name too, or, when the connection's line description is `name_short_description`, the name,
+ *   " - " and the product's short description (a variation's parent's) as plain text: tags stripped, entities
+ *   decoded, characters cXML cannot carry removed, whitespace collapsed; left out when empty or only the name again,
+ *   and shortened (never the name) so the whole fits DESCRIPTION_LIMIT, which the filter
+ *   `punchout_line_description_limit` can lower. Capitals when the connection asks for them. UOM EA; the
+ *   classification the caller passes.
  * - ShipTo: the order's shipping address, while the connection sends ShipTo and the address is usable.
- * - DeliveryInstructions: the buyer's order note, cleaned of characters cXML cannot carry and capped at 2,000.
- * - No freight line: the order's shipping line stays the store's estimate and never reaches the message.
+ * - DeliveryInstructions: the buyer's order note, cleaned of characters cXML cannot carry, then each of the
+ *   connection's "Order details sent" (Partners\OrderDetails; the filter `punchout_order_details_sent` can extend
+ *   the list) that has a value, as "Label: value": text as plain text on one line (at most DETAIL_LIMIT), a Unix
+ *   timestamp as its UTC calendar day (gmdate, Y-m-d), whatever the server's timezone. The parts are joined by
+ *   " | " (the builder flattens line breaks), at most NOTE_LIMIT in all; only the note is shortened.
+ * - Freight: only while the connection sends delivery cost (`emit_delivery_line`) and the order has a shipping line:
+ *   one quantity-one freight line, the order's shipping total before tax, named after its shipping method(s) with the
+ *   estimate sentence, which then also leads DeliveryInstructions. Otherwise the order's shipping line stays the
+ *   store's estimate and never reaches the message, and the Total is the products'.
  * - Envelope: From and To reversed from the setup, Sender identity only (no shared secret exists here), the visit's
  *   BuyerCookie and deployment mode, the connection's dialect, "create" only, no SupplierOrderInfo.
  */
@@ -42,6 +56,26 @@ final class OrderMessage {
 	/** The builder's own limit for DeliveryInstructions. */
 	public const NOTE_LIMIT = 2000;
 
+	/** The longest line Description sent with the short description, in characters (a filter can lower it). */
+	public const DESCRIPTION_LIMIT        = 2000;
+	public const DESCRIPTION_LIMIT_FILTER = 'punchout_line_description_limit';
+	private const DESCRIPTION_SEPARATOR   = ' - ';
+
+	/** The longest value one order detail sends, in characters. */
+	public const DETAIL_LIMIT = 500;
+
+	/**
+	 * Between the parts of DeliveryInstructions. The builder flattens line breaks in element text to spaces (Dynamics
+	 * breaks on newlines), so the parts are joined with a separator that survives onto the wire.
+	 */
+	public const INSTRUCTIONS_SEPARATOR = ' | ';
+
+	/** Extends or changes a connection's "Order details sent" for one order ( $entries, $order, $partner ). */
+	public const ORDER_DETAILS_FILTER = 'punchout_order_details_sent';
+
+	/** Closing tags and line breaks that separate words once the tags are gone. */
+	private const WORD_BREAK_TAGS = '#<(?:br|/p|/div|/li|/h[1-6]|/tr|/td|/th|/dt|/dd)\b[^>]*>#i';
+
 	/** The fields of an address the cXML ShipTo mapping reads, in its order. */
 	private const ADDRESS_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
 
@@ -50,8 +84,14 @@ final class OrderMessage {
 	 *
 	 * @return array{0: array<string, mixed>, 1: list<string>}
 	 */
-	public static function builder_args( \WC_Order $order, Partner $partner, Session $visit, string $classification, string $host ): array {
-		[ $items, $total_cents, $skipped ] = self::lines( $order, $partner->allcaps_transform, $classification );
+	public static function builder_args( \WC_Order $order, Partner $partner, Session $visit, string $classification, string $host, string $estimate_note = '' ): array {
+		[ $items, $total_cents, $skipped ] = self::lines( $order, $partner, $classification );
+
+		$freight = $partner->emit_delivery_line ? self::freight( $order, $partner, $estimate_note ) : null;
+		if ( null !== $freight ) {
+			$items[]      = $freight;
+			$total_cents += $freight['unit_price_cents'];
+		}
 
 		return [
 			[
@@ -75,7 +115,7 @@ final class OrderMessage {
 				'emit_delivery_code'           => false,
 				'delivery_code'                => '',
 				'delivery_code_extrinsic_name' => $partner->delivery_code_extrinsic_name,
-				'delivery_notes'               => self::note( (string) $order->get_customer_note() ),
+				'delivery_notes'               => self::instructions( $order, $partner, null !== $freight ? $estimate_note : '' ),
 				'delivery_notes_policy'        => $partner->delivery_notes_policy,
 			],
 			$skipped,
@@ -87,7 +127,7 @@ final class OrderMessage {
 	 *
 	 * @return array{0: list<array<string, mixed>>, 1: int, 2: list<string>} items, total in cents, skipped names
 	 */
-	private static function lines( \WC_Order $order, bool $capitals, string $classification ): array {
+	private static function lines( \WC_Order $order, Partner $partner, string $classification ): array {
 		$items   = [];
 		$skipped = [];
 		$total   = 0;
@@ -116,14 +156,131 @@ final class OrderMessage {
 				'supplier_part_id' => $sku,
 				'aux_id'           => (int) $item->get_product_id() . '|' . (int) $item->get_variation_id(),
 				'unit_price_cents' => $unit_cents,
-				'description'      => $name,
+				'description'      => self::description( $name, $product, $partner->line_description ),
 				'short_name'       => $name,
 				'uom'              => 'EA',
 				'classification'   => $classification,
 			];
 		}
 
-		return [ $capitals ? PoomMapper::uppercase_items( $items ) : $items, $total, $skipped ];
+		return [ $partner->allcaps_transform ? PoomMapper::uppercase_items( $items ) : $items, $total, $skipped ];
+	}
+
+	/** A line's Description under the connection's line description mode. */
+	private static function description( string $name, object $product, string $mode ): string {
+		if ( Partner::LINE_DESCRIPTION_NAME_AND_SHORT !== $mode ) { return $name; }
+
+		$short = self::plain_text( self::short_description( $product ) );
+		$same  = static fn( string $text ): bool => mb_strtolower( $short ) === mb_strtolower( self::plain_text( $text ) );
+		if ( '' === $short || $same( $name ) || $same( (string) $product->get_name() ) ) { return $name; }
+
+		$limit = self::description_limit();
+		$full  = $name . self::DESCRIPTION_SEPARATOR . $short;
+		if ( mb_strlen( $full ) <= $limit ) { return $full; }
+		$room = $limit - mb_strlen( $name . self::DESCRIPTION_SEPARATOR );
+		return $room < 2 ? $name : $name . self::DESCRIPTION_SEPARATOR . rtrim( mb_substr( $short, 0, $room - 1 ) ) . '…';
+	}
+
+	/** The product's short description; a variation, which has none of its own, reads its parent's. */
+	private static function short_description( object $product ): string {
+		$short = method_exists( $product, 'get_short_description' ) ? (string) $product->get_short_description() : '';
+		if ( '' === trim( $short ) && method_exists( $product, 'get_parent_id' ) && (int) $product->get_parent_id() > 0 && function_exists( 'wc_get_product' ) ) {
+			$parent = wc_get_product( (int) $product->get_parent_id() );
+			$short  = is_object( $parent ) && method_exists( $parent, 'get_short_description' ) ? (string) $parent->get_short_description() : '';
+		}
+		return $short;
+	}
+
+	/** DESCRIPTION_LIMIT, or less when the filter asks for less. */
+	private static function description_limit(): int {
+		$limit = function_exists( 'apply_filters' ) ? apply_filters( self::DESCRIPTION_LIMIT_FILTER, self::DESCRIPTION_LIMIT ) : self::DESCRIPTION_LIMIT;
+		return is_int( $limit ) && $limit > 0 ? min( $limit, self::DESCRIPTION_LIMIT ) : self::DESCRIPTION_LIMIT;
+	}
+
+	/**
+	 * Text as cXML carries it on one line: tags stripped (a closing block tag or a line break still separates words),
+	 * entities decoded, characters outside XML removed, every run of whitespace one space.
+	 */
+	public static function plain_text( string $text ): string {
+		$text = wp_strip_all_tags( (string) preg_replace( self::WORD_BREAK_TAGS, '$0 ', $text ) );
+		$text = (string) preg_replace( self::NOT_XML, '', html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
+		return trim( (string) preg_replace( '/[\s\p{Z}]+/u', ' ', $text ) );
+	}
+
+	/**
+	 * The freight line for the order's shipping, or null when the order has no shipping line. Named after the
+	 * shipping method(s) as plain text, joined with "; ", with the estimate sentence; capitals with the connection.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	private static function freight( \WC_Order $order, Partner $partner, string $estimate_note ): ?array {
+		$methods = method_exists( $order, 'get_shipping_methods' ) ? (array) $order->get_shipping_methods() : [];
+		if ( [] === $methods ) { return null; }
+		$labels = [];
+		foreach ( $methods as $method ) {
+			$label = is_object( $method ) && method_exists( $method, 'get_name' ) ? self::plain_text( (string) $method->get_name() ) : '';
+			if ( '' !== $label ) { $labels[] = $label; }
+		}
+		$line = [
+			'line_type'             => 'freight',
+			'quantity'              => 1,
+			'supplier_part_id'      => $partner->freight_supplier_part_id,
+			'aux_id'                => '',
+			'unit_price_cents'      => Money::to_cents( (float) $order->get_shipping_total() ),
+			'description'           => EstimateNote::line_description( [] !== $labels ? implode( '; ', $labels ) : __( 'Delivery', 'punchout-woocommerce' ), self::note( $estimate_note ) ),
+			'uom'                   => $partner->freight_uom,
+			'classification_domain' => $partner->freight_classification_domain,
+			'classification'        => $partner->freight_classification,
+		];
+		return $partner->allcaps_transform ? PoomMapper::uppercase_items( [ $line ] )[0] : $line;
+	}
+
+	/**
+	 * DeliveryInstructions: the lead (the estimate sentence, only with a freight line), the buyer's note, then each
+	 * order detail with a value as "Label: value", joined by INSTRUCTIONS_SEPARATOR, within NOTE_LIMIT. Only the note
+	 * is shortened.
+	 */
+	private static function instructions( \WC_Order $order, Partner $partner, string $lead ): string {
+		$details = [];
+		foreach ( self::order_details( $order, $partner ) as $entry ) {
+			$value = self::detail_value( $order->get_meta( $entry['meta_key'], true ), $entry['format'] );
+			if ( '' !== $value ) { $details[] = $entry['label'] . ': ' . $value; }
+		}
+		$join = self::INSTRUCTIONS_SEPARATOR;
+		$lead = self::note( $lead );
+		$tail = implode( $join, $details );
+		$note = self::note( (string) $order->get_customer_note() );
+
+		$fixed = array_values( array_filter( [ $lead, $tail ], static fn( string $part ): bool => '' !== $part ) );
+		$room  = self::NOTE_LIMIT - mb_strlen( implode( $join, $fixed ) ) - count( $fixed ) * mb_strlen( $join );
+		$note  = $room > 0 && mb_strlen( $note ) > $room ? rtrim( mb_substr( $note, 0, $room ) ) : ( $room > 0 ? $note : '' );
+
+		$text = implode( $join, array_values( array_filter( [ $lead, $note, $tail ], static fn( string $part ): bool => '' !== $part ) ) );
+		return mb_strlen( $text ) > self::NOTE_LIMIT ? rtrim( mb_substr( $text, 0, self::NOTE_LIMIT ) ) : $text;
+	}
+
+	/**
+	 * The connection's "Order details sent" for this order, after the filter, well-formed only.
+	 *
+	 * @return list<array{meta_key: string, label: string, format: string}>
+	 */
+	private static function order_details( \WC_Order $order, Partner $partner ): array {
+		$entries = $partner->order_detail_list();
+		if ( function_exists( 'apply_filters' ) ) { $entries = apply_filters( self::ORDER_DETAILS_FILTER, $entries, $order, $partner ); }
+		return OrderDetails::normalise( is_array( $entries ) ? array_values( $entries ) : [] );
+	}
+
+	/** One order detail's value as sent; '' when the order has no usable value for it. */
+	private static function detail_value( mixed $raw, string $format ): string {
+		if ( OrderDetails::FORMAT_UNIX_DATE === $format ) {
+			// Whole seconds since 1970 only: a date plugin stores midnight UTC of the chosen day, and gmdate() reads
+			// it back as that day at any server timezone (date() or wp_date() would give the day before west of UTC).
+			$stamp = is_int( $raw ) ? $raw : ( is_string( $raw ) && 1 === preg_match( '/\A\d{1,12}\z/', trim( $raw ) ) ? (int) trim( $raw ) : 0 );
+			return $stamp > 0 ? gmdate( 'Y-m-d', $stamp ) : '';
+		}
+		if ( ! is_string( $raw ) && ! is_int( $raw ) && ! is_float( $raw ) ) { return ''; }
+		$text = self::plain_text( (string) $raw );
+		return mb_strlen( $text ) > self::DETAIL_LIMIT ? rtrim( mb_substr( $text, 0, self::DETAIL_LIMIT - 1 ) ) . '…' : $text;
 	}
 
 	/**

@@ -2,7 +2,10 @@
 /**
  * The order -> cXML mapper (0.5.0): what the buyer's purchasing system receives is built from the order WooCommerce
  * checkout placed, through the unchanged builder. Lines, prices, ShipTo, the buyer's note, no freight, and the
- * envelope (identities reversed, the visit's cookie and mode).
+ * envelope (identities reversed, the visit's cookie and mode). Ticket 75 adds what the connection screen sets
+ * (schema 10): the line description (the name, or the name and its cleaned short description), the "Order details
+ * sent" after the note in DeliveryInstructions (text, or a Unix timestamp as its UTC day at any server timezone),
+ * and the freight line only while "Send delivery cost" is on.
  *
  * @package POW
  */
@@ -38,10 +41,35 @@ namespace {
 		public function get_variation_attributes(): array { return $this->attributes; }
 	}
 
+	/** A product with the short description the shop wrote, and the parent a variation reads it from. */
+	final class OrderMessageDescribedProduct extends WC_Product {
+		public function __construct( int $id, string $name, string $sku, private string $short = '', private int $parent = 0 ) { parent::__construct( $id, $name, $sku ); }
+		public function get_short_description(): string { return $this->short; }
+		public function get_parent_id(): int { return $this->parent; }
+	}
+
+	/** A variation with no short description of its own, as WooCommerce has it. */
+	final class OrderMessageDescribedVariation extends WC_Product {
+		/** @param array<string, string> $attributes */
+		public function __construct( int $id, string $name, string $sku, private int $parent, private array $attributes ) { parent::__construct( $id, $name, $sku ); }
+		public function get_short_description(): string { return ''; }
+		public function get_parent_id(): int { return $this->parent; }
+		/** @return array<string, string> */
+		public function get_variation_attributes(): array { return $this->attributes; }
+	}
+
+	/** The order's shipping line, as much of WC_Order_Item_Shipping as the mapper reads. */
+	final class OrderMessageShipping {
+		public function __construct( private string $method_title ) {}
+		public function get_name(): string { return $this->method_title; }
+	}
+
 	/** A placed order: its lines, currency, shipping address and the buyer's note. */
 	final class OrderMessageOrder extends WC_Order {
-		/** @param list<OrderMessageItem> $lines @param array<string, string> $shipping */
-		public function __construct( private array $lines, private array $shipping = [], private string $note = '', private string $order_currency = 'ZAR', private string $shipping_total = '0.00' ) { parent::__construct( 501 ); }
+		/** @param list<OrderMessageItem> $lines @param array<string, string> $shipping @param list<OrderMessageShipping> $shipping_lines */
+		public function __construct( private array $lines, private array $shipping = [], private string $note = '', private string $order_currency = 'ZAR', private string $shipping_total = '0.00', private array $shipping_lines = [] ) { parent::__construct( 501 ); }
+		/** @return array<int, OrderMessageShipping> */
+		public function get_shipping_methods(): array { return $this->shipping_lines; }
 		/** @return array<int, OrderMessageItem> */
 		public function get_items( string|array $types = 'line_item' ): array { return 'line_item' === $types ? $this->lines : []; }
 		public function get_currency(): string { return $this->order_currency; }
@@ -58,17 +86,21 @@ namespace {
 		private array $saved = [];
 
 		protected function setUp(): void {
-			foreach ( [ 'pow_test_filters', 'pow_test_attribute_terms' ] as $key ) {
+			foreach ( [ 'pow_test_filters', 'pow_test_attribute_terms', 'pow_test_products' ] as $key ) {
 				$this->saved[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 				unset( $GLOBALS[ $key ] );
 			}
+			$this->timezone = date_default_timezone_get();
 		}
 
 		protected function tearDown(): void {
 			foreach ( $this->saved as $key => [ $existed, $value ] ) {
 				if ( $existed ) { $GLOBALS[ $key ] = $value; } else { unset( $GLOBALS[ $key ] ); }
 			}
+			date_default_timezone_set( $this->timezone );
 		}
+
+		private string $timezone = 'UTC';
 
 		/** @param array<string, mixed> $overrides */
 		private function partner( array $overrides = [] ): Partner {
@@ -100,8 +132,27 @@ namespace {
 		}
 
 		/** @return array<string, mixed> */
-		private function args( ?WC_Order $order = null, ?Partner $partner = null ): array {
-			return OrderMessage::builder_args( $order ?? $this->order(), $partner ?? $this->partner(), $this->visit(), 'UNSPSC-1', 'shop.example.test' )[0];
+		private function args( ?WC_Order $order = null, ?Partner $partner = null, string $estimate_note = '' ): array {
+			return OrderMessage::builder_args( $order ?? $this->order(), $partner ?? $this->partner(), $this->visit(), 'UNSPSC-1', 'shop.example.test', $estimate_note )[0];
+		}
+
+		/** One line whose product has $short as its short description. */
+		private function described( string $short, string $name = 'Alpha' ): OrderMessageOrder {
+			return new OrderMessageOrder( [ new OrderMessageItem( new OrderMessageDescribedProduct( 101, $name, 'E2E-ALPHA', $short ), 2, '22.00', 101 ) ], self::SHIPPING, 'Leave at the gate.' );
+		}
+
+		/** @param list<array{meta_key: string, label: string, format: string}> $details */
+		private function with_details( array $details, array $overrides = [] ): Partner {
+			return $this->partner( $overrides + [ 'order_details' => json_encode( $details ) ] );
+		}
+
+		/** The text of the DeliveryInstructions extrinsic on every merchandise line of the built message. */
+		private function instructions_on_the_wire( array $args ): array {
+			$doc = new DOMDocument();
+			$doc->loadXML( ( new POW\Cxml\Builder() )->poom( $args ) );
+			$found = [];
+			foreach ( ( new DOMXPath( $doc ) )->query( '//ItemIn/ItemDetail/Extrinsic[@name="DeliveryInstructions"]' ) as $node ) { $found[] = $node->textContent; }
+			return $found;
 		}
 
 		public function test_each_line_carries_the_orders_sku_quantity_and_ex_tax_unit_price(): void {
@@ -205,6 +256,185 @@ namespace {
 			self::assertSame( 2.0, $path->evaluate( 'count(//ItemIn)' ) );
 			self::assertSame( 'Leave at the gate.', $path->evaluate( 'string(//ItemIn[1]/ItemDetail/Extrinsic[@name="DeliveryInstructions"])' ) );
 			self::assertSame( 0.0, $path->evaluate( 'count(//SharedSecret)' ) );
+		}
+
+		// ------------------------------------------------------------------ ticket 75: the line description
+
+		public function test_by_default_each_line_is_described_by_its_name_whatever_its_short_description_says(): void {
+			$item = $this->args( $this->described( '<p>Brand Example, red</p>' ) )['items'][0];
+			self::assertSame( [ 'Alpha', 'Alpha' ], [ $item['description'], $item['short_name'] ] );
+		}
+
+		public function test_name_and_short_description_sends_the_short_description_as_plain_text_after_the_name(): void {
+			$partner = $this->partner( [ 'line_description' => 'name_short_description' ] );
+			$item    = $this->args( $this->described( "<p>Brand&nbsp;<strong>Example</strong> &amp; Co</p>\n<ul><li>Red,\t\t600&#8239;ml</li><li>Crate &quot;24&quot;</li></ul>" ), $partner )['items'][0];
+			self::assertSame( 'Alpha - Brand Example & Co Red, 600 ml Crate "24"', $item['description'], 'Tags stripped, entities decoded, spaces collapsed, list items kept apart' );
+			self::assertSame( 'Alpha', $item['short_name'], 'ShortName is always the name' );
+		}
+
+		public function test_a_short_description_that_is_empty_or_only_repeats_the_name_is_left_out(): void {
+			$partner = $this->partner( [ 'line_description' => 'name_short_description' ] );
+			foreach ( [ '', '<p> &nbsp; </p>', '  ALPHA ', '<p>alpha</p>' ] as $short ) {
+				self::assertSame( 'Alpha', $this->args( $this->described( $short ), $partner )['items'][0]['description'], json_encode( $short ) );
+			}
+		}
+
+		public function test_the_description_is_capped_by_shortening_only_the_short_description(): void {
+			$partner = $this->partner( [ 'line_description' => 'name_short_description' ] );
+			self::assertSame( 2000, OrderMessage::DESCRIPTION_LIMIT );
+			$long = $this->args( $this->described( str_repeat( 'é', 3000 ) ), $partner )['items'][0]['description'];
+			self::assertSame( 2000, mb_strlen( $long ) );
+			self::assertSame( 'Alpha - éé', mb_substr( $long, 0, 10 ) );
+			self::assertSame( '…', mb_substr( $long, -1 ) );
+
+			$GLOBALS['pow_test_filters']['punchout_line_description_limit'] = static fn(): int => 20;
+			self::assertSame( 'Alpha - Brand Examp…', $this->args( $this->described( 'Brand Example detail' ), $partner )['items'][0]['description'] );
+			$name = str_repeat( 'N', 30 );
+			self::assertSame( $name, $this->args( $this->described( 'Detail', $name ), $partner )['items'][0]['description'], 'The name itself is never cut' );
+			$GLOBALS['pow_test_filters']['punchout_line_description_limit'] = static fn(): int => 5000;
+			self::assertSame( 2000, mb_strlen( $this->args( $this->described( str_repeat( 'x', 3000 ) ), $partner )['items'][0]['description'] ), 'A filter can lower the cap, never raise it' );
+		}
+
+		public function test_a_variation_takes_its_parents_short_description(): void {
+			$GLOBALS['pow_test_attribute_terms'] = [ 'pa_size' => [ 'large' => 'Large' ] ];
+			$GLOBALS['pow_test_products'][200]   = new OrderMessageDescribedProduct( 200, 'Shirt', 'SHIRT', '<p>Cotton</p>' );
+			$variation = new OrderMessageDescribedVariation( 205, 'Shirt', 'SHIRT-L', 200, [ 'attribute_pa_size' => 'large', 'attribute_colour' => '' ] );
+			$order = new OrderMessageOrder( [ new OrderMessageItem( $variation, 1, '15.00', 200, 205, [ 'colour' => 'Blue' ] ) ] );
+			$item  = $this->args( $order, $this->partner( [ 'line_description' => 'name_short_description' ] ) )['items'][0];
+			self::assertSame( 'Shirt - Large, Blue - Cotton', $item['description'] );
+			self::assertSame( 'Shirt - Large, Blue', $item['short_name'] );
+		}
+
+		public function test_an_all_caps_connection_gets_the_short_description_in_capitals_too(): void {
+			$item = $this->args( $this->described( 'Brand example' ), $this->partner( [ 'line_description' => 'name_short_description', 'allcaps_transform' => 1 ] ) )['items'][0];
+			self::assertSame( [ 'ALPHA - BRAND EXAMPLE', 'ALPHA' ], [ $item['description'], $item['short_name'] ] );
+		}
+
+		// ------------------------------------------------------- ticket 75: DeliveryInstructions and order details
+
+		/**
+		 * The builder flattens every line break in element text to a space (Dynamics breaks on newlines), so the
+		 * parts are joined with a visible " | " that survives onto the wire.
+		 */
+		public function test_the_order_details_follow_the_note_as_label_and_value_parts(): void {
+			$order = $this->order( 'Leave at the gate.' );
+			$order->meta = [ '_delivery_ts' => '1791936000', '_file' => 'spec sheet.pdf' ];
+			$partner = $this->with_details( [ [ 'meta_key' => '_delivery_ts', 'label' => 'Preferred delivery date', 'format' => 'unix_date' ], [ 'meta_key' => '_file', 'label' => 'Attachment', 'format' => 'text' ] ] );
+			self::assertSame( "Leave at the gate. | Preferred delivery date: 2026-10-14 | Attachment: spec sheet.pdf", $this->args( $order, $partner )['delivery_notes'] );
+
+			$order = $this->order( '' );
+			$order->meta = [ '_delivery_ts' => 1791936000 ];
+			self::assertSame( 'Preferred delivery date: 2026-10-14', $this->args( $order, $partner )['delivery_notes'], 'Without a note the details stand alone, and a missing one is left out' );
+		}
+
+		public function test_a_unix_date_is_its_utc_calendar_day_at_every_server_timezone(): void {
+			$partner = $this->with_details( [ [ 'meta_key' => '_delivery_ts', 'label' => 'Preferred delivery date', 'format' => 'unix_date' ] ] );
+			// Midnight UTC is what a date plugin's mktime() stores under WordPress, which runs PHP in UTC; the last
+			// second of that day is the other edge.
+			foreach ( [ 'UTC', 'Africa/Johannesburg', 'America/Los_Angeles', 'Pacific/Pago_Pago', 'Pacific/Kiritimati', 'Asia/Kolkata', 'Europe/London' ] as $zone ) {
+				date_default_timezone_set( $zone );
+				foreach ( [ 1791936000, 1792022399 ] as $stamp ) {
+					$order = $this->order( '' );
+					$order->meta = [ '_delivery_ts' => (string) $stamp ];
+					self::assertSame( 'Preferred delivery date: 2026-10-14', $this->args( $order, $partner )['delivery_notes'], $zone . ' ' . $stamp );
+				}
+			}
+			date_default_timezone_set( 'America/Los_Angeles' );
+			self::assertSame( '2026-10-13', date( 'Y-m-d', 1791936000 ), 'The server-local day would be the day before west of UTC' );
+		}
+
+		public function test_an_order_detail_without_a_usable_value_is_left_out(): void {
+			$partner = $this->with_details( [ [ 'meta_key' => '_text', 'label' => 'Text', 'format' => 'text' ], [ 'meta_key' => '_date', 'label' => 'Date', 'format' => 'unix_date' ] ] );
+			foreach ( [ [ '_text' => '', '_date' => '' ], [ '_text' => [ 'a' ], '_date' => 'tomorrow' ], [ '_text' => '  ', '_date' => '0' ], [ '_text' => true, '_date' => '-86400' ], [ '_text' => null, '_date' => '1791936000.5' ], [ '_text' => new stdClass(), '_date' => [ 1791936000 ] ] ] as $meta ) {
+				$order = $this->order( 'Note.' );
+				$order->meta = $meta;
+				self::assertSame( 'Note.', $this->args( $order, $partner )['delivery_notes'], json_encode( $meta ) );
+			}
+			$order = $this->order( 'Note.' );
+			$order->meta = [ '_text' => 42, '_date' => 1791936000 ];
+			self::assertSame( "Note. | Text: 42 | Date: 2026-10-14", $this->args( $order, $partner )['delivery_notes'], 'A number is text' );
+		}
+
+		public function test_a_text_value_is_plain_text_on_one_line_and_capped(): void {
+			$partner = $this->with_details( [ [ 'meta_key' => '_file', 'label' => 'Attachment', 'format' => 'text' ] ] );
+			$order = $this->order( '' );
+			$order->meta = [ '_file' => "<b>spec</b>\n sheet &amp; co\x07.pdf" ];
+			self::assertSame( 'Attachment: spec sheet & co.pdf', $this->args( $order, $partner )['delivery_notes'] );
+			$order->meta = [ '_file' => str_repeat( 'x', 700 ) ];
+			$line = $this->args( $order, $partner )['delivery_notes'];
+			self::assertSame( OrderMessage::DETAIL_LIMIT, mb_strlen( $line ) - mb_strlen( 'Attachment: ' ) );
+			self::assertSame( '…', mb_substr( $line, -1 ) );
+		}
+
+		public function test_the_instructions_fit_the_builders_limit_by_shortening_only_the_note(): void {
+			$partner = $this->with_details( [ [ 'meta_key' => '_delivery_ts', 'label' => 'Preferred delivery date', 'format' => 'unix_date' ] ] );
+			$order = $this->order( str_repeat( 'n', 2000 ) );
+			$order->meta = [ '_delivery_ts' => '1791936000' ];
+			$notes = $this->args( $order, $partner )['delivery_notes'];
+			self::assertSame( OrderMessage::NOTE_LIMIT, mb_strlen( $notes ) );
+			self::assertTrue( str_ends_with( $notes, "n | Preferred delivery date: 2026-10-14" ), 'The details are kept whole' );
+			if ( extension_loaded( 'dom' ) ) {
+				self::assertSame( [ $notes, $notes ], $this->instructions_on_the_wire( $this->args( $order, $partner ) ), 'The builder takes it on every merchandise line' );
+			}
+		}
+
+		public function test_a_filter_can_extend_the_order_details_and_its_entries_are_checked(): void {
+			$order = $this->order( 'Note.' );
+			$order->meta = [ '_po' => 'PO-7', '_bad' => 'x' ];
+			$GLOBALS['pow_test_filters']['punchout_order_details_sent'] = static function ( array $entries, $filtered_order, $filtered_partner ) use ( $order ): array {
+				self::assertSame( $order, $filtered_order );
+				self::assertSame( 5, $filtered_partner->id );
+				return array_merge( $entries, [ [ 'meta_key' => '_po', 'label' => 'Order reference', 'format' => 'text' ], [ 'meta_key' => '_bad', 'label' => 'Bad', 'format' => 'html' ], 'junk' ] );
+			};
+			self::assertSame( "Note. | Order reference: PO-7", $this->args( $order )['delivery_notes'] );
+		}
+
+		// --------------------------------------------------------------- ticket 75: freight and ShipTo on the wire
+
+		public function test_with_send_delivery_cost_off_there_is_no_freight_line_and_no_estimate_sentence(): void {
+			$order = new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, 'Note.', 'ZAR', '50.00', [ new OrderMessageShipping( 'Courier' ) ] );
+			$args  = $this->args( $order, $this->partner( [ 'emit_delivery_line' => 0 ] ), 'The delivery charge is an estimate.' );
+			self::assertSame( [ 'E2E-ALPHA', 'E2E-BETA' ], array_column( $args['items'], 'supplier_part_id' ) );
+			self::assertSame( 9250, $args['total_cents'] );
+			self::assertSame( 'Note.', $args['delivery_notes'] );
+		}
+
+		public function test_with_send_delivery_cost_on_the_orders_shipping_total_is_one_freight_line(): void {
+			$order   = new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, 'Note.', 'ZAR', '50.00', [ new OrderMessageShipping( 'Courier <em>(2&ndash;3 days)</em>' ), new OrderMessageShipping( 'Local pickup' ) ] );
+			$partner = $this->partner( [ 'emit_delivery_line' => 1, 'freight_supplier_part_id' => 'FREIGHT-1', 'freight_uom' => 'LOT', 'freight_classification_domain' => 'supplier', 'freight_classification' => 'carriage' ] );
+			$args    = $this->args( $order, $partner, 'The delivery charge is an estimate.' );
+			self::assertCount( 3, $args['items'] );
+			self::assertSame(
+				[ 'line_type' => 'freight', 'quantity' => 1, 'supplier_part_id' => 'FREIGHT-1', 'aux_id' => '', 'unit_price_cents' => 5000, 'description' => 'Courier (2–3 days); Local pickup — The delivery charge is an estimate.', 'uom' => 'LOT', 'classification_domain' => 'supplier', 'classification' => 'carriage' ],
+				$args['items'][2]
+			);
+			self::assertSame( 9250 + 5000, $args['total_cents'] );
+			self::assertSame( "The delivery charge is an estimate. | Note.", $args['delivery_notes'], 'The estimate sentence travels only with the freight line' );
+			if ( extension_loaded( 'dom' ) ) {
+				$xml = ( new POW\Cxml\Builder() )->poom( $args );
+				self::assertTrue( ExactCxmlDtd::validate( $xml )['valid'] );
+				$path = new DOMXPath( ( static function ( string $xml ): DOMDocument { $doc = new DOMDocument(); $doc->loadXML( $xml ); return $doc; } )( $xml ) );
+				self::assertSame( '142.50', $path->evaluate( 'string(//PunchOutOrderMessageHeader/Total/Money)' ) );
+				self::assertSame( 0.0, $path->evaluate( 'count(//ItemIn[ItemID/SupplierPartID="FREIGHT-1"]/ItemDetail/Extrinsic)' ), 'No instructions on the freight line' );
+			}
+		}
+
+		public function test_a_freight_line_needs_a_shipping_line_and_follows_capitals(): void {
+			$on = $this->partner( [ 'emit_delivery_line' => 1, 'allcaps_transform' => 1 ] );
+			self::assertCount( 2, $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, '', 'ZAR', '0.00' ), $on )['items'], 'No shipping line, no freight' );
+			$free = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, '', 'ZAR', '0.00', [ new OrderMessageShipping( 'Free shipping' ) ] ), $on )['items'][2];
+			self::assertSame( [ 0, 'FREE SHIPPING', 'DELIVERY' ], [ $free['unit_price_cents'], $free['description'], $free['supplier_part_id'] ], 'A free method is a real zero, in capitals for an all-caps connection' );
+			$untitled = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, '', 'ZAR', '12.00', [ new OrderMessageShipping( '<b></b>' ) ] ), $this->partner( [ 'emit_delivery_line' => 1 ] ) )['items'][2];
+			self::assertSame( 'Delivery', $untitled['description'] );
+		}
+
+		public function test_ship_to_reaches_the_message_only_while_the_connection_sends_it(): void {
+			if ( ! extension_loaded( 'dom' ) ) { self::markTestSkipped( 'ext-dom is required.' ); }
+			$on  = ( new POW\Cxml\Builder() )->poom( $this->args( null, $this->partner( [ 'emit_ship_to' => 1 ] ) ) );
+			$off = ( new POW\Cxml\Builder() )->poom( $this->args( null, $this->partner( [ 'emit_ship_to' => 0 ] ) ) );
+			self::assertStringContainsString( '<ShipTo>', $on );
+			self::assertStringContainsString( '<Street>1 Example Street</Street>', $on );
+			self::assertStringNotContainsString( '<ShipTo>', $off );
 		}
 	}
 }
