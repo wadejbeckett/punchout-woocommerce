@@ -200,6 +200,7 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$this->initial_review();
 		self::assertSame( \POW\Addresses\ReviewLabels::resolve(), Templates::$vars['labels'] ?? null );
 		self::assertSame( [ 'submit' => 'Submit', 'items' => 'Items', 'total' => 'Total' ], Templates::$vars['labels'] );
+		self::assertFalse( Templates::$vars['tax_note'] ?? null, 'No tax sentence by default' );
 	}
 
 	public function test_a_repeated_submit_after_the_cart_returned_gets_the_handoff_again_not_an_error_page(): void {

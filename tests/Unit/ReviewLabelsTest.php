@@ -77,6 +77,24 @@ namespace {
 			self::assertSame( ReviewLabels::MAX_LENGTH, mb_strlen( ReviewLabels::sanitise( str_repeat( 'é', 300 ) ) ) );
 		}
 
+		/** The review's one tax sentence is the site's choice: off by default ("none by default"), saved as yes or no. */
+		public function test_the_tax_sentence_setting_is_off_by_default_and_saved_as_yes_or_no(): void {
+			self::assertSame( 'review_tax_note', ReviewLabels::TAX_NOTE );
+			self::assertFalse( ( new Settings() )->review_tax_note() );
+			self::assertFalse( $this->settings( [ ReviewLabels::TAX_NOTE => 'no' ] )->review_tax_note() );
+			self::assertFalse( $this->settings( [ ReviewLabels::TAX_NOTE => '1' ] )->review_tax_note() );
+			self::assertTrue( $this->settings( [ ReviewLabels::TAX_NOTE => 'yes' ] )->review_tax_note() );
+			$admin = ( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor();
+			( new ReflectionProperty( $admin, 'settings' ) )->setValue( $admin, new Settings() );
+			self::assertSame( 'no', $admin->sanitize_settings( [] )[ ReviewLabels::TAX_NOTE ] );
+			self::assertSame( 'yes', $admin->sanitize_settings( [ ReviewLabels::TAX_NOTE => 'yes' ] )[ ReviewLabels::TAX_NOTE ] );
+			self::assertSame( 'no', $admin->sanitize_settings( [ ReviewLabels::TAX_NOTE => '1' ] )[ ReviewLabels::TAX_NOTE ] );
+			$GLOBALS['pow_test_settings_fields'] = [];
+			$admin->register_settings();
+			self::assertSame( 'checkbox', $GLOBALS['pow_test_settings_fields'][ 'pow_' . ReviewLabels::TAX_NOTE ]['type'] ?? null );
+			self::assertStringContainsString( 'Off by default', $GLOBALS['pow_test_settings_fields'][ 'pow_' . ReviewLabels::TAX_NOTE ]['help'] );
+		}
+
 		public function test_the_settings_screen_offers_and_saves_the_three_labels(): void {
 			$admin = ( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor();
 			( new ReflectionProperty( $admin, 'settings' ) )->setValue( $admin, new Settings() );

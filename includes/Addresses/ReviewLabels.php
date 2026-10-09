@@ -18,6 +18,8 @@ final class ReviewLabels {
 	public const SUBMIT = 'review_submit_label';
 	public const ITEMS  = 'review_items_heading';
 	public const TOTAL  = 'review_total_label';
+	/** 'yes' adds one sentence, "Amounts exclude tax.", under the totals while the connection sends the delivery line. Off by default: the review names tax nowhere. */
+	public const TAX_NOTE = 'review_tax_note';
 
 	/** Setting => its filter. */
 	public const FILTERS = [

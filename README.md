@@ -296,7 +296,8 @@ wp punchout generate-key
 | Review page title | "Review" | Shown as the page title, the last breadcrumb and the document title while the delivery review is drawn inside the theme (posing as the Cart page); blank = the default |
 | Review Submit button | "Submit" | Text on the review page's button that sends the cart (0.4.23); blank = the default; filter `punchout_review_submit_label` |
 | Review items heading | "Items" | Heading over the item lines on the review page (0.4.23); blank = the default; filter `punchout_review_items_heading` |
-| Review total label | "Total" | Label of the amount sent to the purchasing system on the review page (0.4.23); blank = the default; filter `punchout_review_total_label`. When the connection does not send the delivery line, the review shows this one row (the merchandise) and no delivery estimate or tax sentence |
+| Review total label | "Total" | Label of the amount sent to the purchasing system on the review page (0.4.23); blank = the default; filter `punchout_review_total_label`. When the connection does not send the delivery line, the review shows this one row (the merchandise), no delivery estimate or tax sentence, and each delivery method by its title only |
+| Review tax sentence | off | On: one sentence, "Amounts exclude tax.", under the review's totals, only for connections that send the delivery line. Off: the review names tax nowhere (0.4.23) |
 | Setup rate limit | 30/min | Per partner+IP on `/punchout/setup`; 0 uses the default (30). The public self-test preserves positive values and uses 10/min when this is 0. |
 | Setup edge limit | 120/min | Per IP before method checks, body reads, parsing or audit storage on `/punchout/setup`; 0 uses the default (120) |
 | Log retention | 400 days | Audit-table trim horizon |

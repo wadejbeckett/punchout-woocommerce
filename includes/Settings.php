@@ -106,6 +106,9 @@ class Settings {
 		'review_submit_label'  => '',
 		'review_items_heading' => '',
 		'review_total_label'   => '',
+		// 0.4.23: 'yes' adds "Amounts exclude tax." under the review's totals while the connection sends the delivery
+		// line. Off by default, so the review names tax nowhere (Addresses\ReviewLabels::TAX_NOTE).
+		'review_tax_note'      => 'no',
 
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends
@@ -224,6 +227,11 @@ class Settings {
 		$stored = is_string( $stored ) ? trim( $stored ) : '';
 
 		return '' !== $stored ? $stored : $default;
+	}
+
+	/** True when the review shows its one tax sentence under the totals (0.4.23; off by default, and never while the connection sends no delivery line). */
+	public function review_tax_note(): bool {
+		return 'yes' === $this->get( 'review_tax_note', 'no' );
 	}
 
 	/** True when the StartPage link waits for one real click instead of submitting itself (0.4.23; off by default). */

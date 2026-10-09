@@ -2,7 +2,7 @@
 /**
  * Theme-overridable delivery confirmation; all choices and amounts are prepared server-side.
  *
- * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $labels (0.4.23: {submit, items, total}, the site's words for the Submit button, the item heading and the total; missing or blank keys use the defaults; $view['delivery_line'] false = the connection sends no delivery line), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $script_url (0.4.22: the review script where the page has not enqueued it, else ''), $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
+ * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $labels (0.4.23: {submit, items, total}, the site's words for the Submit button, the item heading and the total; missing or blank keys use the defaults; $view['delivery_line'] false = the connection sends no delivery line), $tax_note (0.4.23: true adds "Amounts exclude tax." under the totals while the delivery line is sent; missing = none), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $script_url (0.4.22: the review script where the page has not enqueued it, else ''), $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
  *
  * @package POW @license AGPL-3.0-or-later
  */
@@ -21,6 +21,8 @@ $button_extra = is_callable( [ \POW\Cart\Surface::class, 'extra_button_classes' 
 $button_extra = '' !== $button_extra ? ' ' . $button_extra : '';
 $estimate_note = isset( $estimate_note ) && is_string( $estimate_note ) ? $estimate_note : '';
 $labels = \POW\Addresses\ReviewLabels::complete( $labels ?? null );
+// 0.4.23: the one tax sentence is the site's choice (setting "Review tax sentence"), off by default; only a real true shows it.
+$tax_note = isset( $tax_note ) && true === $tax_note;
 // 0.4.23: a connection that sends no delivery cost shows no estimate and no tax sentence; the total is the merchandise.
 $freight_off = ( array_key_exists( 'delivery_line', $view ) && false === $view['delivery_line'] ) || ( $delivery && 'disabled' === ( $delivery['status'] ?? null ) );
 if ( $document ) : ?>
@@ -98,7 +100,7 @@ if ( $document ) : ?>
 		<?php if ( ! empty( $view['skipped'] ) ) : ?><div class="pow-confirmation__notice"><p><?php echo esc_html__( 'These products cannot be transferred because their catalogue details are incomplete:', 'punchout-woocommerce' ); ?></p><ul><?php foreach ( $view['skipped'] as $name ) { echo '<li>' . esc_html( $name ) . '</li>'; } ?></ul></div><?php endif; ?>
 		</div><aside class="pow-confirmation__summary" aria-labelledby="pow-summary-title"><h2 id="pow-summary-title"><?php echo esc_html__( 'Cart summary', 'punchout-woocommerce' ); ?></h2><?php if ( $freight_off ) : // The merchandise is all that is sent: one row, no estimate, no tax sentence. ?><dl><dt class="pow-confirmation__total"><?php echo esc_html( $labels['total'] ); ?></dt><dd class="pow-confirmation__total"><?php echo esc_html( $money( $view['merchandise_total_cents'] ) ); ?></dd></dl>
 			<?php else : ?><dl><dt><?php echo esc_html__( 'Merchandise', 'punchout-woocommerce' ); ?></dt><dd><?php echo esc_html( $money( $view['merchandise_total_cents'] ) ); ?></dd><dt><?php echo esc_html__( 'Delivery estimate', 'punchout-woocommerce' ); ?></dt><dd><?php echo esc_html( $delivery && null !== $delivery['amount_cents'] ? $money( $delivery['amount_cents'] ) : __( 'Not included', 'punchout-woocommerce' ) ); ?></dd><dt class="pow-confirmation__total"><?php echo esc_html( $labels['total'] ); ?></dt><dd class="pow-confirmation__total"><?php echo esc_html( $money( $view['total_cents'] ) ); ?></dd></dl>
-			<p class="pow-confirmation__hint"><?php echo esc_html__( 'Amounts exclude tax.', 'punchout-woocommerce' ); ?></p>
+			<?php if ( $tax_note ) : ?><p class="pow-confirmation__hint"><?php echo esc_html__( 'Amounts exclude tax.', 'punchout-woocommerce' ); ?></p><?php endif; ?>
 			<?php if ( '' !== $estimate_note && $delivery && null !== ( $delivery['amount_cents'] ?? null ) ) : ?><p class="pow-confirmation__hint pow-confirmation__estimate-note"><?php echo esc_html( $estimate_note ); ?></p><?php endif; ?>
 			<?php endif; ?>
 			<button type="submit" name="pow_delivery_action" value="submit" class="button alt wp-element-button pow-confirmation__submit<?php echo esc_attr( $button_extra ); ?>" <?php if ( $disabled ) { echo 'disabled'; } ?>><?php echo esc_html( $labels['submit'] ); ?></button>
