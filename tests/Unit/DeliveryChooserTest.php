@@ -38,7 +38,7 @@ final class DeliveryChooserTest extends TestCase {
 	}
 	public function test_confirmation_has_edit_and_transfer_actions_and_no_payment_fields(): void {
 		$html = $this->render();
-		foreach ( [ 'Submit for approval', 'Back to cart', 'Review your cart', 'review_digest', 'pow_return_nonce' ] as $copy ) { self::assertStringContainsString( $copy, $html ); }
+		foreach ( [ '>Submit</button>', 'Back to cart', 'Review your cart', 'review_digest', 'pow_return_nonce' ] as $copy ) { self::assertStringContainsString( $copy, $html ); }
 		self::assertStringNotContainsString( 'name="payment_method"', $html );
 		self::assertStringNotContainsString( '<script', $html );
 	}
@@ -172,6 +172,58 @@ final class DeliveryChooserTest extends TestCase {
 		$html = $this->render( [ 'preferred_delivery_date' => null ] );
 		self::assertStringNotContainsString( 'type="date"', $html );
 		self::assertStringNotContainsString( 'preferred_delivery_date', $html );
+	}
+
+	/** 0.4.23: the Submit button, the heading over the item lines and the total's label are the site's words. */
+	public function test_the_review_draws_the_labels_it_is_handed(): void {
+		$html = $this->render( self::physical() + self::two_items(), [ 'labels' => [ 'submit' => 'Send <now>', 'items' => 'Items on order', 'total' => 'Order total' ] ] );
+		self::assertSame( 1, preg_match( '#<button type="submit" name="pow_delivery_action" value="submit"[^>]*>([^<]*)</button>#', $html, $m ) );
+		self::assertSame( 'Send &lt;now&gt;', $m[1] );
+		self::assertStringContainsString( '<h2 id="pow-items-title">Items on order</h2>', $html );
+		self::assertStringContainsString( '<dt class="pow-confirmation__total">Order total</dt>', $html );
+	}
+	public function test_without_labels_the_review_uses_the_neutral_defaults(): void {
+		$html = $this->render( self::physical() + self::two_items() );
+		self::assertSame( 1, preg_match( '#<button type="submit" name="pow_delivery_action" value="submit"[^>]*>Submit</button>#', $html ) );
+		self::assertStringContainsString( '<h2 id="pow-items-title">Items</h2>', $html );
+		self::assertStringContainsString( '<dt class="pow-confirmation__total">Total</dt>', $html );
+	}
+	/** 0.4.23: a connection that sends no delivery cost shows the buyer no estimate, no tax sentence, and the merchandise as the total. */
+	public function test_freight_off_draws_no_estimate_row_no_tax_sentence_and_the_merchandise_total(): void {
+		$money = static fn( int $cents ): string => \POW\Addresses\ReviewFormat::money( $cents, 'ZAR' );
+		$off = self::physical( [ 'delivery' => [ 'status' => 'disabled', 'amount_cents' => 4321, 'emit' => false ] ] + self::two_items() );
+		$html = $this->render( $off, [ 'estimate_note' => 'The delivery charge is an estimate.' ] );
+		$summary = substr( $html, (int) strpos( $html, '<aside' ) );
+		self::assertStringNotContainsString( 'Delivery estimate', $html );
+		self::assertStringNotContainsString( $money( 4321 ), $html, 'No delivery amount anywhere on the page' );
+		self::assertStringNotContainsString( 'tax', strtolower( $html ) );
+		self::assertStringNotContainsString( 'The delivery charge is an estimate.', $html );
+		self::assertStringNotContainsString( 'saved with the local quote', $html );
+		self::assertStringNotContainsString( 'Merchandise', $summary );
+		self::assertSame( 1, preg_match( '#<dt class="pow-confirmation__total">Total</dt><dd class="pow-confirmation__total">([^<]*)</dd>#', $summary, $m ) );
+		self::assertSame( $money( 161986 ), $m[1] );
+		// No rate yet: still nothing about an estimate.
+		$html = $this->render( self::physical( [ 'delivery' => [ 'status' => 'disabled', 'amount_cents' => null, 'emit' => false ] ] + self::two_items() ) );
+		self::assertStringNotContainsString( 'estimate', strtolower( $html ) );
+	}
+	public function test_freight_on_keeps_the_estimate_row_and_one_tax_sentence(): void {
+		$money = static fn( int $cents ): string => \POW\Addresses\ReviewFormat::money( $cents, 'ZAR' );
+		$on = self::physical( [ 'merchandise_total_cents' => 161986, 'total_cents' => 166986, 'items' => self::two_items()['items'] ] );
+		$html = $this->render( $on, [ 'estimate_note' => 'The delivery charge is an estimate.' ] );
+		self::assertStringContainsString( '<dt>Delivery estimate</dt><dd>' . $money( 5000 ) . '</dd>', $html );
+		self::assertStringContainsString( '<dt>Merchandise</dt><dd>' . $money( 161986 ) . '</dd>', $html );
+		self::assertStringContainsString( '<dt class="pow-confirmation__total">Total</dt><dd class="pow-confirmation__total">' . $money( 166986 ) . '</dd>', $html );
+		self::assertSame( 1, substr_count( strtolower( $html ), 'tax' ), 'Tax is named once' );
+		self::assertStringContainsString( 'Amounts exclude tax.', $html );
+		self::assertStringContainsString( 'The delivery charge is an estimate.', $html );
+	}
+	/** Dynamics, not this page, does the approving: the buyer reads where the cart goes, and nothing about approval. */
+	public function test_the_buyer_reads_no_approval_wording(): void {
+		$add = [ 'fields' => '', 'label' => '', 'nonce' => 'add-nonce', 'notice' => null, 'open' => true ];
+		foreach ( [ $this->render(), $this->render( self::physical() + self::two_items(), [ 'add_address' => $add, 'document' => true ] ), $this->render( self::physical( [ 'delivery' => [ 'status' => 'disabled', 'amount_cents' => 5000, 'emit' => false ] ] ) ) ] as $html ) {
+			self::assertStringNotContainsString( 'approv', strtolower( $html ) );
+			self::assertStringContainsString( 'Sends this cart to your purchasing system.', $html );
+		}
 	}
 
 	public function test_add_address_form_renders_only_when_offered(): void {
