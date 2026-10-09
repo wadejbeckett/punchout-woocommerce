@@ -10,7 +10,7 @@ seeds the fixture as the driver does (tests/E2E/fixture.php), serves the site on
      its login live). The same browser posting the link again is sent to the same landing page; another browser
      gets 403.
   2. double click: with "Login link needs a click" on (fixture step start_click, put back by retire), the page
-     waits; a double click on its button sends one POST and lands inside the visit. Back to the page and one
+     waits; two presses 80 ms apart on its button send one POST and land inside the visit. Back to the page and one
      more press: the same browser lands again.
   3. review: in the first browser, both products go into the cart and the cart's Punchout exit opens the review.
      The connection sends no delivery line, so the review shows no amount beside any delivery method, no
@@ -37,6 +37,8 @@ import poom  # noqa: E402
 
 START = '/punchout/start/'
 SECONDS = 20
+# The gap between the two presses of a double click, well inside the time a redeem takes on the fixture.
+PRESS_GAP_MS = 80
 
 
 def in_visit(page):
@@ -67,20 +69,33 @@ def watch(page):
     return seen
 
 
+def leave_start(page):
+    """Wait until the browser has left the start link (True) or SECONDS pass on it (False: it stayed, for example on
+    the expired page, which has the same address)."""
+    try:
+        page.wait_for_url(lambda u: START not in u, timeout=SECONDS * 1000)
+    except Exception:  # noqa: BLE001 - Playwright's timeout: the page stayed on the start link
+        pass
+    page.wait_for_load_state('load')
+    return START not in page.url
+
+
 def signed_in(context):
     return any(cookie['name'].startswith('wordpress_logged_in_') for cookie in context.cookies())
 
 
 class BrowserRun(driver.Run):
 
-    def setup(self, seed, receiver, label):
-        """A fresh setup request, as the purchasing system sends one per visit. Returns (start link, payloadID)."""
+    def setup(self, seed, receiver, label, buyer):
+        """A fresh setup request, as the purchasing system sends one per visit. Returns (start link, payloadID).
+
+        Each case is its own buyer: a new setup for the same buyer ends that buyer's earlier visit (superseded)."""
         url = self.args.url
         connection = seed['connection']
         payload = '{' + str(uuid.uuid4()).upper() + '}'
         xml = driver.setup_request(
             payload_id=payload, timestamp=time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()), buyer=connection['buyer'], supplier=connection['supplier'],
-            secret=seed['secret'], email='buyer.one@buyer.example.com', cookie='{' + str(uuid.uuid4()).upper() + '}', supplier_setup=url + '/punchout/setup',
+            secret=seed['secret'], email=buyer + '@buyer.example.com', cookie='{' + str(uuid.uuid4()).upper() + '}', supplier_setup=url + '/punchout/setup',
             receiver=receiver.url + '/punchout/cxml/',
         )
         status, _, body = driver.Browser(url).request(url + '/punchout/setup', xml.encode('utf-8'), 'text/xml', accept='text/xml')
@@ -112,10 +127,9 @@ class BrowserRun(driver.Run):
         context = chromium.new_context()
         page = context.new_page()
         seen = watch(page)
-        start, payload = self.setup(seed, receiver, 'auto')
+        start, payload = self.setup(seed, receiver, 'auto', 'buyer.one')
         page.goto(start, wait_until='commit')
-        page.wait_for_url(lambda u: START not in u, timeout=SECONDS * 1000)
-        page.wait_for_load_state('load')
+        leave_start(page)
         self.save('landing-auto.html', page.content())
         self.must(bool(seen['landing']), 'auto: the_post_answers_a_redirect', landing=seen['landing'])
         self.landed('auto', page, context, seen, payload)
@@ -130,7 +144,7 @@ class BrowserRun(driver.Run):
             self.check(refused.status == 403, 'auto: a_post_from_another_browser_is_refused', http=refused.status)
         finally:
             other.close()
-        return context, page
+        return context, page, payload
 
     # -- 2. a double click on the button ------------------------------------
 
@@ -140,21 +154,24 @@ class BrowserRun(driver.Run):
         try:
             page = context.new_page()
             seen = watch(page)
-            start, payload = self.setup(seed, receiver, 'double-click')
+            start, payload = self.setup(seed, receiver, 'double-click', 'buyer.two')
             page.goto(start, wait_until='load')
             self.check(page.url == start and seen['posts'] == 0 and not signed_in(context), 'double-click: the_page_waits_for_a_press', url=page.url, posts=seen['posts'])
-            with page.expect_navigation(url=lambda u: START not in u, timeout=SECONDS * 1000):
-                page.dblclick('#pow-start-form button')
-            page.wait_for_load_state('load')
+            # As a person double-clicks: two presses a moment apart, the second while the first POST is on its way.
+            box = page.locator('#pow-start-form button').bounding_box()
+            x, y = box['x'] + box['width'] / 2, box['y'] + box['height'] / 2
+            page.mouse.click(x, y)
+            page.wait_for_timeout(PRESS_GAP_MS)
+            page.mouse.click(x, y)
+            leave_start(page)
             self.save('landing-double-click.html', page.content())
             self.landed('double-click', page, context, seen, payload)
 
             # Back to the page and one more press: the same browser is still in the visit, so it lands again.
             page.go_back(wait_until='load')
-            self.check(START in page.url, 'double-click: back_shows_the_start_page_again', url=page.url)
-            with page.expect_navigation(url=lambda u: START not in u, timeout=SECONDS * 1000):
-                page.click('#pow-start-form button')
-            page.wait_for_load_state('load')
+            self.must(START in page.url and page.locator('#pow-start-form button').count() == 1, 'double-click: back_shows_the_start_page_again', url=page.url)
+            page.click('#pow-start-form button')
+            leave_start(page)
             self.check(seen['posts'] == 2 and START not in page.url and in_visit(page), 'double-click: back_and_press_again_lands_again', posts=seen['posts'], url=page.url)
         finally:
             context.close()
@@ -162,7 +179,7 @@ class BrowserRun(driver.Run):
 
     # -- 3. the review, with the connection's delivery line off --------------
 
-    def review(self, context, page, seed, receiver):
+    def review(self, context, page, payload, seed, receiver):
         url = self.args.url
         for sku, product in seed['products'].items():
             answer = context.request.post(url + '/?wc-ajax=add_to_cart', form={'product_id': str(product['id']), 'quantity': '1'})
@@ -173,8 +190,10 @@ class BrowserRun(driver.Run):
             self.must(answer.status == 200 and not data.get('error') and 'cart_hash' in data, 'review: add_to_cart ' + sku, http=answer.status)
 
         page.goto(url + '/?page_id=' + str(seed['pages']['cart']), wait_until='load')
-        exit_ = driver.cart_exit(page.content(), page.url)
-        self.must(exit_ is not None, 'review: the_cart_offers_the_punchout_exit')
+        cart = page.content()
+        self.save('cart-browser.html', cart)
+        exit_ = driver.cart_exit(cart, page.url)
+        self.must(exit_ is not None, 'review: the_cart_offers_the_punchout_exit', url=page.url)
         kind, target = exit_
         if kind == 'form':
             with page.expect_navigation(timeout=SECONDS * 1000):
@@ -218,6 +237,9 @@ class BrowserRun(driver.Run):
             xml = poom.decode_field(field, fields[field][0]) if field else ''
             self.save('poom-browser.xml', xml)
             self.check('<PunchOutOrderMessage>' in xml, 'review: the_browser_posts_a_punchout_order_message', field=field)
+        state = self.visit_state(payload, 'review')
+        visit = state['visit'] or {}
+        self.check(visit.get('status') == 'returned' and visit.get('login_live') is False and len(state['orders']) == 1, 'review: the_visit_is_returned_with_one_order', status=visit.get('status'), login_live=visit.get('login_live'), orders=len(state['orders']))
         return posted
 
 
@@ -267,9 +289,9 @@ def main(argv=None):
             try:
                 print('Chromium ' + chromium.version, flush=True)
                 run.notes.append('Chromium ' + chromium.version)
-                context, page = run.auto(chromium, seed, receiver)
+                context, page, payload = run.auto(chromium, seed, receiver)
                 run.double_click(chromium, seed, receiver)
-                run.review(context, page, seed, receiver)
+                run.review(context, page, payload, seed, receiver)
                 context.close()
             finally:
                 chromium.close()

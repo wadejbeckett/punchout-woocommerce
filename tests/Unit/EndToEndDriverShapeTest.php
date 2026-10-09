@@ -102,6 +102,14 @@ namespace {
 			self::assertStringContainsString( 'restore', $source, 'The plugin link is put back' );
 		}
 
+		/** The router serves the candidate plugin's own scripts and styles through its symlink, and nothing with a dot segment. */
+		public function test_the_router_serves_static_files_through_the_plugin_symlink_only_without_dot_segments(): void {
+			$source = $this->source( 'router.php' );
+			self::assertStringContainsString( '$pow_e2e_lexical', $source );
+			self::assertStringContainsString( 'preg_match( \'#(^|/)\.\.?(/|$)#\', $pow_e2e_path )', $source, 'No dot segment' );
+			self::assertStringContainsString( 'is_file( $pow_e2e_lexical )', $source );
+		}
+
 		public function test_the_driver_never_prints_the_connection_secret(): void {
 			$source = $this->source( 'driver.py' );
 			self::assertSame( 0, preg_match( '/print\([^)]*secret/i', $source ), 'No print call names the secret' );
