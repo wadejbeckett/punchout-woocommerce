@@ -171,7 +171,7 @@ final class ReturnEndpoint {
 					'emit_delivery_code' => $partner->emit_delivery_code,
 					'delivery_code' => $destination['code'] ?? '',
 					'delivery_code_extrinsic_name' => $partner->delivery_code_extrinsic_name,
-					'delivery_notes' => \POW\Addresses\EstimateNote::compose( $estimate_note, (string) $mapped['delivery_notes'] ),
+					'delivery_notes' => \POW\Addresses\EstimateNote::compose( null !== $freight ? $estimate_note : '', (string) $mapped['delivery_notes'], \POW\Addresses\EstimateNote::deliver_to( $destination ) ),
 					'delivery_notes_policy' => $partner->delivery_notes_policy,
 				];
 			} catch ( \Throwable $error ) { $this->review_page(); return; }

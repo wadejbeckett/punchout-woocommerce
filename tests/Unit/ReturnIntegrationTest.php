@@ -339,7 +339,7 @@ final class ReturnIntegrationTest extends TestCase {
 		preg_match('/name="cxml-base64" value="([^"]+)"/',$response,$m);
 		$poom=(string)base64_decode(html_entity_decode($m[1]),true);
 		$xml=$this->xml($response);
-		self::assertSame('Courier (3-5 working days); Parcel two',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
+		self::assertSame('Courier (3-5 working days); Parcel two — The delivery charge is an estimate; the supplier confirms the final amount before dispatch.',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Description)'));
 		self::assertStringNotContainsString('2030-02-15',$poom);
 		self::assertStringNotContainsString('Preferred',$poom);
 		$order=array_values($GLOBALS['pow_test_orders'])[0];
@@ -363,7 +363,9 @@ final class ReturnIntegrationTest extends TestCase {
 		self::assertSame('supplier',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/Classification/@domain)'),'A domain is an identifier, not text');
 		self::assertSame('EA',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitOfMeasure)'));
 		self::assertSame('35.00',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="DELIVERY"]/ItemDetail/UnitPrice/Money)'));
-		self::assertSame('The delivery charge is an estimate; the supplier confirms the final amount before dispatch. Gate & bell Call on arrival',$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="SKU-1001"]/ItemDetail/Extrinsic[@name="DeliveryInstructions"])'),'the estimate note goes first (0.4.19); notes keep the buyer\'s case (the builder only folds the line breaks)');
+		$instructions=$xml->evaluate('string(//ItemIn[ItemID/SupplierPartID="SKU-1001"]/ItemDetail/Extrinsic[@name="DeliveryInstructions"])');
+		self::assertStringContainsString('Deliver to: ',$instructions,'the delivery address leads the instructions (0.4.20)');
+		self::assertStringContainsString('Gate & bell Call on arrival',$instructions,'notes keep the buyer\'s case (the builder only folds the line breaks)');
 		self::assertSame('Pretoria',$xml->evaluate('string(//ShipTo/Address/PostalAddress/City)'));
 		$order=array_values($GLOBALS['pow_test_orders'])[0];
 		self::assertSame('Pretoria',$order->props['shipping_city']);

@@ -85,12 +85,20 @@ final class Chooser {
 		add_filter( 'pre_get_document_title', static fn() => __( 'Review your cart', 'punchout-woocommerce' ) . ' — ' . $shop, 20 );
 		add_filter( 'body_class', static fn( array $classes ) => array_merge( $classes, [ 'pow-confirmation-page' ] ) );
 		wp_enqueue_style( 'pow-delivery-confirmation', plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), [], \POW\VERSION );
-		[ $status, $html ] = $this->review( false );
+		wp_enqueue_script( 'pow-delivery-review', plugins_url( 'assets/js/delivery-review.js', POW_PLUGIN_FILE ), [], \POW\VERSION, [ 'in_footer' => true ] );
+		if ( 'POST' === strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) ) ) {
+			// 0.4.20: a recalculate or add-address POST redraws the review inside the theme as well. Null: a redirect was sent.
+			$response = $this->respond_post( false );
+			if ( null === $response ) { exit; }
+			[ $status, $html ] = $response;
+		} else {
+			[ $status, $html ] = $this->review( false );
+		}
 		status_header( $status );
 		// WordPress parsed this plugin route as "nothing found"; the page it is about to draw is found.
 		global $wp_query;
 		if ( $wp_query instanceof \WP_Query ) { $wp_query->is_404 = false; }
-		self::pose_as_page( ReviewChrome::pose_as_page_id() );
+		self::pose_as_page( \POW\Addresses\ReviewChrome::pose_as_page_id() );
 		get_header();
 		echo '<div class="pow-confirmation-page__content">' . $html . '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
 		get_footer();
@@ -99,7 +107,7 @@ final class Chooser {
 
 	/** `wp` action, priority 0: pose before the theme resolves which layout, header and footer this request gets. */
 	public function pose_for_theme(): void {
-		self::pose_as_page( ReviewChrome::pose_as_page_id() );
+		self::pose_as_page( \POW\Addresses\ReviewChrome::pose_as_page_id() );
 	}
 
 	/**
@@ -148,16 +156,30 @@ final class Chooser {
 	public function handle(): void {
 		Transport::require_https();
 		self::headers();
+		if ( 'GET' === strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) ) ) {
+			[ $status, $html ] = $this->review( true );
+			if ( 200 !== $status ) { status_header( $status ); }
+			echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
+			return;
+		}
+		$response = $this->respond_post( true );
+		if ( null === $response ) { return; }
+		[ $status, $html ] = $response;
+		if ( 200 !== $status ) { status_header( $status ); }
+		echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
+	}
+
+	/**
+	 * The review's POST actions (0.4.20: shared by the dedicated document and the theme-drawn page). Returns
+	 * [status, html] to draw, or null when a redirect or the return handoff has already been sent.
+	 *
+	 * @return array{0: int, 1: string}|null
+	 */
+	private function respond_post( bool $document ): ?array {
 		try {
 			[ $session, $partner ] = $this->context();
 			$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
-			if ( 'GET' === $method ) {
-				[ $status, $html ] = $this->review( true );
-				if ( 200 !== $status ) { status_header( $status ); }
-				echo $html; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- rendered template.
-				return;
-			}
-			if ( ! self::request_allowed( $method, $_POST ) ) { status_header( 403 ); echo $this->render( [ 'error' => new \WP_Error( 'delivery_nonce', __( 'This form has expired. Open the cart and review your delivery again.', 'punchout-woocommerce' ) ) ], true ); return; }
+			if ( ! self::request_allowed( $method, $_POST ) ) { return [ 403, $this->render( [ 'error' => new \WP_Error( 'delivery_nonce', __( 'This form has expired. Open the cart and review your delivery again.', 'punchout-woocommerce' ) ) ], $document, null, ! $document ) ]; }
 			$action = $_POST['pow_delivery_action'] ?? 'review';
 			// The add fieldset's country refresh is a submit button of its own inside the review form: it posts pow_address_refresh and no action.
 			if ( ! isset( $_POST['pow_delivery_action'] ) && isset( $_POST['pow_address_refresh'] ) ) { $action = 'add_address'; }
@@ -167,14 +189,14 @@ final class Chooser {
 			if ( ! is_string( $action ) || ! in_array( $action, $actions, true ) ) { throw new \DomainException(); }
 			if ( 'back' === $action ) {
 				if ( ! $this->invalidate( $session ) ) { throw new \DomainException(); }
-				wp_safe_redirect( wc_get_cart_url(), 303 ); return;
+				wp_safe_redirect( wc_get_cart_url(), 303 ); return null;
 			}
 			if ( 'add_address' === $action ) {
 				$redraw = $this->add_address( $session, $partner );
 				// Post, redirect, get: after a successful add a reload repeats the review, never the add.
-				if ( null === $redraw ) { wp_safe_redirect( Transport::supplier_url( home_url( '/punchout/confirm' ) ), 303 ); return; }
+				if ( null === $redraw ) { wp_safe_redirect( Transport::supplier_url( home_url( '/punchout/confirm' ) ), 303 ); return null; }
 				[ $view, $add ] = $redraw;
-				echo $this->render( $view, true, $this->add_vars( $partner, $add ), false, $session ); return;
+				return [ 200, $this->render( $view, $document, $this->add_vars( $partner, $add ), ! $document, $session ) ];
 			}
 			$input = [];
 			foreach ( [ 'rates', 'notes', 'review_digest', 'acknowledge_unknown', 'preferred_delivery_date' ] as $field ) { if ( array_key_exists( $field, $_POST ) ) { $input[$field] = wp_unslash( $_POST[$field] ); } }
@@ -187,7 +209,7 @@ final class Chooser {
 			// The optional attachment: a refused file redraws the review with its message and keeps the notes and date; it never reaches consent.
 			$refused_file = $this->attachments?->take_upload( $session, $_FILES, wp_unslash( $_POST ) );
 			if ( $refused_file instanceof \WP_Error ) {
-				echo $this->render( $this->refused( $session, $partner, $refused_file, $input ), true, $this->add_vars( $partner ), false, $session ); return;
+				return [ 200, $this->render( $this->refused( $session, $partner, $refused_file, $input ), $document, $this->add_vars( $partner ), ! $document, $session ) ];
 			}
 			if ( 'submit' === $action ) {
 				$return_nonce = $_POST['pow_return_nonce'] ?? null;
@@ -196,7 +218,7 @@ final class Chooser {
 				if ( ! $view instanceof \WP_Error ) {
 					// Preserve the existing single winner and handoff. This request carries independent nonces for consent and return.
 					$_POST['pow_nonce'] = $return_nonce; $_POST['pow_mode'] = 'cart';
-					$this->return_endpoint->handle(); return;
+					$this->return_endpoint->handle(); return null;
 				}
 			} else {
 				$view = $this->confirmation->preview( $session, $partner, $input );
@@ -208,8 +230,8 @@ final class Chooser {
 				}
 			}
 			if ( $view instanceof \WP_Error ) { $view = $this->refused( $session, $partner, $view, $input ); }
-			echo $this->render( $view, true, $this->add_vars( $partner ), false, $session );
-		} catch ( \Throwable $error ) { status_header( 403 ); echo $this->render( [ 'error' => self::expired() ], true ); }
+			return [ 200, $this->render( $view, $document, $this->add_vars( $partner ), ! $document, $session ) ];
+		} catch ( \Throwable $error ) { return [ 403, $this->render( [ 'error' => self::expired() ], $document, null, ! $document ) ]; }
 	}
 
 	/**
@@ -365,7 +387,7 @@ final class Chooser {
 		if ( null !== $session && isset( $view['items'] ) && null !== $this->attachments ) {
 			try { $view['attachment'] = $this->attachments->view_vars( $session ); } catch ( \Throwable $error ) { $view['attachment'] = null; }
 		}
-		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => $enqueued ? '' : plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add, 'estimate_note' => EstimateNote::text( $this->plugin->settings() ) ] );
+		return Templates::render( 'delivery-confirmation', [ 'view' => $view, 'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ), 'cart_url' => wc_get_cart_url(), 'nonce' => wp_create_nonce( 'pow_confirm_delivery' ), 'return_nonce' => wp_create_nonce( 'pow_return' ), 'stylesheet_url' => $enqueued ? '' : plugins_url( 'assets/css/delivery-confirmation.css', POW_PLUGIN_FILE ), 'shop_name' => get_bloginfo( 'name' ), 'document' => $document, 'add_address' => $add, 'estimate_note' => \POW\Addresses\EstimateNote::text( method_exists( $this->plugin, 'settings' ) ? $this->plugin->settings() : null ) ] );
 	}
 	private static function expired(): \WP_Error { return new \WP_Error( 'delivery_unavailable', __( 'Delivery could not be verified. Return to your purchasing system and open the catalog again if your session has expired.', 'punchout-woocommerce' ) ); }
 	private static function headers(): void { if ( ! defined( 'DONOTCACHEPAGE' ) ) { define( 'DONOTCACHEPAGE', true ); } nocache_headers(); if ( ! headers_sent() ) { header( 'Cache-Control: private, no-store' ); header( 'X-Robots-Tag: noindex, nofollow' ); } }

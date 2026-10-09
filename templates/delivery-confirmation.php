@@ -73,9 +73,8 @@ if ( $document ) : ?>
 			<?php if ( ! empty( $view['requires_unknown_acknowledgement'] ) ) : ?>
 			<label class="pow-confirmation__rate"><input type="checkbox" name="acknowledge_unknown" value="1" required><span><?php echo esc_html__( 'Delivery will be quoted separately. I understand that no delivery charge is included in this transfer.', 'punchout-woocommerce' ); ?></span></label>
 			<?php endif; ?>
-			<button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary<?php echo esc_attr( $button_extra ); ?>" formnovalidate data-busy="<?php echo esc_attr__( 'Updating…', 'punchout-woocommerce' ); ?>"><?php echo esc_html__( 'Recalculate delivery', 'punchout-woocommerce' ); ?></button>
+			<button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary<?php echo esc_attr( $button_extra ); ?>" formnovalidate data-busy="<?php echo esc_attr( __( 'Updating…', 'punchout-woocommerce' ) ); ?>"><?php echo esc_html__( 'Recalculate delivery', 'punchout-woocommerce' ); ?></button>
 			<p class="pow-confirmation__hint"><?php echo esc_html__( 'The address and the delivery estimate update as soon as you change a choice.', 'punchout-woocommerce' ); ?></p>
-			<?php if ( '' !== $estimate_note ) : ?><p class="pow-confirmation__hint pow-confirmation__estimate-note"><?php echo esc_html( $estimate_note ); ?></p><?php endif; ?>
 		</section>
 		<section class="pow-confirmation__section" aria-labelledby="pow-notes-title"><h2 id="pow-notes-title"><?php echo esc_html__( 'Notes and attachment', 'punchout-woocommerce' ); ?></h2>
 			<?php if ( ! ( $delivery && 'not_required' === $delivery['status'] ) ) : ?>
@@ -99,7 +98,7 @@ if ( $document ) : ?>
 		<?php if ( ! empty( $view['skipped'] ) ) : ?><div class="pow-confirmation__notice"><p><?php echo esc_html__( 'These products cannot be transferred because their catalogue details are incomplete:', 'punchout-woocommerce' ); ?></p><ul><?php foreach ( $view['skipped'] as $name ) { echo '<li>' . esc_html( $name ) . '</li>'; } ?></ul></div><?php endif; ?>
 		</div><aside class="pow-confirmation__summary" aria-labelledby="pow-summary-title"><h2 id="pow-summary-title"><?php echo esc_html__( 'Cart summary', 'punchout-woocommerce' ); ?></h2><dl><dt><?php echo esc_html__( 'Merchandise', 'punchout-woocommerce' ); ?></dt><dd><?php echo esc_html( $money( $view['merchandise_total_cents'] ) ); ?></dd><dt><?php echo esc_html__( 'Delivery estimate', 'punchout-woocommerce' ); ?></dt><dd><?php echo esc_html( $delivery && null !== $delivery['amount_cents'] ? $money( $delivery['amount_cents'] ) : __( 'Not included', 'punchout-woocommerce' ) ); ?></dd><dt class="pow-confirmation__total"><?php echo esc_html__( 'Amount sent for approval', 'punchout-woocommerce' ); ?></dt><dd class="pow-confirmation__total"><?php echo esc_html( $money( $view['total_cents'] ) ); ?></dd></dl>
 			<p class="pow-confirmation__hint"><?php echo esc_html__( 'Amounts sent for approval exclude tax.', 'punchout-woocommerce' ); ?></p>
-			<?php if ( '' !== $estimate_note && $delivery && 'not_required' !== $delivery['status'] ) : ?><p class="pow-confirmation__hint pow-confirmation__estimate-note"><?php echo esc_html( $estimate_note ); ?></p><?php endif; ?>
+			<?php if ( '' !== $estimate_note && $delivery && null !== ( $delivery['amount_cents'] ?? null ) ) : ?><p class="pow-confirmation__hint pow-confirmation__estimate-note"><?php echo esc_html( $estimate_note ); ?></p><?php endif; ?>
 			<?php if ( $delivery && 'not_required' !== $delivery['status'] && ! $delivery['emit'] && null !== $delivery['amount_cents'] ) : ?><p class="pow-confirmation__hint"><?php echo esc_html__( 'The delivery estimate is saved with the local quote. This connection does not include it in the transferred amount.', 'punchout-woocommerce' ); ?></p><?php endif; ?>
 			<button type="submit" name="pow_delivery_action" value="submit" class="button alt wp-element-button pow-confirmation__submit<?php echo esc_attr( $button_extra ); ?>" <?php if ( $disabled ) { echo 'disabled'; } ?>><?php echo esc_html__( 'Submit for approval', 'punchout-woocommerce' ); ?></button>
 			<p><?php echo esc_html__( 'Your complete cart will return to your purchasing system. Your company’s approval process continues there.', 'punchout-woocommerce' ); ?></p>
@@ -122,7 +121,6 @@ if ( $document ) : ?>
 		</details>
 		<?php endif; ?>
 	</form>
-	<script>(function(){var f=document.getElementById('pow-delivery-choice');var form=f?f.form:null;if(!form)return;var b=form.querySelector('button[name="pow_delivery_action"][value="review"]');function go(){if(b){b.disabled=true;b.textContent=b.getAttribute('data-busy')||b.textContent;}if(form.requestSubmit){form.requestSubmit(b||undefined);}else{form.submit();}}f.addEventListener('change',function(){if(f.value)go();});form.querySelectorAll('input[type="radio"][name^="rates["]').forEach(function(r){r.addEventListener('change',go);});})();</script>
 
 	<?php endif; ?>
 <?php if ( $document ) : ?></main><?php else : ?></section><?php endif; ?>

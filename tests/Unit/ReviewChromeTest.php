@@ -21,6 +21,17 @@ final class ReviewChromeTest extends TestCase {
 		self::assertFalse( ReviewChrome::decide( 'GET', true, true ) );
 	}
 
+	public function test_a_recalculate_or_add_address_post_is_drawn_inside_the_theme_too(): void {
+		self::assertTrue( ReviewChrome::decide( 'POST', false, true, 'review' ) );
+		self::assertTrue( ReviewChrome::decide( 'POST', false, true, 'add_address' ) );
+	}
+
+	public function test_submit_and_back_keep_the_dedicated_document(): void {
+		self::assertFalse( ReviewChrome::decide( 'POST', false, true, 'submit' ) );
+		self::assertFalse( ReviewChrome::decide( 'POST', false, true, 'back' ) );
+		self::assertFalse( ReviewChrome::decide( 'POST', true, true, 'review' ) );
+	}
+
 	public function test_a_site_can_opt_out_with_the_filter(): void {
 		self::assertFalse( ReviewChrome::decide( 'GET', false, false ) );
 	}

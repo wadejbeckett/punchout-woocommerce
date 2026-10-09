@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.4.19
+Stable tag: 0.4.20
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -57,6 +57,11 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.4.20 =
+* Recalculating the delivery (a changed address or method) and adding an address now redraw the review inside the theme too, not on the plain document; only "Submit for approval" (the handoff) and "Back to cart" keep the dedicated route.
+* With scripting, the "Recalculate delivery" button is hidden and a status line shows while the review recalculates; the script is a file (`assets/js/delivery-review.js`), enqueued only on the theme-drawn review.
+* The returned cart's DeliveryInstructions now lead with "Deliver to: …" (the chosen address on one line), then the delivery-estimate note (only when an estimate line is sent), then the buyer's notes, kept within the 2,000-character limit by shortening only the buyer's notes. The estimate note shows once on the review, under the summary, when an estimate is shown.
 
 = 0.4.19 =
 * Review page: choosing another delivery address or method recalculates the address block and the estimate at once (the "Recalculate delivery" button remains for browsers without scripting); the notes section is now "Notes and attachment" with a plain "Notes for this order" field; the file field's default label stays "Attachment".

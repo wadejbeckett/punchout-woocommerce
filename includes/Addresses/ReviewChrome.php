@@ -19,12 +19,19 @@ final class ReviewChrome {
 	public static function wraps_request(): bool {
 		$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
 		$block  = function_exists( 'wp_is_block_theme' ) && wp_is_block_theme();
-		return self::decide( $method, $block, (bool) apply_filters( self::FILTER, true ) );
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- routing only; the handler verifies the nonce.
+		$action = isset( $_POST['pow_delivery_action'] ) && is_string( $_POST['pow_delivery_action'] ) ? $_POST['pow_delivery_action'] : ( isset( $_POST['pow_address_refresh'] ) ? 'add_address' : null );
+		return self::decide( $method, $block, (bool) apply_filters( self::FILTER, true ), $action );
 	}
 
-	/** Pure rule: only a GET, only in a classic theme, only when the site has not opted out. */
-	public static function decide( string $method, bool $block_theme, bool $enabled ): bool {
-		return 'GET' === strtoupper( $method ) && ! $block_theme && $enabled;
+	/**
+	 * Pure rule: a classic theme, the site has not opted out, and either a GET or (0.4.20) a POST that redraws the
+	 * review (recalculate, add address). Submit (the handoff document) and back (a redirect) are never wrapped.
+	 */
+	public static function decide( string $method, bool $block_theme, bool $enabled, ?string $action = null ): bool {
+		if ( $block_theme || ! $enabled ) { return false; }
+		$method = strtoupper( $method );
+		return 'GET' === $method || ( 'POST' === $method && in_array( $action, [ 'review', 'add_address' ], true ) );
 	}
 
 	public const PAGE_FILTER = 'punchout_review_page_id';
