@@ -173,6 +173,18 @@ final class DeliveryEstimateTest extends TestCase {
 		self::assertCount(3,$result['packages'][0]['rates']);self::assertSame('flat_rate:1',$result['packages'][0]['selected_rate_id']);self::assertSame('Native display Standard',$result['packages'][0]['rates'][0]['display_label']);
 		self::assertTrue($result['can_confirm']);self::assertFalse($result['requires_unknown_acknowledgement']);
 	}
+	/** 0.4.23: a connection that sends no delivery cost offers each method by its own title only: no amount and no tax note from WooCommerce's full label. */
+	public function test_freight_off_offers_each_method_by_its_plain_title():void{
+		$this->wc->cart->offers[0]['rates']['flat_rate:2']->label='Express & <b>fast</b>';
+		$labelled=[];$this->wc->on_label=function($rate)use(&$labelled){$labelled[]=$rate->get_id();};
+		$result=$this->quote($this->partner(['emit_delivery_line'=>false]));
+		self::assertSame('disabled',$result['delivery']['status']);self::assertFalse($result['delivery']['emit']);
+		self::assertSame(['Standard','Express &amp; &lt;b&gt;fast&lt;/b&gt;','Collect'],array_column($result['packages'][0]['rates'],'display_label'));
+		self::assertSame([],$labelled,'WooCommerce\'s priced label is not asked for');
+		// With the delivery line on, the method keeps WooCommerce's full label.
+		self::assertSame('Native display Standard',$this->quote()['packages'][0]['rates'][0]['display_label']);
+		self::assertSame(['flat_rate:1','flat_rate:2','local_pickup:3'],$labelled);
+	}
 	public function test_valid_expensive_selection_survives_native_recalculation():void{
 		$this->wc->session->set('chosen_shipping_methods',[0=>'flat_rate:2']);
 		$result=$this->quote();self::assertSame(2250,$result['delivery']['amount_cents']);self::assertSame('flat_rate:2',$result['packages'][0]['selected_rate_id']);self::assertSame([0=>'flat_rate:2'],$this->wc->session->get('chosen_shipping_methods'));self::assertSame(2,$this->wc->cart->calls);
