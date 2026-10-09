@@ -23,14 +23,14 @@ final class Chooser {
 	private const ADD_NONCE = 'pow_add_delivery_address';
 
 	/**
-	 * Where a successful add leaves its result for the review it redirects to: {visit, key, notes?, preferred_delivery_date?}.
+	 * Where a successful add leaves its result for the review it redirects to: {visit, key, notes?}.
 	 *
 	 * It lives in the visit's own WooCommerce session, where the review already keeps the chosen shipping methods, and the next GET of the review takes it once. The notes are the buyer's free text, so they travel there rather than in the redirect URL.
 	 */
 	private const ADDED = 'pow_delivery_added';
 
-	/** The review form's own fields. The add fieldset sits inside that form, so an add posts these too; the add never reads them. The notes and date are read on their own. */
-	private const REVIEW_FIELDS = [ 'pow_return_nonce', 'review_digest', 'choice', 'rates', 'acknowledge_unknown' ];
+	/** The review form's own fields. The add fieldset sits inside that form, so an add posts these too; the add never reads them. The notes are read on their own. A review page or template override from before 0.4.23 still posts its preferred date: dropped unread, like the rest. */
+	private const REVIEW_FIELDS = [ 'pow_return_nonce', 'review_digest', 'choice', 'rates', 'acknowledge_unknown', 'preferred_delivery_date' ];
 
 	private ?Current $current = null;
 
@@ -209,14 +209,14 @@ final class Chooser {
 				return [ 200, $this->render( $view, $document, $this->add_vars( $partner, $add ), ! $document, $session ) ];
 			}
 			$input = [];
-			foreach ( [ 'rates', 'notes', 'review_digest', 'acknowledge_unknown', 'preferred_delivery_date' ] as $field ) { if ( array_key_exists( $field, $_POST ) ) { $input[$field] = wp_unslash( $_POST[$field] ); } }
+			foreach ( [ 'rates', 'notes', 'review_digest', 'acknowledge_unknown' ] as $field ) { if ( array_key_exists( $field, $_POST ) ) { $input[$field] = wp_unslash( $_POST[$field] ); } }
 			if ( isset( $_POST['choice'] ) ) {
 				if ( ! is_string( $_POST['choice'] ) ) { throw new \DomainException(); }
 				$parts = explode( ':', wp_unslash( $_POST['choice'] ), 2 );
 				if ( count( $parts ) !== 2 ) { throw new \DomainException(); }
 				[ $input['provider'], $input['key'] ] = $parts;
 			}
-			// The optional attachment: a refused file redraws the review with its message and keeps the notes and date; it never reaches consent.
+			// The optional attachment: a refused file redraws the review with its message and keeps the notes; it never reaches consent.
 			$refused_file = $this->attachments?->take_upload( $session, $_FILES, wp_unslash( $_POST ) );
 			if ( $refused_file instanceof \WP_Error ) {
 				return [ 200, $this->render( $this->refused( $session, $partner, $refused_file, $input ), $document, $this->add_vars( $partner ), ! $document, $session ) ];
@@ -265,9 +265,9 @@ final class Chooser {
 	/**
 	 * A buyer's add-address POST: validate its schema and nonce, then ask the book, which decides under the partner lock whether this visit may add.
 	 *
-	 * The add fieldset is part of the review form, so the POST also carries the review's own fields; those are dropped unread before the strict schema check, and the notes and date the buyer is typing come along with the add.
+	 * The add fieldset is part of the review form, so the POST also carries the review's own fields; those are dropped unread before the strict schema check, and the notes the buyer is typing come along with the add.
 	 *
-	 * Success returns null: the book holds the entry (a repeat of the same add returns the same entry), and the caller redirects to the review, which takes the carried key, notes and date once from this visit's own WooCommerce session and previews them without storing consent. A refusal from the book, or a country refresh, redraws the review here with its message, keeping what the buyer typed: the address draft, the notes and the date.
+	 * Success returns null: the book holds the entry (a repeat of the same add returns the same entry), and the caller redirects to the review, which takes the carried key and notes once from this visit's own WooCommerce session and previews them without storing consent. A refusal from the book, or a country refresh, redraws the review here with its message, keeping what the buyer typed: the address draft and the notes.
 	 *
 	 * @return array{0: array, 1: array{draft: ?array, open: bool, notice: ?string}}|null
 	 * @throws \DomainException For a request this connection never offered or a schema or nonce that fails; the caller answers with the expired page.
@@ -296,7 +296,7 @@ final class Chooser {
 	/**
 	 * The carry a successful add left for this visit, taken once, as review input; null when there is none.
 	 *
-	 * Read only from the WooCommerce session this request holds, and only when that is the visit's own basket key; a carry naming another visit or a malformed key is dropped. The review then checks the key, notes and date exactly as it checks a posted form.
+	 * Read only from the WooCommerce session this request holds, and only when that is the visit's own basket key; a carry naming another visit or a malformed key is dropped. The review then checks the key and notes exactly as it checks a posted form.
 	 */
 	private function take_added( Session $session ): ?array {
 		try {
@@ -315,34 +315,32 @@ final class Chooser {
 	}
 
 	/**
-	 * The review's notes and preferred date from a POST or a carry, when well-formed: notes as plain bounded UTF-8 text, the date as Y-m-d or '' (no preference). Anything else is left out, so the review keeps its own value; the review validates what is kept again.
+	 * The review's notes from a POST or a carry, when well-formed: plain bounded UTF-8 text. Anything else is left out, so the review keeps its own value; the review validates what is kept again.
 	 *
-	 * @return array{notes?: string, preferred_delivery_date?: string}
+	 * @return array{notes?: string}
 	 */
 	private static function typed( array $input ): array {
 		$typed = [];
 		if ( isset( $input['notes'] ) && is_string( $input['notes'] ) && strlen( $input['notes'] ) <= 8000 && 1 === preg_match( '//u', $input['notes'] ) ) { $typed['notes'] = $input['notes']; }
-		if ( isset( $input['preferred_delivery_date'] ) && is_string( $input['preferred_delivery_date'] ) && ( '' === $input['preferred_delivery_date'] || DeliveryData::date( $input['preferred_delivery_date'] ) ) ) { $typed['preferred_delivery_date'] = $input['preferred_delivery_date']; }
 		return $typed;
 	}
 
 	/**
-	 * A refused form redrawn: the review as it stands, the error, and the notes and date the buyer typed when well-formed. No document, cents or address from the POST is reflected, and it cannot be submitted as it is.
+	 * A refused form redrawn: the review as it stands, the error, and the notes the buyer typed when well-formed. No document, cents or address from the POST is reflected, and it cannot be submitted as it is.
 	 */
 	private function refused( Session $session, \POW\Partners\Partner $partner, \WP_Error $error, array $input ): array {
 		$view = $this->confirmation->prepare( $session, $partner );
 		$typed = self::typed( $input );
 		if ( isset( $typed['notes'] ) ) { $view['notes'] = sanitize_textarea_field( Confirmation::strip_controls( $typed['notes'] ) ); }
-		if ( isset( $typed['preferred_delivery_date'] ) ) { $view['preferred_delivery_date'] = '' === $typed['preferred_delivery_date'] ? null : $typed['preferred_delivery_date']; }
 		$view['error'] = $error;
 		$view['can_confirm'] = false;
 		return $view;
 	}
 
 	/**
-	 * The review redrawn beside the add form, previewed with the notes and date the add form carried; with $error it cannot be submitted.
+	 * The review redrawn beside the add form, previewed with the notes the add form carried; with $error it cannot be submitted.
 	 *
-	 * @param array{notes?: string, preferred_delivery_date?: string} $typed
+	 * @param array{notes?: string} $typed
 	 */
 	private function redraw( Session $session, \POW\Partners\Partner $partner, array $typed, ?\WP_Error $error = null ): array {
 		$view = $this->confirmation->preview( $session, $partner, $typed );

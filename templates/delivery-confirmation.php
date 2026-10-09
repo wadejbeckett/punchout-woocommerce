@@ -2,7 +2,7 @@
 /**
  * Theme-overridable delivery confirmation; all choices and amounts are prepared server-side.
  *
- * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $labels (0.4.23: {submit, items, total}, the site's words for the Submit button, the item heading and the total; missing or blank keys use the defaults), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $script_url (0.4.22: the review script where the page has not enqueued it, else ''), $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes and preferred date as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
+ * Variables: $view (with $view['attachment'] = null or {label, help, accept, limit, pending} for the optional file field), $labels (0.4.23: {submit, items, total}, the site's words for the Submit button, the item heading and the total; missing or blank keys use the defaults), $action_url, $cart_url, $nonce, $return_nonce, $stylesheet_url, $script_url (0.4.22: the review script where the page has not enqueued it, else ''), $shop_name, $document, and $add_address — null unless the connection lets buyers add a delivery address, otherwise {fields, label, nonce, notice, open} for the add fieldset. The fieldset sits inside the review form, so an add posts the review's notes as typed; its buttons carry formnovalidate so the review's required fields do not block it. An override that ignores $add_address simply offers no add form.
  *
  * @package POW @license AGPL-3.0-or-later
  */
@@ -80,9 +80,6 @@ if ( $document ) : ?>
 			<p class="pow-confirmation__hint"><?php echo esc_html( $freight_off ? __( 'The address and the delivery methods update as soon as you change a choice.', 'punchout-woocommerce' ) : __( 'The address and the delivery estimate update as soon as you change a choice.', 'punchout-woocommerce' ) ); ?></p>
 		</section>
 		<section class="pow-confirmation__section" aria-labelledby="pow-notes-title"><h2 id="pow-notes-title"><?php echo esc_html__( 'Notes and attachment', 'punchout-woocommerce' ); ?></h2>
-			<?php if ( ! ( $delivery && 'not_required' === $delivery['status'] ) ) : ?>
-			<label for="pow-preferred-date"><?php echo esc_html__( 'Preferred delivery date', 'punchout-woocommerce' ); ?></label><input type="date" id="pow-preferred-date" name="preferred_delivery_date" value="<?php echo esc_attr( (string) ( $view['preferred_delivery_date'] ?? '' ) ); ?>"<?php if ( ! empty( $view['preferred_delivery_date_min'] ) ) { echo ' min="' . esc_attr( $view['preferred_delivery_date_min'] ) . '"'; } ?>><p class="pow-confirmation__hint"><?php echo esc_html__( 'Optional. Saved with the shop’s copy of this order; it is not sent to your purchasing system.', 'punchout-woocommerce' ); ?></p>
-			<?php endif; ?>
 			<label for="pow-delivery-notes"><?php echo esc_html__( 'Notes for this order', 'punchout-woocommerce' ); ?></label><p class="pow-confirmation__hint"><?php echo esc_html__( 'Optional. Up to 2,000 characters. Sent to your purchasing system with the cart.', 'punchout-woocommerce' ); ?></p><textarea id="pow-delivery-notes" name="notes" rows="4" maxlength="2000"><?php echo esc_textarea( $view['notes'] ); ?></textarea>
 			<?php $attachment = isset( $view['attachment'] ) && is_array( $view['attachment'] ) ? $view['attachment'] : null; if ( null !== $attachment ) : ?>
 			<div class="pow-confirmation__attachment">
@@ -111,7 +108,7 @@ if ( $document ) : ?>
 		<?php if ( null !== $add ) : ?>
 		<details class="pow-confirmation__add" id="pow-add-address"<?php if ( ! empty( $add['open'] ) ) { echo ' open'; } ?>>
 			<summary id="pow-add-address-title"><?php echo esc_html__( 'Add a delivery address', 'punchout-woocommerce' ); ?></summary>
-			<?php // Inside the review form, so the notes and date the buyer is typing post with the add. Its buttons skip the review's required fields; the server validates the add. ?>
+			<?php // Inside the review form, so the notes the buyer is typing post with the add. Its buttons skip the review's required fields; the server validates the add. ?>
 			<fieldset class="pow-confirmation__add-set" aria-labelledby="pow-add-address-title">
 				<p class="pow-confirmation__hint"><?php echo esc_html__( 'It is saved to your company’s delivery book for every buyer of your company and selected for this cart. Only your company administrator can change or remove it.', 'punchout-woocommerce' ); ?></p>
 				<input type="hidden" name="pow_address_nonce" value="<?php echo esc_attr( (string) ( $add['nonce'] ?? '' ) ); ?>">
