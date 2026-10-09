@@ -87,7 +87,7 @@ final class QuoteOrder {
 	public const META_DELIVERY_NOTES = '_pow_delivery_notes';
 	public const META_DELIVERY_CHOICE = '_pow_delivery_choice';
 	public const META_DELIVERY_CONFIRMATION = '_pow_delivery_confirmation';
-	/** The buyer's optional preferred delivery date (Y-m-d), copied from a schema-2 confirmation. Written only when set; never sent in the PunchOutOrderMessage. */
+	/** The buyer's preferred delivery date (Y-m-d) on a Quote created before 0.4.23, copied then from a schema-2 confirmation. 0.4.23 writes none; the order screen, the store e-mail and the attach check still read it. Never sent in the PunchOutOrderMessage. */
 	public const META_PREFERRED_DELIVERY_DATE = '_pow_preferred_delivery_date';
 
 	/**
@@ -300,8 +300,8 @@ final class QuoteOrder {
 				$shipping['source'],
 				self::bought_by( (string) $session->buyer_name, (string) $session->buyer_identity, self::connection_label( $partner->name, $partner->id ) )
 			);
-			// Still one internal note: the selected method (with any delivery period in its title) and the preferred date follow the attribution.
-			$summary = self::delivery_summary( $delivery, null !== $provenance ? ( $provenance[ self::META_PREFERRED_DELIVERY_DATE ] ?? null ) : null );
+			// Still one internal note: the selected method (with any delivery period in its title) follows the attribution. 0.4.23 writes no preferred date.
+			$summary = self::delivery_summary( $delivery );
 			if ( '' !== $summary ) {
 				$note .= ' ' . $summary;
 			}
@@ -412,8 +412,11 @@ final class QuoteOrder {
 			// names a different account belongs to a different connection.
 			$confirmation = DeliveryData::confirmation( $provenance[ self::META_DELIVERY_CONFIRMATION ], (int) $meta[ self::META_SESSION_ID ], (int) $order->get_customer_id( 'edit' ), $choice );
 			if ( $confirmation['notes'] !== $provenance[ self::META_DELIVERY_NOTES ] || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $delivery ) ) { throw new \RuntimeException( 'quote_attachment_failed' ); }
-			// The date is always compared: '' matches an absent meta, so a stray date on a dateless Quote fails.
-			$provenance[ self::META_PREFERRED_DELIVERY_DATE ] = $confirmation['preferred_delivery_date'] ?? '';
+			// The date is always compared: '' matches an absent meta, so a stray date on a dateless Quote fails. A Quote from
+			// before 0.4.23 carries the date its dated confirmation names and must still match it; 0.4.23 writes no date, so
+			// its Quotes are dateless even when the confirmation still carries one.
+			$dated = null !== ( $confirmation['preferred_delivery_date'] ?? null ) && $order->meta_exists( self::META_PREFERRED_DELIVERY_DATE );
+			$provenance[ self::META_PREFERRED_DELIVERY_DATE ] = $dated ? $confirmation['preferred_delivery_date'] : '';
 			$shipping = QuoteAddress::payload( $choice )['address'] ?? array_fill_keys( self::SHIPPING_FIELDS, '' );
 		} else { $provenance = null; }
 		return [
@@ -484,9 +487,9 @@ final class QuoteOrder {
 
 	/**
 	 * The Quote note's delivery sentence, unescaped: the selected method title(s) as plain text, called Collection when every
-	 * selected rate is native Local Pickup, then the optional preferred date. '' when there is neither.
+	 * selected rate is native Local Pickup, then a preferred date when one is given (0.4.23 passes none). '' when there is neither.
 	 */
-	public static function delivery_summary( ?array $delivery, ?string $preferred_date ): string {
+	public static function delivery_summary( ?array $delivery, ?string $preferred_date = null ): string {
 		$parts = [];
 		if ( null !== $delivery && [] !== ( $delivery['rates'] ?? [] ) && '' !== ( $label = DeliveryData::method_label( $delivery ) ) ) {
 			$parts[] = sprintf(
@@ -947,8 +950,7 @@ final class QuoteOrder {
 		if ( DeliveryData::fingerprint( $choice ) !== DeliveryData::fingerprint( $mapped['delivery_choice'] ) || DeliveryData::fingerprint( QuoteAddress::payload( $choice ) ) !== DeliveryData::fingerprint( QuoteAddress::payload( $mapped['delivery_destination'] ) ) || DeliveryData::fingerprint( $confirmation['delivery'] ) !== DeliveryData::fingerprint( $mapped['delivery'] ) || $confirmation['notes'] !== $notes || sanitize_textarea_field( $notes ) !== $notes || ( array_key_exists( 'delivery_preferred_date', $mapped ) && $mapped['delivery_preferred_date'] !== $date ) ) { throw new \RuntimeException( 'quote_confirmation_invalid' ); }
 		// JSON preserves an explicit null choice across both Woo stores, where a null metadata value would otherwise read back as an empty string.
 		$values = [ self::META_DELIVERY_CHOICE => $choice_json, self::META_DELIVERY_CONFIRMATION => $confirmation_json, self::META_DELIVERY_NOTES => $notes ];
-		// Written only when set, so verify_confirmation() reads it back and schema-1 or dateless quotes carry no key.
-		if ( null !== $date ) { $values[ self::META_PREFERRED_DELIVERY_DATE ] = $date; }
+		// 0.4.23 writes no preferred date, even from a confirmation that still carries one; old Quotes keep theirs.
 		foreach ( $values as $key => $value ) { $order->update_meta_data( $key, $value ); }
 		$order->set_customer_note( $notes );
 		return $values;

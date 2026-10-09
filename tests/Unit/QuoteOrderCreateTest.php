@@ -592,13 +592,23 @@ final class QuoteOrderCreateTest extends TestCase {
 		return $lines;
 	}
 
-	public function test_single_creation_note_names_the_delivery_method_and_preferred_date(): void {
+	/** 0.4.23 writes no preferred date: a confirmation that still carries one (a 0.4.22 consent) adds no date meta and its note names only the method. */
+	public function test_a_dated_confirmation_writes_no_date_and_its_note_names_only_the_method(): void {
 		$quotes = $this->shipping_quotes();
 		$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() );
 		self::assertGreaterThan( 0, $id ); $order = wc_get_order( $id );
+		self::assertFalse( $order->meta_exists( QuoteOrder::META_PREFERRED_DELIVERY_DATE ) );
 		self::assertCount( 1, $order->notes, 'One creation note; an emitted charge adds no estimate note.' );
 		self::assertStringContainsString( 'Delivery address source: company_book.', $order->notes[0] );
-		self::assertStringContainsString( 'via PunchOut (Example Buyer Company). Delivery method: Express; Collect second parcel. Preferred delivery date: 2026-10-07.', $order->notes[0] );
+		self::assertStringContainsString( 'via PunchOut (Example Buyer Company). Delivery method: Express; Collect second parcel.', $order->notes[0] );
+		self::assertStringNotContainsString( 'Preferred delivery date', $order->notes[0] );
+		// Both attach paths accept it: the prepared state from creation, and the snapshot rebuilt from the stored confirmation.
+		$quotes->attach_poom( $id, '<cXML/>' );
+		self::assertSame( Status::SLUG, wc_get_order( $id )->get_status(), 'prepared path' );
+		$id = $this->shipping_quotes()->create_for_session( $this->session(), $this->partner(), $this->dated_lines() );
+		$this->shipping_quotes()->attach_poom( $id, '<cXML/>' );
+		self::assertSame( Status::SLUG, wc_get_order( $id )->get_status(), 'snapshot path' );
+		self::assertFalse( wc_get_order( $id )->meta_exists( QuoteOrder::META_PREFERRED_DELIVERY_DATE ) );
 	}
 
 	public function test_collection_quote_note_says_collection(): void {
@@ -611,16 +621,18 @@ final class QuoteOrderCreateTest extends TestCase {
 		self::assertStringNotContainsString( 'Preferred delivery date', $notes[0] );
 	}
 
-	public function test_preferred_date_meta_is_stamped_and_verified(): void {
-		$quotes = $this->shipping_quotes();
-		$id = $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() );
+	/** A Quote created before 0.4.23 carries the date 0.4.22 wrote next to its dated confirmation: the snapshot attach still checks one against the other. */
+	public function test_a_quote_from_before_0423_still_verifies_its_stored_date(): void {
+		$id = $this->shipping_quotes()->create_for_session( $this->session(), $this->partner(), $this->dated_lines() );
 		self::assertGreaterThan( 0, $id );
-		self::assertSame( '2026-10-07', wc_get_order( $id )->get_meta( QuoteOrder::META_PREFERRED_DELIVERY_DATE ) );
+		wc_get_order( $id )->update_meta_data( QuoteOrder::META_PREFERRED_DELIVERY_DATE, '2026-10-07' );
 		$this->shipping_quotes()->attach_poom( $id, '<cXML/>' );
 		self::assertSame( Status::SLUG, wc_get_order( $id )->get_status(), 'Legacy attach verifies the stored date against the confirmation.' );
 		wc_get_order( $id )->update_meta_data( QuoteOrder::META_PREFERRED_DELIVERY_DATE, '2026-10-08' );
 		$this->shipping_quotes()->attach_poom( $id, '<cXML>retry</cXML>' );
 		self::assertSame( 'cancelled', wc_get_order( $id )->get_status() );
+		// The prepared input must still agree with the confirmation it carries.
+		$quotes = $this->shipping_quotes();
 		$bad = $this->dated_lines(); $bad['delivery_preferred_date'] = '2026-10-08';
 		self::assertSame( 0, $quotes->create_for_session( $this->session(), $this->partner(), $bad ) );
 		$bad = $this->dated_lines(); $bad['delivery_preferred_date'] = null;
@@ -684,9 +696,12 @@ final class QuoteOrderCreateTest extends TestCase {
 		}
 	}
 
-	public function test_bought_by_line_shows_the_preferred_delivery_date(): void {
+	/** The order screen still shows the date a Quote from before 0.4.23 carries. */
+	public function test_bought_by_line_still_shows_a_date_from_before_0423(): void {
 		$quotes = $this->shipping_quotes();
 		$order = wc_get_order( $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() ) );
+		self::assertStringNotContainsString( 'Preferred delivery date', $this->rendered( $order ), 'A new Quote carries no date.' );
+		$order->update_meta_data( QuoteOrder::META_PREFERRED_DELIVERY_DATE, '2026-10-07' );
 		$markup = $this->rendered( $order );
 		self::assertStringContainsString( 'via PunchOut (Example Buyer Company)<br />Preferred delivery date: 2026-10-07</p>', $markup );
 		$plain = wc_get_order( $this->quotes->create_for_session( $this->session(), $this->partner(), $this->lines() ) );
