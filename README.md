@@ -48,7 +48,7 @@ Buyer's procurement system         The store (this plugin)              Buyer's 
         │                                │    buyer-priced catalogue           │
         │                                │◀───────────────────────────────────▶│
         │                                │ 8. the one cart exit:               │
-        │                                │    "Send for approval"              │
+        │                                │    "Punchout", then "Submit"        │
         │                                │        → /punchout/confirm          │
         │                                │        review, confirm and return   │
         │ 9. browser POSTs the cXML PunchOutOrderMessage (cxml-base64          │
@@ -91,7 +91,7 @@ punchout-woocommerce/
 ├── bin/build-zip.sh                Builds the distributable zip (runtime files only)
 ├── phpunit.xml.dist
 ├── templates/                      Theme-overridable buyer-facing surfaces
-│   ├── return-button.php           The "send for approval" cart button
+│   ├── return-button.php           The "Punchout" cart button (opens the review)
 │   ├── abandon-button.php          The "return without a cart" control
 │   ├── handoff.php                 The auto-submitting cart-return page
 │   ├── account/dashboard.php       The My Account dashboard inside a visit (no logout link)
@@ -294,6 +294,9 @@ wp punchout generate-key
 | Login link lifetime | 300 s | One-time StartPage token TTL; at most 7 days (604800 s), per-partner override within the same cap |
 | Session lifetime | 4 h | Punchout login TTL (per-partner override); at most 7 days (604800 s). A longer stored value is used as 7 days |
 | Review page title | "Review" | Shown as the page title, the last breadcrumb and the document title while the delivery review is drawn inside the theme (posing as the Cart page); blank = the default |
+| Review Submit button | "Submit" | Text on the review page's button that sends the cart (0.4.23); blank = the default; filter `punchout_review_submit_label` |
+| Review items heading | "Items" | Heading over the item lines on the review page (0.4.23); blank = the default; filter `punchout_review_items_heading` |
+| Review total label | "Total" | Label of the amount sent to the purchasing system on the review page (0.4.23); blank = the default; filter `punchout_review_total_label`. When the connection does not send the delivery line, the review shows this one row (the merchandise) and no delivery estimate or tax sentence |
 | Setup rate limit | 30/min | Per partner+IP on `/punchout/setup`; 0 uses the default (30). The public self-test preserves positive values and uses 10/min when this is 0. |
 | Setup edge limit | 120/min | Per IP before method checks, body reads, parsing or audit storage on `/punchout/setup`; 0 uses the default (120) |
 | Log retention | 400 days | Audit-table trim horizon |

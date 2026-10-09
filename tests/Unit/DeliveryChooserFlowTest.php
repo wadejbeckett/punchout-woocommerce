@@ -195,6 +195,13 @@ final class DeliveryChooserFlowTest extends TestCase {
 		self::assertSame( 0, $this->return_endpoint->handoffs );
 	}
 
+	/** 0.4.23: the review is handed the site's labels; with nothing saved they are the neutral defaults. */
+	public function test_the_review_is_handed_the_sites_labels(): void {
+		$this->initial_review();
+		self::assertSame( \POW\Addresses\ReviewLabels::resolve(), Templates::$vars['labels'] ?? null );
+		self::assertSame( [ 'submit' => 'Submit', 'items' => 'Items', 'total' => 'Total' ], Templates::$vars['labels'] );
+	}
+
 	public function test_a_repeated_submit_after_the_cart_returned_gets_the_handoff_again_not_an_error_page(): void {
 		// The other click won: this visit has left active, so this request has no review to draw.
 		$this->state->store->session = Session::from_row( [ 'id' => 42, 'partner_id' => 7, 'user_id' => 99, 'wp_session_token' => 'exact-token', 'status' => 'returned', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ), 'wc_session_key' => self::KEY ] );

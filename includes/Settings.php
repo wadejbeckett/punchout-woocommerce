@@ -100,6 +100,13 @@ class Settings {
 		// breadcrumb, document title). Blank = the translated default "Review"; filter punchout_review_title.
 		'review_title'         => '',
 
+		// 0.4.23: the review page's Submit button, the heading over its item lines and the label of its total.
+		// Blank = the translated defaults "Submit", "Items" and "Total"; filters punchout_review_submit_label,
+		// punchout_review_items_heading and punchout_review_total_label run last (Addresses\ReviewLabels).
+		'review_submit_label'  => '',
+		'review_items_heading' => '',
+		'review_total_label'   => '',
+
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends
 		// it to the item description (scope §4.3).
