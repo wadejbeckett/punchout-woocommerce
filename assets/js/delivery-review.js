@@ -1,5 +1,6 @@
 /* PunchOut for WooCommerce, delivery review (0.4.20): a changed address or delivery method recalculates at once.
-   Without scripting the "Recalculate delivery" button does the same.
+   Without scripting the update button ("Recalculate delivery", or "Update delivery" when no delivery cost is sent)
+   does the same.
    0.4.22: the review form is sent once. After the first submission (Submit, "Back to cart", a
    recalculation or an added address) a second one is ignored and Submit and "Back to cart" are
    disabled, so a double click never sends the cart twice. They come back when the browser shows this page again
