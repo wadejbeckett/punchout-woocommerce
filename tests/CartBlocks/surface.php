@@ -132,10 +132,21 @@ namespace {
 		}
 		private function set_session( ?POW\Sessions\Session $session ): void { ( new ReflectionProperty( $this->plugin, 'current_session' ) )->setValue( $this->plugin, $session ); }
 
+		/**
+		 * 0.5.0 (ticket 76, inverted from "the Cart block's button opens the review"): in a visit the Cart block's own
+		 * button keeps its native link to checkout, where PunchOut is the only payment method, and carries the Checkout
+		 * button label. Nothing points at the old review any more.
+		 */
 		public function test_restricted_keeps_native_wrapper_without_an_extra_button(): void {
 			self::assertSame( self::BLOCK, $this->render() );
 			self::assertFalse( isset( $GLOBALS['pow_blocks_hooks']['filter']['render_block_woocommerce/proceed-to-checkout-block'] ), 'Cart recreates its button in React: no PHP filter may rewrite the wrapper' );
-			self::assertSame( [ 'restricted' => true, 'label' => 'Send requisition', 'confirmUrl' => 'https://shop.example.test/punchout/confirm' ], $this->config() );
+			self::assertSame( [ 'restricted' => true, 'label' => 'Proceed to checkout' ], $this->config() );
+		}
+		public function test_the_cart_blocks_button_carries_the_checkout_button_label(): void {
+			$GLOBALS['pow_test_options'][ \POW\Settings::OPTION_KEY ]['checkout_button_label'] = 'Review';
+			( new ReflectionProperty( $this->plugin, 'settings' ) )->setValue( $this->plugin, new POW\Settings() );
+			$this->render();
+			self::assertSame( [ 'restricted' => true, 'label' => 'Review' ], $this->config() );
 		}
 		public function test_dependency_graph_places_filters_after_api_before_cart_hydration(): void {
 			$this->render(); $scripts = $GLOBALS['pow_blocks_scripts'];
@@ -155,7 +166,7 @@ namespace {
 			$scripts->registered['wc-cart-block-frontend'] = (object) [ 'deps' => [ 'wc-blocks-checkout' ] ];
 			self::assertSame( self::BLOCK, $this->render() );
 			POW\Cart\wp_enqueue_script( 'wc-cart-block-frontend' );
-			self::assertSame( [ 'restricted' => true, 'label' => 'Send requisition', 'confirmUrl' => 'https://shop.example.test/punchout/confirm' ], $this->config() );
+			self::assertSame( [ 'restricted' => true, 'label' => 'Proceed to checkout' ], $this->config() );
 			self::assertContains( 'pow-cart-blocks', $scripts->registered['wc-cart-block-frontend']->deps );
 			self::assertSame( [ 'wc-blocks-checkout' ], $scripts->registered['pow-cart-blocks']->deps );
 		}
@@ -170,9 +181,9 @@ namespace {
 		public function test_failed_initial_partner_read_is_restricted_without_fatal(): void { $this->db->partner_error = true; self::assertSame( self::BLOCK, $this->render() ); self::assertTrue( $this->config()['restricted'] ); }
 		public function test_label_filter_is_encoded_as_data_and_no_nonce_or_token_is_exported(): void {
 			$label = '</script><script>example & "label"</script>';
-			$GLOBALS['pow_test_filters']['pow_return_button_label'] = static fn( string $saved ): string => $label;
+			$GLOBALS['pow_test_filters'][ \POW\Settings::CHECKOUT_BUTTON_FILTER ] = static fn( string $saved ): string => $label;
 			$this->render(); $config = $this->config();
-			self::assertSame( [ 'restricted', 'label', 'confirmUrl' ], array_keys( $config ) ); self::assertSame( $label, $config['label'] );
+			self::assertSame( [ 'restricted', 'label' ], array_keys( $config ) ); self::assertSame( $label, $config['label'] );
 			self::assertStringNotContainsString( '</script', implode( '', $GLOBALS['pow_blocks_scripts']->inline['pow-cart-blocks']['before'] ) );
 			self::assertStringNotContainsString( self::KEY_A, implode( '', $GLOBALS['pow_blocks_scripts']->inline['pow-cart-blocks']['before'] ), 'The per-visit key is a bearer credential and is never exported' );
 		}
@@ -181,9 +192,17 @@ namespace {
 			self::assertSame( self::BLOCK, $this->render() );
 			self::assertSame( [], $GLOBALS['pow_blocks_scripts']->inline );
 		}
-		public function test_classic_and_shortcode_keep_mains_confirmation_route(): void {
-			$html = $this->surface->shortcode();
-			self::assertStringContainsString( '/punchout/confirm', $html ); self::assertStringContainsString( 'fixture-pow_confirm_delivery', $html );
+		/**
+		 * 0.5.0 (ticket 76, inverted from "classic and shortcode keep the confirmation route"): the visit leaves through
+		 * checkout, so the return button that opened the old review renders nothing for one release, wherever it is
+		 * placed: the shortcode, the PHP helper and the classic cart's own placement.
+		 */
+		public function test_the_return_button_renders_nothing_in_a_visit(): void {
+			self::assertSame( [ $this->surface, 'shortcode' ], $GLOBALS['pow_blocks_hooks']['shortcode']['punchout_return_button'] ?? null, 'The shortcode stays registered, so a layout that carries it shows nothing rather than its tag' );
+			self::assertSame( '', $this->surface->shortcode() );
+			self::assertSame( '', $this->surface->markup() );
+			ob_start(); $this->surface->render_cart_button(); self::assertSame( '', (string) ob_get_clean() );
+			self::assertStringContainsString( 'pow-abandon-button', $this->surface->abandon_markup(), 'Leaving with nothing is still offered' );
 		}
 		/**
 		 * 0.5.0 (inverted from "the mini-cart loses every checkout button"): in a visit the cart's way out is WooCommerce's
@@ -198,6 +217,16 @@ namespace {
 			self::assertSame( [ 'woocommerce_proceed_to_checkout', 'woocommerce_widget_shopping_cart_buttons' ], $GLOBALS['pow_blocks_removed_all'] );
 			self::assertSame( [ [ $this->surface, 'render_checkout_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_proceed_to_checkout'] ?? [], 'Only the labelled proceed button: no express-pay buttons in a visit' );
 			self::assertSame( [ 'woocommerce_widget_shopping_cart_button_view_cart', [ $this->surface, 'render_widget_checkout_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'], 'The mini-cart keeps View cart and gets the labelled checkout button' );
+		}
+		/**
+		 * 0.5.0 (ticket 76): WooCommerce's express-pay buttons on the checkout page never show in a visit. Its own
+		 * callback is removed from the checkout hook by name, so the other things a checkout plugin hangs there (a
+		 * field, a notice) stay; the gateways a visit is offered are PunchOut alone, which draws no such button.
+		 */
+		public function test_a_visit_shows_no_express_pay_buttons_on_checkout(): void {
+			$this->surface->maybe_unhook_checkout_button();
+			self::assertContains( [ 'woocommerce_checkout_before_customer_details', 'wc_get_pay_buttons', 30 ], $GLOBALS['pow_blocks_removed'] );
+			self::assertFalse( in_array( 'woocommerce_checkout_before_customer_details', $GLOBALS['pow_blocks_removed_all'], true ), 'Other checkout callbacks stay' );
 		}
 		public function test_the_checkout_buttons_carry_the_checkout_button_label_and_lead_to_checkout(): void {
 			$GLOBALS['pow_test_options'][ \POW\Settings::OPTION_KEY ]['checkout_button_label'] = 'Review';
@@ -248,14 +277,23 @@ namespace {
 			self::assertSame( [], $GLOBALS['pow_blocks_removed'] );
 			self::assertSame( [], $GLOBALS['pow_blocks_removed_all'] );
 		}
-		public function test_cart_exits_shortcode_is_registered_and_a_visit_has_no_checkout_link(): void {
+		/**
+		 * 0.5.0 (ticket 76, inverted from "a visit has no checkout link"): the complete cart control keeps rendering
+		 * WooCommerce's normal checkout link in a visit, carrying the Checkout button label.
+		 */
+		public function test_cart_exits_shortcode_is_registered_and_a_visit_gets_the_labelled_checkout_link(): void {
 			self::assertSame( [ $this->surface, 'cart_exits_shortcode' ], $GLOBALS['pow_blocks_hooks']['shortcode']['punchout_cart_exits'] ?? null );
 			$html = $this->surface->cart_exits_shortcode();
-			self::assertSame( 1, substr_count( $html, 'class="pow-return-form"' ) );
-			self::assertStringNotContainsString( 'https://shop.example.test/checkout/', $html );
+			self::assertSame( 1, preg_match( '#^<div class="pow-cart-exits"><a href="https://shop\.example\.test/checkout/" class="([^"]*)">Proceed to checkout</a></div>$#', $html, $classes ), $html );
+			self::assertContains( 'checkout-button', explode( ' ', $classes[1] ) );
+			self::assertContains( 'wc-forward', explode( ' ', $classes[1] ) );
+			self::assertStringNotContainsString( 'pow-return-form', $html );
+			$GLOBALS['pow_test_options'][ \POW\Settings::OPTION_KEY ]['checkout_button_label'] = 'Review';
+			( new ReflectionProperty( $this->plugin, 'settings' ) )->setValue( $this->plugin, new POW\Settings() );
+			self::assertStringContainsString( '">Review</a></div>', $this->surface->cart_exits_shortcode() );
 		}
 		public function test_connection_switched_off_mid_visit_renders_no_exit(): void {
-			self::assertSame( 1, substr_count( $this->surface->cart_exits_shortcode(), 'class="pow-return-form"' ) );
+			self::assertSame( 1, substr_count( $this->surface->cart_exits_shortcode(), 'href="https://shop.example.test/checkout/"' ) );
 			$this->db->partners[ self::PARTNER_A ]['status'] = 'inactive';
 			self::assertSame( '', $this->surface->cart_exits_shortcode(), 'A connection switched off mid-visit renders neither exit' );
 			self::assertSame( 2, $this->db->partner_reads, 'Every render re-reads the connection' );
@@ -293,8 +331,8 @@ namespace {
 			// here that can be wrong.
 			$this->set_session( $this->visit( self::VISIT_B, self::KEY_B, 'active', self::PARTNER_B ) );
 			$html = $this->surface->cart_exits_shortcode();
-			self::assertSame( 1, substr_count( $html, 'class="pow-return-form"' ) );
-			self::assertStringNotContainsString( 'https://shop.example.test/checkout/', $html );
+			self::assertSame( 1, substr_count( $html, 'href="https://shop.example.test/checkout/"' ) );
+			self::assertStringNotContainsString( 'pow-return-form', $html );
 			self::assertSame( [ self::PARTNER_B ], $this->db->partner_lookups, 'The surface resolved this visit\'s own connection' );
 		}
 		public function test_a_visit_of_a_switched_off_connection_is_fenced_while_its_siblings_visit_stays_live(): void {
@@ -306,7 +344,7 @@ namespace {
 			$this->set_session( $this->visit( self::VISIT_B, self::KEY_B, 'active', self::PARTNER_B ) );
 			self::assertSame( '', $this->surface->cart_exits_shortcode(), 'A visit of a disabled connection renders neither exit' );
 			$this->set_session( $this->visit() );
-			self::assertSame( 1, substr_count( $this->surface->cart_exits_shortcode(), 'class="pow-return-form"' ), 'The still-active connection keeps its own visit\'s return control' );
+			self::assertSame( 1, substr_count( $this->surface->cart_exits_shortcode(), 'href="https://shop.example.test/checkout/"' ), 'The still-active connection keeps its own visit\'s checkout link' );
 			self::assertSame( [ self::PARTNER_B, self::PARTNER_A ], $this->db->partner_lookups );
 		}
 		public function test_a_visit_that_has_left_active_renders_no_exit(): void {
@@ -315,23 +353,19 @@ namespace {
 				self::assertSame( '', $this->surface->cart_exits_shortcode(), "A {$status} visit renders no exit" );
 			}
 		}
+		/** 0.5.0 (ticket 76): the old review drawn in the theme is no exception; the return button draws nothing there either. */
 		public function test_on_the_theme_drawn_review_the_punchout_button_draws_nothing(): void {
-			// 0.4.22: the button opens the review, so on the review itself (a theme header, visit bar or cart
-			// layout that carries it) it would only reload the page. The review's own Submit is the exit there.
-			self::assertStringContainsString( 'class="pow-return-form"', $this->surface->shortcode() );
 			POW\Addresses\ReviewChrome::mark_review_request();
 			try {
 				self::assertTrue( POW\Addresses\ReviewChrome::is_review_request() );
 				self::assertSame( '', $this->surface->shortcode(), 'The shortcode draws nothing on the review' );
 				self::assertSame( '', $this->surface->markup(), 'Nor does the PHP helper' );
-				self::assertSame( '', $this->surface->cart_exits_shortcode(), 'Nor the complete cart control' );
 				ob_start(); $this->surface->render_cart_button(); self::assertSame( '', (string) ob_get_clean() );
 				self::assertStringContainsString( 'pow-abandon-button', $this->surface->abandon_markup(), 'Leaving with nothing is still offered' );
 			} finally {
 				POW\Addresses\ReviewChrome::mark_review_request( false );
 			}
 			self::assertFalse( POW\Addresses\ReviewChrome::is_review_request() );
-			self::assertStringContainsString( 'class="pow-return-form"', $this->surface->shortcode(), 'Every other page keeps the button' );
 		}
 		public function test_no_exit_policy_and_no_account_id_decide_anything_here(): void {
 			$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/Cart/Surface.php' );

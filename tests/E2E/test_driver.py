@@ -116,6 +116,12 @@ class ReleasePath(unittest.TestCase):
 
     def test_an_explicit_path_wins(self):
         self.assertEqual(driver.path_for('0.4.22', 'checkout'), 'checkout')
+        self.assertEqual(driver.path_for('0.5.0', 'review', True), 'review')
+
+    def test_auto_takes_checkout_on_a_build_with_the_punchout_payment_method_whatever_its_number(self):
+        # 0.5.0 work in progress still carries the 0.4.23 number; from ticket 76 its cart has no way to the review.
+        self.assertEqual(driver.path_for('0.4.23', 'auto', True), 'checkout')
+        self.assertEqual(driver.path_for('0.4.23', 'auto', False), 'review')
 
 
 
@@ -548,6 +554,107 @@ class OrderMessageLeg(unittest.TestCase):
         self.assertEqual(expected['freight'], '50.00')
         self.assertEqual(expected['freight_description'], 'COURIER E2E X — THE DELIVERY CHARGE IS AN ESTIMATE.')
         self.assertEqual(expected['delivery_instructions'], 'The delivery charge is an estimate. | Leave at the gate. | Exempt: no')
+
+
+CHECKOUT_76 = (
+    '<form name="checkout" method="post" class="checkout woocommerce-checkout" action="' + BASE + '/?page_id=258" enctype="multipart/form-data">'
+    '<select name="billing_address_book" id="billing_address_book"><option value="a1" selected=\'selected\'>Receiving Desk, 1 Example Street</option><option value="add_new">Add New Address</option></select>'
+    '<input type="text" name="billing_first_name" value="Receiving"><input type="text" name="billing_last_name" value="Desk">'
+    '<input type="text" name="billing_address_1" value="9 Typed Road"><input type="text" name="billing_address_2" value="">'
+    '<input type="text" name="billing_city" value="Example City"><input type="text" name="billing_postcode" value="2001">'
+    '<select name="billing_country"><option value="ZA" selected="selected">South Africa</option></select>'
+    '<select name="billing_state"><option value="">Select</option><option value="GP" selected="selected">Gauteng</option><option value="WC">Western Cape</option></select>'
+    '<input type="tel" name="billing_phone" value=""><input type="email" name="billing_email" value="e2e@example.invalid">'
+    '<input id="ship-to-different-address-checkbox" type="checkbox" name="ship_to_different_address" value="1" checked=\'checked\' />'
+    '<select name="shipping_address_book" id="shipping_address_book"><option value="a1" selected=\'selected\'>Receiving Desk, 1 Example Street</option><option value="a2">Depot: Dock Two, 2 Depot Road</option><option value="add_new">Add New Address</option></select>'
+    '<input type="text" name="shipping_first_name" value="Receiving"><input type="text" name="shipping_last_name" value="Desk">'
+    '<input type="text" name="shipping_address_1" value="1 Example Street"><input type="text" name="shipping_address_2" value="">'
+    '<input type="text" name="shipping_city" value="Example City"><input type="text" name="shipping_postcode" value="2001">'
+    '<select name="shipping_country"><option value="ZA" selected="selected">South Africa</option></select>'
+    '<select name="shipping_state"><option value="GP" selected="selected">Gauteng</option><option value="WC">Western Cape</option></select>'
+    '<textarea name="order_comments"></textarea>'
+    '<ul class="wc_payment_methods"><li><input type="radio" name="payment_method" value="punchout" checked=\'checked\' data-order_button_text="Submit" /></li></ul>'
+    '<input type="hidden" name="woocommerce-process-checkout-nonce" value="abc123" />'
+    '</form>'
+    '<script>var wc_checkout_params = {"update_order_review_nonce":"6045fc68dd","apply_coupon_nonce":"0a1b2c3d4e"};</script>'
+)
+DEPOT = {'first_name': 'Dock', 'last_name': 'Two', 'company': 'Buyer Co Depot', 'address_1': '2 Depot Road', 'address_2': '', 'city': 'Depot Town', 'state': 'GP', 'postcode': '2001', 'country': 'ZA', 'phone': '', 'address_nickname': 'Depot'}
+BILLING = {'first_name': 'Receiving', 'last_name': 'Desk', 'company': 'Buyer Co', 'address_1': '1 Example Street', 'address_2': '', 'city': 'Example City', 'state': 'GP', 'postcode': '2001', 'country': 'ZA', 'email': 'e2e@example.invalid'}
+
+
+class CheckoutInAVisit(unittest.TestCase):
+    """0.5.0 ticket 76: billing from the account, a saved delivery address chosen, refusals read from answers."""
+
+    def form(self, page=CHECKOUT_76):
+        return driver.checkout_form(page, BASE + '/?page_id=258')
+
+    def test_the_saved_address_select_is_found_by_the_entries_it_offers(self):
+        self.assertEqual(driver.address_book_select(self.form(), ['a1', 'a2']), 'shipping_address_book')
+        self.assertIsNone(driver.address_book_select(self.form(), ['a1', 'a3']), 'A select missing a seeded entry is not the book')
+        self.assertIsNone(driver.address_book_select(self.form(), []))
+
+    def test_an_address_fills_the_fields_the_form_has_for_its_section(self):
+        choice = driver.address_choice(self.form(), 'shipping_', DEPOT)
+        self.assertEqual(choice, {'shipping_first_name': 'Dock', 'shipping_last_name': 'Two', 'shipping_address_1': '2 Depot Road', 'shipping_address_2': '', 'shipping_city': 'Depot Town', 'shipping_state': 'GP', 'shipping_postcode': '2001', 'shipping_country': 'ZA'})
+
+    def test_an_address_a_select_does_not_offer_is_refused(self):
+        with self.assertRaises(ValueError):
+            driver.address_choice(self.form(), 'shipping_', dict(DEPOT, state='XX'))
+
+    def test_a_forced_entry_replaces_what_the_form_sends_or_is_added(self):
+        entries = [('a', '1'), ('payment_method', 'punchout'), ('b', '2'), ('payment_method', 'x')]
+        self.assertEqual(driver.forced(entries, 'payment_method', 'cheque'), [('a', '1'), ('payment_method', 'cheque'), ('b', '2')])
+        self.assertEqual(driver.forced([('a', '1')], 'payment_method', 'cheque'), [('a', '1'), ('payment_method', 'cheque')])
+
+    def test_billing_findings_compare_what_opens_with_the_accounts_saved_billing(self):
+        ok, detail = driver.billing_findings(self.form(), BILLING)
+        self.assertFalse(ok, 'A typed address in the form is not the saved profile')
+        self.assertEqual(detail['differs'], {'address_1': {'shown': '9 Typed Road', 'saved': '1 Example Street'}})
+        page = CHECKOUT_76.replace('value="9 Typed Road"', 'value="1 Example Street"')
+        ok, detail = driver.billing_findings(self.form(page), BILLING)
+        self.assertTrue(ok, detail)
+        self.assertIn('email', detail['compared'])
+        self.assertNotIn('company', detail['compared'], 'A field the page does not draw is not compared')
+
+    def test_the_order_review_update_posts_typed_billing_and_the_forms_shipping(self):
+        entries = dict(driver.order_review_update(self.form(), '6045fc68dd', {'address': '9 Typed Road', 'city': 'Typed City'}))
+        self.assertEqual(entries['security'], '6045fc68dd')
+        self.assertEqual(entries['payment_method'], 'punchout')
+        self.assertEqual([entries['address'], entries['city'], entries['country'], entries['state'], entries['postcode']], ['9 Typed Road', 'Typed City', 'ZA', 'GP', '2001'])
+        self.assertEqual([entries['s_address'], entries['s_city'], entries['s_country']], ['1 Example Street', 'Example City', 'ZA'])
+        self.assertEqual(entries['ship_to_different_address'], '1')
+        self.assertIn('billing_first_name=Receiving', entries['post_data'])
+        self.assertEqual(driver.update_order_review_nonce(CHECKOUT_76), '6045fc68dd')
+        self.assertIsNone(driver.update_order_review_nonce('<p>no script</p>'))
+
+    def test_ship_to_text_reads_the_ship_to_address_only(self):
+        xml = '<cXML><Message><PunchOutOrderMessage><PunchOutOrderMessageHeader><ShipTo><Address><Name>Dock Two</Name><PostalAddress><Street>2 Depot Road</Street><City>Depot Town</City></PostalAddress></Address></ShipTo></PunchOutOrderMessageHeader></PunchOutOrderMessage></Message></cXML>'
+        self.assertEqual(driver.ship_to_text(xml), 'Dock Two 2 Depot Road Depot Town')
+        self.assertEqual(driver.ship_to_text('<cXML></cXML>'), '')
+
+    def test_a_refusal_is_a_redirect_to_the_landing_page(self):
+        landing = BASE + '/?page_id=5'
+        self.assertTrue(driver.refused_to(302, {'Location': '/?page_id=5'}, BASE + '/?page_id=258&order-pay=7', landing))
+        self.assertFalse(driver.refused_to(200, {}, BASE + '/?page_id=258&order-pay=7', landing), 'The page itself answered')
+        self.assertFalse(driver.refused_to(302, {'Location': BASE + '/?page_id=258'}, BASE + '/', landing), 'A redirect elsewhere is not the refusal')
+
+    def test_the_store_apis_refusal_is_read_from_its_json(self):
+        self.assertEqual(driver.store_api_answer(403, '{"code":"pow_requisition_only","message":"x","data":{"status":403}}'), (403, 'pow_requisition_only'))
+        self.assertEqual(driver.store_api_answer(500, '<html>'), (500, None))
+
+    def test_profile_changes_name_every_entry_that_differs_or_appeared(self):
+        before = {'billing_phone': [''], 'wc_address_book_shipping': ['a:2:{...}'], 'first_name': ['Receiving']}
+        after = {'billing_phone': ['0100000000'], 'wc_address_book_shipping': ['a:2:{...}'], 'first_name': ['Receiving'], 'wc_address_book_address_shipping_a3': ['a:1:{...}']}
+        self.assertEqual(driver.profile_changes(before, after), {'billing_phone': [[''], ['0100000000']], 'wc_address_book_address_shipping_a3': [None, ['a:1:{...}']]})
+        self.assertEqual(driver.profile_changes(before, dict(before)), {})
+
+    def test_the_cart_exits_page_draws_the_labelled_checkout_link_and_no_return_button(self):
+        page = '<div class="pow-cart-exits"><a href="' + BASE + '/?page_id=258" class="button alt wp-element-button checkout-button wc-forward">Review</a></div>'
+        findings = {name: ok for name, ok, _ in driver.cart_exits_findings(page, BASE + '/?page_id=400', 'Review', BASE + '/?page_id=258')}
+        self.assertEqual(findings, {'cart_exits_draws_the_checkout_link_with_the_label': True, 'the_return_button_draws_nothing': True})
+        old = '<div class="pow-cart-exits"><form method="post" action="' + BASE + '/punchout/confirm" class="pow-return-form"><button type="submit" class="pow-return-button">Punchout</button></form></div>'
+        findings = {name: ok for name, ok, _ in driver.cart_exits_findings(old, BASE + '/?page_id=400', 'Review', BASE + '/?page_id=258')}
+        self.assertEqual(findings, {'cart_exits_draws_the_checkout_link_with_the_label': False, 'the_return_button_draws_nothing': False})
 
 
 class _Closer:

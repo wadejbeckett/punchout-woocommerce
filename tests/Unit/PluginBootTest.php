@@ -77,6 +77,15 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
+	 * 0.5.0 (ticket 76): a visit that outlived the switch's sweep is still the shared account, so the rule that
+	 * checkout in a visit saves nothing to it is registered before the switch is consulted, as basket isolation is.
+	 */
+	public function test_master_off_boot_still_saves_nothing_to_the_bound_account_from_a_visit(): void {
+		$result = $this->booted();
+		self::assertTrue( in_array( 'woocommerce_checkout_update_customer_data', $result['filters'], true ) );
+	}
+
+	/**
 	 * A busy connection must not strand every connection after it.
 	 *
 	 * on_settings_updated() sweeps each connection inside its own named MySQL

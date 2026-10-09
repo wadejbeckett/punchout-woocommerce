@@ -143,8 +143,11 @@ final class RouteGuard {
 
 			$wrong_visit_order = null !== $visit && ! $this->order_belongs_to_visit( $order, $visit );
 			$payment_denied    = is_wc_endpoint_url( 'order-pay' ) && $this->checkout_blocked_for_visit( $order );
+			// 0.5.0: a visit leaves through the handoff. WooCommerce's "order received" page would tell the buyer an
+			// order was placed while nothing has reached the purchasing system, so a visit never lands there.
+			$received_in_visit = null !== $visit && is_wc_endpoint_url( 'order-received' );
 
-			if ( $wrong_visit_order || $payment_denied ) {
+			if ( $wrong_visit_order || $payment_denied || $received_in_visit ) {
 				$this->redirect_to_landing();
 				return;
 			}

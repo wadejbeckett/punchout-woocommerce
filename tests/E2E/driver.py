@@ -139,11 +139,12 @@ def at_least(version, floor):
     return tuple(int(p) for p in re.findall(r'\d+', version)[:3]) >= floor
 
 
-def path_for(version, flag):
-    """Which exit a release takes: the review (0.4.x) or WooCommerce checkout (0.5.0 and later)."""
+def path_for(version, flag, payment_method=False):
+    """Which exit a release takes: the review (0.4.x) or WooCommerce checkout (0.5.0 and later, and any build that
+    has the PunchOut payment method, whatever number it still carries)."""
     if flag in ('review', 'checkout'):
         return flag
-    return 'checkout' if at_least(version, (0, 5, 0)) else 'review'
+    return 'checkout' if payment_method or at_least(version, (0, 5, 0)) else 'review'
 
 
 def _policy(header):
@@ -496,6 +497,130 @@ def handoff_form(html, base_url):
     return None
 
 
+# -- 0.5.0 ticket 76: checkout in a visit and the bound account ------------------------------------------------
+
+def address_book_select(form, keys):
+    """The name of the checkout select that offers every one of the account's saved address `keys` (as the site's
+    address book draws it, whatever it calls the field), or None."""
+    if not keys:
+        return None
+    for control in form.controls:
+        if control.tag == 'select' and control.name and set(keys) <= {o[0] for o in control.options}:
+            return control.name
+    return None
+
+
+def address_choice(form, prefix, address):
+    """{prefix + field: value} for each field of `address` the form draws in that section (as the address book's
+    script fills them when an entry is chosen). ValueError when a select there does not offer the value."""
+    choice = {}
+    for field, value in address.items():
+        name = prefix + field
+        controls = [c for c in form.controls if c.name == name and not c.disabled]
+        if not controls:
+            continue
+        control = controls[0]
+        if control.tag == 'select' and str(value) not in [o[0] for o in control.options]:
+            raise ValueError('The select ' + name + ' does not offer ' + repr(value))
+        choice[name] = '' if value is None else str(value)
+    return choice
+
+
+def forced(entries, name, value):
+    """The entry list with every `name` entry replaced by one carrying `value` (added at the end when absent): a
+    request a page's own form would not send, as a forged one is."""
+    out, done = [], False
+    for key, current in entries:
+        if key == name:
+            if not done:
+                out.append((name, value))
+                done = True
+            continue
+        out.append((key, current))
+    return out if done else out + [(name, value)]
+
+
+def billing_findings(form, billing):
+    """(ok, detail): every billing field the checkout form draws opens on the account's saved billing value."""
+    compared, differs = [], {}
+    for field, saved in billing.items():
+        shown = form.value('billing_' + field)
+        if shown is None and not any(c.name == 'billing_' + field for c in form.controls):
+            continue
+        compared.append(field)
+        if (shown or '') != (saved or ''):
+            differs[field] = {'shown': shown, 'saved': saved}
+    return bool(compared) and not differs, {'compared': compared, 'differs': differs}
+
+
+def update_order_review_nonce(html):
+    """The nonce WooCommerce's checkout script sends with wc-ajax=update_order_review, or None."""
+    match = re.search(r'"update_order_review_nonce"\s*:\s*"([0-9a-f]+)"', html)
+    return match.group(1) if match else None
+
+
+def order_review_update(form, nonce, typed):
+    """What WooCommerce's checkout script posts to wc-ajax=update_order_review after the buyer typed `typed` into the
+    billing address ({address, address_2, city, postcode, state, country}): the billing address with those values,
+    the shipping section's address (as the script sends it while "ship to a different address" is ticked), and the
+    whole form serialised."""
+    value = lambda name: form.value(name) or ''  # noqa: E731 - a local reader keeps the list below readable
+    ticked = form.value('ship_to_different_address') is not None
+    billing = {'country': value('billing_country'), 'state': value('billing_state'), 'postcode': value('billing_postcode'), 'city': value('billing_city'), 'address': value('billing_address_1'), 'address_2': value('billing_address_2')}
+    billing.update(typed)
+    shipping = {'s_country': value('shipping_country'), 's_state': value('shipping_state'), 's_postcode': value('shipping_postcode'), 's_city': value('shipping_city'), 's_address': value('shipping_address_1'), 's_address_2': value('shipping_address_2')} if ticked else {'s_' + k: v for k, v in billing.items()}
+    post = dict(form.submission())
+    post.update({'billing_' + ('address_1' if k == 'address' else k): v for k, v in typed.items()})
+    entries = [('security', nonce), ('payment_method', 'punchout')] + list(billing.items()) + list(shipping.items()) + [('has_full_address', 'true')]
+    if ticked:
+        entries.append(('ship_to_different_address', '1'))
+    entries.append(('post_data', urllib.parse.urlencode([(k, '' if v is None else v) for k, v in post.items()])))
+    return entries
+
+
+def ship_to_text(xml):
+    """The ShipTo address of a PunchOutOrderMessage as one line of text ('' when there is none)."""
+    try:
+        ship = poom.parse_xml(xml).find('.//PunchOutOrderMessageHeader/ShipTo')
+    except Exception:  # noqa: BLE001 - an unreadable message has no ShipTo
+        return ''
+    return ' '.join(t.strip() for t in ship.itertext() if t.strip()) if ship is not None else ''
+
+
+def refused_to(status, headers, url, landing):
+    """Whether an answer is the route guard's refusal: a redirect to the landing page."""
+    location = headers.get('Location') if headers is not None else None
+    return status in (301, 302, 303, 307) and bool(location) and urllib.parse.urljoin(url, location) == landing
+
+
+def store_api_answer(status, body):
+    """(status, error code) from a Store API answer; the code is None when the body is not its JSON error."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return status, None
+    return status, data.get('code') if isinstance(data, dict) else None
+
+
+def profile_changes(before, after):
+    """{key: [before, after]} for every entry of the account's profile that differs (both sides as recorded)."""
+    before, after = before or {}, after or {}
+    return {key: [before.get(key), after.get(key)] for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)}
+
+
+def cart_exits_findings(html, base_url, label, checkout_url):
+    """0.5.0: on a page carrying [punchout_cart_exits] and [punchout_return_button], the complete cart control is
+    WooCommerce's checkout link with `label`, and the return button draws nothing. [(check, ok, detail)]"""
+    start = html.find('class="pow-cart-exits"')
+    end = html.find('</div>', start)
+    region = html[start:end] if start >= 0 and end > start else ''
+    link = checkout_anchor(region, base_url, 'checkout-button') if region else None
+    return [
+        ('cart_exits_draws_the_checkout_link_with_the_label', link == (checkout_url, label), {'link': link, 'expected': [checkout_url, label]}),
+        ('the_return_button_draws_nothing', 'pow-return-form' not in html and 'pow-return-button' not in html, {}),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # HTTP: one browser (cookie jar, no automatic redirects) and a loopback receiver
 # ---------------------------------------------------------------------------
@@ -597,6 +722,8 @@ class Run:
         self.path = 'review'
         self.extras = copy.deepcopy(EXTRAS_DEFAULT)
         self.extra_lines = []
+        self.chosen_address = None  # 0.5.0 ticket 76: the saved delivery address the main leg chose
+        self.main_order = None  # {'id', 'key'} of the main visit's Punchout Quote
 
     def check(self, ok, name, **detail):
         (self.passed if ok else self.failed).append({'check': name, 'detail': detail})
@@ -704,9 +831,9 @@ class Run:
             quantities[key] = quantity
             # The Cart widget as WooCommerce redraws it after the add (0.5.0 checks its checkout button).
             mini_cart = (answer.get('fragments') or {}).get('div.widget_shopping_cart_content') or ''
-        visit = {'payload': payload, 'cookie': cookie, 'quantities': quantities, 'mini_cart': mini_cart}
+        visit = {'payload': payload, 'cookie': cookie, 'quantities': quantities, 'mini_cart': mini_cart, 'landing': landing}
         if not label:
-            self.payload, self.cookie, self.quantities, self.mini_cart = payload, cookie, quantities, mini_cart
+            self.payload, self.cookie, self.quantities, self.mini_cart, self.landing = payload, cookie, quantities, mini_cart, landing
         return visit
 
     # -- 0.4.x: the cart's Punchout exit and the review -------------------------
@@ -764,9 +891,12 @@ class Run:
         """Leave through WooCommerce's classic checkout and return the handoff page, as `review_path` does.
 
         The order lifecycle's second leg (ticket 74) is `late_submits` and `second_leg`; the connection's message
-        settings (ticket 75) are checked here and in the cXML. Still to come with the later 0.5.0 tickets (spec
-        "Testing Decisions"): the shipping section opened on the default saved address, a file, no delivery amount on
-        the page, and the refusals outside a visit."""
+        settings (ticket 75) are checked here and in the cXML. Checkout in a visit (ticket 76): the cart carries no
+        return button and the cart-exits page the labelled checkout link; billing opens on the account's saved billing
+        profile even after the buyer typed another address in this visit; the shipping section opens ticked on the
+        account's default saved address, and the buyer chooses its other saved address, which ShipTo must carry (the
+        account's profile and saved addresses are compared after Submit, in `main`). Still to come with the later
+        0.5.0 tickets (spec "Testing Decisions"): a file and no delivery amount on the page."""
         url = self.args.url
         checkout = seed.get('checkout') or {}
         labels = checkout.get('labels') or {}
@@ -781,11 +911,37 @@ class Run:
         proceed = checkout_anchor(cart, cart_url, 'checkout-button')
         self.must(status == 200 and proceed is not None, 'cart_offers_the_checkout_button', http=status)
         self.check(proceed[1] == labels['proceed'], 'cart_checkout_button_carries_the_label', shown=proceed[1], setting=labels['proceed'])
+        # Ticket 76: the return button that opened the old review renders nothing, on the cart and wherever a layout
+        # places it; the complete cart control keeps WooCommerce's checkout link, with the label.
+        self.check('pow-return-form' not in cart and 'pow-return-button' not in cart, 'the_cart_has_no_return_button')
+        exits_page = (seed.get('pages') or {}).get('cart_exits')
+        if exits_page:
+            status, _, exits, exits_url = browser.get(url + '/?page_id=' + str(exits_page))
+            self.save('cart-exits.html', exits)
+            for name, ok, detail in cart_exits_findings(exits, exits_url, labels['proceed'], proceed[0]):
+                self.check(status == 200 and ok, name, http=status, **detail)
 
+        status, _, page, page_url = browser.get(proceed[0])
+        self.save('checkout-first.html', page)
+        form = checkout_form(page, page_url)
+        self.must(status == 200 and form is not None, 'the_checkout_button_opens_woocommerce_checkout_in_the_visit', http=status, url=page_url)
+
+        # Ticket 76: the buyer types another billing address (WooCommerce's script keeps it in the visit's session),
+        # then opens checkout again: billing opens on the account's saved billing profile, not on what was typed.
+        nonce = update_order_review_nonce(page)
+        body = forms.encode(order_review_update(form, nonce or '', {'address': '9 Typed Road', 'city': 'Typed City'}), forms.URLENCODED)[0]
+        status, _, typed = browser.request(url + '/?wc-ajax=update_order_review', body, forms.URLENCODED, accept='application/json')
+        try:
+            typed_result = json.loads(typed).get('result')
+        except (ValueError, AttributeError):
+            typed_result = None
+        self.must(status == 200 and nonce is not None and typed_result == 'success', 'the_buyer_types_another_billing_address_in_the_visit', http=status, result=typed_result)
         status, _, page, page_url = browser.get(proceed[0])
         self.save('checkout.html', page)
         form = checkout_form(page, page_url)
-        self.must(status == 200 and form is not None, 'the_checkout_button_opens_woocommerce_checkout_in_the_visit', http=status, url=page_url)
+        self.must(status == 200 and form is not None, 'checkout_opens_again', http=status, url=page_url)
+        ok, detail = billing_findings(form, seed['billing'])
+        self.check(ok, 'billing_opens_on_the_accounts_saved_billing_profile', **detail)
         for name, ok, detail in checkout_findings(page, form, labels['place_order']):
             if name == 'checkout_offers_only_the_punchout_method':
                 self.must(ok, name, **detail)
@@ -806,6 +962,21 @@ class Run:
         if connection['emit_delivery_line']:
             shipping = shipping_rate(form, seed['shipping']['instance_id'])
             self.must(shipping is not None, 'checkout_offers_the_priced_method', instance=seed['shipping']['instance_id'])
+
+        # Ticket 76: the shipping section opens ticked on the account's default saved address; the buyer chooses the
+        # other saved address (its fields filled as the address book's script fills them).
+        book = seed.get('saved_addresses')
+        self.must(isinstance(book, dict) and book.get('chosen') in (book.get('entries') or {}), 'seed_gives_the_account_saved_addresses')
+        entries, default = book['entries'], book['default']
+        select = address_book_select(form, list(entries))
+        self.check(select is not None and form.value(select) == default, 'checkout_offers_the_saved_addresses_on_the_default', select=select, selected=form.value(select) if select else None, default=default)
+        ticked, shown = form.value('ship_to_different_address'), form.value('shipping_address_1')
+        self.check(ticked == '1' and shown == entries[default].get('address_1'), 'the_shipping_section_opens_ticked_on_the_default_saved_address', ticked=ticked, shown=shown, default=entries[default].get('address_1'))
+        self.chosen_address = entries[book['chosen']]
+        fields.update(address_choice(form, 'shipping_', self.chosen_address))
+        if select:
+            fields[select] = book['chosen']
+        fields['ship_to_different_address'] = '1'
 
         self.note = 'Leave at the gate. End-to-end run ' + seed['run'] + '.'
         self.checkout_form = form
@@ -831,7 +1002,11 @@ class Run:
     def post_checkout(self, browser, form, note, extra=None, headers=None, shipping=None):
         """POST the checkout form as WooCommerce's script does (`?wc-ajax=checkout`) and read the answer. `extra` and
         `shipping` are `checkout_submission`'s."""
-        body, content_type = forms.encode(checkout_submission(form, note, extra, shipping), forms.URLENCODED)
+        return self.post_entries(browser, checkout_submission(form, note, extra, shipping), headers)
+
+    def post_entries(self, browser, entries, headers=None):
+        """POST an entry list to `?wc-ajax=checkout` and read the answer."""
+        body, content_type = forms.encode(entries, forms.URLENCODED)
         status, answer_headers, raw = browser.request(self.args.url + '/?wc-ajax=checkout', body, content_type, accept='application/json', extra_headers=headers)
         result, redirect, messages = checkout_answer(status, raw)
         return {'status': status, 'result': result, 'redirect': redirect, 'messages': messages, 'raw': raw, 'set_cookies': answer_headers.get_all('Set-Cookie') or []}
@@ -843,9 +1018,9 @@ class Run:
         self.must(status == 200 and form is not None, label + ': checkout_opens_in_the_visit', http=status, url=page_url)
         return page, form
 
-    def inspect(self, payload, name):
+    def inspect(self, payload, name, **env):
         out = self.args.out / ('inspect-' + name + '.json')
-        self.wp('inspect', POW_E2E_PAYLOAD=payload, POW_E2E_RESULT=str(out))
+        self.wp('inspect', POW_E2E_PAYLOAD=payload, POW_E2E_RESULT=str(out), **env)
         return json.loads(out.read_text())
 
     def follow(self, browser, answer):
@@ -880,10 +1055,11 @@ class Run:
         return poom.decode_field(field, value), field, posted
 
     def second_leg(self, seed, receiver):
-        """The order lifecycle's second leg (ticket 74), each case in a visit of its own: two racing Submits, a
+        """The second leg, each case in a visit of its own. The order lifecycle (ticket 74): two racing Submits, a
         zero-total cart (with a currency refusal first, and a note cXML cannot carry as typed), and a line without a
-        SKU."""
-        for label, leg in (('race', self.race_leg), ('zero', self.zero_total_leg), ('sku', self.skuless_leg)):
+        SKU. Checkout in a visit (ticket 76): a Submit held while its order is pending, with a one-off delivery
+        address; and what stays refused, in a visit and outside any visit."""
+        for label, leg in (('race', self.race_leg), ('zero', self.zero_total_leg), ('sku', self.skuless_leg), ('pending', self.pending_leg), ('refuse', self.refusal_leg)):
             try:
                 leg(seed, receiver)
             except SystemExit as stop:
@@ -1002,6 +1178,117 @@ class Run:
         self.check(posts_for(receiver.captured, visit['cookie']) == 0, label + ': nothing_is_posted')
         self.quiet_orders += [o['id'] for o in result['orders'] + result['trashed']]
 
+    def order_url(self, seed, endpoint, order):
+        """A checkout endpoint URL for an order, as WooCommerce links it on a site without pretty permalinks."""
+        url = '%s/?page_id=%d&%s=%d&key=%s' % (self.args.url, seed['checkout']['page_id'], endpoint, order['id'], order['key'])
+        return url + ('&pay_for_order=true' if endpoint == 'order-pay' else '')
+
+    def pending_leg(self, seed, receiver):
+        """Ticket 76. A Submit held once WooCommerce has created its order, before the payment method runs: the
+        pending order already carries its visit's provenance, and the visit can open neither order-received nor
+        order-pay for it. The buyer types a one-off delivery address (the address book's choice that is not a saved
+        entry): it reaches ShipTo and stays on the order, and the account saves nothing. Then the Submit completes and
+        hands off."""
+        url, label = self.args.url, 'pending'
+        browser = Browser(url)
+        sku, product = next(iter(seed['products'].items()))
+        visit = self.punch_in(browser, seed, receiver, items=[(sku, product['id'], 1)], label=label, redeem='post')
+        _, form = self.open_checkout(browser, seed, label)
+        one_off = dict(seed['ship_to'], first_name='Site', last_name='Office', company='', address_1='3 One-off Lane', city='Oneoff City')
+        choice = address_choice(form, 'shipping_', one_off)
+        saved = list(((seed.get('saved_addresses') or {}).get('entries') or {}))
+        select = address_book_select(form, saved)
+        new_entry = [o for o in form.options(select) if o not in saved] if select else []
+        if new_entry:
+            choice[select] = new_entry[0]
+        choice['ship_to_different_address'] = '1'
+        answers = {}
+        held = threading.Thread(target=lambda: answers.__setitem__('held', self.post_checkout(browser, form, 'Pending run ' + seed['run'] + '.', choice, headers={'X-Pow-E2E-Pause': '8'})), daemon=True)
+        held.start()
+        time.sleep(3)
+        result = self.inspect(visit['payload'], label + '-held')
+        orders = result['orders']
+        self.check(len(orders) == 1 and orders[0]['status'] == 'pending' and orders[0]['payment_method'] == 'punchout', label + ': the_order_carries_its_visits_provenance_before_submit_runs', orders=[(o['id'], o['status'], o['payment_method']) for o in orders])
+        if orders:
+            peek = browser.clone()
+            for endpoint in ('order-received', 'order-pay'):
+                target = self.order_url(seed, endpoint, orders[0])
+                status, headers, _ = peek.request(target)
+                self.check(refused_to(status, headers, target, visit['landing']), label + ': a_visit_cannot_open_' + endpoint.replace('-', '_') + '_for_its_own_order', http=status, location=headers.get('Location'))
+        held.join(90)
+        answer = answers.get('held') or {'result': None, 'redirect': None, 'messages': ['no answer']}
+        page, state, handoff = self.follow(browser, answer)
+        self.must(handoff is not None, label + ': the_held_submit_hands_off', result=answer['result'], redirect=answer['redirect'], messages=answer['messages'], state=state)
+        xml, _, _ = self.capture_leg(browser, handoff, receiver, visit, label)
+        self.save('pending-poom.xml', xml)
+        ship = ship_to_text(xml)
+        self.check(one_off['address_1'].lower() in ship.lower() and one_off['city'].lower() in ship.lower(), label + ': ship_to_is_the_one_off_address', ship_to=ship)
+        result = self.inspect(visit['payload'], label)
+        orders = result['orders']
+        self.check(len(orders) == 1 and orders[0]['status'] == 'punchout-quote' and orders[0]['shipping'].get('address_1') == one_off['address_1'], label + ': the_one_off_address_stays_on_the_order', orders=[(o['id'], o['status'], o['shipping'].get('address_1')) for o in orders])
+        self.check(result['account_profile'] == seed['account_profile'], label + ': the_one_off_address_is_not_saved_to_the_account', changed=profile_changes(seed['account_profile'], result['account_profile']))
+        self.quote_orders += [o['id'] for o in orders]
+        self.quiet_orders += [t['id'] for t in result['trashed']]
+
+    def refusal_leg(self, seed, receiver):
+        """Ticket 76. What stays refused. In a visit of its own: another payment method forced into checkout, the
+        Store API checkout, and another visit's order at order-pay and order-received; none of them leaves an order or
+        posts anything. Outside any visit (a guest): the PunchOut method is never offered beside the shop's own, a
+        forged PunchOut choice is refused and creates no order, a Punchout Quote's order-pay page never opens, and the
+        cart-exits control is WooCommerce's own checkout link."""
+        url, label = self.args.url, 'refuse'
+        browser = Browser(url)
+        sku, product = next(iter(seed['products'].items()))
+        visit = self.punch_in(browser, seed, receiver, items=[(sku, product['id'], 1)], label=label, redeem='post')
+        _, form = self.open_checkout(browser, seed, label)
+        other = (seed.get('checkout') or {}).get('other_gateway') or 'cheque'
+        answer = self.post_entries(browser, forced(checkout_submission(form, 'Forced method.'), 'payment_method', other))
+        self.check(answer['result'] == 'failure' and any('No other payment method' in m for m in answer['messages']), label + ': another_payment_method_forced_in_a_visit_is_refused', result=answer['result'], messages=answer['messages'])
+
+        status, headers, _ = browser.request(url + '/?rest_route=/wc/store/v1/cart', accept='application/json')
+        nonce = headers.get('Nonce') or ''
+        address = {k: v for k, v in seed['ship_to'].items() if k != 'phone'}
+        payload = json.dumps({'billing_address': dict(address, email=seed['billing']['email'], phone='0100000000'), 'shipping_address': dict(address, phone=''), 'payment_method': 'punchout'}).encode('utf-8')
+        status, _, body = browser.request(url + '/?rest_route=/wc/store/v1/checkout', payload, 'application/json', accept='application/json', extra_headers={'Nonce': nonce})
+        self.save('refuse-store-api.json', body)
+        self.check(store_api_answer(status, body) == (403, 'pow_requisition_only'), label + ': the_store_api_checkout_is_refused_in_a_visit', http=status, answer=_text(body)[:200], nonce=bool(nonce))
+
+        main = self.main_order
+        self.must(main is not None, label + ': the_main_visit_left_a_quote_to_reach_for')
+        for endpoint in ('order-pay', 'order-received'):
+            target = self.order_url(seed, endpoint, main)
+            status, headers, _ = browser.request(target)
+            self.check(refused_to(status, headers, target, visit['landing']), label + ': another_visits_order_is_refused_at_' + endpoint.replace('-', '_'), http=status, location=headers.get('Location'))
+        result = self.inspect(visit['payload'], label)
+        self.check(result['orders'] == [] and result['trashed'] == [] and (result['visit'] or {}).get('status') == 'active', label + ': the_refusals_leave_no_order_and_the_visit_open', orders=[(o['id'], o['status']) for o in result['orders']], visit=result['visit'])
+        self.check(posts_for(receiver.captured, visit['cookie']) == 0, label + ': nothing_is_posted')
+
+        guest, prefix = Browser(url), 'guest: '
+        status, _, body = guest.request(url + '/?wc-ajax=add_to_cart', forms.encode([('product_id', str(product['id'])), ('quantity', '1')], forms.URLENCODED)[0], forms.URLENCODED, accept='application/json')
+        self.must(status == 200 and '"cart_hash"' in body, prefix + 'wc_ajax_add_to_cart', http=status)
+        status, _, page, page_url = guest.get(url + '/?page_id=' + str(seed['checkout']['page_id']))
+        self.save('guest-checkout.html', page)
+        form = checkout_form(page, page_url)
+        self.must(status == 200 and form is not None, prefix + 'checkout_opens', http=status)
+        offered = [c.value for c in form.controls if c.name == 'payment_method' and c.type == 'radio']
+        self.check(other in offered and 'punchout' not in offered, prefix + 'outside_a_visit_the_punchout_method_is_never_offered', offered=offered)
+        email = 'guest-' + seed['run'] + '@example.com'
+        choose = address_choice(form, 'billing_', dict(seed['ship_to'], email=email, phone='0100000000'))
+        choose.update(address_choice(form, 'shipping_', seed['ship_to']))
+        answer = self.post_entries(guest, forced(checkout_submission(form, 'Forged method.', choose), 'payment_method', 'punchout'))
+        self.check(answer['result'] == 'failure' and any('only in a catalog session' in m for m in answer['messages']), prefix + 'a_forged_punchout_choice_is_refused', result=answer['result'], messages=answer['messages'])
+        guest_orders = self.inspect(self.payload, 'guest', POW_E2E_GUEST_EMAIL=email)['guest_orders']
+        self.check(guest_orders == 0, prefix + 'the_forged_choice_creates_no_order', orders=guest_orders)
+        target = self.order_url(seed, 'order-pay', main)
+        status, headers, body = guest.request(target)
+        self.check(refused_to(status, headers, target, visit['landing']), prefix + 'a_punchout_quotes_order_pay_page_never_opens', http=status, location=headers.get('Location'))
+        exits_page = (seed.get('pages') or {}).get('cart_exits')
+        if exits_page:
+            status, _, page, page_url = guest.get(url + '/?page_id=' + str(exits_page))
+            start = page.find('class="pow-cart-exits"')
+            link = checkout_anchor(page[start:], page_url, 'checkout-button') if start >= 0 else None
+            self.check(link is not None and link[1] == 'Proceed to checkout', prefix + 'cart_exits_keeps_woocommerces_checkout_link', link=link)
+
     def mail_checks(self, seed):
         """Exactly one e-mail per Punchout Quote, the store's Quote e-mail; none for a binned or refused order; no
         failed or cancelled order e-mail anywhere in the run."""
@@ -1052,6 +1339,8 @@ class Run:
         }
         if self.path == 'checkout':
             base.update(checkout_expected(seed, self.note, self.extra_lines))
+            if connection['emit_ship_to'] and self.chosen_address:
+                base['ship_to_contains'] = [self.chosen_address['address_1'], self.chosen_address['city']]
         return base
 
 
@@ -1145,7 +1434,7 @@ def main(argv=None):
         seeded = True
         seed = json.loads((args.out / 'fixture.json').read_text())
         version = run.version = seed['versions']['plugin']
-        path = run.path = path_for(version, args.path)
+        path = run.path = path_for(version, args.path, bool((seed.get('checkout') or {}).get('payment_method')))
         print('PunchOut %s on WooCommerce %s, WordPress %s; path: %s; site %s' % (version, seed['versions']['woocommerce'], seed['versions']['wordpress'], path, args.url), flush=True)
 
         browser = Browser(args.url)
@@ -1160,6 +1449,10 @@ def main(argv=None):
         (args.out / 'checks.json').write_text(json.dumps(results, indent=1, default=str))
         for result in results:
             run.check(result['ok'], 'cxml ' + result['check'], **({} if result['ok'] else result['detail']))
+
+        if path == 'checkout' and run.chosen_address:
+            ship, billing = ship_to_text(xml).lower(), seed['billing']['address_1'].lower()
+            run.check(run.chosen_address['address_1'].lower() in ship and run.chosen_address['city'].lower() in ship and billing not in ship, 'ship_to_is_the_chosen_saved_address_not_billing', ship_to=ship_to_text(xml), chosen=run.chosen_address['address_1'])
 
         if path == 'checkout':
             second, handoff_url = run.handoff_again
@@ -1199,11 +1492,19 @@ def main(argv=None):
                 run.check(order['auto_cancel'] is False, 'order_is_never_auto_cancelled')
                 run.check(state['trashed'] == [], 'nothing_of_the_visit_is_in_the_bin', trashed=state['trashed'])
                 run.quote_orders.append(order['id'])
+                run.main_order = {'id': order['id'], 'key': order.get('key')}
+                # 0.5.0 (ticket 76): the order ships to the saved address chosen, and checkout changed nothing on the
+                # shared account: not its billing or shipping details, not its saved addresses.
+                if run.chosen_address:
+                    run.check(order['shipping'].get('address_1') == run.chosen_address['address_1'], 'order_ships_to_the_chosen_saved_address', shipping=order['shipping'])
+                run.check(state['account_profile'] == seed['account_profile'], 'the_bound_accounts_profile_and_saved_addresses_are_unchanged', changed=profile_changes(seed['account_profile'], state['account_profile']))
         if path == 'checkout':
             run.second_leg(seed, receiver)
             run.mail_checks(seed)
-            stock = run.inspect(run.payload, 'stock')['stock']
+            last = run.inspect(run.payload, 'stock')
+            stock = last['stock']
             run.check(all(quantity == seed['stock'] for quantity in stock.values()), 'punchout_quotes_move_no_stock', stock=stock, seeded=seed['stock'])
+            run.check(last['account_profile'] == seed['account_profile'], 'after_every_case_the_bound_account_is_unchanged', changed=profile_changes(seed['account_profile'], last['account_profile']))
     except SystemExit as stop:
         run.check(False, 'run_completed', reason=str(stop))
     except (Exception, KeyboardInterrupt) as error:  # noqa: BLE001 - a connection error or a crash is a failed run, never an empty failure list

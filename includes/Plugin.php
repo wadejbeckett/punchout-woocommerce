@@ -212,6 +212,15 @@ final class Plugin {
 		$this->surface = new Surface( $this, $this->registry );
 		$this->surface->register_cart_exits_shortcode();
 
+		// 0.5.0: WooCommerce's classic checkout is the visit's Review step and PunchOut its only payment method;
+		// Submit hands the placed order back through the GET handoff. Built here, registered behind the switch below.
+		$submission     = new Checkout\Submission( $this, $this->registry, $this->sessions, $builder, $this->audit, $this->settings );
+		$payment_method = new Checkout\PaymentMethod( $this, $this->registry, $submission );
+		// Checkout in a visit saves nothing to the shared account and opens billing on its saved profile. Registered
+		// whatever the switch says, for the same reason as basket isolation: a visit that outlived the sweep is still
+		// every buyer's account.
+		( new Checkout\VisitAccount( $this, $payment_method ) )->register();
+
 		if ( ! $this->enabled() ) {
 			return;
 		}
@@ -227,14 +236,13 @@ final class Plugin {
 		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
 		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book, $attachments, $account_book );
 
-		// 0.5.0: WooCommerce's classic checkout is the visit's Review step and PunchOut its only payment method;
-		// Submit hands the placed order back through the GET handoff.
-		$handoff        = new Checkout\Handoff( $this->sessions, $this->audit );
-		$submission     = new Checkout\Submission( $this, $this->registry, $this->sessions, $builder, $this->audit, $this->settings );
-		$payment_method = new Checkout\PaymentMethod( $this, $this->registry, $submission );
+		// 0.5.0: the payment method (built above) and the handoff it redirects to.
+		$handoff = new Checkout\Handoff( $this->sessions, $this->audit );
 		$payment_method->register();
 		// The order lifecycle around Submit: refusals before an order exists, zero-total carts, a Submit after the return.
 		( new Checkout\Validation( $payment_method ) )->register();
+		// A PunchOut order carries its visit's provenance from the moment checkout creates it, so it is never payable.
+		( new Checkout\Provenance( $this, $this->registry, $payment_method ) )->register();
 		( new Checkout\Lifecycle( $payment_method ) )->register();
 		( new Checkout\LateSubmit( $this, $this->sessions ) )->register();
 

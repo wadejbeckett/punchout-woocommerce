@@ -67,6 +67,18 @@ class Watch(unittest.TestCase):
         self.assertIn('inline script', seen['policy'][0])
 
 
+class Steps(unittest.TestCase):
+    """0.5.0 (ticket 76): a build with the PunchOut payment method has no way from the cart to the old review."""
+
+    def test_a_review_build_runs_all_three_steps(self):
+        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.4.23'}, 'checkout': {'payment_method': False}}), ['auto', 'double_click', 'review'])
+        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.4.23'}}), ['auto', 'double_click', 'review'])
+
+    def test_a_checkout_build_runs_the_start_link_steps_only(self):
+        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.4.23'}, 'checkout': {'payment_method': True}}), ['auto', 'double_click'])
+        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.5.0'}}), ['auto', 'double_click'])
+
+
 class Arguments(unittest.TestCase):
 
     def test_the_run_refuses_to_start_without_a_local_chromium(self):

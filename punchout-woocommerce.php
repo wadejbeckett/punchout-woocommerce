@@ -59,17 +59,23 @@ require_once __DIR__ . '/includes/Autoloader.php';
 Autoloader::register( __NAMESPACE__, __DIR__ . '/includes' );
 
 /**
- * Declare compatibility with WooCommerce High-Performance Order Storage.
+ * Declare compatibility with WooCommerce features.
  *
- * All order access in this plugin goes through wc_get_order() and the CRUD
- * meta methods, never through get_posts/postmeta, so HPOS is safe.
+ * High-Performance Order Storage: all order access in this plugin goes
+ * through wc_get_order() and the CRUD meta methods, never through
+ * get_posts/postmeta, so HPOS is safe.
+ *
+ * Cart and checkout blocks: a visit leaves through WooCommerce's classic
+ * checkout, where PunchOut is a payment method. The Checkout block shows no
+ * PunchOut method, so the plugin declares itself incompatible and WooCommerce
+ * shows its own notice rather than a store whose buyers find no way out.
  */
 add_action(
 	'before_woocommerce_init',
 	static function (): void {
 		if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
 			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
-			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', __FILE__, true );
+			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', __FILE__, false );
 		}
 	}
 );

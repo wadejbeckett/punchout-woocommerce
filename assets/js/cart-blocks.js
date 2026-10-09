@@ -8,24 +8,11 @@
 		return;
 	}
 
-	const label = typeof config.label === 'string' && config.label.trim() ? config.label : 'Punchout';
-	let link = '#';
-	try {
-		if (typeof config.confirmUrl === 'string' && config.confirmUrl.trim()) {
-			const url = new URL(config.confirmUrl, window.location.href);
-			if (url.origin === window.location.origin && /^https?:$/.test(url.protocol) &&
-				!url.username && !url.password && !url.search && !url.hash && url.pathname.endsWith('/punchout/confirm')) {
-				link = url.href;
-			}
-		}
-	} catch (error) {
-		// Invalid restricted configuration cannot fall back to a checkout target.
-	}
+	const label = typeof config.label === 'string' && config.label.trim() ? config.label : null;
 
-	// The native button remains a link: GET opens the authenticated review.
-	// These filters grant no checkout/return permission; server guards still apply.
+	// In a visit (0.5.0) the native button keeps its own link to checkout, where PunchOut is the only payment method,
+	// and carries the Checkout button label. The filter grants nothing; the server's guards still decide.
 	checkout.registerCheckoutFilters('punchout-woocommerce', {
-		proceedToCheckoutButtonLabel: function () { return label; },
-		proceedToCheckoutButtonLink: function () { return link; }
+		proceedToCheckoutButtonLabel: function (value) { return label === null ? value : label; }
 	});
 }());

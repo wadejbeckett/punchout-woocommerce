@@ -106,48 +106,15 @@ final class Surface {
 	}
 
 	/**
-	 * The button markup, or '' outside an active punchout session.
+	 * The return button's markup: always '' since 0.5.0.
 	 *
-	 * Also '' on the delivery review drawn inside the theme (0.4.22): the
-	 * button opens the review, so a theme header or visit bar that carries
-	 * it would only reload the page the buyer is already on. The review's
-	 * own "Submit" is the exit there.
+	 * The button opened the old review page. A visit now leaves through WooCommerce's checkout (the cart's buttons
+	 * carry the Checkout button label), so the button renders nothing wherever a layout still places it: the
+	 * [punchout_return_button] shortcode, the pow_return_button() helper and the classic cart's own placement. The
+	 * shortcode stays registered for one release, so a layout that carries it shows nothing rather than its tag.
 	 */
 	public function markup(): string {
-		$session = $this->plugin->current_session();
-
-		if ( null === $session || \POW\Addresses\ReviewChrome::is_review_request() ) {
-			return '';
-		}
-
-		return Templates::render(
-			'return-button',
-			[
-				'action_url' => Transport::supplier_url( home_url( '/punchout/confirm' ) ),
-				'nonce'      => wp_create_nonce( 'pow_confirm_delivery' ),
-				'label'      => $this->return_button_label(),
-				'classes'    => $this->button_classes( 'pow-return-button' ),
-			]
-		);
-	}
-
-	/** The native Cart block and the classic/shortcode controls share one label policy. */
-	private function return_button_label(): string {
-		/**
-		 * Filter the RFQ exit button label.
-		 *
-		 * Applied to the operator's saved label (or the default when that
-		 * is blank), so a filter always has the last word.
-		 *
-		 * @param string $label Button text.
-		 */
-		return (string) apply_filters(
-			'pow_return_button_label',
-			$this->plugin->settings()->button_label(
-				'return_button_label',
-				__( 'Punchout', 'punchout-woocommerce' )
-			)
-		);
+		return '';
 	}
 
 	/**
@@ -248,12 +215,14 @@ final class Surface {
 	 * A complete classic-cart exit control independent of theme callbacks.
 	 *
 	 * Sites using this shortcode can hide their theme's native cart button.
-	 * The plugin then owns the authorized exit without identifying or
-	 * removing callbacks installed by WooCommerce or a theme.
+	 * The plugin then owns the exit without identifying or removing callbacks
+	 * installed by WooCommerce or a theme.
 	 *
-	 * Inside a visit that is the return control alone. Outside one it is the
-	 * native checkout link, for every shopper: a connection's bound account
-	 * shopping on its own password login is an ordinary customer here.
+	 * It is WooCommerce's normal checkout link for every shopper: a
+	 * connection's bound account shopping on its own password login is an
+	 * ordinary customer here. Inside a live visit (0.5.0) the same link
+	 * carries the Checkout button label, since checkout is the visit's way
+	 * out; a visit that is not live renders nothing.
 	 */
 	public function cart_exits_shortcode(): string {
 		$session = $this->plugin->current_session();
@@ -265,13 +234,9 @@ final class Surface {
 			return '<div class="pow-cart-exits">' . $this->checkout_button_markup() . '</div>';
 		}
 
-		if ( ! $this->visit_is_live( $session ) ) {
-			return '';
-		}
+		$link = $this->checkout_link( $this->button_classes( 'checkout-button' ) . ' wc-forward' );
 
-		$return = $this->markup();
-
-		return '' === $return ? '' : '<div class="pow-cart-exits">' . $return . '</div>';
+		return '' === $link ? '' : '<div class="pow-cart-exits">' . $link . '</div>';
 	}
 
 	/** Native WooCommerce checkout link used by the complete cart control. */
@@ -344,11 +309,11 @@ final class Surface {
 			return;
 		}
 
+		// 0.5.0: the block's own button keeps its native link to checkout and carries the Checkout button label.
 		$config = wp_json_encode(
 			[
 				'restricted' => true,
-				'label'      => $this->return_button_label(),
-				'confirmUrl' => Transport::supplier_url( home_url( '/punchout/confirm' ) ),
+				'label'      => $this->plugin->settings()->checkout_button_label(),
 			],
 			JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
 		);
@@ -380,6 +345,9 @@ final class Surface {
 
 		remove_all_actions( 'woocommerce_proceed_to_checkout' );
 		add_action( 'woocommerce_proceed_to_checkout', [ $this, 'render_checkout_button' ], 20 );
+
+		// WooCommerce's express-pay buttons on the checkout page, by name: other checkout callbacks there stay.
+		remove_action( 'woocommerce_checkout_before_customer_details', 'wc_get_pay_buttons', 30 );
 
 		remove_all_actions( 'woocommerce_widget_shopping_cart_buttons' );
 		if ( function_exists( 'woocommerce_widget_shopping_cart_button_view_cart' ) ) {

@@ -16,6 +16,8 @@ seeds the fixture as the driver does (tests/E2E/fixture.php), serves the site on
      The connection sends no delivery line, so the review shows no amount beside any delivery method, no
      estimate row and no tax wording, its words are the seeded settings, and its update control says
      "Update delivery". Submit then hands the cart to the punchback URL once, and the visit is returned.
+     Only on a build that still leaves through the review: one with the PunchOut payment method (0.5.0) has no way
+     from the cart to it, and its checkout is driver.py's checkout leg (`steps_for`).
 
 It talks to nothing but 127.0.0.1, prints no secret, and writes its evidence to a private run directory (mode 700).
 """
@@ -78,6 +80,13 @@ def leave_start(page):
         pass
     page.wait_for_load_state('load')
     return START not in page.url
+
+
+def steps_for(seed):
+    """The steps a run takes on the seeded build: the review step only where the cart still leads to the review."""
+    payment_method = bool((seed.get('checkout') or {}).get('payment_method'))
+    steps = ['auto', 'double_click']
+    return steps + ['review'] if driver.path_for(seed['versions']['plugin'], 'auto', payment_method) == 'review' else steps
 
 
 def signed_in(context):
@@ -289,9 +298,13 @@ def main(argv=None):
             try:
                 print('Chromium ' + chromium.version, flush=True)
                 run.notes.append('Chromium ' + chromium.version)
+                steps = steps_for(seed)
                 context, page, payload = run.auto(chromium, seed, receiver)
                 run.double_click(chromium, seed, receiver)
-                run.review(context, page, payload, seed, receiver)
+                if 'review' in steps:
+                    run.review(context, page, payload, seed, receiver)
+                else:
+                    run.notes.append('review step not run: this build leaves the cart through checkout (driver.py, checkout leg)')
                 context.close()
             finally:
                 chromium.close()

@@ -27,7 +27,18 @@
  *   from its --checkout-extras), then one a classic checkout always writes and
  *   one no order has; with POW_E2E_SEND_DELIVERY_COST=1 it also sends delivery
  *   cost. One product's short description is markup with entities, the other
- *   only repeats its name; the seed says what each must read as. Writes the
+ *   only repeats its name; the seed says what each must read as. For checkout
+ *   in a visit (0.5.0, ticket 76), when the site has an address-book API (found
+ *   by shape, as the plugin finds it) the account gets saved addresses: its own
+ *   billing and shipping as each book's default and a second, named shipping
+ *   entry the driver delivers to; the seed records the account's profile
+ *   (billing and shipping user meta, address-book meta, names) so the driver
+ *   can prove checkout changed none of it. For the run the shipping section
+ *   opens ticked ("Shipping destination" set to the customer's shipping
+ *   address, as the launch store has it), one ordinary payment method is on
+ *   (cheques), so "only PunchOut in a visit, never PunchOut outside one" is
+ *   tested against a real alternative, and one page carries the cart-exits and
+ *   return-button shortcodes. Writes the
  *   run's facts, including the generated shared secret and what it changed,
  *   to POW_E2E_FIXTURE (mode 600). Prints nothing secret.
  * - inspect: reads back what the run left (POW_E2E_PAYLOAD names the visit by
@@ -35,13 +46,15 @@
  *   verifies, and the orders that name the visit, with what each still holds
  *   (stock held for it, coupon holds) and whether WooCommerce's unpaid-order
  *   clean-up would cancel it; the visit's orders in the bin; the coupon's
- *   remaining holds; and each product's stock. Writes them to
- *   POW_E2E_RESULT.
+ *   remaining holds; each product's stock; the bound account's profile as the
+ *   seed recorded it; and, with POW_E2E_GUEST_EMAIL, how many orders carry that
+ *   billing e-mail. Writes them to POW_E2E_RESULT.
  * - start_click: sets the start page's "Login link needs a click" setting to
  *   POW_E2E_START_CLICK ('yes' or 'no') for one case of the browser run
  *   (tests/E2E/browser.py); the seed records the setting as it was.
  * - retire: disables the run's connection, puts the run's settings (the
- *   plugin's review and start page settings and the payment method's) back
+ *   plugin's review and start page settings, the payment method's, the
+ *   shipping destination and the cheque method) back
  *   as they were, removes the priced shipping method the seed added and moves
  *   the run's coupon to the bin, so a later run starts clean. The run's rows (account, connection, products,
  *   visit, order) stay for inspection.
@@ -96,6 +109,18 @@ final class PowEndToEndFixture {
 
 	/** The page that draws the classic cart for the run, found by its slug or made once. */
 	private const CLASSIC_CART_SLUG = 'pow-e2e-classic-cart';
+
+	/** The page that carries the cart-exits and return-button shortcodes, found by its slug or made once (0.5.0). */
+	private const CART_EXITS_SLUG    = 'pow-e2e-cart-exits';
+	private const CART_EXITS_CONTENT = "<!-- wp:shortcode -->\n[punchout_cart_exits]\n<!-- /wp:shortcode -->\n<!-- wp:shortcode -->\n[punchout_return_button]\n<!-- /wp:shortcode -->";
+
+	/** The second saved shipping address (0.5.0, ticket 76): a named entry, not the default, the driver delivers to. */
+	private const DEPOT = [ 'first_name' => 'Dock', 'last_name' => 'Two', 'company' => 'Buyer Co Depot', 'address_1' => '2 Depot Road', 'address_2' => '', 'city' => 'Depot Town', 'phone' => '', 'address_nickname' => 'Depot' ];
+
+	/** For the run: the shipping section opens ticked (the launch store's setting), and one ordinary payment method is on. */
+	private const SHIP_TO_DESTINATION = 'shipping';
+	private const OTHER_GATEWAY        = 'cheque';
+	private const OTHER_GATEWAY_OPTION = 'woocommerce_cheque_settings';
 
 	/** The priced method the seed adds for the run, ex tax. */
 	private const PRICED_COST = '50.00';
@@ -214,6 +239,10 @@ final class PowEndToEndFixture {
 			'lines'          => $lines,
 			'buyer_cookie'   => (string) $order->get_meta( POW\Orders\QuoteOrder::META_BUYER_COOKIE ),
 			'customer_note'  => $order->get_customer_note(),
+			// 0.5.0 (ticket 76): where it ships, and its key, for the order pages a visit or a guest must not reach.
+			'key'            => $order->get_order_key(),
+			'shipping'       => $order->get_address( 'shipping' ),
+			'billing_address_1' => $order->get_billing_address_1(),
 			'reserved_stock' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}wc_reserved_stock WHERE order_id = %d", $order->get_id() ) ),
 			'coupon_holds'   => $held,
 			// WooCommerce's own question, asked as its unpaid-order clean-up asks it.
@@ -241,6 +270,9 @@ final class PowEndToEndFixture {
 		}
 		$customer->set_billing_email( $customer->get_email() );
 		$customer->save();
+		// 0.5.0 (ticket 76): the account's saved addresses, then its profile as checkout must leave it.
+		$book    = self::address_book( $account, $address );
+		$profile = self::account_profile( $account );
 
 		$secret = wp_generate_password( 40, false, false );
 		$buyer  = 'BUYER-E2E-' . strtoupper( $run );
@@ -291,8 +323,10 @@ final class PowEndToEndFixture {
 
 		$checkout = (int) wc_get_page_id( 'checkout' );
 		$classic_cart = self::classic_cart_page();
+		$cart_exits   = self::cart_exits_page();
 		[ $settings_before, $shipping ] = self::configure_review( $run );
 		$gateway_before = self::configure_gateway();
+		$checkout_before = self::configure_checkout();
 		self::write(
 			$path,
 			[
@@ -325,7 +359,7 @@ final class PowEndToEndFixture {
 				'coupon'       => $coupon,
 				'stock'        => self::STOCK,
 				'ship_to'      => $address,
-				'pages'        => [ 'shop' => (int) wc_get_page_id( 'shop' ), 'cart' => (int) wc_get_page_id( 'cart' ), 'checkout' => $checkout, 'classic_cart' => $classic_cart ],
+				'pages'        => [ 'shop' => (int) wc_get_page_id( 'shop' ), 'cart' => (int) wc_get_page_id( 'cart' ), 'checkout' => $checkout, 'classic_cart' => $classic_cart, 'cart_exits' => $cart_exits ],
 				'checkout'     => [
 					'page_id' => $checkout,
 					'classic' => $checkout > 0 && has_shortcode( (string) get_post_field( 'post_content', $checkout ), 'woocommerce_checkout' ),
@@ -333,7 +367,19 @@ final class PowEndToEndFixture {
 					'labels'  => [ 'proceed' => self::REVIEW_SETTINGS['checkout_button_label'], 'place_order' => self::GATEWAY_SETTINGS['order_button_text'] ],
 					// For retire: the payment method's settings as they were, null when never saved.
 					'gateway_before' => $gateway_before,
+					// Whether the linked build has the PunchOut payment method (the driver's automatic path follows it).
+					'payment_method' => class_exists( 'POW\\Checkout\\PaymentMethod' ),
+					// 0.5.0 (ticket 76): the shipping section opens ticked for the run, and an ordinary method is on.
+					'ship_to_destination' => self::SHIP_TO_DESTINATION,
+					'other_gateway'       => self::OTHER_GATEWAY,
+					// For retire: both settings as they were (null = not saved).
+					'checkout_before'     => $checkout_before,
 				],
+				// The account's billing as checkout must open it (its saved billing profile).
+				'billing'      => array_merge( array_diff_key( $address, [ 'phone' => true ] ), [ 'email' => $customer->get_billing_email() ] ),
+				// The account's saved addresses (null without an address-book API) and its profile after the seed.
+				'saved_addresses' => $book,
+				'account_profile' => $profile,
 				// An address book found by shape, as the plugin finds it: a get_address_book() in any namespace.
 				'address_book' => [] !== array_filter( get_defined_functions()['user'], static fn( string $f ): bool => 'get_address_book' === substr( $f, -16 ) ),
 				'review'       => [
@@ -386,6 +432,75 @@ final class PowEndToEndFixture {
 		$id = wp_insert_post( [ 'post_type' => 'page', 'post_status' => 'publish', 'post_name' => self::CLASSIC_CART_SLUG, 'post_title' => 'Cart (classic, end-to-end)', 'post_content' => "<!-- wp:shortcode -->\n[woocommerce_cart]\n<!-- /wp:shortcode -->" ], true );
 		if ( $id instanceof WP_Error || (int) $id <= 0 ) { throw new RuntimeException( 'The classic cart page could not be made.' ); }
 		return (int) $id;
+	}
+
+	/** One published page carrying the cart-exits and return-button shortcodes, found by its slug or made once. */
+	private static function cart_exits_page(): int {
+		$page = get_page_by_path( self::CART_EXITS_SLUG, OBJECT, 'page' );
+		if ( $page instanceof WP_Post && 'publish' === $page->post_status && self::CART_EXITS_CONTENT === $page->post_content ) { return (int) $page->ID; }
+		$id = wp_insert_post( [ 'post_type' => 'page', 'post_status' => 'publish', 'post_name' => self::CART_EXITS_SLUG, 'post_title' => 'Cart exits (end-to-end)', 'post_content' => self::CART_EXITS_CONTENT ], true );
+		if ( $id instanceof WP_Error || (int) $id <= 0 ) { throw new RuntimeException( 'The cart-exits page could not be made.' ); }
+		return (int) $id;
+	}
+
+	/**
+	 * The account's saved addresses through the site's address-book API, found by shape as the plugin finds it
+	 * (POW\Addresses\AccountBook::api()): reading each book makes the account's own billing and shipping its default
+	 * entry, and a second, named shipping entry is added. Null when the site has no such API (or the linked build
+	 * cannot find one). Returns the shipping book: its default key, the entry the driver delivers to, and every entry.
+	 *
+	 * @param array<string, string> $address The account's own address (its default entry).
+	 */
+	private static function address_book( int $account, array $address ): ?array {
+		$api = class_exists( 'POW\\Addresses\\AccountBook' ) ? POW\Addresses\AccountBook::api() : null;
+		if ( null === $api ) { return null; }
+		$shipping = $api( new WC_Customer( $account ), 'shipping' );
+		$default  = $shipping->default_key();
+		$depot    = $shipping->add( array_merge( $address, self::DEPOT ) );
+		$api( new WC_Customer( $account ), 'billing' );
+		$book    = $api( new WC_Customer( $account ), 'shipping' );
+		$entries = $book->addresses();
+		if ( ! is_string( $default ) || ! is_string( $depot ) || $default === $depot || ! isset( $entries[ $default ], $entries[ $depot ] ) || $book->default_key() !== $default ) {
+			throw new RuntimeException( 'The account\'s saved addresses could not be seeded.' );
+		}
+		return [ 'default' => $default, 'chosen' => $depot, 'entries' => $entries ];
+	}
+
+	/**
+	 * The bound account's profile as checkout could change it: every billing_ and shipping_ user meta value, every
+	 * address-book meta value, the first and last name, and the display name and e-mail, raw as stored.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function account_profile( int $account ): array {
+		wp_cache_delete( $account, 'user_meta' );
+		clean_user_cache( $account );
+		$profile = [];
+		foreach ( (array) get_user_meta( $account ) as $key => $values ) {
+			$key = (string) $key;
+			if ( str_starts_with( $key, 'billing_' ) || str_starts_with( $key, 'shipping_' ) || str_contains( $key, 'address_book' ) || in_array( $key, [ 'first_name', 'last_name' ], true ) ) {
+				$profile[ $key ] = $values;
+			}
+		}
+		ksort( $profile );
+		$user = get_userdata( $account );
+		$profile['(user) display_name'] = $user ? $user->display_name : null;
+		$profile['(user) user_email']   = $user ? $user->user_email : null;
+		return $profile;
+	}
+
+	/** The run's checkout settings: the shipping section opens ticked, and the cheque method is on. Returns both as they were. */
+	private static function configure_checkout(): array {
+		$destination = get_option( 'woocommerce_ship_to_destination', null );
+		$gateway     = get_option( self::OTHER_GATEWAY_OPTION, null );
+		update_option( 'woocommerce_ship_to_destination', self::SHIP_TO_DESTINATION );
+		update_option( self::OTHER_GATEWAY_OPTION, array_replace( is_array( $gateway ) ? $gateway : [], [ 'enabled' => 'yes' ] ) );
+		return [ 'ship_to_destination' => is_string( $destination ) ? $destination : null, 'other_gateway' => is_array( $gateway ) ? $gateway : null ];
+	}
+
+	private static function restore_checkout( array $before ): void {
+		if ( null === ( $before['ship_to_destination'] ?? null ) ) { delete_option( 'woocommerce_ship_to_destination' ); } else { update_option( 'woocommerce_ship_to_destination', $before['ship_to_destination'] ); }
+		if ( null === ( $before['other_gateway'] ?? null ) ) { delete_option( self::OTHER_GATEWAY_OPTION ); } else { update_option( self::OTHER_GATEWAY_OPTION, $before['other_gateway'] ); }
 	}
 
 	/** Set the payment method's run settings; returns its option as it was (null = never saved). */
@@ -442,6 +557,9 @@ final class PowEndToEndFixture {
 				'trashed'      => $found['trashed'],
 				'coupon_holds' => $coupon_id > 0 ? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key LIKE %s", $coupon_id, $wpdb->esc_like( '_coupon_held_' ) . '%' ) ) : null,
 				'stock'        => $stock,
+				// 0.5.0 (ticket 76): the bound account's profile now, against the seed's.
+				'account_profile' => self::account_profile( (int) $seed['account'] ),
+				'guest_orders'    => '' !== (string) getenv( 'POW_E2E_GUEST_EMAIL' ) ? count( wc_get_orders( [ 'limit' => -1, 'return' => 'ids', 'status' => array_keys( wc_get_order_statuses() ), 'billing_email' => (string) getenv( 'POW_E2E_GUEST_EMAIL' ) ] ) ) : null,
 			]
 		);
 		echo 'inspected visit ' . ( $visit ? $visit->id : 'none' ) . ': ' . count( $found['orders'] ) . ' order(s), ' . count( $found['trashed'] ) . " in the bin\n";
@@ -470,6 +588,10 @@ final class PowEndToEndFixture {
 		if ( isset( $seed['checkout'] ) && is_array( $seed['checkout'] ) && array_key_exists( 'gateway_before', $seed['checkout'] ) ) {
 			self::restore_gateway( is_array( $seed['checkout']['gateway_before'] ) ? $seed['checkout']['gateway_before'] : null );
 			echo "payment method settings put back\n";
+		}
+		if ( isset( $seed['checkout']['checkout_before'] ) && is_array( $seed['checkout']['checkout_before'] ) ) {
+			self::restore_checkout( $seed['checkout']['checkout_before'] );
+			echo "shipping destination and cheque method put back\n";
 		}
 		$coupon = (int) ( $seed['coupon']['id'] ?? 0 );
 		if ( $coupon > 0 && 'shop_coupon' === get_post_type( $coupon ) && ( $seed['coupon']['code'] ?? null ) === get_the_title( $coupon ) ) {
