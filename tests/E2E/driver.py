@@ -30,6 +30,7 @@ run directory, mode 700.
 import argparse
 import base64
 import copy
+import hashlib
 import html as htmllib
 import http.cookiejar
 import http.server
@@ -136,15 +137,42 @@ def path_for(version, flag):
     return 'checkout' if at_least(version, (0, 5, 0)) else 'review'
 
 
+def _policy(header):
+    """A Content-Security-Policy header as {directive: [sources]}."""
+    directives = {}
+    for part in (header or '').split(';'):
+        words = part.split()
+        if words:
+            directives[words[0].lower()] = words[1:]
+    return directives
+
+
+def _sha256(text):
+    return "'sha256-" + base64.b64encode(hashlib.sha256(text.encode('utf-8')).digest()).decode('ascii') + "'"
+
+
 def start_page_findings(status, headers, body, url):
-    """0.4.23 and later: a GET of the start link answers a page that posts itself back, never stored or indexed. [(check, ok, detail)]"""
+    """0.4.23 and later: a GET of the start link answers a page that posts itself back, never stored, transformed,
+    indexed or framed, whose policy runs nothing but the page's own inline script and style. [(check, ok, detail)]"""
     kind, _ = start_outcome(status, headers, body, url)
     cache = (headers.get('Cache-Control') or '').lower()
     robots = (headers.get('X-Robots-Tag') or '').lower()
+    policy = _policy(headers.get('Content-Security-Policy'))
+    scripts = re.findall(r'<script>(.*?)</script>', body, re.S)
+    styles = re.findall(r'<style>(.*?)</style>', body, re.S)
+    strict = (policy.get('default-src') == ["'none'"] and policy.get('form-action') == ["'self'"] and policy.get('frame-ancestors') == ["'none'"]
+              and policy.get('base-uri') == ["'none'"] and not any('unsafe' in source or source == '*' for sources in policy.values() for source in sources))
+    named = (bool(scripts) and all(_sha256(script) in policy.get('script-src', []) for script in scripts)
+             and all(_sha256(style) in policy.get('style-src', []) for style in styles)
+             and re.search(r'<script\s[^>]*>|\sstyle="|\son[a-z]+=', re.sub(r'<(script|style)>.*?</\1>', '', body, flags=re.S), re.I) is None)
     return [
         ('a_get_of_the_start_link_answers_a_page_that_posts_itself_back', kind == 'post', {'http': status, 'outcome': kind}),
         ('the_start_page_is_not_stored', 'no-store' in cache, {'cache_control': cache}),
         ('the_start_page_is_not_indexed', 'noindex' in robots, {'x_robots_tag': robots}),
+        ('the_start_page_is_not_transformed', 'no-transform' in cache, {'cache_control': cache}),
+        ('the_start_page_cannot_be_framed', (headers.get('X-Frame-Options') or '').upper() == 'DENY', {'x_frame_options': headers.get('X-Frame-Options')}),
+        ('the_start_page_policy_is_strict', strict, {'policy': headers.get('Content-Security-Policy')}),
+        ('the_start_page_policy_allows_its_own_script_and_style_by_hash', named, {'scripts': len(scripts), 'styles': len(styles)}),
     ]
 
 
@@ -177,11 +205,13 @@ def review_findings(page, labels, freight, priced_titles):
     methods = re.findall(r'<label class="pow-confirmation__rate"><input type="radio"[^>]*>\s*<span>(.*?)</span></label>', area, re.S)
     priced = [m for m in methods if 'Price-amount' in m or 'Price-currencySymbol' in m or re.search(r'\d[.,]\d{2}(?!\d)', _text(m))]
     titles = [_text(m) for m in methods]
+    update = re.search(r'<button type="submit" name="pow_delivery_action" value="review"[^>]*>([^<]*)</button>', area)
     findings += [
         ('review_has_no_estimate_row', 'Delivery estimate' not in area and 'pow-confirmation__estimate-note' not in area and rows == 1, {'summary_rows': rows}),
         ('review_method_list_has_no_amount', bool(methods) and not priced, {'methods': titles, 'priced': [_text(m) for m in priced]}),
         ('review_offers_the_priced_method_by_its_title', all(title in titles for title in priced_titles), {'methods': titles, 'expected': list(priced_titles)}),
         ('review_has_no_tax_sentence', re.search(r'\b(tax|vat)\b', _text(area), re.I) is None, {}),
+        ('review_update_control_is_neutral', update is not None and _text(update.group(1)) == 'Update delivery' and 'recalculat' not in area.lower(), {'shown': _text(update.group(1)) if update else None}),
     ]
     return findings
 
@@ -363,11 +393,15 @@ class Run:
                 how = 'POST'
         self.notes.append('start link redeemed by ' + how)
         self.must(kind == 'redeemed' and browser.logged_in(), 'start_link_redeems_and_signs_the_visit_in', method=how, http=status)
+        landing = urllib.parse.urljoin(start, headers.get('Location'))
         if scanner_proof:
             # Single use: a second POST, from a browser that never held the visit, is refused.
             again = Browser(url).request(start, b'', forms.URLENCODED)
             self.check(again[0] == 403, 'a_second_post_is_refused', http=again[0])
-        landing = urllib.parse.urljoin(start, headers.get('Location'))
+            # The browser that redeemed it, still in the visit, is sent to the landing page again (0.4.23).
+            repeat = browser.request(start, b'', forms.URLENCODED)
+            where = urllib.parse.urljoin(start, repeat[1].get('Location') or '')
+            self.check(repeat[0] in (302, 303) and where == landing, 'a_repeat_post_from_the_same_browser_lands_again', http=repeat[0], location=where, landing=landing)
         status, _, body, _ = browser.get(landing)
         self.check(status == 200 and re.search(r'<body[^>]*class="[^"]*\bpow-visit\b', body) is not None, 'landing_page_is_inside_the_visit', http=status)
 

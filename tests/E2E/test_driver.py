@@ -1,5 +1,7 @@
 """The driver's own decisions: request shape, start-link handling, the cart's exit, which path a release takes,
 the 0.4.23 review checks, and how a run that cannot finish is reported."""
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -140,13 +142,24 @@ class Versions(unittest.TestCase):
 
 
 START = BASE + '/punchout/start/' + 'a' * 40
-START_PAGE = ('<form method="post" action="' + START + '" id="pow-start-form"><button type="submit">Open the catalog</button></form>'
-              '<script>document.getElementById("pow-start-form").submit();</script>')
-START_HEADERS = {'Cache-Control': 'private, no-store', 'X-Robots-Tag': 'noindex, nofollow'}
+START_SCRIPT = "(function(){var form=document.getElementById('pow-start-form');form.submit();})();"
+START_STYLE = 'body{font-family:sans-serif}'
+
+
+def sha256(text):
+    return "'sha256-" + base64.b64encode(hashlib.sha256(text.encode('utf-8')).digest()).decode('ascii') + "'"
+
+
+START_PAGE = ('<style>' + START_STYLE + '</style><form method="post" action="' + START + '" id="pow-start-form" data-pow-start="auto"><button type="submit">Open the catalog</button></form>'
+              '<script>' + START_SCRIPT + '</script>')
+START_POLICY = ("default-src 'none'; script-src " + sha256(START_SCRIPT) + '; style-src ' + sha256(START_STYLE)
+                + "; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+START_HEADERS = {'Cache-Control': 'private, no-store, no-transform', 'X-Robots-Tag': 'noindex, nofollow', 'Content-Security-Policy': START_POLICY, 'X-Frame-Options': 'DENY'}
 
 
 class StartPage(unittest.TestCase):
-    """0.4.23: a GET of the start link answers a page that posts itself back, uncached and unindexed."""
+    """0.4.23: a GET of the start link answers a page that posts itself back, uncached, unindexed, unframed, and
+    allowed to run its own inline script only."""
 
     def findings(self, status, headers, body):
         return {name: ok for name, ok, _ in driver.start_page_findings(status, headers, body, START)}
@@ -156,6 +169,10 @@ class StartPage(unittest.TestCase):
             'a_get_of_the_start_link_answers_a_page_that_posts_itself_back': True,
             'the_start_page_is_not_stored': True,
             'the_start_page_is_not_indexed': True,
+            'the_start_page_is_not_transformed': True,
+            'the_start_page_cannot_be_framed': True,
+            'the_start_page_policy_is_strict': True,
+            'the_start_page_policy_allows_its_own_script_and_style_by_hash': True,
         })
 
     def test_a_redirecting_get_is_a_redeem_and_fails(self):
@@ -163,8 +180,20 @@ class StartPage(unittest.TestCase):
 
     def test_missing_headers_fail(self):
         found = self.findings(200, {}, START_PAGE)
-        self.assertFalse(found['the_start_page_is_not_stored'])
-        self.assertFalse(found['the_start_page_is_not_indexed'])
+        self.assertEqual(sorted(name for name, ok in found.items() if not ok), [
+            'the_start_page_cannot_be_framed', 'the_start_page_is_not_indexed', 'the_start_page_is_not_stored', 'the_start_page_is_not_transformed',
+            'the_start_page_policy_allows_its_own_script_and_style_by_hash', 'the_start_page_policy_is_strict',
+        ])
+
+    def test_a_loose_policy_fails(self):
+        for loose in [START_POLICY.replace(sha256(START_SCRIPT), "'unsafe-inline'"), START_POLICY.replace("default-src 'none'", "default-src *"),
+                      START_POLICY.replace("; frame-ancestors 'none'", ''), START_POLICY.replace("form-action 'self'", 'form-action *')]:
+            self.assertFalse(self.findings(200, dict(START_HEADERS, **{'Content-Security-Policy': loose}), START_PAGE)['the_start_page_policy_is_strict'], loose)
+
+    def test_a_script_or_style_the_policy_does_not_name_fails(self):
+        for page in [START_PAGE.replace('form.submit();', 'form.submit(); '), START_PAGE.replace('sans-serif', 'serif'), START_PAGE.replace('<button', '<button style="color:red"'),
+                     START_PAGE + '<script src="' + BASE + '/x.js"></script>', START_PAGE.replace('<button', '<button onclick="go()"')]:
+            self.assertFalse(self.findings(200, START_HEADERS, page)['the_start_page_policy_allows_its_own_script_and_style_by_hash'], page[:60])
 
 
 LABELS = {'submit': 'Send cart', 'items': 'Items on order', 'total': 'Order total'}
@@ -177,7 +206,8 @@ REVIEW = (
     '<fieldset><legend>Shipment 1</legend>\n'
     '<label class="pow-confirmation__rate"><input type="radio" name="rates[0]" value="free_shipping:1" checked> <span>Free shipping</span></label>\n'
     '<label class="pow-confirmation__rate"><input type="radio" name="rates[0]" value="flat_rate:9" > <span>' + PRICED + '</span></label>\n'
-    '</fieldset><p class="pow-confirmation__hint">The address and the delivery methods update as soon as you change a choice.</p></section>'
+    '</fieldset><button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary" formnovalidate data-busy="Updating delivery…">Update delivery</button>'
+    '<p class="pow-confirmation__hint">The address and the delivery methods update as soon as you change a choice.</p></section>'
     '<section class="pow-confirmation__section" aria-labelledby="pow-notes-title"><h2 id="pow-notes-title">Notes and attachment</h2>'
     '<textarea id="pow-delivery-notes" name="notes" rows="4" maxlength="2000"></textarea></section>'
     '<section class="pow-confirmation__section" aria-labelledby="pow-items-title"><h2 id="pow-items-title">Items on order</h2><table><tbody>'
@@ -201,7 +231,7 @@ class Review0423(unittest.TestCase):
         self.assertEqual(names, [
             'review_submit_label_is_the_setting', 'review_items_heading_is_the_setting', 'review_total_label_is_the_setting',
             'review_has_no_date_input', 'review_has_no_estimate_row', 'review_method_list_has_no_amount', 'review_offers_the_priced_method_by_its_title',
-            'review_has_no_tax_sentence',
+            'review_has_no_tax_sentence', 'review_update_control_is_neutral',
         ])
         self.assertEqual(self.failed(REVIEW), [])
 
@@ -225,6 +255,11 @@ class Review0423(unittest.TestCase):
     def test_a_page_without_a_method_list_cannot_prove_it_shows_no_amount(self):
         html = REVIEW.split('<fieldset>')[0] + REVIEW.split('</fieldset>')[1]
         self.assertIn('review_method_list_has_no_amount', self.failed(html))
+
+    def test_the_old_recalculate_wording_fails(self):
+        self.assertEqual(self.failed(REVIEW.replace('>Update delivery<', '>Recalculate delivery<')), ['review_update_control_is_neutral'])
+        self.assertEqual(self.failed(REVIEW.replace('data-busy="Updating delivery…"', 'data-busy="Recalculating…"')), ['review_update_control_is_neutral'])
+        self.assertEqual(self.failed(REVIEW.replace('value="review"', 'value="other"')), ['review_update_control_is_neutral'], 'A page without the control cannot prove its words')
 
     def test_any_tax_wording_fails(self):
         for sentence in ['<p class="pow-confirmation__hint">Amounts exclude tax.</p>', '<small class="tax_label">(ex. VAT)</small>']:

@@ -20,9 +20,12 @@
  *   its setup payloadID): the visit's status, whether its login still
  *   verifies, and the orders that name the visit. Writes them to
  *   POW_E2E_RESULT.
- * - retire: disables the run's connection, puts the review settings back as
- *   they were and removes the priced shipping method the seed added, so a
- *   later run starts clean. The run's rows (account, connection, products,
+ * - start_click: sets the start page's "Login link needs a click" setting to
+ *   POW_E2E_START_CLICK ('yes' or 'no') for one case of the browser run
+ *   (tests/E2E/browser.py); the seed records the setting as it was.
+ * - retire: disables the run's connection, puts the review settings and the
+ *   start page setting back as they were and removes the priced shipping
+ *   method the seed added, so a later run starts clean. The run's rows (account, connection, products,
  *   visit, order) stay for inspection.
  *
  * Every name is neutral and suffixed with a random run id.
@@ -215,6 +218,8 @@ final class PowEndToEndFixture {
 		$stored = is_array( $stored ) ? $stored : [];
 		$before = [];
 		foreach ( self::REVIEW_SETTINGS as $key => $value ) { $before[ $key ] = $stored[ $key ] ?? null; }
+		// Not changed by the seed; recorded so that retire can undo a start_click step.
+		$before['start_link_click'] = $stored['start_link_click'] ?? null;
 		$zone     = new WC_Shipping_Zone( 0 );
 		$instance = 0;
 		try {
@@ -238,7 +243,7 @@ final class PowEndToEndFixture {
 		$stored = get_option( POW\Settings::OPTION_KEY, [] );
 		$stored = is_array( $stored ) ? $stored : [];
 		foreach ( $before as $key => $value ) {
-			if ( ! array_key_exists( $key, self::REVIEW_SETTINGS ) ) { continue; }
+			if ( ! array_key_exists( $key, self::REVIEW_SETTINGS ) && 'start_link_click' !== $key ) { continue; }
 			if ( null === $value ) { unset( $stored[ $key ] ); } else { $stored[ $key ] = $value; }
 		}
 		update_option( POW\Settings::OPTION_KEY, $stored );
@@ -281,6 +286,17 @@ final class PowEndToEndFixture {
 		echo 'inspected visit ' . ( $visit ? $visit->id : 'none' ) . ': ' . count( $orders ) . " order(s)\n";
 	}
 
+	/** One case of the browser run: the start page waits for a press ('yes') or posts itself ('no'). Retire puts it back. */
+	public function start_click(): void {
+		$seed = self::read( self::path( 'POW_E2E_FIXTURE' ) );
+		if ( ! array_key_exists( 'start_link_click', (array) ( $seed['review']['settings_before'] ?? [] ) ) ) { throw new RuntimeException( 'This seed cannot put the start page setting back.' ); }
+		$stored = get_option( POW\Settings::OPTION_KEY, [] );
+		$stored = is_array( $stored ) ? $stored : [];
+		$stored['start_link_click'] = 'yes' === getenv( 'POW_E2E_START_CLICK' ) ? 'yes' : 'no';
+		update_option( POW\Settings::OPTION_KEY, $stored );
+		echo 'start page: ' . ( 'yes' === $stored['start_link_click'] ? 'waits for a press' : 'posts itself' ) . "\n";
+	}
+
 	public function retire(): void {
 		$seed = self::read( self::path( 'POW_E2E_FIXTURE' ) );
 		$id   = (int) $seed['connection']['id'];
@@ -288,7 +304,7 @@ final class PowEndToEndFixture {
 		echo 'connection ' . $id . ( $ok ? ' disabled' : ' left as it was' ) . "\n";
 		if ( isset( $seed['review']['settings_before'] ) && is_array( $seed['review']['settings_before'] ) ) {
 			self::restore_settings( $seed['review']['settings_before'] );
-			echo "review settings put back\n";
+			echo "review and start page settings put back\n";
 		}
 		$instance = (int) ( $seed['shipping']['instance_id'] ?? 0 );
 		$method   = $instance > 0 ? WC_Shipping_Zones::get_shipping_method( $instance ) : false;
@@ -302,5 +318,5 @@ final class PowEndToEndFixture {
 
 $step    = (string) getenv( 'POW_E2E_STEP' );
 $fixture = new PowEndToEndFixture();
-if ( ! in_array( $step, [ 'seed', 'inspect', 'retire' ], true ) ) { throw new RuntimeException( 'POW_E2E_STEP must be seed, inspect or retire.' ); }
+if ( ! in_array( $step, [ 'seed', 'inspect', 'start_click', 'retire' ], true ) ) { throw new RuntimeException( 'POW_E2E_STEP must be seed, inspect, start_click or retire.' ); }
 $fixture->{ $step }();
