@@ -9,12 +9,10 @@
 
 declare( strict_types = 1 );
 
-namespace POW\Checkout {
-	// Registration is recorded, not run: WordPress is not loaded here.
-	function add_filter( string $hook, callable $callback, int $priority = 10, int $accepted_args = 1 ): void { $GLOBALS['pow_payment_method_hooks'][ $hook ][] = [ $priority, $callback ]; }
-}
-
 namespace {
+	// Registration is recorded, not run: WordPress is not loaded here.
+	require_once dirname( __DIR__ ) . '/Support/checkout-hooks.php';
+
 	use PHPUnit\Framework\TestCase;
 	use POW\Checkout\Gateway;
 	use POW\Checkout\PaymentMethod;
@@ -100,8 +98,8 @@ namespace {
 		public function test_the_only_method_rule_runs_last(): void {
 			$method = $this->method( $this->visit() );
 			$method->register();
-			self::assertSame( [ [ PHP_INT_MAX, [ $method, 'available_gateways' ] ] ], $GLOBALS['pow_payment_method_hooks']['woocommerce_available_payment_gateways'] );
-			self::assertSame( [ [ 10, [ $method, 'add_gateway' ] ] ], $GLOBALS['pow_payment_method_hooks']['woocommerce_payment_gateways'] );
+			self::assertSame( [ [ PHP_INT_MAX, [ $method, 'available_gateways' ], 1 ] ], $GLOBALS['pow_payment_method_hooks']['woocommerce_available_payment_gateways'] );
+			self::assertSame( [ [ 10, [ $method, 'add_gateway' ], 1 ] ], $GLOBALS['pow_payment_method_hooks']['woocommerce_payment_gateways'] );
 		}
 
 		public function test_a_visit_that_is_not_live_gets_no_method_at_all(): void {

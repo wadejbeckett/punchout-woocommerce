@@ -14,7 +14,8 @@
  * wc_get_product, wc_price, wc_get_formatted_variation, wc_is_attribute_in_product_name,
  * the price-format getters (wc_get_price_decimal_separator,
  * wc_get_price_thousand_separator, get_woocommerce_price_format,
- * get_woocommerce_currency_symbol) and the classes WC_Order, WC_Order_Item_Product,
+ * get_woocommerce_currency_symbol), the checkout hold releases wc_release_stock_for_order and
+ * wc_release_coupons_for_order, wc_setcookie, and the classes WC_Order, WC_Order_Item_Product,
  * WC_Product, WC_Customer, WC_Payment_Gateway and the WC() container. The WordPress surface,
  * apply_filters and WP_Error included, belongs to Support/wp-stubs.php,
  * which loads first. Check the other file before adding anything to
@@ -27,8 +28,35 @@
 declare( strict_types = 1 );
 
 if ( ! function_exists( 'get_woocommerce_currency' ) ) {
+	/** The store's currency, or the one a test prices this request in (pow_test_currency, as a currency switcher would). */
 	function get_woocommerce_currency(): string { // phpcs:ignore
-		return 'ZAR';
+		return (string) ( $GLOBALS['pow_test_currency'] ?? 'ZAR' );
+	}
+}
+
+if ( ! function_exists( 'wc_release_stock_for_order' ) ) {
+	/**
+	 * Records the release in pow_test_steps ("release_stock:<order id>"). pow_test_release_errors['stock'] is thrown
+	 * instead, after the record, so a caller can be proved to survive a failing release.
+	 */
+	function wc_release_stock_for_order( $order ): void { // phpcs:ignore
+		$GLOBALS['pow_test_steps'][] = 'release_stock:' . ( $order instanceof WC_Order ? $order->get_id() : (int) $order );
+		if ( isset( $GLOBALS['pow_test_release_errors']['stock'] ) ) { throw $GLOBALS['pow_test_release_errors']['stock']; }
+	}
+}
+
+if ( ! function_exists( 'wc_release_coupons_for_order' ) ) {
+	/** As wc_release_stock_for_order(): "release_coupons:<order id>", and pow_test_release_errors['coupons']. */
+	function wc_release_coupons_for_order( $order, bool $save = true ): void { // phpcs:ignore
+		$GLOBALS['pow_test_steps'][] = 'release_coupons:' . ( $order instanceof WC_Order ? $order->get_id() : (int) $order );
+		if ( isset( $GLOBALS['pow_test_release_errors']['coupons'] ) ) { throw $GLOBALS['pow_test_release_errors']['coupons']; }
+	}
+}
+
+if ( ! function_exists( 'wc_setcookie' ) ) {
+	/** Records the cookie in pow_test_cookies_set: a CLI run sends no headers. */
+	function wc_setcookie( $name, $value, $expire = 0, $secure = false, $httponly = false ): void { // phpcs:ignore
+		$GLOBALS['pow_test_cookies_set'][] = [ 'name' => $name, 'value' => $value, 'expire' => $expire, 'secure' => $secure, 'httponly' => $httponly ];
 	}
 }
 

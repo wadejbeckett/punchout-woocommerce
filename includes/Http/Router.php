@@ -109,6 +109,13 @@ final class Router {
 			exit;
 		}
 
+		if ( '/punchout/sent' === $path && null !== $this->handoff ) {
+			// 0.5.0: the Sent state, where a Submit after the visit's return is sent. Theme-free, no form.
+			$this->harden_headers();
+			$this->handoff->sent();
+			exit;
+		}
+
 		if ( '/punchout/order' === $path ) {
 			// Priced option O2, not core (scope §3): answer cXML 450
 			// inside HTTP 200 so the buyer-side batch marks it cleanly.

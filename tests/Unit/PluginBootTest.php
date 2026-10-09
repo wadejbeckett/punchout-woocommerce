@@ -64,6 +64,19 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
+	 * 0.5.0: WooCommerce's unpaid-order clean-up runs from cron whatever the master switch says, so the rule that keeps
+	 * it off PunchOut orders (no cancelled e-mail to the store) is registered before the switch is consulted. The
+	 * visit-only checkout rules are not.
+	 */
+	public function test_master_off_boot_still_keeps_the_unpaid_order_clean_up_off_punchout_orders(): void {
+		$result = $this->booted();
+		self::assertTrue( in_array( 'woocommerce_cancel_unpaid_order', $result['filters'], true ) );
+		foreach ( [ 'woocommerce_cart_needs_payment', 'woocommerce_order_needs_payment', 'woocommerce_after_checkout_validation', 'wc_ajax_checkout' ] as $hook ) {
+			self::assertFalse( in_array( $hook, array_merge( $result['filters'], $result['actions'] ), true ), $hook . ' is a visit rule, gated on the switch' );
+		}
+	}
+
+	/**
 	 * A busy connection must not strand every connection after it.
 	 *
 	 * on_settings_updated() sweeps each connection inside its own named MySQL

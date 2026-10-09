@@ -16,16 +16,24 @@
  *   priced flat-rate method to the "rest of the world" shipping zone, so the
  *   driver can see the settings drawn and see that a connection without the
  *   delivery line shows no amount. It makes sure one page draws the classic
- *   cart ([woocommerce_cart]), whatever the shop's own cart page is. Writes
- *   the run's facts, including the generated shared secret and what it
- *   changed, to POW_E2E_FIXTURE (mode 600). Prints nothing secret.
+ *   cart ([woocommerce_cart]), whatever the shop's own cart page is. For the
+ *   0.5.0 order lifecycle (ticket 74) the products keep stock (100 each), so
+ *   checkout holds stock for the order; a third product has no SKU; and a
+ *   100% coupon with a usage limit (so checkout holds it for the order) makes
+ *   a zero-total cart. Writes the run's facts, including the generated shared
+ *   secret and what it changed, to POW_E2E_FIXTURE (mode 600). Prints nothing
+ *   secret.
  * - inspect: reads back what the run left (POW_E2E_PAYLOAD names the visit by
  *   its setup payloadID): the visit's status, whether its login still
- *   verifies, and the orders that name the visit. Writes them to
+ *   verifies, and the orders that name the visit, with what each still holds
+ *   (stock held for it, coupon holds) and whether WooCommerce's unpaid-order
+ *   clean-up would cancel it; the visit's orders in the bin; the coupon's
+ *   remaining holds; and each product's stock. Writes them to
  *   POW_E2E_RESULT.
  * - retire: disables the run's connection, puts the run's settings (the
  *   plugin's and the payment method's) back as they were and removes the
- *   priced shipping method the seed added, so a later run starts clean. The run's rows (account, connection, products,
+ *   priced shipping method the seed added and moves the run's coupon to the
+ *   bin, so a later run starts clean. The run's rows (account, connection, products,
  *   visit, order) stay for inspection.
  *
  * Every name is neutral and suffixed with a random run id.
@@ -62,6 +70,9 @@ final class PowEndToEndFixture {
 
 	/** The priced method the seed adds for the run, ex tax. */
 	private const PRICED_COST = '50.00';
+
+	/** Each product's stock. A Punchout Quote moves none of it. */
+	private const STOCK = 100;
 
 	private POW\Partners\Registry $registry;
 
@@ -123,10 +134,56 @@ final class PowEndToEndFixture {
 		$product->set_status( 'publish' );
 		$product->set_catalog_visibility( 'visible' );
 		$product->set_virtual( false );
+		// Stock kept, so checkout holds stock for the order it creates (0.5.0 releases that hold).
+		$product->set_manage_stock( true );
+		$product->set_stock_quantity( self::STOCK );
 		$id    = (int) $product->save();
 		$saved = $id > 0 ? wc_get_product( $id ) : null;
 		if ( ! $saved instanceof WC_Product || ! $saved->is_purchasable() || ! $saved->needs_shipping() ) { throw new RuntimeException( 'Fixture product ' . $sku . ' is not a purchasable physical product.' ); }
 		return $id;
+	}
+
+	/** A published 100% coupon with a usage limit: WooCommerce holds such a coupon for each checkout order. */
+	private static function coupon( string $code ): array {
+		$coupon = new WC_Coupon();
+		$coupon->set_code( $code );
+		$coupon->set_discount_type( 'percent' );
+		$coupon->set_amount( 100 );
+		$coupon->set_usage_limit( 1000 );
+		$coupon->set_status( 'publish' );
+		$id = (int) $coupon->save();
+		if ( $id <= 0 ) { throw new RuntimeException( 'The run coupon could not be created.' ); }
+		return [ 'id' => $id, 'code' => $code ];
+	}
+
+	/** One order as the second leg reads it: lines, what it still holds, and whether WooCommerce would auto-cancel it. */
+	private static function order_facts( WC_Order $order ): array {
+		global $wpdb;
+		$lines = [];
+		foreach ( $order->get_items() as $item ) {
+			$product = $item->get_product();
+			$lines[] = [ 'sku' => $product ? $product->get_sku() : '', 'qty' => $item->get_quantity(), 'total' => $item->get_total() ];
+		}
+		$held = 0;
+		foreach ( [ '_coupon_held_keys', '_coupon_held_keys_for_users' ] as $key ) {
+			$value = $order->get_meta( $key );
+			$held += is_array( $value ) ? count( $value ) : ( '' !== (string) $value ? 1 : 0 );
+		}
+		$created_via = in_array( $order->get_created_via(), [ 'checkout', 'store-api' ], true );
+		return [
+			'id'             => $order->get_id(),
+			'status'         => $order->get_status(),
+			'customer'       => $order->get_customer_id(),
+			'payment_method' => $order->get_payment_method(),
+			'total'          => (string) $order->get_total(),
+			'lines'          => $lines,
+			'buyer_cookie'   => (string) $order->get_meta( POW\Orders\QuoteOrder::META_BUYER_COOKIE ),
+			'customer_note'  => $order->get_customer_note(),
+			'reserved_stock' => (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}wc_reserved_stock WHERE order_id = %d", $order->get_id() ) ),
+			'coupon_holds'   => $held,
+			// WooCommerce's own question, asked as its unpaid-order clean-up asks it.
+			'auto_cancel'    => (bool) apply_filters( 'woocommerce_cancel_unpaid_order', $created_via, $order ),
+		];
 	}
 
 	public function seed(): void {
@@ -175,6 +232,12 @@ final class PowEndToEndFixture {
 			$products[ $sku ] = [ 'id' => self::product( $sku, 'End-to-end ' . $label . ' ' . $run, $price ), 'price' => $price ];
 		}
 
+		// 0.5.0 order lifecycle: a product without a SKU (refused before any order exists) and a 100% coupon with a
+		// usage limit (a zero-total cart, and a coupon checkout holds for the order).
+		$skuless_name = 'End-to-end no code ' . $run;
+		$skuless      = [ 'id' => self::product( '', $skuless_name, '7.00' ), 'name' => $skuless_name ];
+		$coupon       = self::coupon( 'e2e-free-' . $run );
+
 		$checkout = (int) wc_get_page_id( 'checkout' );
 		$classic_cart = self::classic_cart_page();
 		[ $settings_before, $shipping ] = self::configure_review( $run );
@@ -199,6 +262,9 @@ final class PowEndToEndFixture {
 				],
 				'secret'       => $secret,
 				'products'     => $products,
+				'skuless'      => $skuless,
+				'coupon'       => $coupon,
+				'stock'        => self::STOCK,
 				'ship_to'      => $address,
 				'pages'        => [ 'shop' => (int) wc_get_page_id( 'shop' ), 'cart' => (int) wc_get_page_id( 'cart' ), 'checkout' => $checkout, 'classic_cart' => $classic_cart ],
 				'checkout'     => [
@@ -285,40 +351,38 @@ final class PowEndToEndFixture {
 	}
 
 	public function inspect(): void {
+		global $wpdb;
 		$seed    = self::read( self::path( 'POW_E2E_FIXTURE' ) );
 		$payload = (string) getenv( 'POW_E2E_PAYLOAD' );
 		$visit   = POW\Plugin::instance()->sessions()?->find_by_payload( (int) $seed['connection']['id'], $payload );
-		$orders  = [];
+		$found   = [ 'orders' => [], 'trashed' => [] ];
 		if ( $visit ) {
-			// Every registered status: 'any' leaves out custom ones such as the Punchout Quote.
-			$ids = wc_get_orders( [ 'limit' => -1, 'return' => 'ids', 'status' => array_keys( wc_get_order_statuses() ), 'meta_key' => POW\Orders\QuoteOrder::META_SESSION_ID, 'meta_value' => (string) $visit->id ] );
-			foreach ( $ids as $order_id ) {
-				$order = wc_get_order( $order_id );
-				if ( ! $order ) { continue; }
-				$lines = [];
-				foreach ( $order->get_items() as $item ) {
-					$product = $item->get_product();
-					$lines[] = [ 'sku' => $product ? $product->get_sku() : '', 'qty' => $item->get_quantity(), 'total' => $item->get_total() ];
+			// Every registered status: 'any' leaves out custom ones such as the Punchout Quote. The bin is asked apart.
+			foreach ( [ 'orders' => array_keys( wc_get_order_statuses() ), 'trashed' => [ 'trash' ] ] as $list => $statuses ) {
+				$ids = wc_get_orders( [ 'limit' => -1, 'return' => 'ids', 'status' => $statuses, 'meta_key' => POW\Orders\QuoteOrder::META_SESSION_ID, 'meta_value' => (string) $visit->id ] );
+				foreach ( $ids as $order_id ) {
+					$order = wc_get_order( $order_id );
+					if ( $order ) { $found[ $list ][] = self::order_facts( $order ); }
 				}
-				$orders[] = [
-					'id'             => $order->get_id(),
-					'status'         => $order->get_status(),
-					'customer'       => $order->get_customer_id(),
-					'payment_method' => $order->get_payment_method(),
-					'lines'          => $lines,
-					'buyer_cookie'   => (string) $order->get_meta( POW\Orders\QuoteOrder::META_BUYER_COOKIE ),
-					'customer_note'  => $order->get_customer_note(),
-				];
 			}
+		}
+		$coupon_id = (int) ( $seed['coupon']['id'] ?? 0 );
+		$stock     = [];
+		foreach ( (array) ( $seed['products'] ?? [] ) as $sku => $product ) {
+			$saved         = wc_get_product( (int) $product['id'] );
+			$stock[ $sku ] = $saved ? $saved->get_stock_quantity() : null;
 		}
 		self::write(
 			self::path( 'POW_E2E_RESULT' ),
 			[
-				'visit'  => $visit ? [ 'id' => $visit->id, 'status' => $visit->status, 'order_id' => $visit->order_id, 'login_live' => '' !== $visit->wp_session_token && WP_Session_Tokens::get_instance( $visit->user_id )->verify( $visit->wp_session_token ) ] : null,
-				'orders' => $orders,
+				'visit'        => $visit ? [ 'id' => $visit->id, 'status' => $visit->status, 'order_id' => $visit->order_id, 'login_live' => '' !== $visit->wp_session_token && WP_Session_Tokens::get_instance( $visit->user_id )->verify( $visit->wp_session_token ) ] : null,
+				'orders'       => $found['orders'],
+				'trashed'      => $found['trashed'],
+				'coupon_holds' => $coupon_id > 0 ? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key LIKE %s", $coupon_id, $wpdb->esc_like( '_coupon_held_' ) . '%' ) ) : null,
+				'stock'        => $stock,
 			]
 		);
-		echo 'inspected visit ' . ( $visit ? $visit->id : 'none' ) . ': ' . count( $orders ) . " order(s)\n";
+		echo 'inspected visit ' . ( $visit ? $visit->id : 'none' ) . ': ' . count( $found['orders'] ) . ' order(s), ' . count( $found['trashed'] ) . " in the bin\n";
 	}
 
 	public function retire(): void {
@@ -333,6 +397,10 @@ final class PowEndToEndFixture {
 		if ( isset( $seed['checkout'] ) && is_array( $seed['checkout'] ) && array_key_exists( 'gateway_before', $seed['checkout'] ) ) {
 			self::restore_gateway( is_array( $seed['checkout']['gateway_before'] ) ? $seed['checkout']['gateway_before'] : null );
 			echo "payment method settings put back\n";
+		}
+		$coupon = (int) ( $seed['coupon']['id'] ?? 0 );
+		if ( $coupon > 0 && 'shop_coupon' === get_post_type( $coupon ) && ( $seed['coupon']['code'] ?? null ) === get_the_title( $coupon ) ) {
+			echo 'coupon ' . $coupon . ( wp_trash_post( $coupon ) ? ' moved to the bin' : ' left as it was' ) . "\n";
 		}
 		$instance = (int) ( $seed['shipping']['instance_id'] ?? 0 );
 		$method   = $instance > 0 ? WC_Shipping_Zones::get_shipping_method( $instance ) : false;
