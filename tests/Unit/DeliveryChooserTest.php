@@ -206,6 +206,21 @@ final class DeliveryChooserTest extends TestCase {
 		self::assertStringNotContainsString( 'tax', strtolower( $html ) );
 		self::assertStringNotContainsString( 'tax', strtolower( $this->render( self::two_items() + [ 'delivery_line' => false ], [ 'tax_note' => true ] ) ) );
 	}
+	/** 0.4.23: with no delivery cost sent there is nothing to recalculate, so the review's update control and its busy text say "Update delivery"; with the cost sent they are unchanged. */
+	public function test_the_update_control_is_neutral_when_the_connection_sends_no_delivery_cost(): void {
+		$button = static function ( string $html ): array {
+			self::assertSame( 1, preg_match( '#<button type="submit" name="pow_delivery_action" value="review"[^>]*data-busy="([^"]*)"[^>]*>([^<]*)</button>#', $html, $m ), 'One update control' );
+			return [ $m[2], $m[1] ];
+		};
+		foreach ( [ self::physical( [ 'delivery' => [ 'status' => 'disabled', 'amount_cents' => 5000, 'emit' => false ] ] + self::two_items() ), self::two_items() + [ 'delivery_line' => false ], self::physical( self::two_items() + [ 'delivery_line' => false ] ) ] as $off ) {
+			$html = $this->render( $off );
+			self::assertSame( [ 'Update delivery', 'Updating delivery…' ], $button( $html ) );
+			self::assertStringNotContainsString( 'recalculat', strtolower( $html ) );
+		}
+		$on = $this->render( self::physical( self::two_items() + [ 'delivery_line' => true ] ) );
+		self::assertSame( [ 'Recalculate delivery', 'Updating…' ], $button( $on ) );
+		self::assertSame( [ 'Recalculate delivery', 'Updating…' ], $button( $this->render( self::physical( self::two_items() ) ) ), 'A view without the flag keeps the old words' );
+	}
 	/** 0.4.23: the tax sentence is off by default ("none by default"); the review names tax nowhere. */
 	public function test_freight_on_keeps_the_estimate_row_and_names_no_tax_by_default(): void {
 		$money = static fn( int $cents ): string => \POW\Addresses\ReviewFormat::money( $cents, 'ZAR' );

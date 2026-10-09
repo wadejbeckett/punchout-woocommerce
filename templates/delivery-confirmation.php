@@ -23,7 +23,8 @@ $estimate_note = isset( $estimate_note ) && is_string( $estimate_note ) ? $estim
 $labels = \POW\Addresses\ReviewLabels::complete( $labels ?? null );
 // 0.4.23: the one tax sentence is the site's choice (setting "Review tax sentence"), off by default; only a real true shows it.
 $tax_note = isset( $tax_note ) && true === $tax_note;
-// 0.4.23: a connection that sends no delivery cost shows no estimate and no tax sentence; the total is the merchandise.
+// 0.4.23: a connection that sends no delivery cost shows no estimate and no tax sentence; the total is the merchandise,
+// and its update control says "Update delivery" (there is no cost to recalculate).
 $freight_off = ( array_key_exists( 'delivery_line', $view ) && false === $view['delivery_line'] ) || ( $delivery && 'disabled' === ( $delivery['status'] ?? null ) );
 if ( $document ) : ?>
 <!doctype html><html <?php language_attributes(); ?>><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title><?php echo esc_html__( 'Review your cart', 'punchout-woocommerce' ); ?> — <?php echo esc_html( $shop_name ); ?></title></head><body>
@@ -78,7 +79,7 @@ if ( $document ) : ?>
 			<?php if ( ! empty( $view['requires_unknown_acknowledgement'] ) ) : ?>
 			<label class="pow-confirmation__rate"><input type="checkbox" name="acknowledge_unknown" value="1" required><span><?php echo esc_html__( 'Delivery will be quoted separately. I understand that no delivery charge is included in this transfer.', 'punchout-woocommerce' ); ?></span></label>
 			<?php endif; ?>
-			<button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary<?php echo esc_attr( $button_extra ); ?>" formnovalidate data-busy="<?php echo esc_attr( __( 'Updating…', 'punchout-woocommerce' ) ); ?>"><?php echo esc_html__( 'Recalculate delivery', 'punchout-woocommerce' ); ?></button>
+			<button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary<?php echo esc_attr( $button_extra ); ?>" formnovalidate data-busy="<?php echo esc_attr( $freight_off ? __( 'Updating delivery…', 'punchout-woocommerce' ) : __( 'Updating…', 'punchout-woocommerce' ) ); ?>"><?php echo esc_html( $freight_off ? __( 'Update delivery', 'punchout-woocommerce' ) : __( 'Recalculate delivery', 'punchout-woocommerce' ) ); ?></button>
 			<p class="pow-confirmation__hint"><?php echo esc_html( $freight_off ? __( 'The address and the delivery methods update as soon as you change a choice.', 'punchout-woocommerce' ) : __( 'The address and the delivery estimate update as soon as you change a choice.', 'punchout-woocommerce' ) ); ?></p>
 		</section>
 		<section class="pow-confirmation__section" aria-labelledby="pow-notes-title"><h2 id="pow-notes-title"><?php echo esc_html__( 'Notes and attachment', 'punchout-woocommerce' ); ?></h2>
