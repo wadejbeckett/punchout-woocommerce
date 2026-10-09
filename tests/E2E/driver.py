@@ -964,7 +964,10 @@ class Run:
         expected = {
             'buyer_cookie': visit['cookie'], 'buyer': connection['buyer'], 'supplier': connection['supplier'], 'deployment_mode': connection['deployment_mode'],
             'currency': seed['currency'], 'shared_secret': seed['secret'], 'lines': {sku: {'qty': 1, 'unit': '0.00', 'aux': '%d|0' % product['id']}},
-            'freight': None, 'freight_sku': connection['freight_supplier_part_id'], 'ship_to_contains': None, 'notes': None,
+            # 0.5.0 (ticket 75): with Send delivery cost on, the order's shipping line is the freight line, here free
+            # shipping at 0.00; off, none.
+            'freight': '0.00' if connection['emit_delivery_line'] else None,
+            'freight_sku': connection['freight_supplier_part_id'], 'ship_to_contains': None, 'notes': None,
         }
         for check in poom.check(xml, expected, capture={'field': field, 'content_type': posted['content_type']}):
             self.check(check['ok'], label + ': cxml ' + check['check'], **({} if check['ok'] else check['detail']))
@@ -975,8 +978,12 @@ class Run:
         self.check(all(o['reserved_stock'] == 0 and o['coupon_holds'] == 0 and not o['auto_cancel'] for o in orders) and result['coupon_holds'] == 0, label + ': stock_and_coupon_holds_released', orders=orders, coupon_holds=result['coupon_holds'])
         if orders:
             instructions = [e.text or '' for e in poom.parse_xml(xml).iter('Extrinsic') if e.get('name') == 'DeliveryInstructions']
-            want = cleaned_note(orders[0]['customer_note'])
-            self.check(bool(instructions) and all(i == want for i in instructions) and len(want) == 2000 and '\x01' not in want, label + ': the_note_reaches_the_cxml_cleaned_and_capped', got=[len(i) for i in instructions], want=len(want))
+            # 0.5.0 (ticket 75): the note shares DeliveryInstructions with the estimate sentence (only with a freight
+            # line) and the order details, and only the note is shortened so that the whole stays within 2,000.
+            lead = seed['estimate_note'] if connection['emit_delivery_line'] else ''
+            details = list(seed.get('instructions_expected') or [])
+            fits = [instructions_fit(i, lead, orders[0]['customer_note'], details) for i in instructions]
+            self.check(bool(fits) and all(ok and detail['shortened'] for ok, detail in fits), label + ': the_note_reaches_the_cxml_cleaned_and_capped', got=[detail for _, detail in fits], lead=bool(lead), details=details)
         self.quote_orders += [o['id'] for o in orders]
         self.quiet_orders += [t['id'] for t in result['trashed']]
 
