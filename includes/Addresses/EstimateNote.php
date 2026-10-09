@@ -28,11 +28,29 @@ final class EstimateNote {
 		return trim( $note );
 	}
 
-	/** The buyer's notes with the estimate note first; either part may be blank. */
-	public static function compose( string $note, string $buyer_notes ): string {
-		$note = trim( $note ); $buyer_notes = trim( $buyer_notes );
-		if ( '' === $note ) { return $buyer_notes; }
-		return '' === $buyer_notes ? $note : $note . "\n" . $buyer_notes;
+	/**
+	 * The DeliveryInstructions text: the lead (the "Deliver to" line), then the estimate note, then the buyer's notes,
+	 * within $limit characters (the builder refuses longer text). Only the buyer's notes are ever shortened.
+	 */
+	public static function compose( string $note, string $buyer_notes, string $lead = '', int $limit = 2000 ): string {
+		$head = implode( "\n", array_values( array_filter( [ trim( $lead ), trim( $note ) ], static fn( string $part ): bool => '' !== $part ) ) );
+		$buyer_notes = trim( $buyer_notes );
+		if ( '' === $buyer_notes ) { return self::cut( $head, $limit ); }
+		if ( '' === $head ) { return self::cut( $buyer_notes, $limit ); }
+		$room = $limit - mb_strlen( $head ) - 1;
+		return $room < 1 ? self::cut( $head, $limit ) : $head . "\n" . self::cut( $buyer_notes, $room );
+	}
+
+	/** "Deliver to: …" on one line from a review destination; blank when there is no address. */
+	public static function deliver_to( mixed $destination ): string {
+		if ( ! is_array( $destination ) || ! is_array( $destination['address'] ?? null ) ) { return ''; }
+		$lines = array_values( array_filter( array_map( static fn( $line ): string => trim( (string) $line ), ReviewFormat::address_lines( $destination['address'] ) ), static fn( string $line ): bool => '' !== $line ) );
+		if ( [] === $lines ) { return ''; }
+		return ( function_exists( '__' ) ? __( 'Deliver to:', 'punchout-woocommerce' ) : 'Deliver to:' ) . ' ' . implode( ', ', $lines );
+	}
+
+	private static function cut( string $text, int $limit ): string {
+		return mb_strlen( $text ) <= $limit ? $text : mb_substr( $text, 0, max( 0, $limit - 1 ) ) . '…';
 	}
 
 	/** The freight line's description with the note appended, within the wire limit. */
