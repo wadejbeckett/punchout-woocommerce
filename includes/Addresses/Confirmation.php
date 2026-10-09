@@ -200,6 +200,8 @@ final class Confirmation implements ReturnConfirmation {
 			$physical = false;
 			foreach ( WC()->cart->get_cart() as $line ) { if ( ! isset( $line['data'] ) || ! is_callable( [ $line['data'], 'needs_shipping' ] ) ) { throw new \DomainException(); } if ( $line['data']->needs_shipping() ) { $physical = true; } }
 			$view = self::empty_view(); $view['choices'] = $choices; $view['notes'] = $notes;
+			// 0.4.23: whether this connection sends the delivery line, for every cart (a virtual one has no 'disabled' status to say so); the page leaves the estimate and the tax sentence out when it does not.
+			$view['delivery_line'] = (bool) $company->emit_delivery_line;
 			$choice = null;
 			if ( $physical ) {
 				if ( array_key_exists( 'provider', $input ) || array_key_exists( 'key', $input ) ) {

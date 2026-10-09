@@ -375,6 +375,16 @@ final class DeliveryConfirmationTest extends TestCase {
 	}
 
 	private static function day(int $days,string $zone='UTC'):string{return (new \DateTimeImmutable('today',new \DateTimeZone($zone)))->modify('+'.$days.' days')->format('Y-m-d');}
+	/** 0.4.23: the view says whether the connection sends the delivery line, for every cart, so the page can leave the estimate out. */
+	public function test_the_view_carries_the_connections_delivery_line_flag():void{
+		self::assertTrue($this->preview()['delivery_line']);
+		$this->s->registry->partner=Partner::from_row(array_replace(get_object_vars($this->s->registry->partner),['emit_delivery_line'=>false]));
+		self::assertFalse($this->preview()['delivery_line']);
+		$this->s->cart->cart_contents['line']['data']->physical=false;
+		$v=$this->preview();
+		self::assertSame('not_required',$v['delivery']['status']);
+		self::assertFalse($v['delivery_line'],'A virtual cart too');
+	}
 	/** 0.4.23: the review offers no preferred date of its own; a delivery date belongs to the shop's checkout. */
 	public function test_the_review_offers_no_preferred_date():void{
 		$v=$this->preview();

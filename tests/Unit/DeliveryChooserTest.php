@@ -186,6 +186,18 @@ final class DeliveryChooserTest extends TestCase {
 		$html = $this->render( self::physical( [ 'delivery' => [ 'status' => 'disabled', 'amount_cents' => null, 'emit' => false ] ] + self::two_items() ) );
 		self::assertStringNotContainsString( 'estimate', strtolower( $html ) );
 	}
+	/** The connection's own flag decides, so a virtual-only cart on a connection that sends no delivery line shows no estimate row or tax sentence either. */
+	public function test_a_connection_without_the_delivery_line_shows_only_the_merchandise_total_for_any_cart(): void {
+		$money = static fn( int $cents ): string => \POW\Addresses\ReviewFormat::money( $cents, 'ZAR' );
+		$html = $this->render( self::two_items() + [ 'delivery_line' => false ] );
+		self::assertStringNotContainsString( 'Delivery estimate', $html );
+		self::assertStringNotContainsString( 'tax', strtolower( $html ) );
+		self::assertStringContainsString( '<dl><dt class="pow-confirmation__total">Total</dt><dd class="pow-confirmation__total">' . $money( 161986 ) . '</dd></dl>', $html );
+		// The same virtual cart on a connection that sends the line keeps the full summary.
+		$html = $this->render( self::two_items() + [ 'delivery_line' => true ] );
+		self::assertStringContainsString( '<dt>Delivery estimate</dt><dd>Not included</dd>', $html );
+		self::assertStringContainsString( 'Amounts exclude tax.', $html );
+	}
 	public function test_freight_on_keeps_the_estimate_row_and_one_tax_sentence(): void {
 		$money = static fn( int $cents ): string => \POW\Addresses\ReviewFormat::money( $cents, 'ZAR' );
 		$on = self::physical( [ 'merchandise_total_cents' => 161986, 'total_cents' => 166986, 'items' => self::two_items()['items'] ] );
