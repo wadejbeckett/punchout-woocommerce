@@ -11,6 +11,8 @@ declare( strict_types = 1 );
 namespace POW\Checkout;
 
 use POW\Audit\Log;
+use POW\Http\StatePage;
+use POW\Orders\QuoteOrder;
 use POW\Sessions\Session;
 use POW\Sessions\Store;
 use POW\Support\Transport;
@@ -32,8 +34,11 @@ defined( 'ABSPATH' ) || exit;
  * Anything else gets a short page with no form, so a refresh, a back button or a second tab never posts the cart
  * twice.
  *
- * The Sent state (GET /punchout/sent) is where a Submit that arrives after the visit has returned is sent: a
- * theme-free page with the `pow-state` classes and no form (0.5.0, ticket 74).
+ * The Sent state is where a Submit that arrives after the visit has returned is sent (0.5.0, ticket 74): the site's
+ * state page when one is chosen (Http\StatePage, ticket 77), else the theme-free GET /punchout/sent, with the
+ * `pow-state` classes and no form. With a state page chosen, a handoff that cannot be served sends the browser there
+ * too (spent_target()): Sent when that order's page was served, Not sent when the order's visit returned with it but
+ * its page never reached a browser, else Session ended.
  */
 final class Handoff {
 
@@ -47,6 +52,9 @@ final class Handoff {
 	private const MARKER_TTL = 86400;
 
 	private const PREFIX = 'pow_checkout_handoff_';
+
+	/** Names the mark a served page leaves for its order (a hash of the order key), for as long as the marker cookie. */
+	private const SERVED_PREFIX = 'pow_checkout_handoff_served_';
 
 	public function __construct( private Store $sessions, private ?Log $audit = null ) {}
 
@@ -103,6 +111,11 @@ final class Handoff {
 	 * served only once), else the Sent state.
 	 */
 	public static function after_return( Session $returned, string $login_token ): string {
+		return self::kept_url( $returned, $login_token ) ?? self::sent_url();
+	}
+
+	/** The handoff of the order a returned visit sent, while its page is still kept for this login; else null. */
+	public static function kept_url( Session $returned, string $login_token ): ?string {
 		try {
 			$order = $returned->order_id > 0 && '' !== $login_token && hash_equals( $returned->wp_session_token, $login_token ) ? wc_get_order( $returned->order_id ) : null;
 			$key   = $order instanceof \WC_Order ? (string) $order->get_order_key() : '';
@@ -110,12 +123,41 @@ final class Handoff {
 		} catch ( \Throwable $error ) {
 			// The Sent state carries nothing a failed lookup could expose.
 		}
-		return self::sent_url();
+		return null;
 	}
 
-	/** The Sent state: no form, nothing posted. */
+	/** The Sent state: the chosen state page, else the theme-free /punchout/sent. No form, nothing posted. */
 	public static function sent_url(): string {
-		return Transport::supplier_url( home_url( '/punchout/sent' ) );
+		return StatePage::link( StatePage::SENT ) ?? Transport::supplier_url( home_url( '/punchout/sent' ) );
+	}
+
+	/** The transient marking that this order's page has been served. Only a hash of the order key names it. */
+	private static function served_key( string $order_key ): string {
+		return self::SERVED_PREFIX . hash( 'sha256', 'pow-checkout-handoff-served|' . $order_key );
+	}
+
+	/**
+	 * Where the state page sends a browser whose handoff cannot be served, or null without a state page (the plain
+	 * no-form page answers): Sent when this order's page has been served (a refresh, Back, a second tab); Not sent
+	 * when the order (named by its id and key) is the one its visit returned with, but its page never reached a
+	 * browser; Session ended for anything else, including a lookup that fails.
+	 */
+	public function spent_target( int $order_id, string $order_key ): ?string {
+		$page = StatePage::for_site();
+		if ( 0 === $page->page_id() ) { return null; }
+		$state = StatePage::ENDED;
+		try {
+			if ( '' !== $order_key && false !== get_transient( self::served_key( $order_key ) ) ) {
+				$state = StatePage::SENT;
+			} elseif ( $order_id > 0 && '' !== $order_key ) {
+				$order = wc_get_order( $order_id );
+				$visit = $order instanceof \WC_Order && hash_equals( (string) $order->get_order_key(), $order_key ) ? $this->sessions->find( (int) $order->get_meta( QuoteOrder::META_SESSION_ID ) ) : null;
+				if ( null !== $visit && Session::RETURNED === $visit->status && $visit->order_id === $order_id ) { $state = StatePage::NOT_SENT; }
+			}
+		} catch ( \Throwable $error ) {
+			$state = StatePage::ENDED;
+		}
+		return $page->url( $state );
 	}
 
 	/** The marker's value for a visit: its id and a key over it. */
@@ -165,11 +207,21 @@ final class Handoff {
 			$visit = null;
 		}
 		if ( null === $kept || null === $visit || Session::RETURNED !== $visit->status || '' === $visit->wp_session_token || ! hash_equals( $visit->wp_session_token, $login_token ) || $visit->order_id !== $order_id ) {
+			$target = $this->spent_target( $order_id, $order_key );
+			if ( null !== $target ) {
+				wp_safe_redirect( $target, 303 );
+				return;
+			}
 			$this->no_form_page( 200 );
 			return;
 		}
 
 		wp_clear_auth_cookie();
+		try {
+			set_transient( self::served_key( $order_key ), 1, self::MARKER_TTL );
+		} catch ( \Throwable $error ) {
+			// The mark only words a later state page; the cart is posted either way.
+		}
 		if ( function_exists( 'wc_setcookie' ) ) {
 			wc_setcookie( self::SENT_MARKER, self::marker( $visit->id ), time() + self::MARKER_TTL, is_ssl(), true );
 		}

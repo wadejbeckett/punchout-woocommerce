@@ -333,6 +333,68 @@ namespace {
 			self::assertFalse( POW\Addresses\ReviewChrome::is_review_request() );
 			self::assertStringContainsString( 'class="pow-return-form"', $this->surface->shortcode(), 'Every other page keeps the button' );
 		}
+		/** 0.5.0 (ticket 77): the cart as WooCommerce holds it, with $lines lines. */
+		private function cart( int $lines ): void {
+			$GLOBALS['pow_test_wc'] = new POW_Test_WC();
+			$GLOBALS['pow_test_wc']->cart = new class( $lines ) { public function __construct( private int $lines ) {} public function get_cart(): array { return array_fill( 0, $this->lines, [ 'quantity' => 1 ] ); } };
+		}
+		private function with_leave( array $settings, callable $test ): void {
+			$saved = [ $GLOBALS['pow_test_wc'] ?? null, $_GET ];
+			$GLOBALS['pow_test_options'][ POW\Settings::OPTION_KEY ] = $settings;
+			( new ReflectionProperty( $this->plugin, 'settings' ) )->setValue( $this->plugin, new POW\Settings() );
+			try { $test(); } finally { [ $GLOBALS['pow_test_wc'], $_GET ] = $saved; }
+		}
+		public function test_the_cancel_control_is_unchanged_while_asking_first_is_off(): void {
+			$this->with_leave( [], function (): void {
+				$this->cart( 2 );
+				$html = $this->surface->abandon_shortcode( [ 'question' => 'Leave?' ] );
+				self::assertStringContainsString( 'class="pow-abandon-form"', $html );
+				self::assertStringNotContainsString( '<dialog', $html );
+				self::assertStringNotContainsString( 'data-pow-leave', $html );
+				self::assertFalse( in_array( 'pow-leave-confirmation', $GLOBALS['pow_blocks_scripts']->enqueued, true ), 'No script' );
+			} );
+		}
+		public function test_with_items_in_the_cart_cancel_and_return_asks_first_in_a_dialog(): void {
+			$this->with_leave( [ 'leave_confirmation' => 'yes', 'abandon_button_label' => 'Cancel and return', 'leave_confirm_label' => 'Return without sending', 'leave_stay_label' => 'Keep shopping' ], function (): void {
+				$this->cart( 1 );
+				$html = $this->surface->abandon_shortcode( [ 'question' => 'Return without <b>sending</b>?' ] );
+				self::assertSame( 1, preg_match( '#<form method="post" action="https://shop\.example\.test/punchout/return" class="pow-abandon-form" data-pow-leave="(pow-leave-\d+)">#', $html, $form ), 'The control names its dialog' );
+				self::assertStringContainsString( '<dialog id="' . $form[1] . '" class="pow-leave" aria-labelledby="' . $form[1] . '-question">', $html, 'Closed until asked' );
+				self::assertStringContainsString( '<p class="pow-leave__question" id="' . $form[1] . '-question">Return without &lt;b&gt;sending&lt;/b&gt;?</p>', $html, 'The question is the escaped attribute' );
+				self::assertStringContainsString( '<input type="hidden" name="pow_leave" value="confirmed" />', $html, 'Only the dialog\'s own post carries the answer' );
+				self::assertSame( 1, substr_count( $html, 'value="confirmed"' ) );
+				self::assertSame( 1, preg_match( '#<button type="submit" class="pow-leave__confirm">\s*Return without sending\s*</button>#', $html ) );
+				self::assertSame( 1, preg_match( '#<button type="submit" formmethod="dialog" formnovalidate class="pow-leave__stay" autofocus>\s*Keep shopping\s*</button>#', $html ), 'Keep shopping closes the dialog without a script, and has the focus: the safe answer is the first one' );
+				self::assertSame( 2, substr_count( $html, 'name="pow_nonce" value="fixture-pow_return"' ) );
+				self::assertTrue( in_array( 'pow-leave-confirmation', $GLOBALS['pow_blocks_scripts']->enqueued, true ), 'The plugin\'s own script opens it' );
+				self::assertTrue( str_ends_with( $GLOBALS['pow_blocks_scripts']->registered['pow-leave-confirmation']->src, 'assets/js/leave-confirmation.js' ) );
+				$second = $this->surface->abandon_shortcode( [] );
+				self::assertStringNotContainsString( 'data-pow-leave="' . $form[1] . '"', $second, 'Each control its own dialog' );
+				self::assertStringContainsString( '>Return without sending your cart?</p>', $second, 'The neutral default question' );
+			} );
+		}
+		public function test_an_empty_cart_leaves_at_once(): void {
+			$this->with_leave( [ 'leave_confirmation' => 'yes' ], function (): void {
+				$this->cart( 0 );
+				$html = $this->surface->abandon_shortcode( [ 'question' => 'Leave?' ] );
+				self::assertStringNotContainsString( '<dialog', $html );
+				self::assertStringNotContainsString( 'data-pow-leave', $html );
+			} );
+		}
+		public function test_sent_back_to_ask_the_dialog_is_drawn_open_without_a_script(): void {
+			$this->with_leave( [ 'leave_confirmation' => 'yes' ], function (): void {
+				$this->cart( 3 );
+				$_GET = [ 'pow_leave' => 'ask' ];
+				self::assertSame( 1, preg_match( '#<dialog id="pow-leave-\d+" class="pow-leave" aria-labelledby="pow-leave-\d+-question" open>#', $this->surface->abandon_shortcode( '' ) ) );
+			} );
+		}
+		public function test_outside_a_visit_there_is_no_cancel_control_and_no_dialog(): void {
+			$this->with_leave( [ 'leave_confirmation' => 'yes' ], function (): void {
+				$this->cart( 3 );
+				$this->set_session( null );
+				self::assertSame( '', $this->surface->abandon_shortcode( [ 'question' => 'Leave?' ] ) );
+			} );
+		}
 		public function test_no_exit_policy_and_no_account_id_decide_anything_here(): void {
 			$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/Cart/Surface.php' );
 			self::assertStringNotContainsString( 'ExitPolicy', $source, 'PunchOut is the only exit a visit has' );

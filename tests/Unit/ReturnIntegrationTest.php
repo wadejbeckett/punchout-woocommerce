@@ -19,6 +19,9 @@ function load_source():void {
 	eval(substr($source,5));
 }
 function header(string $header,bool $replace=true,int $response_code=0):void{\POW\Http\header($header,$replace,$response_code);}
+/** 0.5.0: where the endpoint sends a browser instead of drawing a page, and the page the request came from. */
+function wp_safe_redirect(string $location,int $status=302):bool{$GLOBALS['pow_test_redirects'][]=[$location,$status];return true;}
+function wp_get_referer():string|false{return $GLOBALS['pow_test_referer']??false;}
 function sanitize_textarea_field(string $value):string{return \POW\Tests\QuoteShipping\sanitize_textarea_field($value);}
 function wp_slash(string $value):string{return \POW\Tests\QuoteShipping\wp_slash($value);}
 function add_filter(string $hook,callable $callback,int $priority=10,int $args=1):void{\POW\Tests\QuoteShipping\add_filter($hook,$callback,$priority,$args);}
@@ -381,6 +384,59 @@ final class ReturnIntegrationTest extends TestCase {
 		self::assertSame( 'closed', $this->db->session['status'] );
 		self::assertSame( [], $GLOBALS['pow_test_orders'] );
 		self::assertCount( 1, $GLOBALS['pow_test_destroyed_tokens'] );
+	}
+	/** 0.5.0: the plain page Cancel and return answers with is the Not sent state; a cart's is Sending. */
+	public function test_cancel_and_return_answers_the_not_sent_state_and_a_cart_the_sending_state(): void {
+		$_POST['pow_mode'] = 'empty';
+		$response = $this->response();
+		self::assertStringContainsString( 'class="pow-state pow-state--not-sent"', $response );
+		self::assertStringNotContainsString( 'pow-state--sending', $response );
+	}
+	public function test_a_returned_cart_answers_the_sending_state(): void {
+		$response = $this->response();
+		self::assertStringContainsString( 'class="pow-state pow-state--sending"', $response );
+		self::assertStringContainsString( 'pow-handoff-form', $response );
+	}
+	/** 0.5.0: "Ask before leaving" on and the cart holds a line: a cancel without the answer goes back to its page to ask, and nothing leaves. */
+	public function test_cancel_and_return_with_items_goes_back_to_ask_first(): void {
+		$GLOBALS['pow_test_options'][ \POW\Settings::OPTION_KEY ] = [ 'leave_confirmation' => 'yes' ];
+		$GLOBALS['pow_test_referer'] = 'https://shop.example.test/products/';
+		$_POST['pow_mode'] = 'empty';
+		self::assertSame( '', $this->response() );
+		self::assertSame( [ [ 'https://shop.example.test/products/?pow_leave=ask', 303 ] ], $GLOBALS['pow_test_redirects'] );
+		self::assertSame( 'active', $this->db->session['status'], 'The visit stays open' );
+		self::assertSame( [], $GLOBALS['pow_test_destroyed_tokens'] ?? [] );
+
+		$_POST['pow_leave'] = 'confirmed';
+		$response = $this->response();
+		self::assertStringContainsString( 'class="pow-state pow-state--not-sent"', $response, 'The answer leaves' );
+		self::assertSame( 'closed', $this->db->session['status'] );
+	}
+	public function test_cancel_and_return_leaves_at_once_with_an_empty_cart_or_the_setting_off(): void {
+		$_POST['pow_mode'] = 'empty';
+		self::assertStringContainsString( 'pow-handoff-form', $this->response(), 'Off by default' );
+		self::assertSame( [], $GLOBALS['pow_test_redirects'] ?? [] );
+
+		$this->tearDown(); $this->setUp();
+		$GLOBALS['pow_test_options'][ \POW\Settings::OPTION_KEY ] = [ 'leave_confirmation' => 'yes' ];
+		$GLOBALS['pow_test_wc']->cart = new class { public function get_cart(): array { return []; } public function empty_cart( bool $persistent ): void {} };
+		$_POST['pow_mode'] = 'empty';
+		self::assertStringContainsString( 'pow-handoff-form', $this->response(), 'An empty cart' );
+		self::assertSame( [], $GLOBALS['pow_test_redirects'] ?? [] );
+		self::assertSame( 'closed', $this->db->session['status'] );
+	}
+	/** 0.5.0: with a state page chosen, a return whose visit has ended goes to the Session ended state; without one the plain page stays. */
+	public function test_a_return_after_the_visit_has_ended_goes_to_the_session_ended_state(): void {
+		$GLOBALS['pow_test_current_user_id'] = 0;
+		self::assertStringContainsString( 'expired', $this->response(), 'No state page: the plain page' );
+		$GLOBALS['pow_test_posts'][314] = [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/visit/' ];
+		$GLOBALS['pow_test_options'][ \POW\Settings::OPTION_KEY ] = [ 'state_page_id' => 314 ];
+		foreach ( [ 'cart', 'empty' ] as $mode ) {
+			$_POST['pow_mode'] = $mode;
+			$GLOBALS['pow_test_redirects'] = [];
+			self::assertSame( '', $this->response(), $mode );
+			self::assertSame( [ [ 'https://shop.example.test/visit/?pow_state=ended', 303 ] ], $GLOBALS['pow_test_redirects'], $mode );
+		}
 	}
 	/**
 	 * The POOM never names an order of ours, even when the row carries an

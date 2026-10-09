@@ -31,6 +31,13 @@ class Settings {
 	/** Filter over the cart's checkout-button label in a visit (0.5.0), applied to the saved setting or the default. */
 	public const CHECKOUT_BUTTON_FILTER = 'punchout_checkout_button_label';
 
+	/** Filter over the state page's button label (0.5.0), applied to the saved setting or the default. */
+	public const STATE_BUTTON_FILTER = 'punchout_state_button_label';
+
+	/** Filters over the leave-confirmation's two button labels (0.5.0), applied to the saved setting or the default. */
+	public const LEAVE_CONFIRM_FILTER = 'punchout_leave_confirm_label';
+	public const LEAVE_STAY_FILTER    = 'punchout_leave_stay_label';
+
 	/**
 	 * What the visit stylesheet hides with display:none, each selector
 	 * ending in the class it hides. Cart\Surface emits exactly these, and
@@ -88,6 +95,21 @@ class Settings {
 		// WooCommerce's checkout. Blank = the translated default "Proceed to checkout"; filter
 		// punchout_checkout_button_label runs last.
 		'checkout_button_label' => '',
+
+		// 0.5.0: the page holding [punchout_state], where a visit's browser is sent once its cart has gone and when
+		// its link has expired or its session has ended, so those states draw inside the theme (Http\StatePage).
+		// 0 = none: the plain pages are used. Its button's label is the one setting the states have: blank = the
+		// translated default "Continue to your purchasing system"; filter punchout_state_button_label runs last.
+		'state_page_id'        => 0,
+		'state_button_label'   => '',
+
+		// 0.5.0: 'yes' makes the cancel control ([punchout_abandon_button]) ask first when the cart has items. Its
+		// two buttons are the only settings; the question is the shortcode's own attribute. Blank = the translated
+		// defaults "Return without sending" and "Keep shopping"; filters punchout_leave_confirm_label and
+		// punchout_leave_stay_label run last (Cart\LeaveConfirmation).
+		'leave_confirmation'   => 'no',
+		'leave_confirm_label'  => '',
+		'leave_stay_label'     => '',
 
 		// The site's own button classes, space-separated, added to the exit
 		// controls and the review page's primary actions so they match the
@@ -242,8 +264,32 @@ class Settings {
 
 	/** The visit's checkout-button label: a non-blank saved value, else "Proceed to checkout"; the filter runs last and a blank result keeps the default. */
 	public function checkout_button_label(): string {
-		$default = __( 'Proceed to checkout', 'punchout-woocommerce' );
-		$label   = trim( (string) apply_filters( self::CHECKOUT_BUTTON_FILTER, $this->button_label( 'checkout_button_label', $default ) ) );
+		return $this->filtered_label( 'checkout_button_label', __( 'Proceed to checkout', 'punchout-woocommerce' ), self::CHECKOUT_BUTTON_FILTER );
+	}
+
+	/** The state page's button (0.5.0): a non-blank saved value, else "Continue to your purchasing system"; the filter runs last. */
+	public function state_button_label(): string {
+		return $this->filtered_label( 'state_button_label', __( 'Continue to your purchasing system', 'punchout-woocommerce' ), self::STATE_BUTTON_FILTER );
+	}
+
+	/** True when the cancel control asks first while the cart has items (0.5.0; off by default). */
+	public function leave_confirmation(): bool {
+		return 'yes' === $this->get( 'leave_confirmation', 'no' );
+	}
+
+	/** The leave-confirmation's button that leaves without sending (0.5.0): saved value, else "Return without sending"; the filter runs last. */
+	public function leave_confirm_label(): string {
+		return $this->filtered_label( 'leave_confirm_label', __( 'Return without sending', 'punchout-woocommerce' ), self::LEAVE_CONFIRM_FILTER );
+	}
+
+	/** The leave-confirmation's button that stays (0.5.0): saved value, else "Keep shopping"; the filter runs last. */
+	public function leave_stay_label(): string {
+		return $this->filtered_label( 'leave_stay_label', __( 'Keep shopping', 'punchout-woocommerce' ), self::LEAVE_STAY_FILTER );
+	}
+
+	/** A button label: a non-blank saved value, else the default; then the filter, whose blank result keeps the default. */
+	private function filtered_label( string $key, string $default, string $filter ): string {
+		$label = trim( (string) apply_filters( $filter, $this->button_label( $key, $default ) ) );
 		return '' !== $label ? $label : $default;
 	}
 

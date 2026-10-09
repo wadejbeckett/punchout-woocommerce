@@ -211,6 +211,9 @@ final class Plugin {
 		( new Guard( $this, $this->sessions, $this->audit, $this->logger ) )->register();
 		$this->surface = new Surface( $this, $this->registry );
 		$this->surface->register_cart_exits_shortcode();
+		// 0.5.0: the state page ([punchout_state], its no-store headers) is presentation with no visit surface, so a
+		// page holding it never shows the raw shortcode, whatever the switch says. Sending browsers there is runtime.
+		( new \POW\Http\StatePage( $this->settings ) )->register();
 
 		if ( ! $this->enabled() ) {
 			return;
@@ -237,6 +240,8 @@ final class Plugin {
 		( new Checkout\Validation( $payment_method ) )->register();
 		( new Checkout\Lifecycle( $payment_method ) )->register();
 		( new Checkout\LateSubmit( $this, $this->sessions ) )->register();
+		// A page from the browser of a visit that ended goes to the state it ended in, when a state page is chosen.
+		( new \POW\Http\EndedVisit( $this, $this->sessions ) )->register();
 
 		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser, $handoff ) )->register();
 		$chooser->register();

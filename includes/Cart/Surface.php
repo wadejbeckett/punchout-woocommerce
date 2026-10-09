@@ -13,6 +13,7 @@ namespace POW\Cart;
 use POW\Support\Transport;
 
 use POW\Partners\Registry;
+use POW\Cart\LeaveConfirmation;
 use POW\Plugin;
 use POW\Sessions\Session;
 use POW\Settings;
@@ -63,6 +64,9 @@ final class Surface {
 
 	/** The visit controls that carry the operator's extra button classes. */
 	private const EXTRA_CLASS_CONTROLS = [ 'pow-return-button', 'pow-abandon-button' ];
+
+	/** Leave-confirmation dialogs drawn in this request, so each control names its own (a header can draw two). */
+	private static int $dialogs = 0;
 
 	public function __construct(
 		private Plugin $plugin,
@@ -157,8 +161,16 @@ final class Surface {
 	 * PunchOutOrderMessage, which is the cXML way of saying "the buyer left
 	 * with nothing". It is a real POST carrying the pow_return nonce, so the
 	 * control is a submit button and never a link.
+	 *
+	 * With "Ask before leaving" on and a line in the cart (0.5.0), it also
+	 * draws a dialog asking first (LeaveConfirmation): the question is the
+	 * shortcode's `question` attribute, its two buttons are settings, and the
+	 * plugin's own script opens it. Without the script the server asks
+	 * instead, by sending the browser back with the dialog drawn open.
+	 *
+	 * @param array<string, mixed> $atts Shortcode attributes: `question`.
 	 */
-	public function abandon_markup(): string {
+	public function abandon_markup( array $atts = [] ): string {
 		$session = $this->plugin->current_session();
 
 		if ( null === $session ) {
@@ -188,8 +200,34 @@ final class Surface {
 				'nonce'      => wp_create_nonce( 'pow_return' ),
 				'label'      => $label,
 				'classes'    => $this->button_classes( 'pow-abandon-button', false ),
+				'leave'      => $this->leave_dialog( $atts ),
 			]
 		);
+	}
+
+	/**
+	 * The leave-confirmation dialog for one cancel control, or null when it leaves at once (the setting is off or
+	 * the cart is empty). Enqueues the plugin's script that opens it.
+	 *
+	 * @param array<string, mixed> $atts Shortcode attributes: `question`.
+	 * @return array{id: string, question: string, confirm: string, stay: string, open: bool}|null
+	 */
+	private function leave_dialog( array $atts ): ?array {
+		$settings = $this->plugin->settings();
+		if ( ! $settings->leave_confirmation() || LeaveConfirmation::cart_items() <= 0 ) {
+			return null;
+		}
+		$atts = shortcode_atts( [ 'question' => __( 'Return without sending your cart?', 'punchout-woocommerce' ) ], $atts, 'punchout_abandon_button' );
+		$file = POW_PLUGIN_DIR . 'assets/js/leave-confirmation.js';
+		wp_enqueue_script( LeaveConfirmation::SCRIPT, POW_PLUGIN_URL . 'assets/js/leave-confirmation.js', [], is_readable( $file ) ? (string) filemtime( $file ) : false, true );
+
+		return [
+			'id'       => 'pow-leave-' . ( ++self::$dialogs ),
+			'question' => trim( (string) $atts['question'] ),
+			'confirm'  => $settings->leave_confirm_label(),
+			'stay'     => $settings->leave_stay_label(),
+			'open'     => LeaveConfirmation::asked(),
+		];
 	}
 
 	/**
@@ -284,8 +322,9 @@ final class Surface {
 		);
 	}
 
-	public function abandon_shortcode(): string {
-		return $this->abandon_markup();
+	/** @param mixed $atts Shortcode attributes ('' when there are none). */
+	public function abandon_shortcode( mixed $atts = [] ): string {
+		return $this->abandon_markup( is_array( $atts ) ? $atts : [] );
 	}
 
 	public function render_cart_button(): void {

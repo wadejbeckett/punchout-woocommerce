@@ -21,7 +21,8 @@
  * @var list<string> $notices     Per-line notices (skipped lines etc.).
  * @var string       $heading     Page heading.
  * @var string       $copy        Explanatory copy.
- * @var string       $button      Fallback submit label.
+ * @var string       $button      Fallback submit label (the "State page button label" setting).
+ * @var string       $state       'sending' (a cart) or 'not-sent' (Cancel and return): the pow-state modifier (0.5.0).
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -37,8 +38,9 @@ defined( 'ABSPATH' ) || exit;
 	<title><?php echo esc_html( $heading ); ?></title>
 </head>
 <body style="font-family:sans-serif;max-width:36em;margin:4em auto;padding:0 1em">
-	<h1 style="font-size:1.3em"><?php echo esc_html( $heading ); ?></h1>
-	<p><?php echo esc_html( $copy ); ?></p>
+<main class="pow-state pow-state--<?php echo esc_attr( $state ?? 'sending' ); ?>">
+	<h1 class="pow-state__title" style="font-size:1.3em"><?php echo esc_html( $heading ); ?></h1>
+	<p class="pow-state__text"><?php echo esc_html( $copy ); ?></p>
 	<?php foreach ( $notices as $notice ) : ?>
 		<p style="color:#8a6d3b"><?php echo esc_html( $notice ); ?></p>
 	<?php endforeach; ?>
@@ -51,7 +53,7 @@ defined( 'ABSPATH' ) || exit;
 		);
 		?>
 	</p>
-	<form method="post" action="<?php echo esc_url( $action_url ); ?>" id="pow-handoff-form">
+	<form method="post" action="<?php echo esc_url( $action_url ); ?>" id="pow-handoff-form" class="pow-state__actions">
 		<input type="hidden" name="<?php echo esc_attr( $field_name ); ?>" value="<?php
 			// esc_attr() never double-encodes, so a packed payload containing
 			// entities (&amp;, &#233; from the us-ascii pack) would be decoded
@@ -59,8 +61,9 @@ defined( 'ABSPATH' ) || exit;
 			// the buyer. double_encode=true round-trips byte-exactly.
 			echo htmlspecialchars( $field_value, ENT_QUOTES, 'UTF-8', true ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 		?>" />
-		<button type="submit" class="pow-handoff-submit"><?php echo esc_html( $button ); ?></button>
+		<button type="submit" class="pow-handoff-submit pow-state__button"><?php echo esc_html( $button ); ?></button>
 	</form>
+</main>
 	<script>document.getElementById( 'pow-handoff-form' ).submit();</script>
 </body>
 </html>

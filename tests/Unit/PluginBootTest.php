@@ -39,6 +39,18 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
+	 * 0.5.0 (ticket 77): the state page is presentation with no visit surface, like the cart control and the docs
+	 * page, so a page holding [punchout_state] never shows the raw shortcode and keeps its no-store headers while the
+	 * switch is off. Sending browsers of ended visits there is buyer-facing runtime, so it waits for the switch.
+	 */
+	public function test_master_off_boot_keeps_the_state_page_but_sends_no_browser_there(): void {
+		$result = $this->booted();
+		self::assertTrue( $result['state_shortcode_registered'] );
+		self::assertTrue( in_array( 'POW\\Http\\StatePage::send_headers', $result['template_redirect'], true ), 'Its headers' );
+		self::assertFalse( in_array( 'POW\\Http\\EndedVisit::maybe_redirect', $result['template_redirect'], true ) );
+	}
+
+	/**
 	 * Basket isolation must have exactly the same lifetime as visit resolution.
 	 *
 	 * Flipping the master switch off sweeps the open visits, but the sweep can
