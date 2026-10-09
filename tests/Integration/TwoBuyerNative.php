@@ -352,7 +352,7 @@ final class TwoBuyerNative {
 		$cookies = $_COOKIE;
 		$server  = $_SERVER;
 		$capture = function ( string $cookie ) use ( $label ): void { $this->cookies[ $label ] = $cookie; };
-		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$_SERVER['REQUEST_METHOD'] = 'POST'; // 0.4.23: only a POST redeems; a GET shows the page that posts itself back.
 		add_action( 'set_logged_in_cookie', $capture );
 		ob_start();
 		try { ( new POW\Http\StartEndpoint( $this->sessions, $this->registry, $plugin->settings(), $this->audit ) )->handle( $token ); }

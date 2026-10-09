@@ -187,7 +187,7 @@ function pow_native_redeem( string $token ): ?Session {
 	$actor = get_current_user_id();
 	$cookies = $_COOKIE;
 	$server = $_SERVER;
-	$_SERVER['REQUEST_METHOD'] = 'GET';
+	$_SERVER['REQUEST_METHOD'] = 'POST'; // 0.4.23: only a POST redeems; a GET shows the page that posts itself back.
 	ob_start();
 	try {
 		( new StartEndpoint( $sessions, $plugin->registry(), $plugin->settings(), $plugin->audit() ) )->handle( $token );

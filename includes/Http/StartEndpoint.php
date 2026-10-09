@@ -1,6 +1,7 @@
 <?php
 /**
- * GET /punchout/start/{token} — one-time auto-login.
+ * /punchout/start/{token} — one-time auto-login. A GET or HEAD shows a page that posts itself back; only the POST
+ * redeems (0.4.23).
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -31,6 +32,13 @@ defined( 'ABSPATH' ) || exit;
  * content — cookies and nonces are only valid on the next request, so the
  * handler always 302s (wp-implementation M8).
  *
+ * Only a POST is a login request (0.4.23). Mail scanners fetch every link in a
+ * message, and a GET used to redeem the token before the buyer ever saw it. A
+ * GET or HEAD now answers with a small page — no lookup, no write, no audit
+ * row — whose form posts back to the same address: by script at once, or on a
+ * real click when the "Login link needs a click" setting is on. A token that is
+ * not even well-formed is refused for every method before anything is read.
+ *
  * The login is the connection's own customer account, so a redeem creates
  * nothing and owns nothing on that account: it mints a visit. Every
  * PunchOutSetupRequest gets its own WordPress session token, its own auth
@@ -51,6 +59,62 @@ final class StartEndpoint {
 
 	public function handle( string $token ): void {
 		Transport::require_https();
+		// Junk that does not even look like a token gets the same refusal as an expired one, whatever the method,
+		// and never reaches the sessions table (scope §9.2).
+		if ( ! Tokens::looks_valid( $token ) ) { $this->deny(); return; }
+		$method = strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ) );
+		if ( 'GET' === $method || 'HEAD' === $method ) { $this->interstitial( $token, 'HEAD' === $method ); return; }
+		if ( 'POST' !== $method ) { $this->not_allowed(); return; }
+		$this->redeem( $token );
+	}
+
+	/**
+	 * The headers of the page a GET or HEAD gets (0.4.23): HTML, never cached, indexed or sniffed, and no referrer,
+	 * so the address carrying the token is not passed on to anything the page leads to.
+	 *
+	 * @return list<string>
+	 */
+	public static function interstitial_headers(): array {
+		return [ 'Content-Type: text/html; charset=utf-8', ...Router::security_headers(), 'Referrer-Policy: no-referrer' ];
+	}
+
+	/**
+	 * GET or HEAD of the StartPage link: a theme-free page whose form posts back to this address. Nothing is looked
+	 * up or written, so a scanner's fetch leaves the link as it was, and an expired link is only reported to the POST.
+	 *
+	 * The script submits the form while the page is still loading, so the browser replaces this page in its history
+	 * with where the POST leads: Back from the landing page does not come here again.
+	 */
+	private function interstitial( string $token, bool $head ): void {
+		defined( 'DONOTCACHEPAGE' ) || define( 'DONOTCACHEPAGE', true );
+		nocache_headers();
+		status_header( 200 );
+		foreach ( self::interstitial_headers() as $header ) { header( $header ); }
+		if ( $head ) { return; }
+
+		$click  = $this->settings->start_link_click();
+		$action = Transport::supplier_url( home_url( '/punchout/start/' . $token ) );
+		$copy   = $click
+			? __( 'Press the button to open the catalog.', 'punchout-woocommerce' )
+			: __( 'Opening the catalog. If nothing happens, press the button.', 'punchout-woocommerce' );
+
+		echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><title>';
+		echo esc_html__( 'Open the catalog', 'punchout-woocommerce' );
+		echo '</title></head><body style="font-family:sans-serif;max-width:36em;margin:4em auto;padding:0 1em">';
+		echo '<form method="post" action="' . esc_url( $action ) . '" id="pow-start-form"><p>' . esc_html( $copy ) . '</p>';
+		echo '<button type="submit">' . esc_html__( 'Open the catalog', 'punchout-woocommerce' ) . '</button></form>';
+		if ( ! $click ) { echo "<script>document.getElementById( 'pow-start-form' ).submit();</script>"; }
+		echo '</body></html>';
+	}
+
+	/** Any method other than GET, HEAD or POST: refused, nothing read. */
+	private function not_allowed(): void {
+		status_header( 405 );
+		header( 'Allow: GET, HEAD, POST' );
+	}
+
+	/** The buyer's POST: redeem the token and sign this visit in, or refuse with the expired page. */
+	private function redeem( string $token ): void {
 		$session = null;
 		$logged_in = false;
 		try {

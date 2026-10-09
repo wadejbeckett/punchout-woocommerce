@@ -166,6 +166,24 @@ namespace {
 			}
 		}
 
+		/**
+		 * Since 0.4.23 only a POST redeems a StartPage token; a GET shows the page that posts itself back. A native
+		 * script that still redeems by GET would open no visit and fail an hour into a candidate run.
+		 */
+		public function test_every_native_redeem_posts_the_start_link(): void {
+			foreach ( [ 'TwoBuyerNative.php', 'ConcurrencyNative.php' ] as $name ) {
+				$source = $this->script( $name );
+				$handle = strpos( $source, 'StartEndpoint(' );
+				self::assertTrue( is_int( $handle ), $name . ' redeems through the endpoint' );
+				$before = substr( $source, max( 0, $handle - 600 ), 600 );
+				self::assertStringContainsString( "\$_SERVER['REQUEST_METHOD'] = 'POST';", $before, $name . ' redeems by POST' );
+				self::assertStringNotContainsString( "\$_SERVER['REQUEST_METHOD'] = 'GET';", $before, $name . ' no longer redeems by GET' );
+			}
+			$driver = (string) file_get_contents( dirname( __DIR__ ) . '/Account/native.py' );
+			self::assertStringContainsString( "request(visit, starts[-1], b'', method='POST')", $driver, 'The account driver redeems by POST' );
+			self::assertStringContainsString( "request(visit, starts[-1])[0] == 200", $driver, 'and proves a GET leaves the link unused first' );
+		}
+
 		/** The My Account tab is a download and nothing else, and it does not exist inside a visit. */
 		public function test_the_account_driver_drives_a_download_only_tab(): void {
 			$driver = (string) file_get_contents( dirname( __DIR__ ) . '/Account/native.py' );
