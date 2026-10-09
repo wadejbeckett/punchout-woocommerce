@@ -23,7 +23,7 @@ final class DeliveryEstimate {
 	public function __construct( private Settings $settings ) {}
 
 	/**
-	 * Returns {delivery,packages,can_confirm,requires_unknown_acknowledgement}. Only delivery belongs in DeliveryData's existing confirmation schema. Package options include native display_label HTML for the view to render through wp_kses_post. Neither a default method nor can_confirm records consent; the HTTP confirmation boundary owns offered-ID validation and explicit unknown acknowledgement.
+	 * Returns {delivery,packages,can_confirm,requires_unknown_acknowledgement}. Only delivery belongs in DeliveryData's existing confirmation schema. Package options include native display_label HTML for the view to render through wp_kses_post: WooCommerce's full label (title, cost and any tax note) while the connection sends the delivery line, else the escaped method title only (0.4.23). Neither a default method nor can_confirm records consent; the HTTP confirmation boundary owns offered-ID validation and explicit unknown acknowledgement.
 	 *
 	 * Native customer changes use its session data store only. All rate callbacks run outside the partner mutex. On failure this service refuses and attempts to restore prior request/session state; the caller must invalidate confirmation, including when rollback itself cannot be verified.
 	 */
@@ -106,7 +106,8 @@ final class DeliveryEstimate {
 				$offered = [];
 				foreach ( $package['rates'] as $id => $rate ) {
 					$mapped = self::rate( $key, $id, $rate );
-					$display = wc_cart_totals_shipping_method_label( $rate );
+					// 0.4.23: a connection that sends no delivery cost shows the buyer no amount, so each method is offered by its own title only. WooCommerce's full label appends the cost and may add a tax note.
+					$display = $partner->emit_delivery_line ? wc_cart_totals_shipping_method_label( $rate ) : esc_html( $mapped['label'] );
 					if ( ! is_string( $display ) || strlen( $display ) > 8192 || 1 !== preg_match( '//u', $display ) ) { throw self::invalid(); }
 					$offered[] = $mapped + [ 'display_label' => $display ];
 					if ( $id === $selected ) {
