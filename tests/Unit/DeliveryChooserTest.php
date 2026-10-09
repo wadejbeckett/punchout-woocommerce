@@ -124,30 +124,16 @@ final class DeliveryChooserTest extends TestCase {
 	private static function physical( array $changes = [] ): array {
 		$choice = [ 'provider' => 'native', 'key' => 'depot', 'label' => 'Depot', 'address' => [ 'city' => 'Pretoria', 'state' => 'GP', 'country' => 'ZA' ], 'code' => '' ];
 		$package = [ 'package_key' => 0, 'label' => 'Parcel', 'selected_rate_id' => 'flat_rate:1', 'rates' => [ [ 'rate_id' => 'flat_rate:1', 'display_label' => 'Courier (3-5 working days)' ] ] ];
-		return array_replace( [ 'choices' => [ $choice ], 'selected_choice' => $choice, 'delivery_destination' => $choice, 'packages' => [ $package ], 'delivery' => [ 'status' => 'quoted', 'amount_cents' => 5000, 'emit' => true ], 'preferred_delivery_date' => '2026-10-07', 'preferred_delivery_date_min' => '2026-09-24' ], $changes );
+		return array_replace( [ 'choices' => [ $choice ], 'selected_choice' => $choice, 'delivery_destination' => $choice, 'packages' => [ $package ], 'delivery' => [ 'status' => 'quoted', 'amount_cents' => 5000, 'emit' => true ] ], $changes );
 	}
-	private static function date_input( string $html ): string {
-		self::assertSame( 1, preg_match( '#<input type="date"[^>]*>#', $html, $m ), 'One native date input.' );
-		return $m[0];
-	}
-	public function test_date_input_is_native_optional_with_a_tomorrow_minimum(): void {
-		$html = $this->render( self::physical() );
-		$input = self::date_input( $html );
-		self::assertStringContainsString( 'name="preferred_delivery_date"', $input );
-		self::assertStringContainsString( 'value="2026-10-07"', $input );
-		self::assertStringContainsString( 'min="2026-09-24"', $input );
-		self::assertStringNotContainsString( 'required', $input );
-		self::assertStringNotContainsString( 'max=', $input );
-		self::assertStringContainsString( '<label for="pow-preferred-date">Preferred delivery date</label>', $html );
-		self::assertStringContainsString( 'it is not sent to your purchasing system', $html );
-		self::assertStringNotContainsString( '<script', $html );
-		// A cleared date renders empty; an absent minimum adds no attribute.
-		$input = self::date_input( $this->render( self::physical( [ 'preferred_delivery_date' => null, 'preferred_delivery_date_min' => '' ] ) ) );
-		self::assertStringContainsString( 'value=""', $input );
-		self::assertStringNotContainsString( 'min=', $input );
-		// A theme override fed an older view still renders.
-		$view = self::physical(); unset( $view['preferred_delivery_date'], $view['preferred_delivery_date_min'] );
-		self::assertStringContainsString( 'value=""', self::date_input( $this->render( $view ) ) );
+	/** 0.4.23: PunchOut draws no date field of its own; a delivery date belongs to the shop's checkout. A view from an older build that still carries a date draws none either. */
+	public function test_the_review_has_no_date_field(): void {
+		foreach ( [ $this->render( self::physical() ), $this->render( self::physical( [ 'preferred_delivery_date' => '2026-10-07', 'preferred_delivery_date_min' => '2026-09-24' ] ) ), $this->render( [ 'preferred_delivery_date' => null ] ) ] as $html ) {
+			self::assertStringNotContainsString( 'type="date"', $html );
+			self::assertStringNotContainsString( 'preferred_delivery_date', $html );
+			self::assertStringNotContainsString( 'pow-preferred-date', $html );
+			self::assertStringNotContainsString( 'Preferred delivery date', $html );
+		}
 	}
 	public function test_collection_labels_the_method_section(): void {
 		$html = $this->render( self::physical( [ 'collection' => true ] ) );
@@ -168,12 +154,6 @@ final class DeliveryChooserTest extends TestCase {
 		self::assertStringNotContainsString( $hint, $this->render( self::physical( [ 'packages' => [] ] ) ) );
 		self::assertStringNotContainsString( $hint, $this->render() );
 	}
-	public function test_virtual_basket_has_no_date_input(): void {
-		$html = $this->render( [ 'preferred_delivery_date' => null ] );
-		self::assertStringNotContainsString( 'type="date"', $html );
-		self::assertStringNotContainsString( 'preferred_delivery_date', $html );
-	}
-
 	/** 0.4.23: the Submit button, the heading over the item lines and the total's label are the site's words. */
 	public function test_the_review_draws_the_labels_it_is_handed(): void {
 		$html = $this->render( self::physical() + self::two_items(), [ 'labels' => [ 'submit' => 'Send <now>', 'items' => 'Items on order', 'total' => 'Order total' ] ] );
@@ -266,19 +246,19 @@ final class DeliveryChooserTest extends TestCase {
 		// A cart that needs no delivery offers no address form.
 		self::assertSame( 1, substr_count( $this->render( [], [ 'add_address' => $add ] ), '<form' ) );
 	}
-	/** The add rides the review form: the notes and date the buyer is typing are the very fields it posts. Its buttons skip the review's own required fields (the address select, the acknowledgement); the server validates the add. */
-	public function test_add_posts_the_reviews_live_notes_and_date_and_skips_the_reviews_required_fields(): void {
+	/** The add rides the review form: the notes the buyer is typing are the very field it posts. Its buttons skip the review's own required fields (the address select, the acknowledgement); the server validates the add. */
+	public function test_add_posts_the_reviews_live_notes_and_skips_the_reviews_required_fields(): void {
 		$add = [ 'fields' => '<p class="form-row"><input type="text" name="shipping_city" id="pow_add_address_shipping_city" value="" aria-required="true"></p>', 'label' => '', 'nonce' => 'add-nonce', 'notice' => null, 'open' => false ];
 		$html = $this->render( self::physical( [ 'requires_unknown_acknowledgement' => true, 'delivery' => [ 'status' => 'unknown', 'amount_cents' => null, 'emit' => false ] ] ), [ 'add_address' => $add ] );
 		self::assertSame( 1, substr_count( $html, 'name="notes"' ), 'No mirror: the one notes field posts with every button.' );
-		self::assertSame( 1, substr_count( $html, 'name="preferred_delivery_date"' ) );
+		self::assertSame( 0, substr_count( $html, 'name="preferred_delivery_date"' ), 'No date field (0.4.23).' );
 		self::assertStringContainsString( '<select id="pow-delivery-choice" name="choice" required>', $html );
 		self::assertStringContainsString( 'name="acknowledge_unknown" value="1" required', $html );
 		foreach ( [ 'value="add_address"', 'name="pow_address_refresh"' ] as $button ) {
 			self::assertSame( 1, preg_match( '#<button[^>]*' . preg_quote( $button, '#' ) . '[^>]*>#', $html, $m ), $button );
 			self::assertStringContainsString( ' formnovalidate', $m[0], $button );
 		}
-		// Submit for approval still validates the review, and the add adds no required attribute of its own that could block it.
+		// Submit still validates the review, and the add adds no required attribute of its own that could block it.
 		self::assertSame( 1, preg_match( '#<button[^>]*value="submit"[^>]*>#', $html, $m ) );
 		self::assertStringNotContainsString( 'formnovalidate', $m[0] );
 		$fieldset = substr( $html, strpos( $html, '<fieldset class="pow-confirmation__add-set"' ) );

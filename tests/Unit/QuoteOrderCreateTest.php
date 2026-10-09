@@ -670,6 +670,20 @@ final class QuoteOrderCreateTest extends TestCase {
 		}
 	}
 
+	/**
+	 * 0.4.23 removed the review's own date picker; Quotes created before it keep their date. The order screen's
+	 * PunchOut line (the test below) and the "PunchOut order received" e-mail still read it from the order meta.
+	 */
+	public function test_quotes_from_before_0423_still_show_their_preferred_date(): void {
+		$root = dirname( __DIR__, 2 );
+		self::assertStringContainsString( '\'preferred_date\'     => (string) $order->get_meta( QuoteOrder::META_PREFERRED_DELIVERY_DATE ),', (string) file_get_contents( $root . '/includes/Emails/QuoteReceived.php' ) );
+		foreach ( [ 'templates/emails/pow-quote-received.php', 'templates/emails/plain/pow-quote-received.php' ] as $template ) {
+			$source = (string) file_get_contents( $root . '/' . $template );
+			self::assertStringContainsString( 'if ( \'\' !== $preferred_date )', $source, $template );
+			self::assertStringContainsString( 'Preferred delivery date:', $source, $template );
+		}
+	}
+
 	public function test_bought_by_line_shows_the_preferred_delivery_date(): void {
 		$quotes = $this->shipping_quotes();
 		$order = wc_get_order( $quotes->create_for_session( $this->session(), $this->partner(), $this->dated_lines() ) );

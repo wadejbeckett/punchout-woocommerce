@@ -379,44 +379,25 @@ final class DeliveryChooserFlowTest extends TestCase {
 		self::assertSame( 1, $this->state->store->invalidations );
 	}
 
-	public function test_preferred_date_is_posted_through_and_kept_on_a_refused_form(): void {
+	/** 0.4.23: a date field an older page still posts is ignored on a review, a refused form and a submit; the stored consent carries no date. */
+	public function test_a_posted_date_is_ignored_everywhere(): void {
 		$first = $this->initial_review();
 		$date = ( new DateTimeImmutable( 'today', wp_timezone() ) )->modify( '+5 days' )->format( 'Y-m-d' );
-		$view = $this->request( [ 'choice' => 'native:depot', 'preferred_delivery_date' => $date ] );
-		self::assertNull( $view['error'] );
-		self::assertSame( $date, $view['preferred_delivery_date'] );
-		self::assertSame( $first['review_digest'], $view['review_digest'], 'The date is not part of the review digest.' );
+		$yesterday = ( new DateTimeImmutable( 'today', wp_timezone() ) )->modify( '-1 day' )->format( 'Y-m-d' );
+		foreach ( [ $date, $yesterday, '2026-13-40', '<b>2026-10-07</b>', [ $date ] ] as $posted ) {
+			$view = $this->request( [ 'choice' => 'native:depot', 'preferred_delivery_date' => $posted ] );
+			self::assertNull( $view['error'] );
+			self::assertTrue( $view['can_confirm'] );
+			self::assertFalse( array_key_exists( 'preferred_delivery_date', $view ) );
+			self::assertSame( $first['review_digest'], $view['review_digest'] );
+		}
 		$refused = $this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:depot', 'preferred_delivery_date' => $date, 'review_digest' => str_repeat( '0', 64 ) ] );
 		self::assertInstanceOf( WP_Error::class, $refused['error'] );
-		self::assertSame( $date, $refused['preferred_delivery_date'], 'A well-formed date survives a refused form.' );
+		self::assertFalse( array_key_exists( 'preferred_delivery_date', $refused ) );
 		$this->assert_no_consent_or_handoff();
-		$cleared = $this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:depot', 'preferred_delivery_date' => '', 'review_digest' => str_repeat( '0', 64 ) ] );
-		self::assertNull( $cleared['preferred_delivery_date'] );
-		foreach ( [ '2026-13-40', '<b>2026-10-07</b>', [ $date ] ] as $bad ) {
-			$malformed = $this->request( [ 'choice' => 'native:depot', 'preferred_delivery_date' => $bad ] );
-			self::assertSame( 'delivery_date_invalid', $malformed['error']->get_error_code() );
-			self::assertNotSame( $bad, $malformed['preferred_delivery_date'] );
-			self::assertFalse( $malformed['can_confirm'] );
-		}
 		$this->request( [ 'pow_delivery_action' => 'submit', 'choice' => 'native:depot', 'preferred_delivery_date' => $date, 'review_digest' => $first['review_digest'] ] );
 		self::assertSame( 1, $this->return_endpoint->handoffs );
-		self::assertSame( $date, $this->state->store->session->delivery_confirmation()['preferred_delivery_date'] );
-	}
-
-	/** A well-formed date before tomorrow on Update: the address and method still apply, the date stays in the field beside its error, and it binds nothing. */
-	public function test_a_refused_past_date_on_update_stays_in_the_field_for_display_only(): void {
-		$this->initial_review();
-		$yesterday = ( new DateTimeImmutable( 'today', wp_timezone() ) )->modify( '-1 day' )->format( 'Y-m-d' );
-		$view = $this->request( [ 'choice' => 'native:coast', 'preferred_delivery_date' => $yesterday ] );
-		self::assertSame( 'delivery_date_invalid', $view['error']->get_error_code() );
-		self::assertSame( 'coast', $view['selected_choice']['key'], 'The address change still applies.' );
-		self::assertSame( $yesterday, $view['preferred_delivery_date'], 'What the buyer typed stays in the field.' );
-		self::assertFalse( $view['can_confirm'] );
-		$emptied = $this->request( [ 'choice' => 'native:coast', 'preferred_delivery_date' => '' ] );
-		self::assertNull( $emptied['error'] );
-		self::assertNull( $emptied['preferred_delivery_date'] );
-		self::assertSame( $emptied['_confirmation_fingerprint'], $view['_confirmation_fingerprint'], 'The refused date is display only: the fingerprint binds no date.' );
-		$this->assert_no_consent_or_handoff();
+		self::assertFalse( array_key_exists( 'preferred_delivery_date', $this->state->store->session->delivery_confirmation() ) );
 	}
 
 	/** Runs the real Store expiry SQL; only database I/O and native token cleanup are replaced. */
@@ -487,10 +468,10 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$this->state->registry->partner = Partner::from_row( array_replace( get_object_vars( $this->state->registry->partner ), [ 'buyer_addresses' => true ] ) );
 	}
 
-	/** What the one review form posts when its add button is pressed: the review's own fields ride along, and the add reads only its fieldset and the notes and date. */
+	/** What the one review form posts when its add button is pressed: the review's own fields ride along, and the add reads only its fieldset and the notes. */
 	private function add_request( array $fields = [], array $without = [] ): array {
 		$_SERVER['REQUEST_METHOD'] = 'POST';
-		$post = array_replace( [ 'pow_nonce' => 'nonce-pow_confirm_delivery', 'pow_return_nonce' => 'nonce-pow_return', 'review_digest' => str_repeat( 'a', 64 ), 'choice' => 'native:coast', 'rates' => [ 0 => 'flat:1' ], 'acknowledge_unknown' => '1', 'notes' => '', 'preferred_delivery_date' => self::in_days( 14 ), 'pow_address_nonce' => 'nonce-pow_add_delivery_address', 'pow_delivery_action' => 'add_address', 'pow_address_label' => 'Site B', 'shipping_first_name' => 'Ada', 'shipping_last_name' => 'Buyer', 'shipping_company' => '', 'shipping_address_1' => '9 Dock Road', 'shipping_address_2' => '', 'shipping_city' => 'Durban', 'shipping_state' => 'KZN', 'shipping_postcode' => '4001', 'shipping_country' => 'ZA', 'shipping_phone' => '' ], $fields );
+		$post = array_replace( [ 'pow_nonce' => 'nonce-pow_confirm_delivery', 'pow_return_nonce' => 'nonce-pow_return', 'review_digest' => str_repeat( 'a', 64 ), 'choice' => 'native:coast', 'rates' => [ 0 => 'flat:1' ], 'acknowledge_unknown' => '1', 'notes' => '', 'pow_address_nonce' => 'nonce-pow_add_delivery_address', 'pow_delivery_action' => 'add_address', 'pow_address_label' => 'Site B', 'shipping_first_name' => 'Ada', 'shipping_last_name' => 'Buyer', 'shipping_company' => '', 'shipping_address_1' => '9 Dock Road', 'shipping_address_2' => '', 'shipping_city' => 'Durban', 'shipping_state' => 'KZN', 'shipping_postcode' => '4001', 'shipping_country' => 'ZA', 'shipping_phone' => '' ], $fields );
 		$_POST = array_diff_key( $post, array_flip( $without ) );
 		$GLOBALS['pow_test_status_headers'] = []; $GLOBALS['pow_test_redirects'] = [];
 		Templates::$view = null; Templates::$vars = null;
@@ -556,7 +537,7 @@ final class DeliveryChooserFlowTest extends TestCase {
 
 	public function test_add_address_refuses_a_forged_code_or_any_other_field(): void {
 		$this->offer_buyer_addresses();
-		foreach ( [ [ 'pow_address_code' => 'MINE' ], [ 'pow_address_code' => '' ], [ 'use_for_punchout' => '1' ], [ 'pow_address_key' => 'depot' ], [ 'pow_address_revision' => '1' ], [ 'pow_mode' => 'cart' ], [ 'shipping_city' => [ 'Durban' ] ], [ 'pow_address_refresh' => '2' ], [ 'notes' => [ 'Gate 3' ] ], [ 'preferred_delivery_date' => [ '2026-10-07' ] ] ] as $forged ) {
+		foreach ( [ [ 'pow_address_code' => 'MINE' ], [ 'pow_address_code' => '' ], [ 'use_for_punchout' => '1' ], [ 'pow_address_key' => 'depot' ], [ 'pow_address_revision' => '1' ], [ 'pow_mode' => 'cart' ], [ 'shipping_city' => [ 'Durban' ] ], [ 'pow_address_refresh' => '2' ], [ 'notes' => [ 'Gate 3' ] ] ] as $forged ) {
 			$this->assert_expired( $this->add_request( $forged ), (string) json_encode( $forged ) );
 		}
 		$this->assert_no_consent_or_handoff();
@@ -570,12 +551,11 @@ final class DeliveryChooserFlowTest extends TestCase {
 		};
 	}
 
-	/** Post, redirect, get: the add answers with a 303 to the review, so a reload repeats the GET and never the add. The notes and date typed into the review (not yet sent by Update) post with the add, and the next review selects the new entry and keeps them; it stores no consent. The review's other fields ride along and reach nothing. */
-	public function test_a_successful_add_redirects_and_the_next_review_selects_it_with_the_notes_and_date(): void {
+	/** Post, redirect, get: the add answers with a 303 to the review, so a reload repeats the GET and never the add. The notes typed into the review (not yet sent by Update) post with the add, and the next review selects the new entry and keeps them; it stores no consent. The review's other fields ride along and reach nothing. */
+	public function test_a_successful_add_redirects_and_the_next_review_selects_it_with_the_notes(): void {
 		$this->offer_buyer_addresses();
 		$this->fresh_entry_added();
-		$date = self::in_days( 5 );
-		$view = $this->add_request( [ 'notes' => "Gate 3\nAsk for the site manager", 'preferred_delivery_date' => $date ] );
+		$view = $this->add_request( [ 'notes' => "Gate 3\nAsk for the site manager" ] );
 		self::assertSame( [], $view, 'No page is drawn in answer to the add itself.' );
 		self::assertNull( Templates::$vars );
 		self::assertSame( [ [ \POW\Support\Transport::supplier_url( home_url( '/punchout/confirm' ) ), 303 ] ], $GLOBALS['pow_test_redirects'] );
@@ -590,7 +570,7 @@ final class DeliveryChooserFlowTest extends TestCase {
 		self::assertSame( 'Durban', $view['delivery_destination']['address']['city'] );
 		self::assertTrue( $view['can_confirm'] );
 		self::assertSame( "Gate 3\nAsk for the site manager", $view['notes'] );
-		self::assertSame( $date, $view['preferred_delivery_date'] );
+		self::assertFalse( array_key_exists( 'preferred_delivery_date', $view ) );
 		$add = Templates::$vars['add_address'];
 		self::assertStringContainsString( 'selected for this cart', (string) $add['notice'] );
 		self::assertFalse( $add['open'] );
@@ -617,19 +597,33 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$this->assert_no_consent_or_handoff();
 	}
 
-	/** An emptied date travels as no preference; malformed notes or dates are dropped, and the review's own values stand. */
-	public function test_an_add_carries_only_well_formed_notes_and_dates(): void {
+	/** Malformed notes are dropped and the review's own value stands. */
+	public function test_an_add_carries_only_well_formed_notes(): void {
 		$this->offer_buyer_addresses();
 		$this->fresh_entry_added();
-		$this->add_request( [ 'notes' => 'Use gate 3', 'preferred_delivery_date' => '' ] );
+		$this->add_request( [ 'notes' => 'Use gate 3' ] );
 		$view = $this->review_get();
 		self::assertSame( 'Use gate 3', $view['notes'] );
-		self::assertNull( $view['preferred_delivery_date'] );
-		$this->add_request( [ 'notes' => "\xff", 'preferred_delivery_date' => '<b>2026-10-07</b>' ] );
+		$this->add_request( [ 'notes' => "\xff" ] );
 		$view = $this->review_get();
 		self::assertSame( 'fresh', $view['selected_choice']['key'] );
 		self::assertSame( '', $view['notes'] );
-		self::assertSame( self::in_days( 14 ), $view['preferred_delivery_date'] );
+		$this->assert_no_consent_or_handoff();
+	}
+
+	/** 0.4.23: a review page or template override from 0.4.22 still posts its date field with an add; the add works and the date goes nowhere. */
+	public function test_an_add_from_an_older_page_that_posts_a_date_still_works_and_carries_no_date(): void {
+		$this->offer_buyer_addresses();
+		$this->fresh_entry_added();
+		foreach ( [ self::in_days( 5 ), '', '<b>2026-10-07</b>', [ '2026-10-07' ] ] as $date ) {
+			$this->add_request( [ 'notes' => 'Use gate 3', 'preferred_delivery_date' => $date ] );
+			self::assertSame( 303, $GLOBALS['pow_test_redirects'][0][1] ?? null, (string) json_encode( $date ) );
+			self::assertFalse( array_key_exists( 'preferred_delivery_date', $this->state->session->values['pow_delivery_added'] ?? [] ) );
+			$view = $this->review_get();
+			self::assertSame( 'fresh', $view['selected_choice']['key'] );
+			self::assertSame( 'Use gate 3', $view['notes'] );
+			self::assertFalse( array_key_exists( 'preferred_delivery_date', $view ) );
+		}
 		$this->assert_no_consent_or_handoff();
 	}
 
@@ -676,23 +670,20 @@ final class DeliveryChooserFlowTest extends TestCase {
 		$this->assert_no_consent_or_handoff();
 	}
 
-	public function test_notes_and_date_survive_a_refused_add_and_a_country_refresh(): void {
+	public function test_notes_survive_a_refused_add_and_a_country_refresh(): void {
 		$this->offer_buyer_addresses();
-		$date = self::in_days( 5 );
 		$this->book->result = new WP_Error( 'address_book_full', 'Full' );
-		$view = $this->add_request( [ 'notes' => 'Use gate 3', 'preferred_delivery_date' => $date ] );
+		$view = $this->add_request( [ 'notes' => 'Use gate 3' ] );
 		self::assertSame( 'address_book_full', $view['error']->get_error_code() );
 		self::assertSame( 'Use gate 3', $view['notes'] );
-		self::assertSame( $date, $view['preferred_delivery_date'] );
 		self::assertFalse( $view['can_confirm'] );
-		$view = $this->add_request( [ 'pow_address_refresh' => '1', 'notes' => 'Use gate 3', 'preferred_delivery_date' => '' ], [ 'pow_delivery_action' ] );
+		$view = $this->add_request( [ 'pow_address_refresh' => '1', 'notes' => 'Use gate 3' ], [ 'pow_delivery_action' ] );
 		self::assertCount( 1, $this->book->calls, 'The refresh asks the book nothing.' );
 		self::assertNull( $view['error'] );
 		self::assertSame( 'Use gate 3', $view['notes'] );
-		self::assertNull( $view['preferred_delivery_date'], 'An emptied date stays empty.' );
-		$view = $this->add_request( [ 'pow_address_refresh' => '1', 'notes' => "\xff", 'preferred_delivery_date' => '<b>2026-10-07</b>' ], [ 'pow_delivery_action' ] );
+		self::assertFalse( array_key_exists( 'preferred_delivery_date', $view ) );
+		$view = $this->add_request( [ 'pow_address_refresh' => '1', 'notes' => "\xff" ], [ 'pow_delivery_action' ] );
 		self::assertSame( '', $view['notes'] );
-		self::assertSame( self::in_days( 14 ), $view['preferred_delivery_date'] );
 		$this->assert_no_consent_or_handoff();
 	}
 

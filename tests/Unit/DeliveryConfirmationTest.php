@@ -375,112 +375,25 @@ final class DeliveryConfirmationTest extends TestCase {
 	}
 
 	private static function day(int $days,string $zone='UTC'):string{return (new \DateTimeImmutable('today',new \DateTimeZone($zone)))->modify('+'.$days.' days')->format('Y-m-d');}
-	public function test_review_defaults_the_preferred_date_to_fourteen_days_ahead_in_site_time():void{
-		$GLOBALS['pow_test_timezone']='Africa/Johannesburg';
+	/** 0.4.23: the review offers no preferred date of its own; a delivery date belongs to the shop's checkout. */
+	public function test_the_review_offers_no_preferred_date():void{
 		$v=$this->preview();
 		self::assertNull($v['error']);
-		self::assertSame(self::day(14,'Africa/Johannesburg'),$v['preferred_delivery_date']);
-		self::assertSame(self::day(1,'Africa/Johannesburg'),$v['preferred_delivery_date_min']);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$v));
+		self::assertFalse(array_key_exists('preferred_delivery_date_min',$v));
+		$prepared=$this->model->prepare($this->s->store->session,$this->s->registry->partner);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$prepared));
 	}
-	public function test_preferred_date_before_tomorrow_is_refused_on_review_and_submit():void{
-		foreach([self::day(0),'2020-01-01','2026-02-30','07/10/2026',['2026-10-07']] as $date){
-			$view=$this->preview(['preferred_delivery_date'=>$date]);
-			self::assertTrue(is_array($view));self::assertSame('delivery_date_invalid',$view['error']->get_error_code());self::assertFalse($view['can_confirm']);
-			$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>$date]));
-			self::assertInstanceOf(WP_Error::class,$result);self::assertSame('delivery_date_invalid',$result->get_error_code());
+	/** A date field an older page or template override still posts is ignored: no error, no change to the digests, nothing stored. */
+	public function test_a_posted_date_is_ignored_and_never_stored():void{
+		$plain=$this->preview();
+		foreach([self::day(3),self::day(0),'2020-01-01','2026-02-30','07/10/2026',['2026-10-07'],''] as $date){
+			$v=$this->preview(['preferred_delivery_date'=>$date]);
+			self::assertTrue(is_array($v));self::assertNull($v['error']);self::assertTrue($v['can_confirm']);
+			self::assertSame($plain['review_digest'],$v['review_digest']);
+			self::assertSame($plain['_confirmation_fingerprint'],$v['_confirmation_fingerprint']);
 		}
-		self::assertSame(0,$this->s->store->writes);
-		self::assertNull($this->s->store->session->delivery_confirmation_json);
-	}
-	public function test_buyer_can_change_the_date_on_the_shown_review_and_submit_directly():void{
-		$i=$this->input();$i['preferred_delivery_date']=self::day(3);
-		$result=$this->confirm($i);
-		self::assertTrue(is_array($result));
-		self::assertSame(2,$result['delivery_confirmation']['schema']);
-		self::assertSame(self::day(3),$result['delivery_confirmation']['preferred_delivery_date']);
-		$stored=json_decode($this->s->store->session->delivery_confirmation_json,true);
-		self::assertSame(self::day(3),$stored['preferred_delivery_date']);
-		$returned=$this->returned();self::assertTrue(is_array($returned));self::assertSame(self::day(3),$returned['delivery_preferred_date']);
-		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
-	}
-	public function test_date_is_bound_to_the_stored_fingerprint_not_the_review_digest():void{
-		$a=$this->preview(['preferred_delivery_date'=>self::day(2)]);$b=$this->preview(['preferred_delivery_date'=>self::day(5)]);
-		self::assertSame($a['review_digest'],$b['review_digest']);
-		self::assertNotSame($a['_confirmation_fingerprint'],$b['_confirmation_fingerprint']);
-		$first=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(2)]));
-		$second=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(5)]));
-		self::assertNotSame($first['delivery_confirmation']['cart_fingerprint'],$second['delivery_confirmation']['cart_fingerprint']);
-		$none=$this->preview(['preferred_delivery_date'=>'']);
-		self::assertSame($a['review_digest'],$none['review_digest']);
-	}
-	public function test_cleared_date_confirms_as_null():void{
-		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>'']));
-		self::assertTrue(is_array($result));
-		self::assertSame(1,$result['delivery_confirmation']['schema']);
-		self::assertFalse(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
-		$returned=$this->returned();self::assertTrue(is_array($returned));self::assertNull($returned['delivery_preferred_date']);
-		// A cleared date stays cleared on the next review instead of returning to the default.
-		self::assertNull($this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
-	}
-	public function test_previous_date_is_offered_again_on_the_next_review():void{
-		$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(4)]));
-		self::assertSame(self::day(4),$this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
-	}
-	public function test_schema_one_confirmation_from_before_the_upgrade_still_returns():void{
-		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>'']));self::assertTrue(is_array($result));
-		$old=json_decode($this->s->store->session->delivery_confirmation_json,true);$old['schema']=1;unset($old['preferred_delivery_date']);
-		$this->s->store->change(['delivery_confirmation_json'=>json_encode($old)]);
-		$returned=$this->returned();
-		self::assertTrue(is_array($returned));
-		self::assertNull($returned['delivery_preferred_date']);
-		self::assertSame(1,$returned['delivery_confirmation']['schema']);
-		self::assertFalse(array_key_exists('preferred_delivery_date',$returned['delivery_confirmation']));
-		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
-	}
-	public function test_return_after_midnight_accepts_a_date_that_is_no_longer_tomorrow():void{
-		// Confirm at UTC-11 for its tomorrow, then return at UTC+14, where that date is today or earlier.
-		$GLOBALS['pow_test_timezone']='Pacific/Pago_Pago';
-		$date=self::day(1,'Pacific/Pago_Pago');
-		self::assertTrue(is_array($this->confirm(array_replace($this->input(),['preferred_delivery_date'=>$date]))));
-		$GLOBALS['pow_test_timezone']='Pacific/Kiritimati';
-		self::assertTrue($date<=self::day(0,'Pacific/Kiritimati'));
-		$returned=$this->returned();
-		self::assertTrue(is_array($returned));
-		self::assertSame($date,$returned['delivery_preferred_date']);
-		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
-		// The next review drops the stale stored date and offers the default instead.
-		self::assertSame(self::day(14,'Pacific/Kiritimati'),$this->model->prepare($this->s->store->session,$this->s->registry->partner)['preferred_delivery_date']);
-		// Posting the same stale date is refused on the review itself, with Submit disabled. The date stays in the field for display only and binds nothing.
-		$v=$this->preview(['preferred_delivery_date'=>$date]);
-		self::assertTrue(is_array($v));
-		self::assertSame('delivery_date_invalid',$v['error']->get_error_code());
-		self::assertFalse($v['can_confirm']);
-		self::assertSame($date,$v['preferred_delivery_date']);
-		self::assertSame($this->preview(['preferred_delivery_date'=>''])['_confirmation_fingerprint'],$v['_confirmation_fingerprint']);
-	}
-	public function test_tampered_prepared_date_fails_the_final_guard():void{
-		$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(3)]));$r=$this->returned();self::assertTrue(is_array($r));
-		$r['delivery_preferred_date']='2099-01-01';
-		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
-		unset($r['delivery_preferred_date']);
-		self::assertInstanceOf(WP_Error::class,$this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$r)));
-	}
-	public function test_virtual_cart_never_stores_a_preferred_date():void{
-		$this->s->cart->cart_contents['line']['data']->physical=false;
-		self::assertNull($this->preview()['preferred_delivery_date']);
-		$i=$this->input();unset($i['provider'],$i['key']);$i['preferred_delivery_date']=self::day(3);
-		$result=$this->confirm($i);
-		self::assertTrue(is_array($result));
-		self::assertNull($this->s->store->session->delivery_choice_json);
-		self::assertSame(1,$result['delivery_confirmation']['schema']);
-		self::assertFalse(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
-		self::assertNull($this->returned()['delivery_preferred_date']);
-	}
-	/** An older template override posts no date field: that is no preference, never the 14-day default the review only displays. */
-	public function test_confirm_without_the_date_field_stores_no_preference():void{
-		$i=$this->input();
-		self::assertFalse(array_key_exists('preferred_delivery_date',$i));
-		$result=$this->confirm($i);
+		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(3)]));
 		self::assertTrue(is_array($result));
 		self::assertSame(1,$result['delivery_confirmation']['schema']);
 		self::assertFalse(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
@@ -488,28 +401,43 @@ final class DeliveryConfirmationTest extends TestCase {
 		self::assertSame(1,$stored['schema']);
 		self::assertFalse(array_key_exists('preferred_delivery_date',$stored));
 		$returned=$this->returned();self::assertTrue(is_array($returned));
-		self::assertNull($returned['delivery_preferred_date']);
+		self::assertFalse(array_key_exists('delivery_preferred_date',$returned));
+		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
 	}
-	public function test_the_fourteen_day_default_is_display_only():void{
-		self::assertSame(self::day(14),$this->preview()['preferred_delivery_date']);
-		self::assertSame(0,$this->s->store->writes);
+	public function test_a_virtual_cart_confirms_without_a_date_too():void{
+		$this->s->cart->cart_contents['line']['data']->physical=false;
+		$i=$this->input();unset($i['provider'],$i['key']);$i['preferred_delivery_date']=self::day(3);
+		$result=$this->confirm($i);
+		self::assertTrue(is_array($result));
+		self::assertSame(1,$result['delivery_confirmation']['schema']);
+		self::assertFalse(array_key_exists('preferred_delivery_date',$result['delivery_confirmation']));
 	}
-	/** 'Update delivery options' with an invalid date still applies the posted address and rate, and only withholds Submit. */
-	public function test_invalid_date_on_update_keeps_the_new_address_and_rate():void{
-		$second=$this->s->resolver->choices[0];
-		$second['key']='depot2';$second['label']='Depot 2';$second['code']='DEPOT2';$second['address']['address_1']='2 Side St';$second['entry_fingerprint']=str_repeat('c',64);
-		$this->s->resolver->choices[]=$second;
-		$pk=$this->preview()['packages'][0]['package_key'];
-		$v=$this->preview(['provider'=>'native','key'=>'depot2','rates'=>[$pk=>'flat:2'],'preferred_delivery_date'=>self::day(0)]);
-		self::assertTrue(is_array($v));
-		self::assertSame('delivery_date_invalid',$v['error']->get_error_code());
-		self::assertSame('depot2',$v['selected_choice']['key']);
-		self::assertSame('flat:2',$v['packages'][0]['selected_rate_id']);
-		self::assertFalse($v['can_confirm']);
-		self::assertSame(0,$this->s->store->writes);
-		$result=$this->confirm(array_replace($this->input(),['preferred_delivery_date'=>self::day(0)]));
-		self::assertInstanceOf(WP_Error::class,$result);
-		self::assertSame('delivery_date_invalid',$result->get_error_code());
+	public function test_schema_one_confirmation_from_before_the_upgrade_still_returns():void{
+		$result=$this->confirm($this->input());self::assertTrue(is_array($result));
+		$old=json_decode($this->s->store->session->delivery_confirmation_json,true);$old['schema']=1;
+		$this->s->store->change(['delivery_confirmation_json'=>json_encode($old)]);
+		$returned=$this->returned();
+		self::assertTrue(is_array($returned));
+		self::assertSame(1,$returned['delivery_confirmation']['schema']);
+		self::assertTrue($this->s->registry->with_partner_lock(7,fn()=>$this->model->validate_prepared_locked($this->s->store->session,$this->s->registry->partner,$returned)));
+	}
+	/**
+	 * A consent given on 0.4.22 with a date chose it on a page that no longer exists; its stored fingerprint bound the
+	 * date, which this review no longer computes. It returns nothing and the buyer reviews again (and then confirms
+	 * without a date). Schema 2 records are still read: the Quotes they produced keep their date.
+	 */
+	public function test_a_dated_consent_from_before_the_upgrade_asks_for_a_new_review():void{
+		$this->confirm($this->input());
+		$old=json_decode($this->s->store->session->delivery_confirmation_json,true);
+		$confirmed_at=$old['confirmed_at'];unset($old['confirmed_at']);
+		$old['schema']=2;$old['preferred_delivery_date']=self::day(3);$old['cart_fingerprint']=str_repeat('e',64);$old['confirmed_at']=$confirmed_at;
+		$this->s->store->change(['delivery_confirmation_json'=>json_encode($old)]);
+		self::assertSame(self::day(3),$this->s->store->session->delivery_confirmation()['preferred_delivery_date'],'Schema 2 is still read');
+		$returned=$this->returned();
+		self::assertInstanceOf(WP_Error::class,$returned);
+		self::assertSame('delivery_review_required',$returned->get_error_code());
+		self::assertNull($this->s->store->session->delivery_confirmation_json,'The old consent is cleared');
+		self::assertTrue(is_array($this->confirm($this->input())),'A new review confirms');
 	}
 	/** The review template's per-line totals must add up to the merchandise total the view (and the cXML) carries. */
 	public function test_line_totals_add_up_to_the_merchandise_total():void{
