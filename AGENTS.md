@@ -20,6 +20,7 @@ A standalone cXML PunchOut plugin for WooCommerce (namespace `POW`, source in `i
 ## Tests
 - Unit, no Composer needed: `php tests/run-tests.php` (1282 pass at 0.4.22). Also `php tests/CartBlocks/surface.php` (23), `node --test tests/CartBlocks/cart-blocks.test.js` (5), `node --test tests/Review/delivery-review.test.js` (2), `php tests/Account/run.php` (29), `php tests/Admin/run.php` (44).
 - Native suites (opt-in) need a disposable WordPress + WooCommerce + MariaDB site with this plugin linked in; see `tests/README.md`. Example: `POW_NATIVE_TESTS=disposable POW_NATIVE_SCRIPT=$PWD/tests/Integration/TwoBuyerNative.php wp --user=1 eval 'require getenv("POW_NATIVE_SCRIPT");'` (the same for VisitLockdownNative, SessionSafetyNative, AddressSchemaNative, AdminActionsNative and DeliveryStoreNative). RegistrationLifecycleNative runs via `eval-file`. ConcurrencyNative also needs `POW_NATIVE_CONCURRENCY_MODE=suite`, `POW_NATIVE_WP_CLI`, `POW_NATIVE_WP_PATH`, `POW_NATIVE_WP_USER` and `POW_NATIVE_FIXTURE_ROOT`.
+- End-to-end over real HTTP (opt-in, disposable local fixture): `python3 tests/E2E/driver.py --wp-path <site> --wp-cli <wp-cli.phar> --link-plugin "$PWD"` sends a Dynamics-shaped setup request, redeems, fills the cart, returns it and validates the cXML; its own unit tests are `python3 -m unittest discover -s tests/E2E -p 'test_*.py'`. Runbook: `tests/README.md`, "End-to-end HTTP driver".
 
 ## Backlog
 - Per-connection return-button label (the label is plugin-wide today).

@@ -15,3 +15,6 @@ composer.lock
 .agents/
 .claude/
 .specify/
+
+# Python bytecode (tests/E2E)
+__pycache__/
