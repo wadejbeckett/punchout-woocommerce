@@ -9,7 +9,7 @@ defined( 'ABSPATH' ) || exit;
 echo '= ' . esc_html( wp_strip_all_tags( $email_heading ) ) . " =\n\n";
 printf(
 	/* translators: 1: connection name, 2: buyer */
-	esc_html__( 'A buyer at %1$s has returned a cart from their purchasing system. %2$s The order is waiting as a Punchout Quote until their approval comes through.', 'punchout-woocommerce' ),
+	esc_html__( 'A cart from a buyer at %1$s has been sent to the buyer’s purchasing system. %2$s The order is waiting here as a Punchout Quote.', 'punchout-woocommerce' ),
 	esc_html( '' !== $connection ? $connection : __( 'a punchout connection', 'punchout-woocommerce' ) ),
 	esc_html( '' !== $buyer_name || '' !== $buyer_identity ? sprintf( /* translators: %s: buyer */ __( 'Bought by %s.', 'punchout-woocommerce' ), trim( $buyer_name . ( '' !== $buyer_identity ? ' (' . $buyer_identity . ')' : '' ) ) ) : '' )
 );

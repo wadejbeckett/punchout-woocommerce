@@ -6,7 +6,7 @@ namespace POW\Sessions;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * A double click on "Submit for approval" sends two POSTs. The browser keeps only the response to the last one,
+ * A double click on "Submit" sends two POSTs. The browser keeps only the response to the last one,
  * but the first one wins the return (the visit's single-winner transition) and ends the login, so the second one
  * used to get an error page and the cart never reached the purchasing system.
  *

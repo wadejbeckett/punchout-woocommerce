@@ -109,7 +109,7 @@ final class Surface {
 	 * Also '' on the delivery review drawn inside the theme (0.4.22): the
 	 * button opens the review, so a theme header or visit bar that carries
 	 * it would only reload the page the buyer is already on. The review's
-	 * own "Submit for approval" is the exit there.
+	 * own "Submit" is the exit there.
 	 */
 	public function markup(): string {
 		$session = $this->plugin->current_session();

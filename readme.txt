@@ -18,7 +18,7 @@ PunchOut for WooCommerce lets enterprise buyers "punch out" from their procureme
 
 **One store account per customer.** Each connection is bound to one WooCommerce customer account, which you create and group yourself, once; buyers punch in as that account and see exactly what it sees, at whatever prices and visibility you gave it. Every punchout visit still gets its own basket, delivery selection and quote order, and the buyer name and e-mail their purchasing system sends are recorded on the visit and stamped on the quote.
 
-**PunchOut only.** Buyers send the cart back for approval; checkout is blocked inside a punchout visit and nowhere else. Ordinary shoppers, including anyone who signs into the bound account with a password, are never affected.
+**PunchOut only.** Buyers send the cart to their purchasing system; checkout is blocked inside a punchout visit and nowhere else. Ordinary shoppers, including anyone who signs into the bound account with a password, are never affected.
 
 **Additive, never invasive.** The plugin adds endpoints and a cart button. It never creates, renames or deletes users, and it does not override, replace or filter the WooCommerce checkout or any payment gateway.
 

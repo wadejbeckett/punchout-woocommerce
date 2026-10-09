@@ -53,7 +53,7 @@ defined( 'ABSPATH' ) || exit;
  * login, her cookie and her own basket.
  *
  * A repeated request for a visit that has already handed its cart back (a
- * double click on "Submit for approval": the browser shows only the answer
+ * double click on "Submit": the browser shows only the answer
  * to the last request, and the first one won) gets the winner's handoff page
  * again instead of the expired page (0.4.22, HandoffReplay, replay()).
  *
