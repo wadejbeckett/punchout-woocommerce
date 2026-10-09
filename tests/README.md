@@ -92,3 +92,47 @@ Integration behaviour that requires WordPress/WooCommerce or a real buyer tenant
 `Unit/AdminActionsTest.php` and `Admin/doubles.php` exercise the real Admin actions, page, Registry and Registration through recording SQL and WordPress I/O boundaries. `php tests/Admin/run.php` is the focused entry point. The namespaced admin seams own only admin I/O and do not replace shared global test stubs. Every `POW\Admin` seam the eval-loaded `Admin\Page` binds — including `get_users` — lives in `Admin/doubles.php`, so no test file is a dependency of another test file: a suite that needs the admin surface requires the doubles, never a peer's test case. Coverage includes pending preparation and explicit approval, supplier identity/entitlement validation, every admin handler's POST/capability/nonce gates, escaped direct credentials for manual creation/replacement and generated creation/rotation/approval/reset, rotation overlap, reset failure notices, legacy-owner validation and lock order, stale claim checks, owner-ID auditing, legacy plaintext-notice suppression and native message-renderer cache-header replacement. Recorded writes, captured mail and notices are scanned for the generated plaintext. These are unit boundary checks, not native persistence, wire headers or real concurrent transactions.
 
 `Integration/AdminActionsNative.php` is an opt-in CLI script for the coordinator's disposable local WordPress/WooCommerce candidate. It creates neutral users/connections and checks actual admin hook callbacks, native nonce/capability denial, pending preparation/approval, sealed credential persistence, native audit ownership records, captured mail, binding refusals (a missing account, a privileged one, an account carrying a legacy association, an account another connection already names, and an actor claiming its own), the My Account list saved from real checkbox posts (a new connection's `dashboard` default, a payment page refused on a punchout-only connection, a non-list refused, a name typed in the add-by-name box stored and a malformed one refused, an all-unticked list clearing the column), reset token and visit revocation, preservation of company association and an injected SQL failure notice. It captures terminal responses through WordPress's own `wp_die_handler` and redirect filters, intercepts mail before transport, and prints no credentials. It does not delete its fixtures. Execute only with `POW_NATIVE_TESTS=disposable`, WordPress environment type `local`, a capable fixture administrator and the candidate plugin active. Its file header supplies the invocation. Native HTTP no-store/GET behavior, browser rendering and independent-process ownership races remain separate coordinated acceptance checks; merely linting or passing the standalone suite does not establish them.
+
+## End-to-end HTTP driver (tests/E2E/)
+
+`tests/E2E/driver.py` proves a release from the buyer's purchasing system to the cXML it gets back, over real HTTP against a disposable local WordPress/WooCommerce. Python 3 standard library only; opt-in; nothing in the ordinary suites runs it.
+
+One run: `fixture.php` (over WP-CLI) seeds an ordinary customer account with a deliverable shipping address, one active test connection bound to it (ship-to and notes sent, no delivery line, ALL CAPS on) and two priced simple products, all named with a random run id. The driver serves the site with PHP's built-in server on `127.0.0.1` (`router.php`), starts its own loopback receiver as the buyer's punchback URL, and then:
+
+1. POSTs a PunchOutSetupRequest in the exact one-line shape a Dynamics 365 tenant sends (`ParserTest::test_parses_the_exact_request_shape_a_live_dynamics_tenant_sends`, neutral identities);
+2. redeems the StartPage as a browser does: a GET that redirects is a redeem (0.4.22), a page that posts itself back (0.4.23 and later) is submitted by POST, and then the GET must have left the link unused;
+3. adds both products with `?wc-ajax=add_to_cart` and checks the landing page is inside the visit (`pow-visit`);
+4. leaves through the release's path: the cart's Punchout exit (the classic return form, or the Cart block's configured link), the review (choosing the first address and a rate when none is preselected, a note) and Submit — every form is read from the page and posted with its own fields and the clicked button only (`forms.py`);
+5. reads the handoff page's form, posts it to the receiver as the browser's auto-post would, and checks the posted field equals the page's byte for byte;
+6. decodes the cXML and checks it (`poom.py`; exact 1.2.008 DTD through `dtd.php` and `Support/ExactCxmlDtd.php`): `field_is_cxml_base64`, `posted_form_urlencoded`, `doctype_1_2_008`, `valid_against_cxml_1_2_008_dtd`, `payloadID_timestamp`, `header_reversed_identity_only`, `no_shared_secret_in_return` (no element and not the connection's secret anywhere), `deployment_mode_test`, `buyer_cookie_echoed`, `operation_allowed`, one `line <SKU>` per cart line (quantity, ex-tax unit price, currency, `<product id>|<variation id>`), `no_unexpected_lines`, `every_line_has_uom_and_classification`, `no_freight_line` (or `freight_line` when the connection emits one), `total_equals_sum_of_lines`, `ship_to_present`, `delivery_notes_carried`;
+7. repeats the Submit with the cookies the browser held before the first answer (a double click) and expects the same handoff;
+8. reads back the visit (`returned`, login dead, the browser no longer in it) and its one order (bound account, buyer cookie, lines equal to the cart, Punchout Quote on the review path), then disables the run's connection.
+
+### Running it
+
+A disposable fixture needs: WordPress with environment type `local`, WooCommerce, MariaDB, this plugin active with its master switch on, a store base address that is an allowed shipping destination with a shipping method for it, and outbound mail and HTTP blocked (a must-use plugin returning early from `pre_wp_mail` and `pre_http_request`). PHP CLI needs `mysqli` and `dom`. For the 0.5.0 path the checkout page must be a classic `[woocommerce_checkout]` page; an address-book plugin is optional and reported in the seed.
+
+```bash
+F=/path/to/disposable-fixture            # holds site/ (the WordPress root) and wp-cli.phar
+export PHP_INI_SCAN_DIR=...              # if mysqli/dom are loaded from extra ini files
+python3 tests/E2E/driver.py --wp-path "$F/site" --wp-cli "$F/wp-cli.phar" --link-plugin "$PWD"
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--link-plugin DIR` | none | Point `wp-content/plugins/punchout-woocommerce` (which must be a symlink) at the candidate checkout for this run and put the old link back afterwards, also on failure |
+| `--redeem auto\|get\|post` | `auto` | `auto` behaves like a browser; `post` POSTs the StartPage outright; `get` only GETs (0.4.22 and earlier) |
+| `--path auto\|review\|checkout` | `auto` | `auto` takes the review below 0.5.0 and WooCommerce checkout from 0.5.0 |
+| `--url http://127.0.0.1:PORT` | start a server | Use an already running server for `--wp-path` instead |
+| `--out DIR` | `<wp-path>/../e2e-runs/run-<id>` | Private run directory (mode 700) |
+| `--wp-user`, `--php` | `1`, `php` | Fixture administrator for WP-CLI; PHP binary |
+
+Each check prints `PASS` or `FAIL`; the exit code is non-zero on any failure. The run directory keeps the evidence: `setup-request.xml` (secret redacted), `setup-response.xml`, `cart.html`, `review.html`, `handoff.html`, `poom.xml`, `checks.json`, `inspect.json`, `result.json`, `wp-cli.log` and `php-server.log`. `fixture.json` holds the run's generated shared secret: it is mode 600 and must stay outside this repository. The driver refuses any URL that is not `http://127.0.0.1` and prints no secret. Nothing is deleted: the account, the disabled connection, the products, the visit and its order stay in the fixture.
+
+The driver's own decisions are unit-tested without a site: `python3 -m unittest discover -s tests/E2E -p 'test_*.py'` (form submission rules, every cXML check on a neutral DTD-valid sample, the request shape, start-link and cart-exit handling, the release path). `Unit/EndToEndDriverShapeTest.php` is the standing check from the PHP suite: the pieces parse, the fixture script refuses anything but an opted-in disposable local WP-CLI run and creates no user except the ordinary bound customer, the driver targets the loopback address and never prints the secret, and `dtd.php` accepts the plugin's own sample return and refuses a broken one.
+
+What it does not prove: anything a real browser or theme adds (scripts, layout, the review drawn inside a classic theme), WooCommerce e-mails, concurrency (`Integration/ConcurrencyNative.php`), or acceptance by a real purchasing system.
+
+### The 0.5.0 checkout path
+
+`checkout_path()` in `driver.py` is the extension point: it raises `NotImplementedError` until the PunchOut payment method exists, so `--path checkout` (and `auto` on 0.5.0) fails with `release_path_available` rather than passing. Its docstring lists the steps: the cart's visit-only label, the classic checkout offering only the `punchout` method with the Submit label, `woocommerce-process-checkout-nonce`, a POST to `?wc-ajax=checkout` with the page's own fields, `order_comments`, the chosen saved address and `payment_method=punchout`, then the GET handoff. It returns the handoff page, so capture and every cXML and store check stay shared with the review path.
