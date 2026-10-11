@@ -37,8 +37,12 @@ namespace POW\Http {
 		\wp_set_auth_cookie( $user_id, $remember, $secure, $token );
 	}
 
-	function wp_safe_redirect( string $url, int $status = 302 ): void {
-		$GLOBALS['pow_start_redirects'][] = [ $url, $status ];
+	// Shared with CancelAndReturnTest, which reads pow_test_redirects: whichever file loads first defines it.
+	if ( ! function_exists( __NAMESPACE__ . '\\wp_safe_redirect' ) ) {
+		function wp_safe_redirect( string $url, int $status = 302 ): void {
+			$GLOBALS['pow_start_redirects'][] = [ $url, $status ];
+			$GLOBALS['pow_test_redirects'][] = [ $url, $status ];
+		}
 	}
 }
 

@@ -1,6 +1,6 @@
 <?php
 /**
- * Exit-control label resolution (0.2.4): the operator's saved setting
+ * Control label resolution (0.2.4): the operator's saved setting
  * wins over the translated default, and the label filter runs last so
  * code can always override either.
  *
@@ -20,7 +20,7 @@ use POW\Settings;
 
 final class ButtonLabelTest extends TestCase {
 
-	private const RETURN_DEFAULT  = 'Punchout';
+	private const RETURN_DEFAULT  = 'Proceed to checkout';
 	private const ABANDON_DEFAULT = 'Return without a cart';
 
 	protected function setUp(): void {
@@ -44,11 +44,11 @@ final class ButtonLabelTest extends TestCase {
 	}
 
 	public function test_saved_label_is_trimmed(): void {
-		self::assertSame( 'Punch out', Settings::resolve_label( "  Punch out\n", self::RETURN_DEFAULT ) );
+		self::assertSame( 'Review', Settings::resolve_label( "  Review\n", self::RETURN_DEFAULT ) );
 	}
 
 	public function test_defaults_are_the_shipped_strings(): void {
-		self::assertSame( 'Punchout', Settings::resolve_label( '', self::RETURN_DEFAULT ) );
+		self::assertSame( 'Proceed to checkout', Settings::resolve_label( '', self::RETURN_DEFAULT ) );
 		self::assertSame( 'Return without a cart', Settings::resolve_label( '', self::ABANDON_DEFAULT ) );
 		self::assertStringNotContainsString( 'basket', self::ABANDON_DEFAULT );
 	}
@@ -58,16 +58,16 @@ final class ButtonLabelTest extends TestCase {
 	 * filter overrides both a saved label and the default.
 	 */
 	public function test_filter_runs_last(): void {
-		$GLOBALS['pow_test_filters']['pow_return_button_label'] = static fn ( string $label ): string => 'Filtered';
+		$GLOBALS['pow_test_filters']['punchout_checkout_button_label'] = static fn ( string $label ): string => 'Filtered';
 
 		self::assertSame(
 			'Filtered',
-			apply_filters( 'pow_return_button_label', Settings::resolve_label( 'Saved label', self::RETURN_DEFAULT ) )
+			apply_filters( 'punchout_checkout_button_label', Settings::resolve_label( 'Saved label', self::RETURN_DEFAULT ) )
 		);
 
 		self::assertSame(
 			'Filtered',
-			apply_filters( 'pow_return_button_label', Settings::resolve_label( '', self::RETURN_DEFAULT ) )
+			apply_filters( 'punchout_checkout_button_label', Settings::resolve_label( '', self::RETURN_DEFAULT ) )
 		);
 	}
 

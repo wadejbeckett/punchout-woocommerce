@@ -3,7 +3,7 @@
  * The service doubles Orders\QuoteOrder is constructed with.
  *
  * They live here rather than beside one test class because two suites now
- * build a QuoteOrder (QuoteConvertTest and QuoteOrderCreateTest) and the
+ * build a QuoteOrder (QuoteConvertTest and CancelAndReturnTest) and the
  * standalone runner requires each file only when it reaches it: doubles
  * declared inside one test file do not exist yet for the file that sorts
  * before it. Loading them from the bootstrap makes the order irrelevant

@@ -43,16 +43,16 @@ final class LifetimeCapTest extends TestCase {
 		self::assertSame( 0, $sanitise->invoke( $registry, [ 'session_ttl' => -5 ] )['session_ttl'] );
 	}
 
-	public function test_the_plugin_defaults_are_saved_within_the_cap_and_the_review_title_as_plain_text(): void {
+	public function test_the_plugin_defaults_are_saved_within_the_cap_and_a_label_as_plain_text(): void {
 		$admin = ( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor();
 		( new ReflectionProperty( $admin, 'settings' ) )->setValue( $admin, new POW\Settings() );
-		$clean = $admin->sanitize_settings( [ 'token_ttl' => 900000, 'session_ttl' => 259200, 'review_title' => ' <em>Check</em> and send ' ] );
+		$clean = $admin->sanitize_settings( [ 'token_ttl' => 900000, 'session_ttl' => 259200, 'checkout_button_label' => ' <em>Check</em> and send ' ] );
 		self::assertSame( 604800, $clean['token_ttl'] );
 		self::assertSame( 259200, $clean['session_ttl'] );
-		self::assertSame( 'Check and send', $clean['review_title'] );
+		self::assertSame( 'Check and send', $clean['checkout_button_label'] );
 		$floor = $admin->sanitize_settings( [ 'token_ttl' => 1, 'session_ttl' => 1 ] );
 		self::assertSame( 30, $floor['token_ttl'] );
 		self::assertSame( 300, $floor['session_ttl'] );
-		self::assertSame( '', $admin->sanitize_settings( [] )['review_title'] );
+		self::assertSame( '', $admin->sanitize_settings( [] )['checkout_button_label'] );
 	}
 }

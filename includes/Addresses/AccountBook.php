@@ -135,7 +135,7 @@ final class AccountBook {
 	/* ---------------------------------------------------------------- choices for a visit */
 
 	/**
-	 * The review's choices for this connection, or null when the account book is not in use (no API, unreadable, or empty).
+	 * The account's saved addresses as choices for this connection, or null when the account book is not in use (no API, unreadable, or empty). Since 0.5.0 the visit chooses at WooCommerce's checkout; this read serves the administrator screen's count and the migration.
 	 * Caller holds the partner mutex. Codes are reconciled and, when changed, stored on the account.
 	 *
 	 * @return list<array>|null
@@ -157,7 +157,7 @@ final class AccountBook {
 		catch ( \Throwable $error ) { return false; }
 	}
 
-	/** One review choice in the plugin's fixed shape. */
+	/** One choice in the plugin's fixed shape (the snapshot shape visits returned before 0.5.0 stored). */
 	public static function choice( Partner $partner, string $key, array $entry, string $code ): array {
 		return [ 'schema' => 1, 'partner_id' => $partner->id, 'storage_user_id' => $partner->owner_user_id, 'provider' => self::PROVIDER, 'key' => $key, 'code' => $code, 'address' => $entry['address'], 'label' => $entry['label'], 'source' => self::SOURCE, 'book_revision' => null, 'entry_fingerprint' => self::entry_fingerprint( $key, $entry['label'], $entry['address'], $code ) ];
 	}

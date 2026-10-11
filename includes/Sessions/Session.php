@@ -135,12 +135,12 @@ final class Session {
 		);
 	}
 
-	/** A snapshot decoder only: Resolver must freshly authorize an active selection. */
+	/** A snapshot decoder only (Addresses\DeliveryData): the stored choice of a visit returned before 0.5.0. Nothing writes one any more. */
 	public function delivery_choice(): ?array {
 		return null === $this->delivery_choice_json ? null : \POW\Addresses\DeliveryData::choice( $this->delivery_choice_json, $this->partner_id );
 	}
 
-	/** Historical structured consent; current cart, policy and address eligibility are checked separately. */
+	/** Historical structured consent of a visit returned before 0.5.0; decoded as stored, never written any more. */
 	public function delivery_confirmation(): ?array {
 		return null === $this->delivery_confirmation_json ? null : \POW\Addresses\DeliveryData::confirmation( $this->delivery_confirmation_json, $this->id, $this->user_id, $this->delivery_choice() );
 	}

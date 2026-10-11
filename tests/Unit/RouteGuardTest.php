@@ -346,7 +346,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		$order = $this->quote_order( 501, self::VISIT );
 
 		try { $guard->enforce_order( $order ); self::fail( 'enforce_order must refuse inside a visit' ); }
-		catch ( Exception $error ) { self::assertStringContainsString( 'Punchout', $error->getMessage() ); }
+		catch ( Exception $error ) { self::assertStringContainsString( 'catalog session', $error->getMessage() ); self::assertStringContainsString( '"Proceed to checkout"', $error->getMessage(), 'The buyer is pointed at the cart\'s checkout button' ); self::assertStringNotContainsString( 'Punchout"', $error->getMessage(), 'The old return button is not named' ); }
 
 		try { $guard->block_store_api_checkout( $order ); self::fail( 'The Store API route must refuse inside a visit' ); }
 		catch ( RouteGuardHalt $halt ) { self::assertStringContainsString( 'catalog session', $halt->getMessage() ); self::assertSame( 403, $halt->status ); }
@@ -494,7 +494,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		[ $type, $message ] = $this->notices()[0];
 		self::assertSame( 'notice', $type );
 		self::assertStringContainsString( 'not available', $message );
-		self::assertStringContainsString( '"Punchout"', $message, 'The buyer is pointed at the configured return control' );
+		self::assertStringContainsString( '"Proceed to checkout"', $message, 'The buyer is pointed at the cart\'s checkout button (the Checkout button label)' );
 
 		// A second refusal in the same request does not stack the same notice.
 		$this->guarded( $this->guard( $this->visit() ) );

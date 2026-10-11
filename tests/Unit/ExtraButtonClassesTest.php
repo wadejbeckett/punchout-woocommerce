@@ -2,8 +2,10 @@
 /**
  * The "Extra button classes" setting: one plugin-wide list of the site's own
  * button classes, normalised on save and again on read, appended to the
- * visit's exit controls and the review page's primary actions before the
- * pow_button_classes filter, which keeps the last word.
+ * visit's cancel control before the pow_button_classes filter, which keeps
+ * the last word. Since 0.5.0 the checkout links keep WooCommerce's own
+ * classes and the old return button renders nothing, so the cancel control
+ * is the one control that carries them.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -63,51 +65,47 @@ namespace {
 			return $m[1];
 		}
 
-		public function test_tokens_are_sanitised_deduplicated_and_never_a_plugin_or_hidden_class(): void {
-			self::assertSame( [ 'site-btn', 'big', 'bx' ], Settings::button_class_tokens( 'site-btn  big site-btn pow-x checkout-button <b>x' ) );
+		public function test_tokens_are_sanitised_deduplicated_and_never_a_plugin_class(): void {
+			self::assertSame( [ 'site-btn', 'big', 'bx' ], Settings::button_class_tokens( 'site-btn  big site-btn pow-x <b>x' ) );
 			self::assertSame( [], Settings::button_class_tokens( null ) );
 			self::assertSame( [], Settings::button_class_tokens( [ 'site-btn' ] ) );
 			self::assertSame( [], Settings::button_class_tokens( '   ' ) );
-			self::assertSame( [ 'a' ], Settings::button_class_tokens( "POW-return\tcheckout a\ncheckout-button" ) );
+			self::assertSame( [ 'a' ], Settings::button_class_tokens( "POW-return\ta\nPow-Abandon" ) );
 			self::assertCount( 20, Settings::button_class_tokens( implode( ' ', array_map( static fn( int $i ): string => 'c' . $i, range( 1, 30 ) ) ) ) );
 		}
 
-		/** One list: every class the visit stylesheet hides is refused as an extra class, so no extra class can hide the visit's exit or the review's buttons. */
-		public function test_the_reserved_classes_are_exactly_the_ones_the_visit_stylesheet_hides(): void {
-			$reserved = Settings::reserved_button_classes();
-			self::assertSame( [ 'checkout-button', 'checkout', 'wc-block-mini-cart__footer-checkout' ], $reserved );
-			self::assertCount( count( Settings::VISIT_HIDDEN_SELECTORS ), $reserved );
-			foreach ( Settings::VISIT_HIDDEN_SELECTORS as $i => $selector ) { self::assertSame( '.' . $reserved[ $i ], substr( $selector, -strlen( '.' . $reserved[ $i ] ) ) ); }
-			foreach ( $reserved as $class ) { self::assertSame( [ 'site-btn' ], Settings::button_class_tokens( $class . ' site-btn' ), $class ); }
-			// The settings help names them from the same list.
+		/** 0.5.0: the visit stylesheet that hid checkout links is gone with the review, and with it the classes it reserved. */
+		public function test_no_class_is_reserved_any_more_and_the_help_names_the_cancel_control(): void {
+			self::assertFalse( method_exists( Settings::class, 'reserved_button_classes' ) );
+			self::assertFalse( defined( Settings::class . '::VISIT_HIDDEN_SELECTORS' ) );
+			self::assertSame( [ 'checkout-button', 'site-btn' ], Settings::button_class_tokens( 'checkout-button site-btn' ), 'Nothing is hidden, so nothing is reserved' );
 			$saved = $GLOBALS['pow_test_settings_fields'] ?? null; $GLOBALS['pow_test_settings_fields'] = [];
 			try {
 				( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor()->register_settings();
 				$help = $GLOBALS['pow_test_settings_fields']['pow_extra_button_classes']['help'];
 			} finally { if ( null === $saved ) { unset( $GLOBALS['pow_test_settings_fields'] ); } else { $GLOBALS['pow_test_settings_fields'] = $saved; } }
-			foreach ( $reserved as $class ) { self::assertStringContainsString( $class, $help ); }
+			self::assertStringContainsString( '[punchout_abandon_button]', $help );
 			self::assertStringContainsString( 'pow-', $help );
+			foreach ( [ 'review', 'Punchout exit', 'add-address' ] as $retired ) { self::assertStringNotContainsString( $retired, $help, $retired ); }
 		}
 
 		public function test_settings_read_sanitises_again(): void {
 			$this->extras( 'site-btn pow-return-button "><script> site-btn' );
 			self::assertSame( [ 'site-btn', 'script' ], ( new Settings() )->extra_button_classes() );
-			self::assertSame( 'site-btn script', Surface::extra_button_classes() );
 			$this->extras( '' );
 			self::assertSame( [], ( new Settings() )->extra_button_classes() );
-			self::assertSame( '', Surface::extra_button_classes() );
 		}
 
 		public function test_saving_the_settings_keeps_the_normalised_key(): void {
 			$admin = ( new ReflectionClass( POW\Admin\Page::class ) )->newInstanceWithoutConstructor();
 			( new ReflectionProperty( $admin, 'settings' ) )->setValue( $admin, new Settings() );
-			self::assertSame( 'site-btn big', $admin->sanitize_settings( [ 'extra_button_classes' => ' site-btn big pow-x site-btn checkout ' ] )['extra_button_classes'] );
+			self::assertSame( 'site-btn big', $admin->sanitize_settings( [ 'extra_button_classes' => ' site-btn big pow-x site-btn ' ] )['extra_button_classes'] );
 			self::assertSame( '', $admin->sanitize_settings( [] )['extra_button_classes'] );
 			self::assertSame( '', $admin->sanitize_settings( [ 'extra_button_classes' => [ 'x' ] ] )['extra_button_classes'] );
 		}
 
-		/** 0.5.0 (ticket 76): the return button renders nothing, so the abandon control is the visit control that carries them. */
-		public function test_exit_and_abandon_controls_carry_the_extras_before_the_filter(): void {
+		/** 0.5.0: the return button renders nothing, so the cancel control is the visit control that carries them. */
+		public function test_the_cancel_control_carries_the_extras_before_the_filter(): void {
 			$this->extras( 'site-btn big button' );
 			$surface = $this->surface();
 			self::assertSame( '', $surface->markup(), 'The return button renders nothing in 0.5.0' );
@@ -125,34 +123,12 @@ namespace {
 			self::assertSame( 'pow-abandon-button', self::button_class( $surface->abandon_markup() ) );
 		}
 
-		public function test_the_non_visit_checkout_link_gets_no_extras(): void {
+		public function test_the_checkout_links_get_no_extras(): void {
 			$this->extras( 'site-btn' );
-			$classes = ( new ReflectionMethod( Surface::class, 'button_classes' ) )->invoke( $this->surface( false ), 'checkout-button' );
-			self::assertSame( 'button alt wp-element-button checkout-button', $classes );
-		}
-
-		private function review( array $overrides = [] ): string {
-			$view = [ 'choices' => [], 'selected_choice' => null, 'delivery_destination' => null, 'packages' => [], 'delivery' => [ 'status' => 'not_required', 'amount_cents' => null, 'emit' => false ], 'notes' => '', 'currency' => 'ZAR', 'merchandise_total_cents' => 12300, 'total_cents' => 12300, 'items' => [], 'skipped' => [], 'can_confirm' => true, 'requires_unknown_acknowledgement' => false, 'review_digest' => str_repeat( 'a', 64 ), 'error' => null ];
-			$vars = array_replace( [ 'view' => $view, 'action_url' => 'https://shop.example.test/punchout/confirm', 'cart_url' => 'https://shop.example.test/cart/', 'nonce' => 'confirmation-nonce', 'return_nonce' => 'return-nonce', 'stylesheet_url' => 'https://shop.example.test/confirmation.css', 'shop_name' => 'Example shop', 'document' => false ], $overrides );
-			ob_start();
-			try { ( static function ( string $file, array $vars ): void { extract( $vars, EXTR_SKIP ); include $file; } )( dirname( __DIR__, 2 ) . '/templates/delivery-confirmation.php', $vars ); return (string) ob_get_clean(); }
-			catch ( Throwable $error ) { ob_end_clean(); throw $error; }
-		}
-
-		public function test_review_primary_actions_carry_the_extras_and_back_does_not(): void {
-			$this->extras( 'site-btn' );
-			$html = $this->review();
-			self::assertStringContainsString( 'class="button alt wp-element-button pow-confirmation__submit site-btn"', $html );
-			self::assertStringContainsString( 'class="button wp-element-button pow-confirmation__secondary site-btn"', $html );
-			self::assertStringContainsString( 'class="pow-confirmation__back" formnovalidate', $html );
-			self::assertStringNotContainsString( 'pow-confirmation__back site-btn', $html );
-			$add = $this->review( [ 'view' => [ 'choices' => [], 'selected_choice' => null, 'delivery_destination' => null, 'packages' => [], 'delivery' => [ 'status' => 'unknown', 'amount_cents' => null, 'emit' => false ], 'notes' => '', 'currency' => 'ZAR', 'merchandise_total_cents' => 12300, 'total_cents' => 12300, 'items' => [], 'skipped' => [], 'can_confirm' => false, 'requires_unknown_acknowledgement' => false, 'review_digest' => str_repeat( 'a', 64 ), 'error' => null ], 'add_address' => [ 'fields' => '', 'label' => '', 'nonce' => 'n', 'notice' => null, 'open' => false ] ] );
-			self::assertStringContainsString( 'class="button wp-element-button pow-confirmation__secondary pow-confirmation__add-submit site-btn"', $add );
-			self::assertStringContainsString( 'name="pow_address_refresh" value="1" class="pow-confirmation__back" formnovalidate', $add );
-			$this->extras( '' );
-			$html = $this->review();
-			self::assertStringContainsString( 'class="button alt wp-element-button pow-confirmation__submit"', $html );
-			self::assertStringContainsString( 'class="button wp-element-button pow-confirmation__secondary"', $html );
+			foreach ( [ true, false ] as $visit ) {
+				$classes = ( new ReflectionMethod( Surface::class, 'button_classes' ) )->invoke( $this->surface( $visit ), 'checkout-button' );
+				self::assertSame( 'button alt wp-element-button checkout-button', $classes, $visit ? 'inside a visit' : 'outside a visit' );
+			}
 		}
 	}
 }

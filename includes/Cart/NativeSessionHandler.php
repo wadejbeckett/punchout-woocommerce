@@ -263,7 +263,7 @@ final class NativeSessionHandler extends \WC_Session_Handler {
 		$guard = NativeSessionGuard::registered();
 		$fresh = $guard->identity_locked( $prepared['identity'] );
 		if ( ! $fresh ) { $this->refuse_for( self::REFUSED_IDENTITY ); return false; }
-		// A pending NULL invalidation still participates in the same commit order. Failed clear blocks the write (Store::invalidate_delivery false demands caller fencing, never an assumption that consent survived); existing recovery remains Chooser/Store-owned. The refusal is surfaced by save_checked().
+		// A pending NULL invalidation still participates in the same commit order. Failed clear blocks the write (Store::invalidate_delivery false demands caller fencing, never an assumption that consent survived); existing recovery remains Store-owned (the review that wrote consent retired in 0.5.0; the clear keeps the columns NULL). The refusal is surfaced by save_checked().
 		if ( $this->changed && ! $guard->invalidate_locked( $fresh ) ) { $this->refuse_for( self::REFUSED_CONSENT_INVALIDATION ); return false; }
 		if ( ! $this->row->commit_locked( $prepared['value'], $prepared['expiry'] ) ) { $this->refuse_for( self::REFUSED_ROW_CONFLICT ); return false; }
 		if ( ( WC()->session ?? null ) !== $this || $prepared['data'] !== $this->_data || ! $guard->identity_locked( $prepared['identity'] ) ) { $this->refuse_for( self::REFUSED_SNAPSHOT ); return false; }

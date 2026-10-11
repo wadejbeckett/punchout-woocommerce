@@ -201,7 +201,8 @@ namespace {
 			self::assertSame( [ $this->surface, 'shortcode' ], $GLOBALS['pow_blocks_hooks']['shortcode']['punchout_return_button'] ?? null, 'The shortcode stays registered, so a layout that carries it shows nothing rather than its tag' );
 			self::assertSame( '', $this->surface->shortcode() );
 			self::assertSame( '', $this->surface->markup() );
-			ob_start(); $this->surface->render_cart_button(); self::assertSame( '', (string) ob_get_clean() );
+			self::assertFalse( method_exists( $this->surface, 'render_cart_button' ), 'The classic cart gets no placement of its own any more' );
+			self::assertSame( [], array_filter( $GLOBALS['pow_blocks_hooks']['action']['woocommerce_after_cart_totals'] ?? [] ), 'Nothing is hung after the cart totals' );
 			self::assertStringContainsString( 'pow-abandon-button', $this->surface->abandon_markup(), 'Leaving with nothing is still offered' );
 		}
 		/**
@@ -352,20 +353,6 @@ namespace {
 				$this->set_session( $this->visit( self::VISIT_A, self::KEY_A, $status ) );
 				self::assertSame( '', $this->surface->cart_exits_shortcode(), "A {$status} visit renders no exit" );
 			}
-		}
-		/** 0.5.0 (ticket 76): the old review drawn in the theme is no exception; the return button draws nothing there either. */
-		public function test_on_the_theme_drawn_review_the_punchout_button_draws_nothing(): void {
-			POW\Addresses\ReviewChrome::mark_review_request();
-			try {
-				self::assertTrue( POW\Addresses\ReviewChrome::is_review_request() );
-				self::assertSame( '', $this->surface->shortcode(), 'The shortcode draws nothing on the review' );
-				self::assertSame( '', $this->surface->markup(), 'Nor does the PHP helper' );
-				ob_start(); $this->surface->render_cart_button(); self::assertSame( '', (string) ob_get_clean() );
-				self::assertStringContainsString( 'pow-abandon-button', $this->surface->abandon_markup(), 'Leaving with nothing is still offered' );
-			} finally {
-				POW\Addresses\ReviewChrome::mark_review_request( false );
-			}
-			self::assertFalse( POW\Addresses\ReviewChrome::is_review_request() );
 		}
 		/** 0.5.0 (ticket 77): the cart as WooCommerce holds it, with $lines lines. */
 		private function cart( int $lines ): void {

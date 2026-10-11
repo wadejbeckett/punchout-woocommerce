@@ -10,8 +10,6 @@ declare( strict_types = 1 );
 
 namespace POW\Checkout;
 
-use POW\Addresses\EstimateNote;
-use POW\Addresses\QuoteAddress;
 use POW\Cart\PoomMapper;
 use POW\Cxml\Builder;
 use POW\Cxml\Money;
@@ -43,8 +41,10 @@ defined( 'ABSPATH' ) || exit;
  *   " | " (the builder flattens line breaks), at most NOTE_LIMIT in all; only the note is shortened.
  * - Freight: only while the connection sends delivery cost (`emit_delivery_line`) and the order has a shipping line:
  *   one quantity-one freight line, the order's shipping total before tax, named after its shipping method(s) with the
- *   estimate sentence, which then also leads DeliveryInstructions. Otherwise the order's shipping line stays the
- *   store's estimate and never reaches the message, and the Total is the products'.
+ *   estimate sentence (estimate_sentence(): a fixed translatable sentence, filter `punchout_delivery_estimate_note`,
+ *   blank sends none), which then also leads DeliveryInstructions. Otherwise the order's shipping line stays the
+ *   store's estimate and never reaches the message, and the Total is the products'. The plugin adds no delivery
+ *   wording of its own anywhere a buyer reads.
  * - Envelope: From and To reversed from the setup, Sender identity only (no shared secret exists here), the visit's
  *   BuyerCookie and deployment mode, the connection's dialect, "create" only, no SupplierOrderInfo.
  */
@@ -79,14 +79,33 @@ final class OrderMessage {
 	/** The fields of an address the cXML ShipTo mapping reads, in its order. */
 	private const ADDRESS_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
 
+	/** Bounds of a ShipTo field as the builder takes it (the same as the old address snapshot's). */
+	private const ADDRESS_LIMITS = [ 'first_name' => 190, 'last_name' => 190, 'company' => 190, 'address_1' => 190, 'address_2' => 190, 'city' => 190, 'state' => 190, 'postcode' => 32, 'country' => 2, 'phone' => 100 ];
+
+	/** Filter over the estimate sentence sent with a freight line; a blank result sends no sentence. */
+	public const ESTIMATE_FILTER = 'punchout_delivery_estimate_note';
+
+	/**
+	 * The sentence that travels with a freight line, so the buyer's purchasing system sees that the charge is an
+	 * estimate. Sent only while the connection sends delivery cost; never shown to the buyer by this plugin. The
+	 * filter runs last and a blank result sends none. (Until 0.4.23 this was the "Delivery estimate note" setting.)
+	 */
+	public static function estimate_sentence(): string {
+		$sentence = __( 'The delivery charge is an estimate; the supplier confirms the final amount before dispatch.', 'punchout-woocommerce' );
+		if ( function_exists( 'apply_filters' ) ) { $sentence = (string) apply_filters( self::ESTIMATE_FILTER, $sentence ); }
+		return trim( $sentence );
+	}
+
 	/**
 	 * [ builder input, names of the lines left out for want of a SKU ].
 	 *
+	 * @param string|null $estimate_note The freight line's sentence; null = estimate_sentence().
 	 * @return array{0: array<string, mixed>, 1: list<string>}
 	 */
-	public static function builder_args( \WC_Order $order, Partner $partner, Session $visit, string $classification, string $host, string $estimate_note = '' ): array {
+	public static function builder_args( \WC_Order $order, Partner $partner, Session $visit, string $classification, string $host, ?string $estimate_note = null ): array {
 		[ $items, $total_cents, $skipped ] = self::lines( $order, $partner, $classification );
 
+		$estimate_note ??= self::estimate_sentence();
 		$freight = $partner->emit_delivery_line ? self::freight( $order, $partner, $estimate_note ) : null;
 		if ( null !== $freight ) {
 			$items[]      = $freight;
@@ -227,12 +246,20 @@ final class OrderMessage {
 			'supplier_part_id'      => $partner->freight_supplier_part_id,
 			'aux_id'                => '',
 			'unit_price_cents'      => Money::to_cents( (float) $order->get_shipping_total() ),
-			'description'           => EstimateNote::line_description( [] !== $labels ? implode( '; ', $labels ) : __( 'Delivery', 'punchout-woocommerce' ), self::note( $estimate_note ) ),
+			'description'           => self::freight_description( [] !== $labels ? implode( '; ', $labels ) : __( 'Delivery', 'punchout-woocommerce' ), self::note( $estimate_note ) ),
 			'uom'                   => $partner->freight_uom,
 			'classification_domain' => $partner->freight_classification_domain,
 			'classification'        => $partner->freight_classification,
 		];
 		return $partner->allcaps_transform ? PoomMapper::uppercase_items( [ $line ] )[0] : $line;
+	}
+
+	/** The freight line's description with the estimate sentence appended, within the wire limit. */
+	private static function freight_description( string $label, string $note, int $limit = 250 ): string {
+		$note = trim( $note );
+		if ( '' === $note ) { return $label; }
+		$joined = $label . ' — ' . $note;
+		return mb_strlen( $joined ) <= $limit ? $joined : mb_substr( $joined, 0, $limit - 1 ) . '…';
 	}
 
 	/**
@@ -251,6 +278,8 @@ final class OrderMessage {
 		$tail = implode( $join, $details );
 		$note = self::note( (string) $order->get_customer_note() );
 
+		// The room left for the note: the limit less the fixed parts and one separator for each of them (the
+		// note sits between or beside them, so each fixed part costs exactly one separator).
 		$fixed = array_values( array_filter( [ $lead, $tail ], static fn( string $part ): bool => '' !== $part ) );
 		$room  = self::NOTE_LIMIT - mb_strlen( implode( $join, $fixed ) ) - count( $fixed ) * mb_strlen( $join );
 		$note  = $room > 0 && mb_strlen( $note ) > $room ? rtrim( mb_substr( $note, 0, $room ) ) : ( $room > 0 ? $note : '' );
@@ -314,11 +343,36 @@ final class OrderMessage {
 			$address[ $field ] = is_scalar( $value ) ? trim( (string) $value ) : '';
 		}
 		if ( '' === $address['address_1'] . $address['address_2'] ) { return null; }
-		try {
-			return QuoteAddress::to_cxml( [ 'address' => $address ] );
-		} catch ( \DomainException $error ) {
-			return null;
+		return self::to_cxml( $address );
+	}
+
+	/**
+	 * The postal wire shape of a ten-field address, or null when cXML cannot carry it: a name (the company, else
+	 * the person) and at least one street line are needed, every field within its bounds, the country an ISO
+	 * code. The phone stays local; the builder owns escaping and the exact dialect.
+	 *
+	 * @param array<string, string> $address The ten address keys.
+	 * @return array<string, mixed>|null
+	 */
+	public static function to_cxml( array $address ): ?array {
+		foreach ( self::ADDRESS_LIMITS as $field => $limit ) {
+			$value = $address[ $field ] ?? null;
+			if ( ! is_string( $value ) || 1 !== preg_match( '//u', $value ) || 1 === preg_match( '/[\x00-\x1f\x7f\x{FFFE}\x{FFFF}]/u', $value ) || preg_match_all( '/./us', $value ) > $limit ) { return null; }
 		}
+		if ( 1 !== preg_match( '/\A[A-Z]{2}\z/', $address['country'] ) ) { return null; }
+		$person  = trim( $address['first_name'] . ' ' . $address['last_name'] );
+		$name    = '' !== $address['company'] ? $address['company'] : $person;
+		$streets = array_values( array_filter( [ $address['address_1'], $address['address_2'] ], static fn( string $line ): bool => '' !== trim( $line ) ) );
+		if ( '' === trim( $name ) || [] === $streets ) { return null; }
+		return [
+			'name'        => $name,
+			'deliver_to'  => '' !== $person ? [ $person ] : [],
+			'street'      => $streets,
+			'city'        => $address['city'],
+			'state'       => $address['state'],
+			'postal_code' => $address['postcode'],
+			'iso_country' => $address['country'],
+		];
 	}
 
 	/** The buyer's note as cXML can carry it: characters outside XML removed, at most 2,000 characters. */

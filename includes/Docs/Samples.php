@@ -14,7 +14,6 @@ use POW\Cxml\Builder;
 use POW\Cxml\Money;
 use POW\Cxml\Parser;
 use POW\Cxml\SetupMessage;
-use POW\Addresses\DeliveryEstimate;
 use POW\Http\SetupEndpoint;
 use POW\Partners\Partner;
 
@@ -230,8 +229,10 @@ XML;
 			[ 'package_key' => 1, 'rate_id' => 'flat_rate:2', 'method_id' => 'flat_rate', 'instance_id' => 2, 'label' => 'Example package two', 'amount_cents' => 1800, 'taxes' => [] ],
 		];
 		$delivery = [ 'status' => $config['emit_delivery_line'] ? 'quoted' : 'disabled', 'amount_cents' => array_sum( array_column( $rates, 'amount_cents' ) ), 'currency' => self::CURRENCY, 'code' => $args['delivery_code'], 'emit' => $config['emit_delivery_line'], 'rates' => $rates, 'freight' => [ 'supplier_part_id' => 'DELIVERY', 'uom' => 'EA', 'classification_domain' => 'supplier', 'classification' => 'freight' ] ];
-		$freight = DeliveryEstimate::poom_line( $delivery );
-		if ( null !== $freight ) { $args['items'][] = $freight; }
+		if ( $delivery['emit'] ) {
+			// One quantity-one freight line, as the order's cXML sends it while the connection sends delivery cost.
+			$args['items'][] = [ 'line_type' => 'freight', 'quantity' => 1, 'supplier_part_id' => $delivery['freight']['supplier_part_id'], 'aux_id' => '', 'unit_price_cents' => $delivery['amount_cents'], 'description' => implode( '; ', array_column( $rates, 'label' ) ), 'uom' => $delivery['freight']['uom'], 'classification_domain' => $delivery['freight']['classification_domain'], 'classification' => $delivery['freight']['classification'] ];
+		}
 		$args['total_cents'] = self::total_cents( $args['items'] );
 		return $args;
 	}

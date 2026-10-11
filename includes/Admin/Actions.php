@@ -65,7 +65,8 @@ final class Actions {
 			'deployment_mode'         => sanitize_key( (string) ( $posted['deployment_mode'] ?? 'test' ) ),
 			'return_encoding'         => sanitize_key( (string) ( $posted['return_encoding'] ?? 'base64' ) ),
 			'allcaps_transform'       => isset( $posted['allcaps_transform'] ) ? 1 : 0,
-			'buyer_addresses'         => isset( $posted['buyer_addresses'] ) ? 1 : 0,
+			// Retired in 0.5.0 (buyers choose a saved address at checkout); the column stays and always reads off.
+			'buyer_addresses'         => 0,
 			'owner_settings'          => isset( $posted['owner_reset_connection'] ) ? 'reset_connection' : '',
 			'ip_allowlist'            => $this->cidrs_to_json( (string) ( $posted['ip_allowlist'] ?? '' ) ),
 			'token_ttl'               => absint( $posted['token_ttl'] ?? 300 ),

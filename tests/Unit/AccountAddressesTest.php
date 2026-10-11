@@ -22,7 +22,7 @@ final class AccountAddressesTest extends TestCase {
 		return [ 'first_name' => 'Test', 'last_name' => 'Buyer', 'company' => 'Example Co', 'address_1' => $street, 'address_2' => '', 'city' => 'Johannesburg', 'state' => 'GP', 'postcode' => '2001', 'country' => 'ZA', 'phone' => '' ];
 	}
 
-	private static function partner( string $prefix = 'GLOBEX' ): Partner {
+	private static function partner( string $prefix = 'DEMO' ): Partner {
 		return Partner::from_row( [ 'id' => 1, 'owner_user_id' => 4, 'status' => 'active', 'delivery' => json_encode( [ 'delivery_code_prefix' => $prefix ] ) ] );
 	}
 
@@ -31,11 +31,11 @@ final class AccountAddressesTest extends TestCase {
 	public function test_new_keys_get_codes_in_sequence_and_the_map_is_marked_changed(): void {
 		$fp1 = AccountCodes::fingerprint( self::address( '1 Demo Street' ) );
 		$fp2 = AccountCodes::fingerprint( self::address( '2 Demo Street' ) );
-		$result = AccountCodes::reconcile( [], [ 'a1' => $fp1, 'a2' => $fp2 ], 'GLOBEX' );
+		$result = AccountCodes::reconcile( [], [ 'a1' => $fp1, 'a2' => $fp2 ], 'DEMO' );
 		self::assertTrue( $result['changed'] );
-		self::assertSame( [ 'a1' => 'GLOBEX-001', 'a2' => 'GLOBEX-002' ], $result['codes'] );
-		self::assertSame( [ 'GLOBEX-001' => [ 'key' => 'a1', 'retired' => false ], 'GLOBEX-002' => [ 'key' => 'a2', 'retired' => false ] ], $result['map']['claims'] );
-		$again = AccountCodes::reconcile( $result['map'], [ 'a1' => $fp1, 'a2' => $fp2 ], 'GLOBEX' );
+		self::assertSame( [ 'a1' => 'DEMO-001', 'a2' => 'DEMO-002' ], $result['codes'] );
+		self::assertSame( [ 'DEMO-001' => [ 'key' => 'a1', 'retired' => false ], 'DEMO-002' => [ 'key' => 'a2', 'retired' => false ] ], $result['map']['claims'] );
+		$again = AccountCodes::reconcile( $result['map'], [ 'a1' => $fp1, 'a2' => $fp2 ], 'DEMO' );
 		self::assertFalse( $again['changed'] );
 		self::assertSame( $result['codes'], $again['codes'] );
 	}
@@ -44,16 +44,16 @@ final class AccountAddressesTest extends TestCase {
 		$fp1 = AccountCodes::fingerprint( self::address( '1 Demo Street' ) );
 		$fp2 = AccountCodes::fingerprint( self::address( '2 Demo Street' ) );
 		$fp3 = AccountCodes::fingerprint( self::address( '3 New Street' ) );
-		$map = AccountCodes::reconcile( [], [ 'a1' => $fp1, 'a2' => $fp2 ], 'GLOBEX' )['map'];
+		$map = AccountCodes::reconcile( [], [ 'a1' => $fp1, 'a2' => $fp2 ], 'DEMO' )['map'];
 		// a2 deleted in the book, then a new address saved: the extension hands out a2 again.
-		$result = AccountCodes::reconcile( $map, [ 'a1' => $fp1, 'a2' => $fp3 ], 'GLOBEX' );
+		$result = AccountCodes::reconcile( $map, [ 'a1' => $fp1, 'a2' => $fp3 ], 'DEMO' );
 		self::assertTrue( $result['changed'] );
-		self::assertSame( [ 'a1' => 'GLOBEX-001', 'a2' => 'GLOBEX-003' ], $result['codes'] );
-		self::assertTrue( $result['map']['claims']['GLOBEX-002']['retired'] );
-		self::assertSame( [ 'key' => 'a2', 'retired' => false ], $result['map']['claims']['GLOBEX-003'] );
+		self::assertSame( [ 'a1' => 'DEMO-001', 'a2' => 'DEMO-003' ], $result['codes'] );
+		self::assertTrue( $result['map']['claims']['DEMO-002']['retired'] );
+		self::assertSame( [ 'key' => 'a2', 'retired' => false ], $result['map']['claims']['DEMO-003'] );
 		// The retired code is never handed out again, even for a fresh key.
-		$later = AccountCodes::reconcile( $result['map'], [ 'a1' => $fp1, 'a2' => $fp3, 'a3' => $fp2 ], 'GLOBEX' );
-		self::assertSame( 'GLOBEX-004', $later['codes']['a3'] );
+		$later = AccountCodes::reconcile( $result['map'], [ 'a1' => $fp1, 'a2' => $fp3, 'a3' => $fp2 ], 'DEMO' );
+		self::assertSame( 'DEMO-004', $later['codes']['a3'] );
 	}
 
 	public function test_an_empty_prefix_gives_empty_codes_but_still_tracks_the_fingerprint(): void {
@@ -70,11 +70,11 @@ final class AccountAddressesTest extends TestCase {
 	public function test_keys_that_left_the_book_keep_their_claims(): void {
 		$fp1 = AccountCodes::fingerprint( self::address( '1 Demo Street' ) );
 		$fp2 = AccountCodes::fingerprint( self::address( '2 Demo Street' ) );
-		$map = AccountCodes::reconcile( [], [ 'a1' => $fp1, 'a2' => $fp2 ], 'GLOBEX' )['map'];
-		$result = AccountCodes::reconcile( $map, [ 'a1' => $fp1 ], 'GLOBEX' );
+		$map = AccountCodes::reconcile( [], [ 'a1' => $fp1, 'a2' => $fp2 ], 'DEMO' )['map'];
+		$result = AccountCodes::reconcile( $map, [ 'a1' => $fp1 ], 'DEMO' );
 		self::assertFalse( $result['changed'] );
-		self::assertSame( [ 'a1' => 'GLOBEX-001' ], $result['codes'] );
-		self::assertArrayHasKey( 'GLOBEX-002', $result['map']['claims'] );
+		self::assertSame( [ 'a1' => 'DEMO-001' ], $result['codes'] );
+		self::assertArrayHasKey( 'DEMO-002', $result['map']['claims'] );
 	}
 
 	public function test_a_malformed_stored_map_is_replaced_whole_never_repaired(): void {
@@ -129,29 +129,29 @@ final class AccountAddressesTest extends TestCase {
 
 	public function test_a_choice_has_the_fixed_shape_and_decodes_as_an_account_selection(): void {
 		$entry = [ 'label' => 'Head office', 'address' => self::address( '1 Demo Street' ), 'fingerprint' => AccountCodes::fingerprint( self::address( '1 Demo Street' ) ) ];
-		$choice = AccountBook::choice( self::partner(), 'a1', $entry, 'GLOBEX-001' );
+		$choice = AccountBook::choice( self::partner(), 'a1', $entry, 'DEMO-001' );
 		self::assertSame( [ 'schema', 'partner_id', 'storage_user_id', 'provider', 'key', 'code', 'address', 'label', 'source', 'book_revision', 'entry_fingerprint' ], array_keys( $choice ) );
 		self::assertSame( 'account', $choice['provider'] );
 		self::assertSame( 'account_book', $choice['source'] );
 		self::assertSame( 4, $choice['storage_user_id'] );
 		self::assertNull( $choice['book_revision'] );
-		self::assertSame( AccountBook::entry_fingerprint( 'a1', 'Head office', $entry['address'], 'GLOBEX-001' ), $choice['entry_fingerprint'] );
+		self::assertSame( AccountBook::entry_fingerprint( 'a1', 'Head office', $entry['address'], 'DEMO-001' ), $choice['entry_fingerprint'] );
 		$decoded = DeliveryData::choice( json_encode( $choice ), 1 );
 		self::assertSame( $choice, $decoded );
 	}
 
 	public function test_the_entry_fingerprint_moves_with_the_label_address_or_code(): void {
 		$address = self::address( '1 Demo Street' );
-		$base = AccountBook::entry_fingerprint( 'a1', 'Head office', $address, 'GLOBEX-001' );
-		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a1', 'Head office', $address, 'GLOBEX-002' ) );
-		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a1', 'Depot', $address, 'GLOBEX-001' ) );
-		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a1', 'Head office', self::address( '2 Demo Street' ), 'GLOBEX-001' ) );
-		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a2', 'Head office', $address, 'GLOBEX-001' ) );
+		$base = AccountBook::entry_fingerprint( 'a1', 'Head office', $address, 'DEMO-001' );
+		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a1', 'Head office', $address, 'DEMO-002' ) );
+		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a1', 'Depot', $address, 'DEMO-001' ) );
+		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a1', 'Head office', self::address( '2 Demo Street' ), 'DEMO-001' ) );
+		self::assertNotSame( $base, AccountBook::entry_fingerprint( 'a2', 'Head office', $address, 'DEMO-001' ) );
 	}
 
 	public function test_a_stored_account_choice_must_carry_a_fingerprint_and_a_canonical_code(): void {
 		$entry = [ 'label' => 'Head office', 'address' => self::address( '1 Demo Street' ), 'fingerprint' => '' ];
-		$choice = AccountBook::choice( self::partner(), 'a1', $entry, 'GLOBEX-001' );
+		$choice = AccountBook::choice( self::partner(), 'a1', $entry, 'DEMO-001' );
 		foreach ( [ [ 'entry_fingerprint' => null ], [ 'book_revision' => 3 ], [ 'code' => 'bad code' ], [ 'source' => 'company_book' ] ] as $bad ) {
 			try { DeliveryData::choice( json_encode( array_replace( $choice, $bad ) ), 1 ); self::fail( 'Accepted ' . json_encode( $bad ) ); }
 			catch ( \DomainException $error ) { self::assertSame( 'Invalid stored delivery selection.', $error->getMessage() ); }

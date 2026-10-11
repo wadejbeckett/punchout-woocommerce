@@ -149,12 +149,9 @@ final class TransportTest extends TestCase {
 		$this->denied(fn()=> $this->unconstructed(\POW\Http\ReturnEndpoint::class)->handle());
 		$this->denied(fn()=> $this->unconstructed(\POW\Http\ReturnEndpoint::class)->handle_ajax());
 	}
-	public function test_router_early_exit_path_and_chooser_shortcode_cannot_bypass_policy(): void {
+	public function test_router_early_exit_path_cannot_bypass_policy(): void {
 		$_SERVER['REQUEST_URI']='/punchout/start/'.str_repeat('a',64);
 		$this->denied(fn()=> $this->unconstructed(\POW\Http\Router::class)->route());
-		$chooser=$this->unconstructed(\POW\Addresses\Chooser::class);
-		$this->denied(fn()=> $chooser->handle());
-		self::assertStringContainsString('HTTPS',$chooser->markup());
 	}
 	public function test_secret_pages_actions_and_docs_refuse_before_dependencies(): void {
 		$this->denied(fn()=> $this->unconstructed(\POW\Account\IntegrationTab::class)->render());

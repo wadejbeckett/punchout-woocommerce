@@ -40,7 +40,7 @@ final class Templates {
 	}
 
 	/**
-	 * Resolve a template path by name (e.g. "return-button", "docs/page").
+	 * Resolve a template path by name (e.g. "abandon-button", "docs/page").
 	 */
 	public static function locate( string $name ): string {
 		$name  = self::normalise_name( $name );

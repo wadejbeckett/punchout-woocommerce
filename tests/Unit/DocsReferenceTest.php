@@ -37,7 +37,8 @@ final class DocsReferenceTest extends TestCase {
 		foreach ( $this->reference()->endpoints() as $url ) {
 			self::assertStringStartsWith( 'https://shop.example.com/punchout/', $url );
 		}
-		self::assertContains( 'https://shop.example.com/punchout/confirm', array_values( $this->reference()->endpoints() ) );
+		self::assertContains( 'https://shop.example.com/punchout/handoff', array_values( $this->reference()->endpoints() ) );
+		self::assertFalse( in_array( 'https://shop.example.com/punchout/confirm', array_values( $this->reference()->endpoints() ), true ), 'The review route retired in 0.5.0' );
 	}
 
 	public function test_documented_delivery_defaults_match_the_real_partner_contract(): void {
@@ -131,21 +132,23 @@ final class DocsReferenceTest extends TestCase {
 		self::assertFalse( str_contains( $text, 'their own login and cart' ) );
 	}
 
-	/** 0.4.23 removed the review's own preferred date: the reference describes it as history, not as a current field. */
-	public function test_delivery_workflow_describes_the_preferred_date_as_removed(): void {
-		$text = implode( ' ', $this->reference()->delivery_workflow() );
-
-		self::assertStringNotContainsString( 'The optional preferred delivery date stays in the shop', $text );
-		self::assertStringContainsString( 'Since 0.4.23 the review has no preferred delivery date field of its own; a delivery date belongs to the shop’s checkout.', $text );
-		self::assertStringContainsString( 'Quotes created before 0.4.23 keep their date in the order meta, their note and the store e-mail. It never reached the PunchOutOrderMessage.', $text );
+	/** 0.5.0: the reference describes the checkout path, not the retired review, and names what checkout refuses. */
+	public function test_delivery_workflow_describes_the_checkout_path(): void {
+		$text = implode( "\n", $this->reference()->delivery_workflow() );
+		self::assertStringContainsString( 'leaves through the shop’s classic checkout, where PunchOut is the only payment method offered', $text );
+		self::assertStringContainsString( 'a line without a SKU, a cart priced in another currency than the store’s, and a note cXML cannot carry', $text );
+		self::assertStringContainsString( 'checkout saves nothing to the bound account', $text );
+		foreach ( [ '/punchout/confirm', 'punchout_delivery_confirmation', 'review and confirm', 'quote_separately', 'Review tax sentence', 'preferred delivery date' ] as $retired ) {
+			self::assertStringNotContainsString( $retired, $text, $retired );
+		}
 	}
 
-	/** 0.4.23: with the delivery line off the buyer sees no delivery amount and no tax wording; with it on, the tax sentence is a setting, off by default. */
-	public function test_delivery_workflow_says_what_the_buyer_sees_with_the_delivery_line_off(): void {
-		$text = implode( ' ', $this->reference()->delivery_workflow() );
-
-		self::assertStringContainsString( 'With emit_delivery_line off, the review shows each delivery method by its title only, no delivery estimate and no tax sentence; its total is the merchandise.', $text );
-		self::assertStringContainsString( 'With it on, the review adds the estimate and, only when the Review tax sentence setting is on, one sentence saying amounts exclude tax.', $text );
+	/** 0.5.0: delivery cost is WooCommerce's; the freight line and the estimate sentence travel only with "Send delivery cost". */
+	public function test_delivery_workflow_says_delivery_cost_is_the_stores(): void {
+		$text = implode( "\n", $this->reference()->delivery_workflow() );
+		self::assertStringContainsString( 'the order keeps its normal shipping line, the store’s own estimate', $text );
+		self::assertStringContainsString( 'Only while the connection sends delivery cost does the message add one quantity-one freight ItemIn', $text );
+		self::assertStringContainsString( 'the plugin adds no delivery or tax wording of its own', $text );
 	}
 
 	/**

@@ -115,22 +115,16 @@ function pow_is_punchout(): bool {
 }
 
 /**
- * Render (or return) the "send to purchasing system" button for the current
- * punchout session. Safe to call anywhere in a theme; outputs nothing when
- * the visitor is not in an active punchout session.
+ * The old "send to purchasing system" button: retired in 0.5.0 and kept for one
+ * release so a theme that still calls it shows nothing. It renders nothing: a
+ * visit leaves through WooCommerce's checkout, whose cart button carries the
+ * "Checkout button label" setting. The [punchout_return_button] shortcode is
+ * the same. Both are removed in the next release.
  *
- * Also available as the [punchout_return_button] shortcode.
- *
- * @param bool $display True to echo, false to return the markup.
+ * @param bool $display Ignored; nothing is printed.
  */
 function pow_return_button( bool $display = true ): string {
-	$markup = Plugin::instance()->return_button_markup();
-
-	if ( $display ) {
-		echo $markup; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within.
-	}
-
-	return $markup;
+	return Plugin::instance()->return_button_markup();
 }
 
 /**

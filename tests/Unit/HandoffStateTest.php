@@ -50,7 +50,7 @@ final class HandoffStateTest extends TestCase {
 		$html  = $this->page();
 		$parts = self::parts( $html );
 		self::assertArrayHasKey( 'pow-state pow-state--sending', $parts );
-		self::assertSame( 'Returning your cart…', $parts['pow-state__title'] );
+		self::assertSame( 'Sending your cart…', $parts['pow-state__title'] );
 		self::assertStringStartsWith( 'Your cart is being sent back to your purchasing system.', $parts['pow-state__text'] );
 		self::assertMatchesRegularExpression( '#<form method="post" action="https://buyer\.example\.com/punchout/return" id="pow-handoff-form" class="pow-state__actions">#', $html );
 		self::assertSame( 'Continue to your purchasing system', $parts['pow-handoff-submit pow-state__button'] );

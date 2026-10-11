@@ -16,7 +16,6 @@ use POW\Partners\Registry;
 use POW\Cart\LeaveConfirmation;
 use POW\Plugin;
 use POW\Sessions\Session;
-use POW\Settings;
 use POW\Support\Templates;
 
 defined( 'ABSPATH' ) || exit;
@@ -26,8 +25,6 @@ defined( 'ABSPATH' ) || exit;
  * button and the Cart widget's checkout button lead to WooCommerce's
  * classic checkout, where PunchOut is the only payment method; they carry
  * the "Checkout button label" setting (maybe_unhook_checkout_button()).
- * The "send to your purchasing system" return control, which opens the
- * older review page, still renders until that page is retired.
  *
  * Outside a visit nothing here applies. Ordinary shoppers — including the
  * connection's own bound account on a password login — keep WooCommerce's
@@ -36,34 +33,26 @@ defined( 'ABSPATH' ) || exit;
  * The two cart templates need opposite treatment:
  *
  * - Classic cart: Woo's proceed-to-checkout hook is cleared for the visit
- *   and only the labelled proceed button is put back; the return control
- *   renders after the cart totals.
+ *   and only the labelled proceed button is put back.
  * - Block cart: the native wrapper is left untouched, because Cart's React
  *   render recreates its button whatever PHP does to the markup. Woo's
- *   public label/link filters (assets/js/cart-blocks.js, configured by
- *   enqueue_cart_blocks_filters()) turn that one native button into the
- *   return control instead.
+ *   public label filter (assets/js/cart-blocks.js, configured by
+ *   enqueue_cart_blocks_filters()) relabels that one native button.
  *
- * Two controls, one endpoint: the cart return (mode=cart) and the
- * mid-session abandon (mode=empty, the cXML cancel semantic — "return
- * without a cart"). Both are presentation only; ReturnEndpoint owns
- * every authorisation check.
+ * The mid-session abandon control ("Cancel and return": an empty
+ * PunchOutOrderMessage, the cXML cancel semantic) posts to ReturnEndpoint,
+ * which owns every authorisation check; this class is presentation only.
+ * It has one placement path — [punchout_abandon_button] — because there is
+ * no core hook that means "the session chrome".
  *
- * Four placement paths for the return button, most flexible first:
- * - [punchout_cart_exits] complete cart control;
- * - [punchout_return_button] shortcode (builders, widgets);
- * - pow_return_button() PHP helper (theme code);
- * - automatic injection on the classic cart page (woocommerce_after_cart_totals,
- *   deliberately outside the proceed-to-checkout container, which themes and
- *   page-builder cart elements hide or replace wholesale).
- *
- * The abandon control has one placement path — [punchout_abandon_button]
- * — because there is no core hook that means "the session chrome".
+ * The old return button, which opened the retired review page, renders
+ * nothing: its shortcode and helper stay registered for one release so a
+ * layout that still carries them shows nothing rather than a tag.
  */
 final class Surface {
 
 	/** The visit controls that carry the operator's extra button classes. */
-	private const EXTRA_CLASS_CONTROLS = [ 'pow-return-button', 'pow-abandon-button' ];
+	private const EXTRA_CLASS_CONTROLS = [ 'pow-abandon-button' ];
 
 	/** Leave-confirmation dialogs drawn in this request, so each control names its own (a header can draw two). */
 	private static int $dialogs = 0;
@@ -85,9 +74,9 @@ final class Surface {
 
 	/** Register controls and filters that are meaningful only while PunchOut is enabled. */
 	public function register_runtime(): void {
+		// Retired in 0.5.0 and kept for one release: it renders nothing (markup()).
 		add_shortcode( 'punchout_return_button', [ $this, 'shortcode' ] );
 		add_shortcode( 'punchout_abandon_button', [ $this, 'abandon_shortcode' ] );
-		add_action( 'woocommerce_after_cart_totals', [ $this, 'render_cart_button' ], 5 );
 		add_action( 'woocommerce_blocks_cart_enqueue_data', [ $this, 'enqueue_cart_blocks_filters' ] );
 		add_action( 'wp', [ $this, 'maybe_unhook_checkout_button' ] );
 		add_filter( 'body_class', [ $this, 'visit_body_class' ] );
@@ -110,12 +99,12 @@ final class Surface {
 	}
 
 	/**
-	 * The return button's markup: always '' since 0.5.0.
+	 * The old return button's markup: always '' since 0.5.0.
 	 *
-	 * The button opened the old review page. A visit now leaves through WooCommerce's checkout (the cart's buttons
-	 * carry the Checkout button label), so the button renders nothing wherever a layout still places it: the
-	 * [punchout_return_button] shortcode, the pow_return_button() helper and the classic cart's own placement. The
-	 * shortcode stays registered for one release, so a layout that carries it shows nothing rather than its tag.
+	 * The button opened the retired review page. A visit now leaves through WooCommerce's checkout (the cart's
+	 * buttons carry the Checkout button label), so the button renders nothing wherever a layout still places it:
+	 * the [punchout_return_button] shortcode and the pow_return_button() helper. Both stay for one release, so a
+	 * layout that carries them shows nothing rather than a tag; the next release removes them.
 	 */
 	public function markup(): string {
 		return '';
@@ -202,10 +191,10 @@ final class Surface {
 	 *
 	 * Generic WooCommerce and WordPress button classes give a site stable
 	 * styling hooks without detecting a theme or assuming its callbacks.
-	 * The visit's exit and abandon controls also carry the operator's
-	 * "Extra button classes" setting, appended before the filter so that
-	 * code keeps the last word; the non-visit checkout link does not.
-	 * Site-specific classes can also be added through the filter.
+	 * The visit's abandon control also carries the operator's "Extra button
+	 * classes" setting, appended before the filter so that code keeps the
+	 * last word; the checkout links do not. Site-specific classes can also
+	 * be added through the filter.
 	 *
 	 * The abandon control passes $themed = false: it is a secondary "leave
 	 * with nothing" action that reads as a text link beside the primary
@@ -232,19 +221,7 @@ final class Surface {
 		return implode( ' ', array_filter( array_map( 'sanitize_html_class', $classes ) ) );
 	}
 
-	/**
-	 * The operator's extra button classes as one class-attribute fragment,
-	 * for the delivery review page's primary actions; '' when none are set
-	 * or the settings cannot be read.
-	 */
-	public static function extra_button_classes(): string {
-		try {
-			return implode( ' ', ( new Settings() )->extra_button_classes() );
-		} catch ( \Throwable ) {
-			return '';
-		}
-	}
-
+	/** The [punchout_return_button] shortcode: nothing, since 0.5.0 (markup()). */
 	public function shortcode(): string {
 		return $this->markup();
 	}
@@ -290,10 +267,6 @@ final class Surface {
 	/** @param mixed $atts Shortcode attributes ('' when there are none). */
 	public function abandon_shortcode( mixed $atts = [] ): string {
 		return $this->abandon_markup( is_array( $atts ) ? $atts : [] );
-	}
-
-	public function render_cart_button(): void {
-		echo $this->markup(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within.
 	}
 
 	/**

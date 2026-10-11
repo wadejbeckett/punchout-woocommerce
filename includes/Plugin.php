@@ -15,7 +15,6 @@ use POW\Admin\Details as AdminDetails;
 use POW\Admin\Page as AdminPage;
 use POW\Audit\Log;
 use POW\Cart\Guard;
-use POW\Cart\PoomMapper;
 use POW\Cart\Surface;
 use POW\CLI\Command;
 use POW\Cxml\Builder;
@@ -104,22 +103,20 @@ final class Plugin {
 		// Refuse insecure buyer traffic before Woo initializes carts, even with new sessions switched off.
 		\POW\Support\Transport::register();
 		// Select the guarded native cookie handler before Woo hydrates any buyer cart, including Store API requests.
-		$native_sessions = new Cart\NativeSessionGuard( $this->registry, $this->sessions, $this->logger );
-		$native_sessions->register();
+		( new Cart\NativeSessionGuard( $this->registry, $this->sessions, $this->logger ) )->register();
 		$registration  = new \POW\Partners\Registration( $this->registry, $this->sessions, $this->audit );
 
 		$parser      = new Parser();
 		$builder     = new Builder();
-		$mapper      = new PoomMapper( $this->settings, $this->logger );
-		// One resolver for "is this request inside a visit", shared by the
-		// book's editor gate and the address resolver: with a single bound
-		// login, that question is the only thing that still separates the
-		// customer managing their delivery book from an employee shopping.
+		// One resolver for "is this request inside a visit", shared with the
+		// book's editor gate: with a single bound login, that question is the
+		// only thing that still separates the customer managing their
+		// delivery book from an employee shopping.
 		$visits = new Sessions\Current( $this->sessions );
+		// The company delivery book stays an administrator surface and the source of the address migration
+		// (`wp punchout migrate-addresses`); since 0.5.0 no visit reads it. Buyers choose from the account's saved
+		// addresses at WooCommerce's checkout.
 		$address_book = new Addresses\CompanyBook( $this->registry, $this->audit, $visits );
-		// The account's saved addresses (an address-book API found by shape) take precedence over the company book when present.
-		$account_book = new Addresses\AccountBook( $this->registry );
-		$address_resolver = new Addresses\Resolver( $this->registry, $address_book, $visits, $account_book );
 		$address_fields = new Addresses\Fields( $this->registry, $address_book, new Addresses\NativeImport( $this->registry, $address_book ) );
 
 		// Built before the master-switch gate because housekeeping needs it:
@@ -152,9 +149,9 @@ final class Plugin {
 		( new \POW\Emails\Notifications() )->register();
 		// 0.5.0: WooCommerce's unpaid-order clean-up (cron) never cancels a PunchOut order, whatever the master switch says.
 		Checkout\Lifecycle::register_unpaid_rule();
-		// The buyer's optional file: claimed by the Quote before the e-mail, downloadable by staff from the order screen.
-		$attachments = new \POW\Orders\Attachment( $this->settings );
-		$attachments->register();
+		// Files old Punchout Quotes keep (the review's attachment field retired in 0.5.0): shown on the order screen
+		// and downloadable by staff. Nothing new is uploaded or claimed.
+		$attachments = new \POW\Orders\Attachment();
 
 		if ( is_admin() ) {
 			$quotes->register_admin();
@@ -235,9 +232,8 @@ final class Plugin {
 		$anonymous_audit = \POW\Http\AnonymousAudit::hourly();
 		$setup_endpoint  = new SetupEndpoint( $this->registry, $this->sessions, $parser, $builder, $rate_limiter, $this->audit, $edge_limiter, $anonymous_audit );
 		$start_endpoint  = new StartEndpoint( $this->sessions, $this->registry, $this->settings, $this->audit, $anonymous_audit );
-		$confirmation = new Addresses\Confirmation( $this->registry, $this->sessions, new Addresses\QuoteAddress( $address_resolver ), new Addresses\DeliveryEstimate( $this->settings ), $address_resolver, $mapper, $native_sessions );
-		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $mapper, $builder, $this->audit, $quotes, $confirmation );
-		$chooser = new Addresses\Chooser( $this, $this->registry, $this->sessions, $confirmation, $return_endpoint, $native_sessions, $address_book, $attachments, $account_book );
+		// Cancel and return: the empty message. A cart leaves through checkout and the handoff below (0.5.0).
+		$return_endpoint = new ReturnEndpoint( $this->sessions, $this->registry, $builder, $this->audit );
 
 		// 0.5.0: the payment method (built above) and the handoff it redirects to.
 		$handoff = new Checkout\Handoff( $this->sessions, $this->audit );
@@ -251,8 +247,7 @@ final class Plugin {
 		// A page from the browser of a visit that ended goes to the state it ended in, when a state page is chosen.
 		( new \POW\Http\EndedVisit( $this, $this->sessions ) )->register();
 
-		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $chooser, $handoff ) )->register();
-		$chooser->register();
+		( new Router( $setup_endpoint, $start_endpoint, $return_endpoint, $handoff ) )->register();
 		$return_endpoint->register();
 
 		$this->surface->register_runtime();
@@ -298,10 +293,11 @@ final class Plugin {
 	}
 
 	/**
-	 * The RFQ exit button markup for the current session ('' outside one).
+	 * The old return button's markup: always '' since 0.5.0 (a visit leaves through WooCommerce's checkout). The
+	 * helper and the shortcode stay for one release so a layout that still carries them shows nothing.
 	 */
 	public function return_button_markup(): string {
-		return null !== $this->surface ? $this->surface->markup() : '';
+		return '';
 	}
 
 	/**

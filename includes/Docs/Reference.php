@@ -50,8 +50,8 @@ final class Reference {
 		return [
 			__( 'Setup (PunchOutSetupRequest, ProfileRequest)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/setup',
 			__( 'Start page (one-time token, opened in the browser)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/start/{token}',
-			__( 'Delivery confirmation (buyer review; GET and nonced POST)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/confirm',
-			__( 'Return (BrowserFormPost target is yours; this is ours)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/return',
+			__( 'Handoff (the page that posts the placed order to your BrowserFormPost; ours, served once)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/handoff',
+			__( 'Cancel and return (the empty PunchOutOrderMessage; BrowserFormPost target is yours, this is ours)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/return',
 			__( 'Inbound orders (answers 450 — not implemented)', 'punchout-woocommerce' ) => $this->home_url . '/punchout/order',
 		];
 	}
@@ -119,8 +119,8 @@ final class Reference {
 			__( 'XML signatures on any document.', 'punchout-woocommerce' ),
 			__( 'operation="edit", "inspect" and "source" — all answered 450.', 'punchout-woocommerce' ),
 			__( 'Inbound OrderRequest / cXML purchase orders. /punchout/order answers 450.', 'punchout-woocommerce' ),
-			__( 'Different delivery addresses per merchandise line. One destination is confirmed for the basket.', 'punchout-woocommerce' ),
-			__( 'Currencies other than ZAR. Cart confirmation currently requires the WooCommerce store and returned cart to use ZAR; currency conversion is not provided.', 'punchout-woocommerce' ),
+			__( 'Different delivery addresses per merchandise line. One ShipTo, the order’s shipping address, is sent for the basket.', 'punchout-woocommerce' ),
+			__( 'Currency conversion. The returned cart is priced in the store’s currency; a cart priced in another currency is refused at checkout.', 'punchout-woocommerce' ),
 		];
 	}
 
@@ -134,11 +134,11 @@ final class Reference {
 			[
 				'field'  => 'ShipTo',
 				'source' => __( 'PunchOutOrderMessageHeader (outbound); PunchOutSetupRequest (inbound)', 'punchout-woocommerce' ),
-				'note'   => __( 'Inbound ShipTo is context for the visit, for explicit buyer confirmation. Outbound full postal address is separately enabled and does not require an address code. Verified in cXML 1.2.008 and 1.2.071.', 'punchout-woocommerce' ),
+				'note'   => __( 'Inbound ShipTo is recorded on the visit. Outbound, the order’s shipping address (the saved address the buyer chose at checkout, or the one-off address typed there) is sent as the full postal address while the connection sends ShipTo; it does not require an address code. Verified in cXML 1.2.008 and 1.2.071.', 'punchout-woocommerce' ),
 			],
 			[
 				'field'  => 'Address/@addressID',
-				'source' => __( 'the delivery code on the chosen address', 'punchout-woocommerce' ),
+				'source' => __( 'the delivery code on the chosen address (orders returned before 0.5.0)', 'punchout-woocommerce' ),
 				'note'   => __( 'Optional company address identifier, for example BUYER-001. A shop administrator manages it. Issued codes are unique per company and never reassigned to another address.', 'punchout-woocommerce' ),
 			],
 			[
@@ -149,7 +149,7 @@ final class Reference {
 			[
 				'field'  => 'Address/PostalAddress',
 				'source' => __( 'the chosen delivery address', 'punchout-woocommerce' ),
-				'note'   => __( 'DeliverTo, Street, City, State, PostalCode and Country@isoCountryCode come from the confirmed destination snapshot. They are escaped as XML text.', 'punchout-woocommerce' ),
+				'note'   => __( 'DeliverTo, Street, City, State, PostalCode and Country@isoCountryCode come from the order’s shipping address. They are escaped as XML text.', 'punchout-woocommerce' ),
 			],
 			[
 				'field'  => 'ItemIn/Extrinsic name="DeliveryAddressCode"',
@@ -158,13 +158,13 @@ final class Reference {
 			],
 			[
 				'field' => 'ItemDetail/Extrinsic name="DeliveryInstructions"',
-				'source' => __( 'the confirmed basket note', 'punchout-woocommerce' ),
+				'source' => __( 'the order note typed at checkout, then the connection’s “Order details sent”', 'punchout-woocommerce' ),
 				'note' => __( 'Local only by default. Explicit item_detail_extrinsic policy copies the note onto every merchandise line, excluding freight. Verified for 1.2.008 and 1.2.071; the receiver must agree to use this mapping.', 'punchout-woocommerce' ),
 			],
 			[
 				'field' => 'ItemIn (freight)',
-				'source' => __( 'the sum of the selected native WooCommerce package rates, excluding tax', 'punchout-woocommerce' ),
-				'note' => __( 'Separately enabled quantity-one line with configured supplier ID, unit and classification, independent of address export. An unavailable rate is never represented as free delivery. No header Shipping is added.', 'punchout-woocommerce' ),
+				'source' => __( 'the order’s WooCommerce shipping total, excluding tax', 'punchout-woocommerce' ),
+				'note' => __( 'Sent only while the connection sends delivery cost: a quantity-one line with configured supplier ID, unit and classification, named after the shipping method with the estimate sentence, independent of address export. Otherwise the shipping line stays on the store’s order and the Total is the merchandise. No header Shipping is added.', 'punchout-woocommerce' ),
 			],
 		];
 	}
@@ -172,24 +172,22 @@ final class Reference {
 	/** @return list<string> */
 	public function delivery_workflow(): array {
 		return [
-			__( 'Authorised shop administrators manage Company delivery addresses on the customer administration screen. Each connection has its own private book. Every punchout visit selects from that connection’s enabled entries; a visit cannot edit the book. A connection can also let its buyers add a new address from the delivery review page; buyers never change or remove entries.', 'punchout-woocommerce' ),
-			__( 'Add an address manually, or preview and explicitly copy the connection’s store account’s normal WooCommerce billing or shipping address. New entries and imports start disabled; review and enable them separately with use_for_punchout. Normal address saves do not synchronise this book. Inbound ShipTo and the account’s saved shipping address can be reviewed as candidates for one visit; neither silently overwrites the company book.', 'punchout-woocommerce' ),
-			__( 'Every physical cart return requires the same punchout visit to review and confirm the full destination, native shipping method for each package and optional notes. This applies to pickup, a single available address or method, and all export flags being off. Open /punchout/confirm from the cart control, or place [punchout_delivery_confirmation] on a page; both use the same review and protected POST route. A direct /punchout/return POST cannot bypass confirmation. Virtual-only baskets record delivery as not_required. When every selected method is WooCommerce Local Pickup the review calls the method section Collection; an address is still chosen because WooCommerce offers pickup by zone.', 'punchout-woocommerce' ),
-			__( 'A valid existing native shipping choice is preserved. Otherwise WooCommerce chooses its configured native default in the current cart context; the plugin adds no cheapest-rate or pickup preference. When emit_delivery_line is enabled, require_rate refuses unavailable rates. quote_separately permits return only after the buyer acknowledges the missing estimate; neither a freight line nor a Quote shipping charge is added. With charge export off, the available estimate or unavailable state is still stored locally with the confirmation. A quoted zero is a real rate; unavailable is null, never zero. Write any delivery period in the shipping method title; the review shows it, the Quote note carries it and, with emit_delivery_line, it becomes the freight ItemIn Description. With emit_delivery_line off, the review shows each delivery method by its title only, no delivery estimate and no tax sentence; its total is the merchandise. With it on, the review adds the estimate and, only when the Review tax sentence setting is on, one sentence saying amounts exclude tax. Since 0.4.23 the review has no preferred delivery date field of its own; a delivery date belongs to the shop’s checkout. Quotes created before 0.4.23 keep their date in the order meta, their note and the store e-mail. It never reached the PunchOutOrderMessage.', 'punchout-woocommerce' ),
-			__( 'Confirmation binds the current cart, destination, rates, configuration and notes to that visit. Changing those facts requires a fresh review. A selected company entry must still exist and be enabled at confirmation and final return: removal or disablement requires reselection, and changes to its address, label or code require reconfirmation. After confirmation, an unrelated revision of the book does not invalidate an unchanged selected entry; an open review must be updated once. Completed return and Quote snapshots remain unchanged by later master edits.', 'punchout-woocommerce' ),
-			__( 'Notes are sanitised plain text, limited to 2,000 characters and 8,000 bytes. They default to local confirmation storage. delivery_notes_policy=item_detail_extrinsic additionally copies the basket note to DeliveryInstructions on every merchandise ItemDetail, excluding freight, for the exact supported DTDs. Agree this repetition with the receiver before enabling it.', 'punchout-woocommerce' ),
-			__( 'If enabled and available, delivery is one quantity-one freight ItemIn equal to the sum of the selected native package rates. The optional winner Quote uses native shipping items per package with the same sum, once. Prices and totals use ex-tax integer cents; merchandise stays separate. With export off or an acknowledged unavailable estimate, the Quote retains delivery metadata and an estimate note without a shipping charge. An empty close-out adds no freight.', 'punchout-woocommerce' ),
-			__( 'Codes are company-scoped references, not URLs, registered receiver records or an address-list API. Codes allow A–Z, 0–9, underscore and hyphen, up to 32 characters; an optional prefix is limited to 24, and labels to 190 characters. Changed or removed issued codes retain their claims permanently. No external address-book plugin, additional credential store or directory integration is required.', 'punchout-woocommerce' ),
+			__( 'A visit shops the ordinary WooCommerce cart and leaves through the shop’s classic checkout, where PunchOut is the only payment method offered. Its Submit builds the PunchOutOrderMessage from the placed order (its lines, its shipping address, its note) and posts it to the visit’s BrowserFormPost from the handoff page. The order stays on the store as a Punchout Quote; it is never paid here, and the plugin adds no delivery or tax wording of its own.', 'punchout-woocommerce' ),
+			__( 'Checkout refuses, before any order exists, a line without a SKU, a cart priced in another currency than the store’s, and a note cXML cannot carry. A Submit after the visit has returned is sent to the Sent state and posts nothing again. The cancel control (Cancel and return) posts the empty message instead.', 'punchout-woocommerce' ),
+			__( 'During a visit checkout saves nothing to the bound account: not its billing or shipping details, and not an address-book plugin’s entries. Billing opens on the account’s saved billing profile; the buyer chooses one of the account’s saved shipping addresses, or types a one-off address that stays on that order. Shop administrators keep those saved addresses on the account. The connection’s company delivery book (earlier releases’ address list) remains an administrator surface on the customer administration screen and the source of the wp punchout migrate-addresses command; no punchout visit reads it.', 'punchout-woocommerce' ),
+			__( 'ShipTo is the order’s shipping address, sent as the full postal address while the connection sends ShipTo. DeliveryInstructions carries the order note typed at checkout, then each of the connection’s “Order details sent” with a value, as “label: value”, joined by “ | ”, within 2,000 characters; only the note is shortened. It travels on every merchandise ItemDetail while delivery_notes_policy is item_detail_extrinsic. Agree this repetition with the receiver before enabling it.', 'punchout-woocommerce' ),
+			__( 'Delivery cost is WooCommerce’s: the order keeps its normal shipping line, the store’s own estimate. Only while the connection sends delivery cost does the message add one quantity-one freight ItemIn, the order’s shipping total before tax, named after the shipping method with the estimate sentence; otherwise the Total is the merchandise and no freight is sent. An empty close-out adds no freight.', 'punchout-woocommerce' ),
+			__( 'Codes are company-scoped references, not URLs, registered receiver records or an address-list API. Codes allow A–Z, 0–9, underscore and hyphen, up to 32 characters; an optional prefix is limited to 24, and labels to 190 characters. Changed or removed issued codes retain their claims permanently. Orders returned before 0.5.0 may carry a code; the order’s cXML sends none.', 'punchout-woocommerce' ),
 		];
 	}
 
 	/** Exact connection keys and defaults, displayed without exposing any connection values. @return array<string,array{default:bool|string,note:string}> */
 	public function delivery_settings(): array {
 		return [
-			'emit_ship_to' => [ 'default' => false, 'note' => __( 'Export the full confirmed ShipTo, independently of address code and charge.', 'punchout-woocommerce' ) ],
-			'emit_delivery_code' => [ 'default' => false, 'note' => __( 'Export a usable selected code in the exact-version fields below. Does not enable full ShipTo or freight.', 'punchout-woocommerce' ) ],
-			'emit_delivery_line' => [ 'default' => false, 'note' => __( 'Include one available native freight total in the cart return and matching optional Quote shipping items.', 'punchout-woocommerce' ) ],
-			'delivery_unknown_policy' => [ 'default' => 'require_rate', 'note' => __( 'require_rate refuses missing charge estimates; quote_separately allows acknowledged omission when charge export is enabled.', 'punchout-woocommerce' ) ],
+			'emit_ship_to' => [ 'default' => false, 'note' => __( 'Send ShipTo: export the order’s shipping address as the full postal ShipTo, independently of address code and charge.', 'punchout-woocommerce' ) ],
+			'emit_delivery_code' => [ 'default' => false, 'note' => __( 'Export a usable delivery code in the exact-version fields below (orders returned before 0.5.0 only; the order’s cXML sends none). Does not enable full ShipTo or freight.', 'punchout-woocommerce' ) ],
+			'emit_delivery_line' => [ 'default' => false, 'note' => __( 'Send delivery cost: include one freight line, the order’s shipping total before tax, with the estimate sentence. Off, the Total is the merchandise.', 'punchout-woocommerce' ) ],
+			'delivery_unknown_policy' => [ 'default' => 'require_rate', 'note' => __( 'Retired with the review page (0.5.0): WooCommerce’s checkout decides the shipping method. Kept on the row for orders returned before 0.5.0.', 'punchout-woocommerce' ) ],
 			'delivery_notes_policy' => [ 'default' => 'off', 'note' => __( 'off keeps notes local; item_detail_extrinsic exports DeliveryInstructions on merchandise ItemDetail for the verified dialects.', 'punchout-woocommerce' ) ],
 			'delivery_code_prefix' => [ 'default' => '', 'note' => __( 'Optional prefix for generated company address codes; empty leaves a new blank code uncoded.', 'punchout-woocommerce' ) ],
 			'delivery_code_extrinsic_name' => [ 'default' => 'DeliveryAddressCode', 'note' => __( 'Name of the optional direct ItemIn/Extrinsic, available only for 1.2.071.', 'punchout-woocommerce' ) ],

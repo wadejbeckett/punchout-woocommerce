@@ -42,7 +42,6 @@ final class Router {
 		private SetupEndpoint $setup,
 		private StartEndpoint $start,
 		private ReturnEndpoint $return_endpoint,
-		private ?\POW\Addresses\Chooser $delivery = null,
 		private ?\POW\Checkout\Handoff $handoff = null,
 	) {}
 
@@ -80,20 +79,8 @@ final class Router {
 			exit;
 		}
 
-		if ( '/punchout/confirm' === $path && null !== $this->delivery ) {
-			$this->harden_headers();
-			if ( \POW\Addresses\ReviewChrome::wraps_request() ) {
-				// A GET of the review inside the active theme: WordPress parses the request on,
-				// and the page is drawn at template_redirect, before any guard or redirect runs.
-				// Pose as the shop's cart page before the theme resolves its layout for this request (0.4.18).
-				\POW\Addresses\ReviewChrome::mark_review_request();
-				add_action( 'wp', [ $this->delivery, 'pose_for_theme' ], 0 );
-				add_action( 'template_redirect', [ $this->delivery, 'handle_in_theme' ], 0 );
-				return;
-			}
-			$this->delivery->handle();
-			exit;
-		}
+		// The old review route (retired in 0.5.0) falls through to WordPress and 404s like any other unknown path
+		// under /punchout/. A cart leaves through WooCommerce's checkout and /punchout/handoff.
 
 		if ( '/punchout/return' === $path ) {
 			$this->harden_headers();

@@ -787,28 +787,19 @@ final class RouteGuard {
 	}
 
 	/**
-	 * Two cases, two strings: a buyer inside a visit is pointed at the
-	 * operator's configured and filtered return control, and anyone
-	 * holding a punchout quote order outside its visit is told that order
-	 * is not payable here.
+	 * Two cases, two strings: a buyer inside a visit is told that this catalog session leaves only through the
+	 * shop's own checkout with the PunchOut method (the Store API checkout and the block checkout are refused),
+	 * and anyone holding a PunchOut order outside its visit is told that order is not payable here.
 	 */
 	private function checkout_blocked_message(): string {
 		if ( ! $this->inside_visit() ) {
 			return __( 'This order belongs to a PunchOut catalog session and cannot be paid here.', 'punchout-woocommerce' );
 		}
 
-		$label = (string) apply_filters(
-			'pow_return_button_label',
-			$this->settings->button_label(
-				'return_button_label',
-				__( 'Punchout', 'punchout-woocommerce' )
-			)
-		);
-
 		return sprintf(
-			/* translators: %s: label of the punchout exit button */
-			__( 'Checkout is not available in this catalog session. Please use "%s".', 'punchout-woocommerce' ),
-			$label
+			/* translators: %s: label of the cart's checkout button in a visit */
+			__( 'This catalog session sends your order to your purchasing system from the shop\'s checkout page. Open your cart and use "%s".', 'punchout-woocommerce' ),
+			$this->settings->checkout_button_label()
 		);
 	}
 
@@ -1070,20 +1061,12 @@ final class RouteGuard {
 		}
 	}
 
-	/** Why a page refused inside a visit, pointing at the configured return control. */
+	/** Why a page refused inside a visit, pointing at the cart's checkout button (the "Checkout button label"). */
 	private function refused_page_message(): string {
-		$label = (string) apply_filters(
-			'pow_return_button_label',
-			$this->settings->button_label(
-				'return_button_label',
-				__( 'Punchout', 'punchout-woocommerce' )
-			)
-		);
-
 		return sprintf(
-			/* translators: %s: label of the punchout exit button */
+			/* translators: %s: label of the cart's checkout button in a visit */
 			__( 'That page is not available in this catalog session. Add what you need to your cart, then use "%s" to send it to your purchasing system.', 'punchout-woocommerce' ),
-			$label
+			$this->settings->checkout_button_label()
 		);
 	}
 }

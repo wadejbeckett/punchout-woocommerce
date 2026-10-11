@@ -5,8 +5,7 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * The buyer's purchasing system does the approving, not the shop (0.4.23). No page, control or script a buyer
- * meets in a visit says "approval": a source scan over every buyer-facing template and script, and the one buyer
- * notice that lives in code. The store's own e-mail and the admin screens are not buyer-facing and are not scanned.
+ * meets in a visit says "approval": a source scan over every buyer-facing template and script. The store's own e-mail and the admin screens are not buyer-facing and are not scanned.
  */
 final class BuyerWordingTest extends TestCase {
 	/** @return array<string, string> Path relative to the plugin => source. */
@@ -19,9 +18,9 @@ final class BuyerWordingTest extends TestCase {
 		return $sources;
 	}
 
-	public function test_the_scan_reaches_the_review_the_handoff_and_the_visit_controls(): void {
+	public function test_the_scan_reaches_the_handoff_the_state_page_and_the_visit_controls(): void {
 		$scanned = array_keys( self::buyer_facing() );
-		foreach ( [ 'templates/delivery-confirmation.php', 'templates/handoff.php', 'templates/return-button.php', 'templates/abandon-button.php', 'assets/js/delivery-review.js' ] as $file ) {
+		foreach ( [ 'templates/handoff.php', 'templates/state.php', 'templates/abandon-button.php', 'assets/js/leave-confirmation.js', 'assets/js/start-link.js' ] as $file ) {
 			self::assertContains( $file, $scanned, $file );
 		}
 	}
@@ -32,9 +31,4 @@ final class BuyerWordingTest extends TestCase {
 		}
 	}
 
-	public function test_the_added_address_notice_says_no_approval(): void {
-		$notice = ( new ReflectionMethod( POW\Addresses\Chooser::class, 'added_notice' ) )->invoke( null );
-		self::assertStringNotContainsString( 'approv', strtolower( $notice ) );
-		self::assertStringContainsString( 'Address added', $notice );
-	}
 }

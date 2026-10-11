@@ -39,7 +39,7 @@ final class CompanyBook {
 	}
 
 	/**
-	 * Read-only consumer boundary for Resolver's active-choice check. Caller owns the partner mutex and visit/session authorization; do not acquire it again here. Reread the association and raw metadata even when its revision appears unchanged. This is the selection read and works inside a visit; it grants no management access, which editor() alone decides.
+	 * Read-only consumer boundary (the migration command and the administrator screen; until 0.5.0 the review's address resolver). Caller owns the partner mutex and visit/session authorization; do not acquire it again here. Reread the association and raw metadata even when its revision appears unchanged. This is the selection read and works inside a visit; it grants no management access, which editor() alone decides.
 	 */
 	public function read_for_partner_locked( Partner $partner ): array|\WP_Error {
 		try {
@@ -50,7 +50,7 @@ final class CompanyBook {
 	}
 
 	/**
-	 * Fingerprint a checked canonical entry and immutable key, never the aggregate revision. Resolver/confirmation consumers share DeliveryData's ordering and encoding rules. Reordered maps are equivalent; noncanonical content refuses instead of being silently repaired.
+	 * Fingerprint a checked canonical entry and immutable key, never the aggregate revision. Consumers share DeliveryData's ordering and encoding rules. Reordered maps are equivalent; noncanonical content refuses instead of being silently repaired.
 	 *
 	 * @throws \DomainException If the persisted key/entry shape is not canonical. Current shipping policy cannot change this historical fingerprint.
 	 */
@@ -200,7 +200,7 @@ final class CompanyBook {
 	/**
 	 * The buyer-add gate, asked under the partner lock: the connection is active and allows buyer adds, the visit is the bound account's, and this request is inside that very visit, still active, on its own basket.
 	 *
-	 * The visit passed in is only a claim. The live visit is resolved again here from the login, and must be the same row with the same per-visit basket key. That row and the claim are read the same way, so the key must also be the basket this request actually holds (WooCommerce's session customer id), as Chooser::invalidate() and Confirmation::live_cart_key() require; no loaded session refuses. The shared account id alone proves nothing, because every visit of the connection signs in as it.
+	 * The visit passed in is only a claim. The live visit is resolved again here from the login, and must be the same row with the same per-visit basket key. That row and the claim are read the same way, so the key must also be the basket this request actually holds (WooCommerce's session customer id), no loaded session refuses. The shared account id alone proves nothing, because every visit of the connection signs in as it.
 	 */
 	private function buyer_adder( int $partner_id, \POW\Sessions\Session $visit ): Partner|\WP_Error {
 		$partner = $this->registry->find( $partner_id );

@@ -14,7 +14,7 @@ use POW\Support\Templates;
 final class TemplateNameTest extends TestCase {
 
 	public function test_flat_names_are_unchanged(): void {
-		self::assertSame( 'return-button', Templates::normalise_name( 'return-button' ) );
+		self::assertSame( 'abandon-button', Templates::normalise_name( 'abandon-button' ) );
 		self::assertSame( 'handoff', Templates::normalise_name( 'handoff' ) );
 	}
 

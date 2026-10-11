@@ -204,7 +204,6 @@ final class Page {
 		return [
 			'enabled'              => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
 			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
-			'return_button_label'  => [ __( 'Punchout button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button that sends the cart back to the buyer\'s purchasing system. Blank uses the default: “Punchout”.', 'punchout-woocommerce' ) ],
 			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Return without a cart”.', 'punchout-woocommerce' ) ],
 			'checkout_button_label' => [ __( 'Checkout button label', 'punchout-woocommerce' ), 'text', __( 'During a visit, text on the cart’s proceed button and the Cart widget’s checkout button, which open checkout with PunchOut as the only payment method. Blank uses the default: “Proceed to checkout”.', 'punchout-woocommerce' ) ],
 			'leave_confirmation'   => [ __( 'Ask before leaving', 'punchout-woocommerce' ), 'checkbox', __( 'During a visit, the cancel control ([punchout_abandon_button]) asks first when the cart has items, with the shortcode’s question attribute (for example [punchout_abandon_button question="Return without sending?"]; default “Return without sending your cart?”). An empty cart leaves at once. Off by default.', 'punchout-woocommerce' ) ],
@@ -212,20 +211,7 @@ final class Page {
 			'leave_stay_label'     => [ __( 'Stay button label', 'punchout-woocommerce' ), 'text', __( 'The confirmation’s button that closes it and keeps the visit. Blank uses the default: “Keep shopping”.', 'punchout-woocommerce' ) ],
 			'state_page_id'        => [ __( 'State page', 'punchout-woocommerce' ), 'page', __( 'A page holding the [punchout_state] shortcode. Once a cart has been sent, and when a link has expired or a session has ended, the buyer’s browser is sent there, so Sent, Not sent, Link expired and Session ended draw inside your theme (classes pow-state and pow-state--sent, --not-sent, --expired, --ended, --sending). Titles and text are shortcode attributes, for example [punchout_state sent_title="Sent"]. The page that posts the cart itself always stays plain. None keeps the plain pages.', 'punchout-woocommerce' ), [ 'none' => __( 'None: the plain pages (default)', 'punchout-woocommerce' ) ] ],
 			'state_button_label'   => [ __( 'State page button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button of the page that posts the cart to the purchasing system (pressed only when it cannot continue by itself), and on the state page’s button when its shortcode names a button_url. Blank uses the default: “Continue to your purchasing system”.', 'punchout-woocommerce' ) ],
-			'extra_button_classes' => [ __( 'Extra button classes', 'punchout-woocommerce' ), 'text', sprintf(
-				/* translators: %s: comma-separated CSS classes the visit stylesheet hides. */
-				__( 'Space-separated CSS classes added to the Punchout exit button, the “Return without a cart” control, the delivery review page’s Submit and Update buttons and the add-address form’s “Add and use this address” button, so they match the site’s own button styles. Plugin classes (pow-…) and the classes a visit hides (%s) are ignored. The Cart block draws its own button and does not receive them.', 'punchout-woocommerce' ),
-				implode( ', ', Settings::reserved_button_classes() )
-			) ],
-			'attachment_enabled'   => [ __( 'Attachment field', 'punchout-woocommerce' ), 'checkbox', __( 'Offer an optional file upload beside the delivery notes on the review page. The file stays with the Punchout Quote order (order screen and the “PunchOut order received” e-mail); it is never sent to the purchasing system. Default types: xlsx, xls, csv, pdf and images, up to 10 MB (filters punchout_attachment_types and punchout_attachment_max_bytes).', 'punchout-woocommerce' ) ],
-			'attachment_label'     => [ __( 'Attachment label', 'punchout-woocommerce' ), 'text', __( 'Label of the file field on the review page. Blank uses the default: “Attachment”.', 'punchout-woocommerce' ) ],
-			'attachment_help'      => [ __( 'Attachment help text', 'punchout-woocommerce' ), 'text', __( 'Shown under the file field. Blank uses the default: “Optional: a sheet or document for this order.”', 'punchout-woocommerce' ) ],
-			'delivery_estimate_note' => [ __( 'Delivery estimate note', 'punchout-woocommerce' ), 'text', __( 'One sentence shown with the delivery estimate on the review page, sent with the returned cart (on the delivery line and in the delivery instructions) and included in the “PunchOut order received” e-mail. Blank uses the default: “The delivery charge is an estimate; the supplier confirms the final amount before dispatch.”', 'punchout-woocommerce' ) ],
-			'review_title'         => [ __( 'Review page title', 'punchout-woocommerce' ), 'text', __( 'Shown as the page title and last breadcrumb while the review is drawn inside your theme. Blank uses the default: “Review”.', 'punchout-woocommerce' ) ],
-			'review_submit_label'  => [ __( 'Review Submit button', 'punchout-woocommerce' ), 'text', __( 'Text on the review page’s button that sends the cart to the purchasing system. Blank uses the default: “Submit”.', 'punchout-woocommerce' ) ],
-			'review_items_heading' => [ __( 'Review items heading', 'punchout-woocommerce' ), 'text', __( 'Heading over the item lines on the review page. Blank uses the default: “Items”.', 'punchout-woocommerce' ) ],
-			'review_total_label'   => [ __( 'Review total label', 'punchout-woocommerce' ), 'text', __( 'Label of the amount sent to the purchasing system on the review page. Blank uses the default: “Total”.', 'punchout-woocommerce' ) ],
-			'review_tax_note'      => [ __( 'Review tax sentence', 'punchout-woocommerce' ), 'checkbox', __( 'Add one sentence, “Amounts exclude tax.”, under the review page’s totals. It shows only for connections that send the delivery cost; otherwise the review names tax nowhere. Off by default.', 'punchout-woocommerce' ) ],
+			'extra_button_classes' => [ __( 'Extra button classes', 'punchout-woocommerce' ), 'text', __( 'Space-separated CSS classes added to the “Cancel and return” control ([punchout_abandon_button]), so it matches your theme’s buttons. Classes starting with pow- are ignored. The cart’s checkout button keeps WooCommerce’s own classes.', 'punchout-woocommerce' ) ],
 			'start_link_click'     => [ __( 'Login link needs a click', 'punchout-woocommerce' ), 'checkbox', __( 'The login link opens a short page that continues to the catalog by itself, so a mail scanner that only fetches the link does not use it up. Tick this to make the buyer press a button on that page instead, for scanners that also run scripts. Off by default.', 'punchout-woocommerce' ) ],
 			'start_link_button_label' => [ __( 'Login link button', 'punchout-woocommerce' ), 'text', __( 'Text on the button of the short page the login link opens. Blank uses the default: “Open the catalog”.', 'punchout-woocommerce' ) ],
 			'token_ttl'            => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300. At most 604800 (7 days).', 'punchout-woocommerce' ) ],
@@ -326,29 +312,21 @@ final class Page {
 		Transport::require_https();
 		$input = is_array( $input ) ? $input : [];
 
-		return [
+		// The settings 0.5.0 retired stay as stored (Settings::stored_retired()), for a rollback; the screen has no
+		// field for them, so a save never changes one.
+		return \POW\Settings::stored_retired() + [
 			'enabled'              => ( isset( $input['enabled'] ) && 'yes' === $input['enabled'] ) ? 'yes' : 'no',
 			'landing_page_id'      => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
-			'return_button_label'  => sanitize_text_field( (string) ( $input['return_button_label'] ?? '' ) ),
 			'abandon_button_label' => sanitize_text_field( (string) ( $input['abandon_button_label'] ?? '' ) ),
-			'checkout_button_label' => \POW\Addresses\ReviewLabels::sanitise( $input['checkout_button_label'] ?? '' ),
+			'checkout_button_label' => \POW\Settings::sanitise_label( $input['checkout_button_label'] ?? '' ),
 			'leave_confirmation'   => ( isset( $input['leave_confirmation'] ) && 'yes' === $input['leave_confirmation'] ) ? 'yes' : 'no',
-			'leave_confirm_label'  => \POW\Addresses\ReviewLabels::sanitise( $input['leave_confirm_label'] ?? '' ),
-			'leave_stay_label'     => \POW\Addresses\ReviewLabels::sanitise( $input['leave_stay_label'] ?? '' ),
+			'leave_confirm_label'  => \POW\Settings::sanitise_label( $input['leave_confirm_label'] ?? '' ),
+			'leave_stay_label'     => \POW\Settings::sanitise_label( $input['leave_stay_label'] ?? '' ),
 			'state_page_id'        => max( 0, (int) ( $input['state_page_id'] ?? 0 ) ),
-			'state_button_label'   => \POW\Addresses\ReviewLabels::sanitise( $input['state_button_label'] ?? '' ),
+			'state_button_label'   => \POW\Settings::sanitise_label( $input['state_button_label'] ?? '' ),
 			'extra_button_classes' => implode( ' ', \POW\Settings::button_class_tokens( $input['extra_button_classes'] ?? '' ) ),
-			'attachment_enabled'   => ( isset( $input['attachment_enabled'] ) && 'yes' === $input['attachment_enabled'] ) ? 'yes' : 'no',
-			'attachment_label'     => sanitize_text_field( (string) ( $input['attachment_label'] ?? '' ) ),
-			'attachment_help'      => sanitize_text_field( (string) ( $input['attachment_help'] ?? '' ) ),
-			'delivery_estimate_note' => sanitize_text_field( (string) ( $input['delivery_estimate_note'] ?? '' ) ),
-			'review_title'         => \POW\Addresses\ReviewTitle::sanitise( $input['review_title'] ?? '' ),
-			'review_submit_label'  => \POW\Addresses\ReviewLabels::sanitise( $input['review_submit_label'] ?? '' ),
-			'review_items_heading' => \POW\Addresses\ReviewLabels::sanitise( $input['review_items_heading'] ?? '' ),
-			'review_total_label'   => \POW\Addresses\ReviewLabels::sanitise( $input['review_total_label'] ?? '' ),
-			'review_tax_note'      => ( isset( $input['review_tax_note'] ) && 'yes' === $input['review_tax_note'] ) ? 'yes' : 'no',
 			'start_link_click'     => ( isset( $input['start_link_click'] ) && 'yes' === $input['start_link_click'] ) ? 'yes' : 'no',
-			'start_link_button_label' => \POW\Addresses\ReviewLabels::sanitise( $input['start_link_button_label'] ?? '' ),
+			'start_link_button_label' => \POW\Settings::sanitise_label( $input['start_link_button_label'] ?? '' ),
 			'token_ttl'            => \POW\Partners\Partner::clamp_ttl( (int) ( $input['token_ttl'] ?? 300 ), 30 ),
 			'session_ttl'          => \POW\Partners\Partner::clamp_ttl( (int) ( $input['session_ttl'] ?? 14400 ), 300 ),
 			'rate_limit_per_min'   => max( 0, (int) ( $input['rate_limit_per_min'] ?? 30 ) ),
@@ -682,16 +660,6 @@ final class Page {
 		);
 
 		$this->form_row( __( 'My Account pages in a visit', 'punchout-woocommerce' ), $this->visit_endpoints_field( $partner ) );
-
-		$this->form_row(
-			__( 'Buyer-added addresses', 'punchout-woocommerce' ),
-			sprintf(
-				'<label><input type="checkbox" name="buyer_addresses" value="1" %s /> %s</label><p class="description">%s</p>',
-				checked( true, (bool) ( $partner->buyer_addresses ?? false ), false ),
-				esc_html__( 'Buyers may add delivery addresses to the company book', 'punchout-woocommerce' ),
-				esc_html__( 'Off by default. When ticked, a buyer inside a punchout visit can add a new address on the delivery review page. It is saved to this connection’s company book, enabled and selected at once, and the audit log records which visit added it. Buyers cannot change or remove entries.', 'punchout-woocommerce' )
-			)
-		);
 
 		$this->form_row(
 			__( 'Account holder actions', 'punchout-woocommerce' ),

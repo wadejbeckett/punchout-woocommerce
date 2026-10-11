@@ -17,8 +17,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * Per-partner configuration lives in the partners table (Partners\Registry);
  * this option holds operational knobs only. There is no storefront-wide
- * entitlement: punchout is the only exit a visit has, so nothing here
- * decides what a visit may reach.
+ * entitlement: a visit leaves through the shop's checkout with the PunchOut
+ * payment method or through Cancel and return, and nothing here decides what
+ * a visit may reach.
  *
  * The sodium key that seals partner secrets is NOT a setting: it must live
  * in wp-config.php as POW_SECRET_KEY so a database dump alone cannot
@@ -38,17 +39,28 @@ class Settings {
 	public const LEAVE_CONFIRM_FILTER = 'punchout_leave_confirm_label';
 	public const LEAVE_STAY_FILTER    = 'punchout_leave_stay_label';
 
-	/**
-	 * What the visit stylesheet hides with display:none, each selector
-	 * ending in the class it hides. Cart\Surface emits exactly these, and
-	 * the final class of each is reserved (reserved_button_classes()): an
-	 * operator's extra class on the exit would otherwise hide the visit's
-	 * only way out. One list, so the two can never drift apart.
-	 */
-	public const VISIT_HIDDEN_SELECTORS = [ '.checkout-button', '.widget_shopping_cart .buttons .checkout', '.wc-block-mini-cart__footer-checkout' ];
-
 	/** At most this many extra classes are kept. */
 	private const MAX_BUTTON_CLASSES = 20;
+
+	/** The longest label a button setting keeps, in characters. */
+	public const MAX_LABEL = 100;
+
+	/**
+	 * Settings 0.5.0 retired with the review page, each with the label it had on the settings screen. A save keeps a
+	 * stored value of any of them as it was (never a new one), so a rollback to 0.4.23 finds its words again.
+	 */
+	public const RETIRED = [
+		'return_button_label'    => 'Punchout button label',
+		'attachment_enabled'     => 'Attachment field',
+		'attachment_label'       => 'Attachment label',
+		'attachment_help'        => 'Attachment help text',
+		'delivery_estimate_note' => 'Delivery estimate note',
+		'review_title'           => 'Review page title',
+		'review_submit_label'    => 'Review Submit button',
+		'review_items_heading'   => 'Review items heading',
+		'review_total_label'     => 'Review total label',
+		'review_tax_note'        => 'Review tax sentence',
+	];
 
 	private const DEFAULTS = [
 		// Master switch. Off by default so a fresh install exposes no
@@ -83,12 +95,10 @@ class Settings {
 		// the route guard. 0 = the shop page.
 		'landing_page_id'      => 0,
 
-		// Buyer-facing labels for the two session exit controls. Empty
-		// means "use the translated default" — the defaults themselves
-		// cannot live in a constant because they are translatable. The
-		// pow_return_button_label / pow_abandon_button_label filters still
-		// run last, so code can override either one.
-		'return_button_label'  => '',
+		// The buyer-facing label of the cancel control. Empty means "use the
+		// translated default" — the defaults themselves cannot live in a
+		// constant because they are translatable. The pow_abandon_button_label
+		// filter still runs last, so code can override it.
 		'abandon_button_label' => '',
 
 		// 0.5.0: the cart's proceed button and the Cart widget's checkout button in a visit, which lead to
@@ -111,37 +121,11 @@ class Settings {
 		'leave_confirm_label'  => '',
 		'leave_stay_label'     => '',
 
-		// The site's own button classes, space-separated, added to the exit
-		// controls and the review page's primary actions so they match the
-		// theme without the plugin naming it. Normalised on save and on read
-		// by button_class_tokens(); empty adds nothing.
+		// The site's own button classes, space-separated, added to the cancel
+		// control so it matches the theme without the plugin naming it.
+		// Normalised on save and on read by button_class_tokens(); empty adds
+		// nothing.
 		'extra_button_classes' => '',
-
-		// The review page's optional file field (0.4.14): on by default; the
-		// label and help text are blank for the translated defaults
-		// ("Attachment", "Optional: a sheet or document for this order.").
-		// The punchout_attachment_{enabled,label,help,types,max_bytes}
-		// filters run last, in Orders\Attachment.
-		'attachment_enabled'   => 'yes',
-		'attachment_label'     => '',
-		'attachment_help'      => '',
-
-		// 0.4.19: the sentence shown with every delivery estimate and sent with the returned cart. Blank = the translated default.
-		'delivery_estimate_note' => '',
-
-		// 0.4.22: the title the theme-drawn review answers with while it poses as the Cart page (title bar, last
-		// breadcrumb, document title). Blank = the translated default "Review"; filter punchout_review_title.
-		'review_title'         => '',
-
-		// 0.4.23: the review page's Submit button, the heading over its item lines and the label of its total.
-		// Blank = the translated defaults "Submit", "Items" and "Total"; filters punchout_review_submit_label,
-		// punchout_review_items_heading and punchout_review_total_label run last (Addresses\ReviewLabels).
-		'review_submit_label'  => '',
-		'review_items_heading' => '',
-		'review_total_label'   => '',
-		// 0.4.23: 'yes' adds "Amounts exclude tax." under the review's totals while the connection sends the delivery
-		// line. Off by default, so the review names tax nowhere (Addresses\ReviewLabels::TAX_NOTE).
-		'review_tax_note'      => 'no',
 
 		// Classification fallback when a cart line has no SKU-map row.
 		// The DTD requires at least one Classification; D365 only appends
@@ -193,8 +177,8 @@ class Settings {
 	 * Normalise a list of extra button classes.
 	 *
 	 * Whitespace-separated; each token passes sanitize_html_class. Empty
-	 * results, plugin classes (`pow-…`, any case), the reserved classes the
-	 * visit stylesheet hides and repeats are dropped, and at most 20 are kept.
+	 * results, plugin classes (`pow-…`, any case) and repeats are dropped,
+	 * and at most 20 are kept.
 	 *
 	 * @return list<string>
 	 */
@@ -205,7 +189,7 @@ class Settings {
 		$tokens = [];
 		foreach ( preg_split( '/\s+/', trim( $raw ) ) ?: [] as $token ) {
 			$token = sanitize_html_class( $token );
-			if ( '' === $token || 0 === stripos( $token, 'pow-' ) || in_array( $token, self::reserved_button_classes(), true ) || in_array( $token, $tokens, true ) ) {
+			if ( '' === $token || 0 === stripos( $token, 'pow-' ) || in_array( $token, $tokens, true ) ) {
 				continue;
 			}
 			$tokens[] = $token;
@@ -217,13 +201,13 @@ class Settings {
 	}
 
 	/**
-	 * Classes an operator may not add: the class each VISIT_HIDDEN_SELECTORS
-	 * selector ends in, in the same order.
-	 *
-	 * @return list<string>
+	 * A label setting as saved: plain text (tags stripped), one line, trimmed, at most MAX_LABEL characters;
+	 * anything that is not a string saves as blank (the default).
 	 */
-	public static function reserved_button_classes(): array {
-		return array_map( static fn( string $selector ): string => substr( $selector, (int) strrpos( $selector, '.' ) + 1 ), self::VISIT_HIDDEN_SELECTORS );
+	public static function sanitise_label( mixed $raw ): string {
+		if ( ! is_string( $raw ) ) { return ''; }
+		$label = trim( (string) preg_replace( '/\s+/u', ' ', sanitize_text_field( $raw ) ) );
+		return mb_strlen( $label ) > self::MAX_LABEL ? rtrim( mb_substr( $label, 0, self::MAX_LABEL ) ) : $label;
 	}
 
 	/**
@@ -293,11 +277,6 @@ class Settings {
 		return '' !== $label ? $label : $default;
 	}
 
-	/** True when the review shows its one tax sentence under the totals (0.4.23; off by default, and never while the connection sends no delivery line). */
-	public function review_tax_note(): bool {
-		return 'yes' === $this->get( 'review_tax_note', 'no' );
-	}
-
 	/** True when the StartPage link waits for one real click instead of submitting itself (0.4.23; off by default). */
 	public function start_link_click(): bool {
 		return 'yes' === $this->get( 'start_link_click', 'no' );
@@ -311,6 +290,17 @@ class Settings {
 	public function save( array $values ): void {
 		$this->cache = wp_parse_args( $values, self::DEFAULTS );
 		update_option( self::OPTION_KEY, $this->cache, false );
+	}
+
+	/**
+	 * The retired settings (0.5.0) as the option still stores them, so a save carries them over unchanged and a
+	 * rollback to 0.4.23 finds the review's words again. Never a value from the screen: the screen has no field.
+	 *
+	 * @return array<string, mixed>
+	 */
+	public static function stored_retired(): array {
+		$stored = get_option( self::OPTION_KEY, [] );
+		return is_array( $stored ) ? array_intersect_key( $stored, self::RETIRED ) : [];
 	}
 
 	/**

@@ -136,7 +136,7 @@ final class Fields {
 	/**
 	 * WooCommerce's own shipping fields for $country, filled from $address, with ids under $id_prefix.
 	 *
-	 * The one field set both address forms use: the administrator's editor here and a buyer's add form on the delivery review page. Their input names are always shipping_*, so both post the same keys and CompanyBook validates both the same way.
+	 * The administrator's editor's field set. Its input names are always shipping_*, so it posts the keys CompanyBook validates. (Until 0.5.0 a buyer's add form on the review page used the same set.)
 	 *
 	 * @param array<string, string> $address The ten address keys.
 	 * @throws \RuntimeException When WooCommerce offers no usable field set for the country.
@@ -169,9 +169,9 @@ final class Fields {
 		return ! isset( $post['pow_address_refresh'] ) || '1' === $post['pow_address_refresh'];
 	}
 	/**
-	 * The strict schema of a buyer's add-address POST on the delivery review page.
+	 * The strict schema of a buyer's add-address POST (retired in 0.5.0 with the review page; kept as the rule that bounded it).
 	 *
-	 * Only the review nonce, the add nonce, the action, a label, the ten shipping fields, an optional country refresh, and the review's notes, which post with the add because the add fieldset sits inside the review form; every value a string. Chooser drops the review form's other fields (return nonce, digest, choice, rates, acknowledgement, and the preferred date a page from before 0.4.23 may still post) unread before asking. There is no code field, so a buyer never picks a delivery code, and nothing names a key, revision, rate or enablement.
+	 * Only the review nonce, the add nonce, the action, a label, the ten shipping fields, an optional country refresh, and the review's notes, which post with the add because the add fieldset sits inside the review form; every value a string. The review dropped the form's other fields (return nonce, digest, choice, rates, acknowledgement, and the preferred date a page from before 0.4.23 may still post) unread before asking. There is no code field, so a buyer never picks a delivery code, and nothing names a key, revision, rate or enablement.
 	 */
 	public static function buyer_post_allowed( array $post ): bool {
 		$allowed = array_merge( [ 'pow_nonce', 'pow_address_nonce', 'pow_delivery_action', 'pow_address_label', 'pow_address_refresh', 'notes' ], array_map( static fn( $key ) => 'shipping_' . $key, self::ADDRESS_KEYS ) );
