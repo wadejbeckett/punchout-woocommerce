@@ -370,7 +370,7 @@ final class PowEndToEndFixture {
 				// What the fixture's own order details must send, after the driver's.
 				'instructions_expected' => self::ORDER_DETAILS_SENT,
 				// The sentence a freight line carries (and that then leads DeliveryInstructions).
-				'estimate_note' => class_exists( 'POW\\Addresses\\EstimateNote' ) ? POW\Addresses\EstimateNote::text( POW\Plugin::instance()->settings() ) : '',
+				'estimate_note' => class_exists( 'POW\\Checkout\\OrderMessage' ) && method_exists( 'POW\\Checkout\\OrderMessage', 'estimate_sentence' ) ? POW\Checkout\OrderMessage::estimate_sentence() : '',
 				'secret'       => $secret,
 				'products'     => $products,
 				'skuless'      => $skuless,

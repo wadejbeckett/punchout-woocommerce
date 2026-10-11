@@ -58,7 +58,6 @@ namespace {
 		/** The suites that carry two concurrent visits of one bound account. */
 		private const VISIT_SUITES = [
 			'ConcurrencyNative.php',
-			'DeliveryStoreNative.php',
 			'VisitLockdownNative.php',
 			'TwoBuyerNative.php',
 		];

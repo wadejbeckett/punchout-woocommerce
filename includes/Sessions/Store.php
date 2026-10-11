@@ -276,37 +276,7 @@ class Store {
 	}
 
 	/**
-	 * Caller holds the partner mutex and has freshly checked company/address/cart/policy eligibility. Raw expected values come from the loaded server session, never POST. One conditional native UPDATE stores the bound pair; exact byte predicates preserve NULL and resist collation-equivalent stale values. An empty choice represents SQL NULL only for a schema-valid virtual/not-required confirmation.
-	 */
-	public function save_delivery( int $session_id, int $user_id, string $login_token, ?string $expected_choice, ?string $expected_confirmation, array $choice, array $confirmation ): bool {
-		global $wpdb;
-		try {
-			if ( $session_id <= 0 || $user_id <= 0 || '' === $login_token ) { return false; }
-			$session = $this->find( $session_id );
-			if ( ! $session || $session->user_id !== $user_id || $session->wp_session_token !== $login_token || Session::ACTIVE !== $session->status || ! $session->expires || $session->expires <= gmdate( 'Y-m-d H:i:s' ) || $session->delivery_choice_json !== $expected_choice || $session->delivery_confirmation_json !== $expected_confirmation || ! $this->login_valid_checked( $session ) ) { return false; }
-			$flags = JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
-			$choice_json = [] === $choice ? null : json_encode( $choice, $flags, 16 );
-			$accepted = null === $choice_json ? null : \POW\Addresses\DeliveryData::choice( $choice_json, $session->partner_id );
-			$confirmation_json = json_encode( $confirmation, $flags, 16 );
-			\POW\Addresses\DeliveryData::confirmation( $confirmation_json, $session_id, $user_id, $accepted );
-			if ( $choice_json === $expected_choice && $confirmation_json === $expected_confirmation ) { return true; }
-			$set = 'delivery_choice = ' . ( null === $choice_json ? 'NULL' : '%s' ) . ', delivery_confirmation = %s';
-			$args = null === $choice_json ? [] : [ $choice_json ];
-			array_push( $args, $confirmation_json, $session_id, $session->partner_id, $user_id, $login_token, Session::ACTIVE, gmdate( 'Y-m-d H:i:s' ) );
-			$where = 'id = %d AND partner_id = %d AND user_id = %d AND BINARY wp_session_token = %s AND status = %s AND expires > %s';
-			foreach ( [ 'delivery_choice' => $expected_choice, 'delivery_confirmation' => $expected_confirmation ] as $column => $expected ) {
-				$where .= ' AND ' . ( null === $expected ? $column . ' IS NULL' : 'BINARY ' . $column . ' = %s' );
-				if ( null !== $expected ) { $args[] = $expected; }
-			}
-			$written = $wpdb->query( $wpdb->prepare( 'UPDATE ' . $this->table() . ' SET ' . $set . ' WHERE ' . $where, ...$args ) );
-			if ( 1 !== $written || '' !== $wpdb->last_error ) { return false; }
-			$after = $this->find( $session_id );
-			return $after && $after->partner_id === $session->partner_id && $after->user_id === $user_id && $after->wp_session_token === $login_token && Session::ACTIVE === $after->status && $after->expires && $after->expires > gmdate( 'Y-m-d H:i:s' ) && $after->delivery_choice_json === $choice_json && $after->delivery_confirmation_json === $confirmation_json && $this->login_valid_checked( $after );
-		} catch ( \Throwable $error ) { return false; }
-	}
-
-	/**
-	 * Caller holds the partner mutex. Remove consent after a cart mutation or an unacknowledged save, preserving the selected destination. Exact stored login binding is required, but the native token may already be revoked: recovery must still remove that ACTIVE row's consent. Completed snapshots are never changed. False requires caller recovery/fencing, not an assumption that old state survived.
+	 * Caller holds the partner mutex. Clear the consent snapshot of an ACTIVE visit after a cart mutation, preserving the selected destination. Since 0.5.0 nothing writes a snapshot (the review that did retired), so a current visit's column is already NULL and this answers true; the clear stays for a visit opened before the upgrade. Exact stored login binding is required, but the native token may already be revoked. Completed snapshots are never changed. False requires caller recovery/fencing, not an assumption that old state survived.
 	 */
 	public function invalidate_delivery( int $session_id, int $user_id, string $login_token ): bool {
 		global $wpdb;

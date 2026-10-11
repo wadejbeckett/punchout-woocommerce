@@ -15,9 +15,10 @@
  *
  * What the script actually does is play each visit's whole sequence against
  * real rows, in one CLI process, one request after another: an authenticated
- * `PunchOutSetupRequest`, the StartPage redeem, the basket, the delivery
- * review, the cart return and the Punchout Quote it leaves behind, then reads
- * the rows back byte-exactly. It is not a wire run and it is not concurrent.
+ * `PunchOutSetupRequest`, the StartPage redeem, the basket, and the close-out
+ * through the real `/punchout/return` handler (Cancel and return, the empty
+ * message; since 0.5.0 a cart leaves through WooCommerce's checkout, which the
+ * end-to-end driver drives over HTTP), then reads the rows back byte-exactly. It is not a wire run and it is not concurrent.
  * Every setup is handed to a `Http\SetupEndpoint` this file constructs, with
  * the request body fed through the `pow_test_setup_io` seam and BOTH rate
  * limiters constructed disabled, so nothing here can fail on the setup route
@@ -37,10 +38,9 @@
  * ordinary password login of that same account — must be neither read nor
  * deleted nor honoured inside a visit.
  *
- * Fixture requirements it will not invent for you: a `local` environment type,
- * a store currency of ZAR (the delivery review's own assertion), and a store
- * base address that is a currently allowed shipping destination, since a fresh
- * visit's delivery candidate is the bound account's profile address. It creates
+ * Fixture requirements it will not invent for you: a `local` environment type
+ * and a store base address that is a currently allowed shipping destination,
+ * so the bound account's profile address is deliverable. It creates
  * its own account, connections, products and visits and leaves them for
  * inspection; it deletes nothing. It proves the plugin's own decisions against
  * real rows, not the web server's: an actual HTTP run is still the only thing
@@ -60,10 +60,6 @@ if ( ! POW\Plugin::instance()->enabled() ) {
 	throw new RuntimeException( 'The master switch must be on: the cart guards and the buyer runtime are registered behind it.' );
 }
 
-if ( 'ZAR' !== get_woocommerce_currency() ) {
-	throw new RuntimeException( 'The delivery review only accepts a ZAR store; set the fixture currency before running this suite.' );
-}
-
 require_once dirname( __DIR__ ) . '/Support/setup-io-stubs.php';
 require_once dirname( __DIR__ ) . '/Support/native-visits.php';
 
@@ -80,7 +76,6 @@ final class TwoBuyerNative {
 	private POW\Audit\Log $audit;
 	private POW\RouteGuard $guard;
 	private POW\Cart\NativeSessionGuard $carts;
-	private POW\Addresses\Confirmation $confirmation;
 	private POW\Http\ReturnEndpoint $returns;
 
 	private string $run;
@@ -95,7 +90,7 @@ final class TwoBuyerNative {
 	private array $identities = [];
 	/** @var array<string,POW\Sessions\Session> label => visit row as last read */
 	private array $visits = [];
-	/** @var array<string,int> label => quote order id */
+	/** @var array<string,int> label => a Punchout Quote stamped with that visit's provenance, as checkout leaves one */
 	private array $quotes = [];
 	/** @var array<string,string> label => the logged_in cookie WordPress minted for that visit */
 	private array $cookies = [];
@@ -114,30 +109,8 @@ final class TwoBuyerNative {
 		// its own guard through NativeSessionGuard::registered(), so a second
 		// instance would stage against one guard and commit against another.
 		$this->carts    = POW\Cart\NativeSessionGuard::registered();
-		$resolver       = new POW\Addresses\Resolver(
-			$this->registry,
-			new POW\Addresses\CompanyBook( $this->registry, $this->audit, new POW\Sessions\Current( $this->sessions ) ),
-			new POW\Sessions\Current( $this->sessions )
-		);
-		$mapper             = new POW\Cart\PoomMapper( $plugin->settings(), $plugin->logger() );
-		$this->confirmation = new POW\Addresses\Confirmation(
-			$this->registry,
-			$this->sessions,
-			new POW\Addresses\QuoteAddress( $resolver ),
-			new POW\Addresses\DeliveryEstimate( $plugin->settings() ),
-			$resolver,
-			$mapper,
-			$this->carts
-		);
-		$this->returns = new POW\Http\ReturnEndpoint(
-			$this->sessions,
-			$this->registry,
-			$mapper,
-			new POW\Cxml\Builder(),
-			$this->audit,
-			new POW\Orders\QuoteOrder( $this->sessions, $this->audit, $plugin->settings(), $plugin->logger() ),
-			$this->confirmation
-		);
+		// Cancel and return: the one thing /punchout/return does since 0.5.0.
+		$this->returns = new POW\Http\ReturnEndpoint( $this->sessions, $this->registry, new POW\Cxml\Builder(), $this->audit );
 		$this->run   = strtolower( bin2hex( random_bytes( 4 ) ) );
 		$this->admin = get_current_user_id();
 	}
@@ -616,70 +589,56 @@ final class TwoBuyerNative {
 	}
 
 	/* ---------------------------------------------------------------------
-	 * Delivery review and the cart return
+	 * The close-out (Cancel and return) and the Quotes checkout leaves
 	 * ------------------------------------------------------------------ */
 
-	/** One visit's own delivery consent, through the real review. */
-	private function confirm_delivery( string $label ): void {
-		$visit   = $this->fresh( $label );
-		$partner = $this->registry->find( $visit->partner_id ) ?? throw new RuntimeException( 'Connection vanished.' );
-		$view    = $this->confirmation->preview( $visit, $partner, [] );
-		if ( $view instanceof WP_Error ) { throw new RuntimeException( 'Delivery review refused ' . $label . ': ' . $view->get_error_code() ); }
-		if ( $view['error'] instanceof WP_Error ) { throw new RuntimeException( 'Delivery review refused ' . $label . ': ' . $view['error']->get_error_code() ); }
-		$choice = $view['selected_choice'];
-		$this->check( is_array( $choice ) && 'customer' === $choice['source'] && POW\Addresses\DeliveryData::fingerprint( $this->address ) === POW\Addresses\DeliveryData::fingerprint( $choice['address'] ), 'the review offers the bound account company address as visit ' . $label . ' destination' );
-		$confirmed = $this->confirmation->confirm(
-			$visit,
-			$partner,
-			[
-				'provider'      => $choice['provider'],
-				'key'           => $choice['key'],
-				'notes'         => 'Notes from visit ' . $label,
-				'review_digest' => $view['review_digest'],
-				'acknowledge_unknown' => true,
-			]
-		);
-		if ( $confirmed instanceof WP_Error ) { throw new RuntimeException( 'Delivery confirmation refused ' . $label . ': ' . $confirmed->get_error_code() ); }
-		$stored = $this->fresh( $label )->delivery_confirmation();
-		$this->check( is_array( $stored ) && $stored['session_id'] === $visit->id && 'Notes from visit ' . $label === $stored['notes'], 'visit ' . $label . ' consent is stored against its own visit row' );
+	/**
+	 * The Punchout Quote a visit's checkout leaves behind, as checkout stamps it (Checkout\Provenance): a fixture
+	 * order of the bound account carrying that visit's provenance keys. The checkout itself is the HTTP driver's.
+	 */
+	private function stamped_quote( string $label ): int {
+		$visit = $this->fresh( $label );
+		$order = wc_create_order( [ 'customer_id' => $this->account, 'status' => POW\Orders\Status::SLUG ] );
+		if ( ! $order instanceof WC_Order ) { throw new RuntimeException( 'Fixture order unavailable.' ); }
+		foreach ( POW\Checkout\Provenance::keys( $visit, $this->partner ) as $key => $value ) { $order->update_meta_data( $key, $value ); }
+		$order->save();
+		$this->quotes[ $label ] = $order->get_id();
+		return $order->get_id();
 	}
 
 	/**
-	 * The reviewed cart return, driven through the endpoint itself.
-	 *
-	 * @return int The Punchout Quote the return left behind.
+	 * The close-out, driven through the endpoint itself: Cancel and return posts the empty message and closes
+	 * this visit only.
 	 */
-	private function return_cart( string $label ): int {
-		$visit                     = $this->fresh( $label );
+	private function close_out( string $label ): void {
 		$post                      = $_POST;
 		$server                    = $_SERVER;
 		$_SERVER['REQUEST_METHOD'] = 'POST';
-		$_POST                     = [ 'pow_nonce' => wp_create_nonce( 'pow_return' ), 'pow_mode' => 'cart' ];
+		$_POST                     = [ 'pow_nonce' => wp_create_nonce( 'pow_return' ), 'pow_mode' => 'empty' ];
 		ob_start();
 		try { $this->returns->handle(); $markup = (string) ob_get_contents(); }
 		finally { ob_end_clean(); $_POST = $post; $_SERVER = $server; }
-		$this->check( str_contains( $markup, 'https://buyer.example.test/return' ) && ! str_contains( $markup, 'expired' ), 'visit ' . $label . ' return renders the handoff form for its own BrowserFormPost URL' );
+		$this->check( str_contains( $markup, 'https://buyer.example.test/return' ) && str_contains( $markup, 'pow-state--not-sent' ) && ! str_contains( $markup, 'expired' ), 'visit ' . $label . ' close-out renders the Not sent page for its own BrowserFormPost URL' );
+		$this->check( 1 === preg_match( '/name="cxml-(?:base64|urlencoded)" value="([^"]+)"/', $markup, $m ) && str_contains( (string) base64_decode( $m[1], true ), '<PunchOutOrderMessage>' ) && ! str_contains( (string) base64_decode( $m[1], true ), '<ItemIn' ), 'and posts an empty PunchOutOrderMessage' );
 		$fresh = $this->fresh( $label );
-		$this->check( POW\Sessions\Session::RETURNED === $fresh->status && $fresh->order_id > 0, 'visit ' . $label . ' return transitions that visit to returned and links its quote' );
-		$this->quotes[ $label ] = $fresh->order_id;
-		return $fresh->order_id;
+		$this->check( POW\Sessions\Session::CLOSED === $fresh->status, 'visit ' . $label . ' close-out transitions that visit to closed' );
 	}
 
 	private function first_return(): void {
 		$colleague = $this->visits['b'];
 		$this->enter( 'a' );
 		$this->hydrate();
-		$this->check( [ $this->products['alpha'] ] === array_map( static fn( array $line ): int => (int) $line['product_id'], array_values( WC()->cart->get_cart() ) ), 'the return starts from the visit own hydrated basket' );
-		$this->confirm_delivery( 'a' );
+		$this->check( [ $this->products['alpha'] ] === array_map( static fn( array $line ): int => (int) $line['product_id'], array_values( WC()->cart->get_cart() ) ), 'the close-out starts from the visit own hydrated basket' );
+		$this->stamped_quote( 'a' );
 		$stale = $this->visits['a'];
-		$this->return_cart( 'a' );
+		$this->close_out( 'a' );
 		$tokens = WP_Session_Tokens::get_instance( $this->account );
 
-		$this->check( ! $tokens->verify( $stale->wp_session_token ) && $tokens->verify( $colleague->wp_session_token ), 'the teardown destroys only the returning visit login' );
-		$this->check( null === pow_native_cart_row( $this->key( 'a' ) ) && [ $this->products['beta'] ] === $this->stored_lines( 'b' ), 'and deletes only the returning visit basket row' );
+		$this->check( ! $tokens->verify( $stale->wp_session_token ) && $tokens->verify( $colleague->wp_session_token ), 'the teardown destroys only the closing visit login' );
+		$this->check( null === pow_native_cart_row( $this->key( 'a' ) ) && [ $this->products['beta'] ] === $this->stored_lines( 'b' ), 'and deletes only the closing visit basket row' );
 		$this->check(
 			POW\Sessions\Session::ACTIVE === ( pow_native_visit_row( $colleague->id )['status'] ?? '' ) && null === $this->sessions->find( $colleague->id )?->delivery_confirmation_json,
-			'the colleague visit stays live and keeps its own unconfirmed delivery state'
+			'the colleague visit stays live, with no consent snapshot (nothing writes one since 0.5.0)'
 		);
 		pow_native_leave_visit( $this->admin );
 	}
@@ -687,10 +646,10 @@ final class TwoBuyerNative {
 	private function second_return(): void {
 		$this->enter( 'b' );
 		$this->hydrate();
-		$this->check( [ $this->products['beta'] ] === array_map( static fn( array $line ): int => (int) $line['product_id'], array_values( WC()->cart->get_cart() ) ), 'the colleague basket survived the other visit whole return' );
+		$this->check( [ $this->products['beta'] ] === array_map( static fn( array $line ): int => (int) $line['product_id'], array_values( WC()->cart->get_cart() ) ), 'the colleague basket survived the other visit whole close-out' );
 		$this->foreign_quote( 'b', $this->quotes['a'] );
-		$this->confirm_delivery( 'b' );
-		$this->return_cart( 'b' );
+		$this->stamped_quote( 'b' );
+		$this->close_out( 'b' );
 		pow_native_leave_visit( $this->admin );
 	}
 
@@ -707,9 +666,10 @@ final class TwoBuyerNative {
 	 * What the two returns left behind
 	 * ------------------------------------------------------------------ */
 
+	/** The attribution checkout's provenance stamps (Checkout\Provenance::keys()), as the order screen draws it. */
 	private function quotes_attribution(): void {
 		$quotes = new POW\Orders\QuoteOrder( $this->sessions, $this->audit, POW\Plugin::instance()->settings(), POW\Plugin::instance()->logger() );
-		$this->check( $this->quotes['a'] > 0 && $this->quotes['b'] > 0 && $this->quotes['a'] !== $this->quotes['b'], 'the two visits return two separate Punchout Quotes' );
+		$this->check( $this->quotes['a'] > 0 && $this->quotes['b'] > 0 && $this->quotes['a'] !== $this->quotes['b'], 'the two visits leave two separate Punchout Quotes' );
 		foreach ( [ 'a' => 'Alice Buyer', 'b' => 'Bob Buyer' ] as $label => $name ) {
 			$order = wc_get_order( $this->quotes[ $label ] );
 			$visit = $this->visits[ $label ];
@@ -725,10 +685,6 @@ final class TwoBuyerNative {
 			$quotes->render_bought_by( $order );
 			$rendered = (string) ob_get_clean();
 			$this->check( str_contains( $rendered, esc_html( $sentence ) ), 'the order screen renders quote ' . $label . ' Bought by line' );
-			$notes = wc_get_order_notes( [ 'order_id' => $this->quotes[ $label ], 'limit' => 20 ] );
-			$found = false;
-			foreach ( $notes as $note ) { if ( str_contains( (string) $note->content, $sentence ) ) { $found = true; } }
-			$this->check( $found, 'and an order note records the same sentence on quote ' . $label );
 			$other = $label === 'a' ? 'b' : 'a';
 			$this->check( ! str_contains( (string) $order->get_meta( POW\Orders\QuoteOrder::META_BUYER_IDENTITY ), $this->identities[ $other ] ), 'quote ' . $label . ' names no other buyer' );
 		}
