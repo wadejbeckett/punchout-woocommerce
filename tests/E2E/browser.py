@@ -272,8 +272,9 @@ class BrowserRun(driver.Run):
             box.check()
             page.wait_for_timeout(600)
             self.check(box.is_checked() and page.locator('#shipping_address_1').count() == 1, 'checkout: the_ship_to_box_is_ticked_again_and_the_fields_are_there')
-            # 0.5.1: the shipping fields are hidden inputs (they post; nothing can be typed), the selector stays visible.
-            typable = page.evaluate("() => [...document.querySelectorAll('form.checkout [name^=\"shipping_\"]')].filter(e => !e.name.endsWith('_address_book') && !(e.tagName === 'INPUT' && e.type === 'hidden')).map(e => e.name)")
+            # 0.5.1: the shipping fields are hidden inputs (they post; nothing can be typed), the selector stays visible;
+            # the shipping-rate radios (shipping_method[...]) are not address fields.
+            typable = page.evaluate("() => [...document.querySelectorAll('form.checkout [name^=\"shipping_\"]')].filter(e => !e.name.endsWith('_address_book') && !e.name.startsWith('shipping_method') && !(e.tagName === 'INPUT' && e.type === 'hidden')).map(e => e.name)")
             self.check(typable == [] and page.locator('#shipping_address_1').get_attribute('type') == 'hidden', 'checkout: the_shipping_fields_are_hidden_inputs', typable=typable)
 
             # The other saved entry, chosen from the address book's select (found by the entries it offers, never by name).
