@@ -129,9 +129,9 @@ final class ConnectionMessageSettingsTest extends TestCase {
 	 * says where the values go.
 	 */
 	public function test_the_plugins_own_order_keys_are_refused_as_order_details(): void {
-		$parsed = OrderDetails::parse_lines( "_pow_poom_xml | Copy | text\n_POW_buyer_identity | Who | text\n_cafw_attachment_name | Attachment | text" );
+		$parsed = OrderDetails::parse_lines( "_pow_poom_xml | Copy | text\n_POW_buyer_identity | Who | text\n_attachment_name | Attachment | text" );
 		self::assertSame( [ '_pow_poom_xml | Copy | text', '_POW_buyer_identity | Who | text' ], $parsed['rejected'] );
-		self::assertSame( [ [ 'meta_key' => '_cafw_attachment_name', 'label' => 'Attachment', 'format' => 'text' ] ], $parsed['entries'] );
+		self::assertSame( [ [ 'meta_key' => '_attachment_name', 'label' => 'Attachment', 'format' => 'text' ] ], $parsed['entries'] );
 		self::assertSame( [], OrderDetails::normalise( [ [ 'meta_key' => '_pow_session_id', 'label' => 'Visit', 'format' => 'text' ] ] ), 'A stored or filtered list drops them too' );
 		self::assertSame( '', OrderDetails::encode( '[{"meta_key":"_pow_partner_id","label":"Connection","format":"text"}]' ) );
 		self::assertSame( [ [ 'meta_key' => 'pow_not_ours', 'label' => 'pow_not_ours', 'format' => 'text' ] ], OrderDetails::parse_lines( 'pow_not_ours' )['entries'], 'Only the underscore prefix is the plugin\'s' );
