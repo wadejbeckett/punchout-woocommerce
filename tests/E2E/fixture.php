@@ -10,13 +10,11 @@
  * - seed: the linked build's schema upgrade (as a wp-admin page load would
  *   run it), then one ordinary customer account (the connection's login) with a
  *   deliverable shipping address, one active test connection bound to it,
- *   two priced simple products. For the run it also sets the review's words
- *   to non-default values and its tax sentence on (0.4.23 settings), the
- *   cart's checkout button label and the PunchOut payment method's
- *   place-order label to non-default values (0.5.0 settings), and adds one
- *   priced flat-rate method to the "rest of the world" shipping zone, so the
- *   driver can see the settings drawn and see that a connection without the
- *   delivery line shows no amount. It makes sure one page draws the classic
+ *   two priced simple products. For the run it also sets the cart's checkout
+ *   button label and the PunchOut payment method's place-order label to
+ *   non-default values (0.5.0 settings), and adds one priced flat-rate method
+ *   to the "rest of the world" shipping zone, so the driver can see the
+ *   settings drawn and, with delivery cost on, a freight line with an amount. It makes sure one page draws the classic
  *   cart ([woocommerce_cart]), whatever the shop's own cart page is. For the
  *   0.5.0 order lifecycle (ticket 74) the products keep stock (100 each), so
  *   checkout holds stock for the order; a third product has no SKU; and a
@@ -63,7 +61,7 @@
  *   and the master switch end one (Store::expire_and_destroy()): its row
  *   expired and its login destroyed, its browser left holding the cookie.
  * - retire: disables the run's connection, puts the run's settings (the
- *   plugin's review, start page and state page settings, the payment
+ *   plugin's checkout button, start page and state page settings, the payment
  *   method's, the shipping destination and the cheque method) back
  *   as they were, removes the priced shipping method the seed added and moves
  *   the run's coupon to the bin, so a later run starts clean. The run's rows (account, connection, products,
@@ -110,8 +108,8 @@ final class PowEndToEndFixture {
 	];
 	private const ORDER_DETAILS_SENT = [ 'Exempt: no' ];
 
-	/** The review's words for the run (0.4.23 settings), none of them a default; the tax sentence is on, which a connection without the delivery line must still never show. */
-	private const REVIEW_SETTINGS = [ 'review_submit_label' => 'Send cart', 'review_items_heading' => 'Items on order', 'review_total_label' => 'Order total', 'review_tax_note' => 'yes', 'checkout_button_label' => 'Review' ];
+	/** The plugin settings for the run (0.5.0), none of them a default: the cart's checkout button label. */
+	private const RUN_SETTINGS = [ 'checkout_button_label' => 'Review' ];
 
 	/**
 	 * The state page and leave-confirmation settings the `states` step turns on (0.5.0, ticket 77), none of them a
@@ -344,7 +342,7 @@ final class PowEndToEndFixture {
 		$checkout = (int) wc_get_page_id( 'checkout' );
 		$classic_cart = self::classic_cart_page();
 		$cart_exits   = self::cart_exits_page();
-		[ $settings_before, $shipping ] = self::configure_review( $run );
+		[ $settings_before, $shipping ] = self::configure_run_settings( $run );
 		$gateway_before = self::configure_gateway();
 		$checkout_before = self::configure_checkout();
 		self::write(
@@ -384,7 +382,7 @@ final class PowEndToEndFixture {
 					'page_id' => $checkout,
 					'classic' => $checkout > 0 && has_shortcode( (string) get_post_field( 'post_content', $checkout ), 'woocommerce_checkout' ),
 					// 0.5.0: the cart's and the Cart widget's checkout button, and the payment method's place-order button.
-					'labels'  => [ 'proceed' => self::REVIEW_SETTINGS['checkout_button_label'], 'place_order' => self::GATEWAY_SETTINGS['order_button_text'] ],
+					'labels'  => [ 'proceed' => self::RUN_SETTINGS['checkout_button_label'], 'place_order' => self::GATEWAY_SETTINGS['order_button_text'] ],
 					// For retire: the payment method's settings as they were, null when never saved.
 					'gateway_before' => $gateway_before,
 					// Whether the linked build has the PunchOut payment method (the driver's automatic path follows it).
@@ -402,9 +400,8 @@ final class PowEndToEndFixture {
 				'account_profile' => $profile,
 				// An address book found by shape, as the plugin finds it: a get_address_book() in any namespace.
 				'address_book' => [] !== array_filter( get_defined_functions()['user'], static fn( string $f ): bool => 'get_address_book' === substr( $f, -16 ) ),
-				'review'       => [
-					'labels'          => [ 'submit' => self::REVIEW_SETTINGS['review_submit_label'], 'items' => self::REVIEW_SETTINGS['review_items_heading'], 'total' => self::REVIEW_SETTINGS['review_total_label'] ],
-					'tax_note'        => 'yes' === self::REVIEW_SETTINGS['review_tax_note'],
+				'settings'     => [
+					'labels'          => [ 'checkout_button' => self::RUN_SETTINGS['checkout_button_label'] ],
 					// For retire: each changed setting as it was, null when it was not saved at all.
 					'settings_before' => $settings_before,
 				],
@@ -415,16 +412,16 @@ final class PowEndToEndFixture {
 	}
 
 	/**
-	 * The run's review settings and its priced shipping method. Returns [ the changed settings as they were (null =
+	 * The run's plugin settings and its priced shipping method. Returns [ the changed settings as they were (null =
 	 * not saved), the method's facts ]. A failure here puts back whatever it changed before it rethrows.
 	 *
 	 * @return array{0: array<string, mixed>, 1: array{instance_id: int, priced_title: string, cost: string}}
 	 */
-	private static function configure_review( string $run ): array {
+	private static function configure_run_settings( string $run ): array {
 		$stored = get_option( POW\Settings::OPTION_KEY, [] );
 		$stored = is_array( $stored ) ? $stored : [];
 		$before = [];
-		foreach ( self::REVIEW_SETTINGS as $key => $value ) { $before[ $key ] = $stored[ $key ] ?? null; }
+		foreach ( self::RUN_SETTINGS as $key => $value ) { $before[ $key ] = $stored[ $key ] ?? null; }
 		// Not changed by the seed; recorded so that retire can undo a start_click step.
 		$before['start_link_click'] = $stored['start_link_click'] ?? null;
 		// Not changed by the seed either; recorded so that retire can undo a states step (0.5.0, ticket 77).
@@ -433,7 +430,7 @@ final class PowEndToEndFixture {
 		$zone     = new WC_Shipping_Zone( 0 );
 		$instance = 0;
 		try {
-			update_option( POW\Settings::OPTION_KEY, array_replace( $stored, self::REVIEW_SETTINGS ) );
+			update_option( POW\Settings::OPTION_KEY, array_replace( $stored, self::RUN_SETTINGS ) );
 			$instance = (int) $zone->add_shipping_method( 'flat_rate' );
 			$method   = $instance > 0 ? WC_Shipping_Zones::get_shipping_method( $instance ) : false;
 			if ( ! $method instanceof WC_Shipping_Flat_Rate ) { throw new RuntimeException( 'The priced shipping method could not be added.' ); }
@@ -543,7 +540,7 @@ final class PowEndToEndFixture {
 		$stored = get_option( POW\Settings::OPTION_KEY, [] );
 		$stored = is_array( $stored ) ? $stored : [];
 		foreach ( $before as $key => $value ) {
-			if ( ! array_key_exists( $key, self::REVIEW_SETTINGS ) && ! array_key_exists( $key, self::STATE_SETTINGS ) && ! in_array( $key, [ 'start_link_click', 'state_page_id' ], true ) ) { continue; }
+			if ( ! array_key_exists( $key, self::RUN_SETTINGS ) && ! array_key_exists( $key, self::STATE_SETTINGS ) && ! in_array( $key, [ 'start_link_click', 'state_page_id' ], true ) ) { continue; }
 			if ( null === $value ) { unset( $stored[ $key ] ); } else { $stored[ $key ] = $value; }
 		}
 		update_option( POW\Settings::OPTION_KEY, $stored );
@@ -591,7 +588,7 @@ final class PowEndToEndFixture {
 	/** One case of the browser run: the start page waits for a press ('yes') or posts itself ('no'). Retire puts it back. */
 	public function start_click(): void {
 		$seed = self::read( self::path( 'POW_E2E_FIXTURE' ) );
-		if ( ! array_key_exists( 'start_link_click', (array) ( $seed['review']['settings_before'] ?? [] ) ) ) { throw new RuntimeException( 'This seed cannot put the start page setting back.' ); }
+		if ( ! array_key_exists( 'start_link_click', (array) ( $seed['settings']['settings_before'] ?? [] ) ) ) { throw new RuntimeException( 'This seed cannot put the start page setting back.' ); }
 		$stored = get_option( POW\Settings::OPTION_KEY, [] );
 		$stored = is_array( $stored ) ? $stored : [];
 		$stored['start_link_click'] = 'yes' === getenv( 'POW_E2E_START_CLICK' ) ? 'yes' : 'no';
@@ -612,7 +609,7 @@ final class PowEndToEndFixture {
 	/** The state page and leave-confirmation leg (0.5.0, ticket 77): its two pages, and its settings turned on for the run. */
 	public function states(): void {
 		$seed = self::read( self::path( 'POW_E2E_FIXTURE' ) );
-		if ( ! array_key_exists( 'state_page_id', (array) ( $seed['review']['settings_before'] ?? [] ) ) ) { throw new RuntimeException( 'This seed cannot put the state page settings back.' ); }
+		if ( ! array_key_exists( 'state_page_id', (array) ( $seed['settings']['settings_before'] ?? [] ) ) ) { throw new RuntimeException( 'This seed cannot put the state page settings back.' ); }
 		$state = self::content_page( self::STATE_PAGE );
 		$leave = self::content_page( self::LEAVE_PAGE );
 		$stored = get_option( POW\Settings::OPTION_KEY, [] );
@@ -644,9 +641,9 @@ final class PowEndToEndFixture {
 		$id   = (int) $seed['connection']['id'];
 		$ok   = (bool) $this->registry->with_partner_lock( $id, fn(): bool => $this->registry->transition_status( $id, POW\Partners\Partner::STATUS_ACTIVE, [ 'status' => POW\Partners\Partner::STATUS_DISABLED ] ) );
 		echo 'connection ' . $id . ( $ok ? ' disabled' : ' left as it was' ) . "\n";
-		if ( isset( $seed['review']['settings_before'] ) && is_array( $seed['review']['settings_before'] ) ) {
-			self::restore_settings( $seed['review']['settings_before'] );
-			echo "review, start page and state page settings put back\n";
+		if ( isset( $seed['settings']['settings_before'] ) && is_array( $seed['settings']['settings_before'] ) ) {
+			self::restore_settings( $seed['settings']['settings_before'] );
+			echo "checkout button, start page and state page settings put back\n";
 		}
 		if ( isset( $seed['checkout'] ) && is_array( $seed['checkout'] ) && array_key_exists( 'gateway_before', $seed['checkout'] ) ) {
 			self::restore_gateway( is_array( $seed['checkout']['gateway_before'] ) ? $seed['checkout']['gateway_before'] : null );

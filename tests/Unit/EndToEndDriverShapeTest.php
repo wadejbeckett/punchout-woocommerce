@@ -69,7 +69,7 @@ namespace {
 			self::assertStringContainsString( "run.check(False, 'cleanup ' + name", $source, 'A failed cleanup step is reported' );
 		}
 
-		/** The seed's run-only changes to the shop (review settings, a priced shipping method) are put back by retire. */
+		/** The seed's run-only changes to the shop (the checkout button label, a priced shipping method) are put back by retire. */
 		public function test_the_fixture_puts_back_what_the_seed_changed(): void {
 			$source = $this->source( 'fixture.php' );
 			$retire = substr( $source, (int) strpos( $source, 'public function retire()' ) );
@@ -81,7 +81,7 @@ namespace {
 		public function test_the_fixture_puts_back_the_start_link_mode(): void {
 			$source = $this->source( 'fixture.php' );
 			self::assertStringContainsString( "'start_click'", $source, 'A step that sets the start page mode for one case' );
-			$configure = substr( $source, (int) strpos( $source, 'private static function configure_review(' ), 1200 );
+			$configure = substr( $source, (int) strpos( $source, 'private static function configure_run_settings(' ), 1200 );
 			self::assertStringContainsString( "'start_link_click'", $configure, 'The seed records the mode as it was' );
 			$restore = substr( $source, (int) strpos( $source, 'private static function restore_settings(' ), 900 );
 			self::assertStringContainsString( 'start_link_click', $restore, 'Retire may put the mode back' );
@@ -96,7 +96,7 @@ namespace {
 			self::assertStringContainsString( "'states'", $source );
 			self::assertStringContainsString( "'end_visit'", $source );
 			self::assertStringContainsString( 'expire_and_destroy(', $source, 'Ended as logout, the clean-up and the master switch end it' );
-			$configure = substr( $source, (int) strpos( $source, 'private static function configure_review(' ), 1600 );
+			$configure = substr( $source, (int) strpos( $source, 'private static function configure_run_settings(' ), 1600 );
 			self::assertStringContainsString( 'self::STATE_SETTINGS', $configure, 'The seed records the state settings as they were' );
 			self::assertStringContainsString( "'state_page_id'", $configure );
 			$restore = substr( $source, (int) strpos( $source, 'private static function restore_settings(' ), 900 );

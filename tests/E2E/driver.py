@@ -13,11 +13,11 @@ Opt-in, against a disposable local WordPress/WooCommerce only (see tests/README.
      0.4.22 redeem; a page that posts itself back (0.4.23+) is submitted by
      POST (--redeem picks a method outright);
   5. adds both products with wc-ajax=add_to_cart;
-  6. leaves through the release's own path: the cart's Punchout exit and the
-     review's Submit (0.4.x), or (0.5.0) the cart's checkout button to
-     WooCommerce's classic checkout, where PunchOut is the only payment method
-     and its button is the place-order label, then the GET handoff the
-     checkout answer redirects to (`Run.checkout_path`). The 0.5.0 leg also
+  6. leaves through the cart's checkout button to WooCommerce's classic
+     checkout, where PunchOut is the only payment method and its button is
+     the place-order label, then the GET handoff the checkout answer
+     redirects to (`Run.checkout_path`). The old review path (0.4.x) is no
+     longer driven: `--path review` is refused. The leg also
      sets the connection's message settings (line description with the short
      description, "Order details sent", and with --send-delivery-cost the
      freight line) and checks each in the cXML; --checkout-extras names the
@@ -118,33 +118,29 @@ def start_outcome(status, headers, body, url):
     return 'refused', status
 
 
-def cart_exit(html, base_url):
-    """The cart's PunchOut exit: the classic return form, the Cart block's configured link, or None."""
-    for form in forms.parse_forms(html, base_url):
-        if 'pow-return-form' in (form.attrs.get('class') or '').split():
-            return 'form', form
-    match = re.search(r'window\.powCartBlocks\s*=\s*(\{.*?\});', html)
-    if match:
-        try:
-            config = json.loads(match.group(1))
-        except ValueError:
-            config = {}
-        if config.get('restricted') is True and isinstance(config.get('confirmUrl'), str):
-            return 'link', urllib.parse.urljoin(base_url, config['confirmUrl'])
-    return None
-
-
 def at_least(version, floor):
     """True when the release number `version` ('0.4.23') is `floor` ((0, 4, 23)) or later."""
     return tuple(int(p) for p in re.findall(r'\d+', version)[:3]) >= floor
 
 
 def path_for(version, flag, payment_method=False):
-    """Which exit a release takes: the review (0.4.x) or WooCommerce checkout (0.5.0 and later, and any build that
-    has the PunchOut payment method, whatever number it still carries)."""
+    """Which exit a release takes: WooCommerce checkout (0.5.0 and later, and any build that has the PunchOut
+    payment method, whatever number it still carries) or the old review (0.4.x). This driver drives the checkout
+    only: a 'review' answer is refused in `main` (`refuse_review`)."""
     if flag in ('review', 'checkout'):
         return flag
     return 'checkout' if payment_method or at_least(version, (0, 5, 0)) else 'review'
+
+
+def refuse_review(path, payment_method):
+    """Why a run cannot take the review path, or None when the path is checkout: the review retired in 0.5.0, so
+    a build with the PunchOut payment method has no way from the cart to it, and this driver no longer drives it
+    on an older build either (the driver of the 0.4.23 tag does)."""
+    if path != 'review':
+        return None
+    if payment_method:
+        return 'Refusing --path review: this build has the PunchOut payment method and leaves the cart through checkout; the review retired in 0.5.0'
+    return 'Refusing --path review: this driver drives the checkout path only; use the driver of the 0.4.23 tag for the review'
 
 
 def _policy(header):
@@ -188,42 +184,6 @@ def start_page_findings(status, headers, body, url):
 
 def _text(fragment):
     return re.sub(r'\s+', ' ', htmllib.unescape(re.sub(r'<[^>]+>', '', fragment))).strip()
-
-
-def review_findings(page, labels, freight, priced_titles):
-    """0.4.23 and later, the review page: its words are the settings, it has no date field, and when the connection
-    sends no delivery line (`freight` False) it shows no estimate row, no amount beside a delivery method and no tax
-    wording, while still offering each priced method by its own title. [(check, ok, detail)]"""
-    start = page.find('class="pow-confirmation')
-    end = page.find('</form>', start)
-    area = page[start:end if end > start else len(page)] if start >= 0 else ''
-    submit = re.search(r'<button type="submit" name="pow_delivery_action" value="submit"[^>]*>([^<]*)</button>', area)
-    items = re.search(r'<h2 id="pow-items-title">([^<]*)</h2>', area)
-    total = re.search(r'<dt class="pow-confirmation__total">([^<]*)</dt>', area)
-    shown = {key: _text(match.group(1)) if match else None for key, match in (('submit', submit), ('items', items), ('total', total))}
-    lowered = page.lower()
-    findings = [
-        ('review_submit_label_is_the_setting', shown['submit'] == labels['submit'], {'shown': shown['submit'], 'setting': labels['submit']}),
-        ('review_items_heading_is_the_setting', shown['items'] == labels['items'], {'shown': shown['items'], 'setting': labels['items']}),
-        ('review_total_label_is_the_setting', shown['total'] == labels['total'], {'shown': shown['total'], 'setting': labels['total']}),
-        ('review_has_no_date_input', 'type="date"' not in lowered and 'preferred_delivery_date' not in lowered, {}),
-    ]
-    if freight:
-        return findings
-    summary = re.search(r'<aside class="pow-confirmation__summary".*?</dl>', area, re.S)
-    rows = summary.group(0).count('<dt') if summary else 0
-    methods = re.findall(r'<label class="pow-confirmation__rate"><input type="radio"[^>]*>\s*<span>(.*?)</span></label>', area, re.S)
-    priced = [m for m in methods if 'Price-amount' in m or 'Price-currencySymbol' in m or re.search(r'\d[.,]\d{2}(?!\d)', _text(m))]
-    titles = [_text(m) for m in methods]
-    update = re.search(r'<button type="submit" name="pow_delivery_action" value="review"[^>]*>([^<]*)</button>', area)
-    findings += [
-        ('review_has_no_estimate_row', 'Delivery estimate' not in area and 'pow-confirmation__estimate-note' not in area and rows == 1, {'summary_rows': rows}),
-        ('review_method_list_has_no_amount', bool(methods) and not priced, {'methods': titles, 'priced': [_text(m) for m in priced]}),
-        ('review_offers_the_priced_method_by_its_title', all(title in titles for title in priced_titles), {'methods': titles, 'expected': list(priced_titles)}),
-        ('review_has_no_tax_sentence', re.search(r'\b(tax|vat)\b', _text(area), re.I) is None, {}),
-        ('review_update_control_is_neutral', update is not None and _text(update.group(1)) == 'Update delivery' and 'recalculat' not in area.lower(), {'shown': _text(update.group(1)) if update else None}),
-    ]
-    return findings
 
 
 class _Anchors(HTMLParser):
@@ -776,7 +736,7 @@ class Run:
         self.notes = []
         self.quote_orders = []  # Punchout Quotes the run made: each must have had exactly one e-mail, the Quote e-mail
         self.quiet_orders = []  # binned or refused orders: no e-mail at all
-        self.path = 'review'
+        self.path = 'checkout'
         self.extras = copy.deepcopy(EXTRAS_DEFAULT)
         self.extra_lines = []
         self.chosen_address = None  # 0.5.0 ticket 76: the saved delivery address the main leg chose
@@ -893,59 +853,10 @@ class Run:
             self.payload, self.cookie, self.quantities, self.mini_cart, self.landing = payload, cookie, quantities, mini_cart, landing
         return visit
 
-    # -- 0.4.x: the cart's Punchout exit and the review -------------------------
-
-    def review_path(self, browser, seed):
-        url = self.args.url
-        status, _, cart, cart_url = browser.get(url + '/?page_id=' + str(seed['pages']['cart']))
-        self.save('cart.html', cart)
-        exit_ = cart_exit(cart, cart_url)
-        self.must(status == 200 and exit_ is not None, 'cart_offers_the_punchout_exit', http=status)
-        kind, target = exit_
-        self.notes.append('cart exit: ' + ('classic return form' if kind == 'form' else 'Cart block link'))
-        status, _, page = browser.submit(target) if kind == 'form' else browser.request(target)
-        review = self.review_form(page, url)
-        self.must(status == 200 and review is not None, 'the_exit_opens_the_review', http=status)
-
-        choose = {}
-        offered = [o for o in review.options('choice') if o] if any(c.name == 'choice' for c in review.controls) else []
-        self.must(bool(offered), 'review_offers_a_delivery_address', offered=offered)
-        if not review.value('choice'):
-            # A buyer picks the first address; the review script posts the change at once.
-            status, _, page = browser.submit(review, ('pow_delivery_action', 'review'), {'choice': offered[0]})
-            review = self.review_form(page, url)
-            self.must(status == 200 and review is not None and review.value('choice') == offered[0], 'choosing_an_address_redraws_the_review', http=status)
-        groups = {}
-        for control in review.controls:
-            if control.type == 'radio' and control.name and control.name.startswith('rates['):
-                groups.setdefault(control.name, []).append(control)
-        for name, radios in groups.items():
-            if not any(r.checked for r in radios):
-                choose[name] = radios[0].value
-        if any(c.name == 'acknowledge_unknown' for c in review.controls):
-            choose['acknowledge_unknown'] = '1'
-        self.note = 'Leave at the gate. End-to-end run ' + seed['run'] + '.'
-        choose['notes'] = self.note
-        self.save('review.html', page)
-        if at_least(self.version, (0, 4, 23)):
-            review_settings = seed.get('review') or {}
-            labels = review_settings.get('labels') or {}
-            priced = [title for title in [(seed.get('shipping') or {}).get('priced_title')] if title]
-            self.must(set(labels) == {'submit', 'items', 'total'} and bool(priced), 'seed_sets_the_review_words_and_a_priced_method', labels=labels, priced=priced)
-            for name, ok, detail in review_findings(page, labels, bool(seed['connection']['emit_delivery_line']), priced):
-                self.check(ok, name, **detail)
-        submitter = ('pow_delivery_action', 'submit')
-        self.must(submitter in review.buttons(), 'review_offers_submit')
-        second = browser.clone()
-        status, _, handoff = browser.submit(review, submitter, choose)
-        self.save('handoff.html', handoff)
-        self.check(status == 200, 'submit_answers_with_the_handoff_page', http=status)
-        return handoff, (second, review, submitter, choose)
-
-    # -- 0.5.0: the cart's checkout button, WooCommerce checkout, the GET handoff --
+    # -- 0.5.0: the cart's checkout button and WooCommerce's checkout -----------
 
     def checkout_path(self, browser, seed):
-        """Leave through WooCommerce's classic checkout and return the handoff page, as `review_path` does.
+        """Leave through WooCommerce's classic checkout and return the handoff page.
 
         The order lifecycle's second leg (ticket 74) is `late_submits` and `second_leg`; the connection's message
         settings (ticket 75) are checked here and in the cXML. Checkout in a visit (ticket 76): the cart carries no
@@ -1492,13 +1403,6 @@ class Run:
         everything = mail_counts(log)
         self.check(not any(everything.get(kind) for kind in ('failed_order', 'customer_failed_order', 'cancelled_order', 'customer_cancelled_order')), 'no_failed_or_cancelled_email_in_the_run', emails=everything)
 
-    @staticmethod
-    def review_form(page, base):
-        for form in forms.parse_forms(page, base):
-            if form.action.split('?')[0].rstrip('/').endswith('/punchout/confirm') and ('pow_delivery_action', 'submit') in form.buttons():
-                return form
-        return None
-
     # -- the end: capture, decode, check --------------------------------------
 
     def capture(self, browser, handoff, receiver):
@@ -1590,7 +1494,7 @@ def main(argv=None):
     parser.add_argument('--url', help='an already running http://127.0.0.1:<port> server for --wp-path (default: start one)')
     parser.add_argument('--link-plugin', type=Path, help='plugin checkout to link into the fixture for this run; the old link is restored after')
     parser.add_argument('--redeem', choices=['auto', 'get', 'post'], default='auto', help='auto: as a browser (GET, then the page\'s own POST form)')
-    parser.add_argument('--path', choices=['auto', 'review', 'checkout'], default='auto', help='auto: review below 0.5.0, checkout from 0.5.0')
+    parser.add_argument('--path', choices=['auto', 'review', 'checkout'], default='auto', help='auto: checkout on a build with the PunchOut payment method or 0.5.0 and later; review is refused (retired in 0.5.0)')
     parser.add_argument('--checkout-extras', type=Path, help='JSON kept with the fixture: checkout fields another plugin draws, the order details they add and the DeliveryInstructions text they must send (load_extras)')
     parser.add_argument('--send-delivery-cost', action='store_true', help='seed the connection with Send delivery cost on and choose the priced method at checkout (0.5.0)')
     parser.add_argument('--out', type=Path, help='run directory (default: <wp-path>/../e2e-runs/run-<id>)')
@@ -1624,15 +1528,17 @@ def main(argv=None):
         seeded = True
         seed = json.loads((args.out / 'fixture.json').read_text())
         version = run.version = seed['versions']['plugin']
-        path = run.path = path_for(version, args.path, bool((seed.get('checkout') or {}).get('payment_method')))
+        payment_method = bool((seed.get('checkout') or {}).get('payment_method'))
+        path = run.path = path_for(version, args.path, payment_method)
         print('PunchOut %s on WooCommerce %s, WordPress %s; path: %s; site %s' % (version, seed['versions']['woocommerce'], seed['versions']['wordpress'], path, args.url), flush=True)
+        refusal = refuse_review(path, payment_method)
+        if refusal:
+            # A clean refusal: recorded as the reason the run did not complete, the seed retired below.
+            sys.exit(refusal)
 
         browser = Browser(args.url)
         run.punch_in(browser, seed, receiver)
-        if path == 'checkout':
-            handoff, replay = run.checkout_path(browser, seed), None
-        else:
-            handoff, replay = run.review_path(browser, seed)
+        handoff = run.checkout_path(browser, seed)
         field, value, xml, posted = run.capture(browser, handoff, receiver)
 
         results = poom.check(xml, run.expected(seed), capture={'field': field, 'content_type': posted['content_type']})
@@ -1650,12 +1556,6 @@ def main(argv=None):
             run.save('handoff-again.html', again)
             run.check(handoff_form(again, args.url) is None, 'the_handoff_is_served_once', http=status)
             run.late_submits(browser, second, receiver)
-
-        if replay is not None:
-            second, review, submitter, choose = replay
-            status, _, again = second.submit(review, submitter, choose)
-            form = handoff_form(again, args.url)
-            run.check(status == 200 and form is not None and form.submission() == [(field, value)], 'a_repeated_submit_gets_the_same_handoff', http=status)
 
         status, _, body, _ = browser.get(args.url + '/?page_id=' + str(seed['pages']['shop']))
         run.check(re.search(r'<body[^>]*class="[^"]*\bpow-visit\b', body) is None, 'after_the_return_the_browser_is_no_longer_in_the_visit', http=status)

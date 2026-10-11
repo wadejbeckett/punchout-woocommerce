@@ -1,5 +1,5 @@
 """The driver's own decisions: request shape, start-link handling, the cart's exit, which path a release takes,
-the 0.4.23 review checks, and how a run that cannot finish is reported."""
+the refusal of the retired review path, and how a run that cannot finish is reported."""
 import base64
 import hashlib
 import json
@@ -90,22 +90,6 @@ class StartLink(unittest.TestCase):
         self.assertEqual(driver.start_outcome(403, {}, 'This catalog link has expired.', BASE + '/punchout/start/t')[0], 'refused')
 
 
-class CartExit(unittest.TestCase):
-
-    def test_the_classic_cart_offers_the_return_form(self):
-        html = '<form method="post" action="' + BASE + '/punchout/confirm" class="pow-return-form"><input type="hidden" name="pow_mode" value="cart"><input type="hidden" name="pow_nonce" value="n"><button type="submit" class="pow-return-button">Punchout</button></form>'
-        kind, form = driver.cart_exit(html, BASE + '/?page_id=6')
-        self.assertEqual(kind, 'form')
-        self.assertEqual(form.submission(), [('pow_mode', 'cart'), ('pow_nonce', 'n')])
-
-    def test_the_block_cart_offers_its_configured_link(self):
-        html = '<script id="pow-cart-blocks-js-before">window.powCartBlocks = {"restricted":true,"label":"Punchout","confirmUrl":"http:\\/\\/127.0.0.1:8080\\/punchout\\/confirm"};</script>'
-        self.assertEqual(driver.cart_exit(html, BASE + '/?page_id=6'), ('link', BASE + '/punchout/confirm'))
-
-    def test_a_cart_without_an_exit_says_so(self):
-        self.assertIsNone(driver.cart_exit('<a href="/checkout">Proceed to checkout</a>', BASE + '/?page_id=6'))
-
-
 class ReleasePath(unittest.TestCase):
 
     def test_auto_follows_the_installed_version(self):
@@ -123,6 +107,14 @@ class ReleasePath(unittest.TestCase):
         self.assertEqual(driver.path_for('0.4.23', 'auto', True), 'checkout')
         self.assertEqual(driver.path_for('0.4.23', 'auto', False), 'review')
 
+    def test_the_review_path_is_refused_cleanly(self):
+        """0.5.0 (ticket 79): the review retired, so a review answer is a refusal with its reason, never a run."""
+        self.assertIsNone(driver.refuse_review('checkout', True))
+        self.assertIsNone(driver.refuse_review('checkout', False))
+        self.assertIn('PunchOut payment method', driver.refuse_review('review', True))
+        self.assertIn('0.4.23', driver.refuse_review('review', False))
+        self.assertFalse(hasattr(driver.Run, 'review_path'), 'The old review path is gone from the driver')
+
 
 
 class Loopback(unittest.TestCase):
@@ -138,7 +130,7 @@ class Handoff(unittest.TestCase):
 
     def test_the_handoff_form_is_read_as_a_browser_would_submit_it(self):
         page = '<form method="post" action="' + BASE + '/receiver/punchout/cxml/%7Bc%7D" id="pow-handoff-form"><input type="hidden" name="cxml-base64" value="PD94bWw+" /><button type="submit" class="pow-handoff-submit">Continue</button></form>'
-        form = driver.handoff_form(page, BASE + '/punchout/confirm')
+        form = driver.handoff_form(page, BASE + '/punchout/handoff')
         self.assertEqual(form.action, BASE + '/receiver/punchout/cxml/%7Bc%7D')
         self.assertEqual(form.submission(), [('cxml-base64', 'PD94bWw+')])
 
@@ -211,87 +203,9 @@ class StartPage(unittest.TestCase):
             self.assertFalse(self.findings(200, START_HEADERS, page)['the_start_page_policy_allows_its_own_script_and_style_by_hash'], page[:60])
 
 
-LABELS = {'submit': 'Send cart', 'items': 'Items on order', 'total': 'Order total'}
-PRICED = 'Courier E2E ab12'
-# The 0.4.23 template drawn for a connection without the delivery line (templates/delivery-confirmation.php, trimmed).
-REVIEW = (
-    '<main class="pow-confirmation woocommerce" aria-labelledby="pow-review-title"><h1 id="pow-review-title">Review your cart</h1>'
-    '<form method="post" action="' + BASE + '/punchout/confirm" enctype="multipart/form-data">'
-    '<section class="pow-confirmation__section" aria-labelledby="pow-shipping-title"><h2 id="pow-shipping-title">Delivery method</h2>'
-    '<fieldset><legend>Shipment 1</legend>\n'
-    '<label class="pow-confirmation__rate"><input type="radio" name="rates[0]" value="free_shipping:1" checked> <span>Free shipping</span></label>\n'
-    '<label class="pow-confirmation__rate"><input type="radio" name="rates[0]" value="flat_rate:9" > <span>' + PRICED + '</span></label>\n'
-    '</fieldset><button type="submit" name="pow_delivery_action" value="review" class="button wp-element-button pow-confirmation__secondary" formnovalidate data-busy="Updating delivery…">Update delivery</button>'
-    '<p class="pow-confirmation__hint">The address and the delivery methods update as soon as you change a choice.</p></section>'
-    '<section class="pow-confirmation__section" aria-labelledby="pow-notes-title"><h2 id="pow-notes-title">Notes and attachment</h2>'
-    '<textarea id="pow-delivery-notes" name="notes" rows="4" maxlength="2000"></textarea></section>'
-    '<section class="pow-confirmation__section" aria-labelledby="pow-items-title"><h2 id="pow-items-title">Items on order</h2><table><tbody>'
-    '<tr><td>END-TO-END ALPHA<small>E2E-ALPHA</small></td><td>2</td><td class="pow-confirmation__number">R 11,00</td><td class="pow-confirmation__number">R 22,00</td></tr>'
-    '</tbody></table></section>'
-    '<aside class="pow-confirmation__summary" aria-labelledby="pow-summary-title"><h2 id="pow-summary-title">Cart summary</h2>'
-    '<dl><dt class="pow-confirmation__total">Order total</dt><dd class="pow-confirmation__total">R 45,50</dd></dl>\n'
-    '<button type="submit" name="pow_delivery_action" value="submit" class="button alt wp-element-button pow-confirmation__submit" >Send cart</button>'
-    '<p>Sends this cart to your purchasing system.</p></aside></form></main>'
-)
-
-
-class Review0423(unittest.TestCase):
-    """The review's own words come from the settings; with the delivery line off it shows no delivery amount, no tax and no date field."""
-
-    def failed(self, html, freight=False, labels=None):
-        return sorted(name for name, ok, _ in driver.review_findings(html, labels or LABELS, freight, [PRICED]) if not ok)
-
-    def test_the_0423_page_without_the_delivery_line_passes(self):
-        names = [name for name, _, _ in driver.review_findings(REVIEW, LABELS, False, [PRICED])]
-        self.assertEqual(names, [
-            'review_submit_label_is_the_setting', 'review_items_heading_is_the_setting', 'review_total_label_is_the_setting',
-            'review_has_no_date_input', 'review_has_no_estimate_row', 'review_method_list_has_no_amount', 'review_offers_the_priced_method_by_its_title',
-            'review_has_no_tax_sentence', 'review_update_control_is_neutral',
-        ])
-        self.assertEqual(self.failed(REVIEW), [])
-
-    def test_default_words_fail_the_label_checks(self):
-        html = REVIEW.replace('>Send cart</button>', '>Submit</button>').replace('Items on order', 'Items').replace('Order total', 'Total')
-        self.assertEqual(self.failed(html), ['review_items_heading_is_the_setting', 'review_submit_label_is_the_setting', 'review_total_label_is_the_setting'])
-
-    def test_an_escaped_label_still_matches(self):
-        html = REVIEW.replace('>Send cart</button>', '>Send &amp; close</button>')
-        self.assertEqual(self.failed(html, labels=dict(LABELS, submit='Send & close')), [])
-
-    def test_an_estimate_row_fails(self):
-        html = REVIEW.replace('<dl>', '<dl><dt>Merchandise</dt><dd>R 45,50</dd><dt>Delivery estimate</dt><dd>R 50,00</dd>')
-        self.assertEqual(self.failed(html), ['review_has_no_estimate_row'])
-
-    def test_a_priced_method_label_fails(self):
-        priced = PRICED + ': <span class="woocommerce-Price-amount amount"><bdi><span class="woocommerce-Price-currencySymbol">R</span>50.00</bdi></span>'
-        self.assertEqual(self.failed(REVIEW.replace('<span>' + PRICED + '</span>', '<span>' + priced + '</span>')), ['review_method_list_has_no_amount', 'review_offers_the_priced_method_by_its_title'])
-        self.assertEqual(self.failed(REVIEW.replace('<span>Free shipping</span>', '<span>Free shipping: R 0,00</span>')), ['review_method_list_has_no_amount'])
-
-    def test_a_page_without_a_method_list_cannot_prove_it_shows_no_amount(self):
-        html = REVIEW.split('<fieldset>')[0] + REVIEW.split('</fieldset>')[1]
-        self.assertIn('review_method_list_has_no_amount', self.failed(html))
-
-    def test_the_old_recalculate_wording_fails(self):
-        self.assertEqual(self.failed(REVIEW.replace('>Update delivery<', '>Recalculate delivery<')), ['review_update_control_is_neutral'])
-        self.assertEqual(self.failed(REVIEW.replace('data-busy="Updating delivery…"', 'data-busy="Recalculating…"')), ['review_update_control_is_neutral'])
-        self.assertEqual(self.failed(REVIEW.replace('value="review"', 'value="other"')), ['review_update_control_is_neutral'], 'A page without the control cannot prove its words')
-
-    def test_any_tax_wording_fails(self):
-        for sentence in ['<p class="pow-confirmation__hint">Amounts exclude tax.</p>', '<small class="tax_label">(ex. VAT)</small>']:
-            self.assertEqual(self.failed(REVIEW.replace('</dl>', '</dl>' + sentence)), ['review_has_no_tax_sentence'], sentence)
-
-    def test_a_date_input_fails(self):
-        html = REVIEW.replace('</textarea>', '</textarea><input type="date" id="pow-preferred-date" name="preferred_delivery_date">')
-        self.assertEqual(self.failed(html), ['review_has_no_date_input'])
-
-    def test_with_the_delivery_line_on_only_the_words_and_the_date_are_checked(self):
-        names = [name for name, _, _ in driver.review_findings(REVIEW, LABELS, True, [PRICED])]
-        self.assertEqual(names, ['review_submit_label_is_the_setting', 'review_items_heading_is_the_setting', 'review_total_label_is_the_setting', 'review_has_no_date_input'])
-
-
 CART = (
     '<div class="wc-proceed-to-checkout"><a href="' + BASE + '/?page_id=258" class="button alt wp-element-button checkout-button wc-forward">Review</a></div>'
-    '<form method="post" action="' + BASE + '/punchout/confirm" class="pow-return-form"><button type="submit">Punchout</button></form>'
+    '<form method="post" action="' + BASE + '/punchout/return" class="pow-abandon-form"><button type="submit">Cancel and return</button></form>'
 )
 MINI_CART = (
     '<p class="woocommerce-mini-cart__buttons buttons"><a href="' + BASE + '/?page_id=6" class="button wc-forward">View cart</a>'

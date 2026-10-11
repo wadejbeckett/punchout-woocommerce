@@ -46,7 +46,7 @@ class Watch(unittest.TestCase):
         page.fire('request', _Request(START, 'GET'))
         page.fire('request', _Request(START, 'POST'))
         page.fire('request', _Request('http://127.0.0.1:8080/?page_id=5', 'GET'))
-        page.fire('request', _Request('http://127.0.0.1:8080/punchout/confirm', 'POST'))
+        page.fire('request', _Request('http://127.0.0.1:8080/?wc-ajax=checkout', 'POST'))
         self.assertEqual((seen['gets'], seen['posts']), (1, 1))
 
     def test_it_records_where_a_post_led(self):
@@ -67,16 +67,24 @@ class Watch(unittest.TestCase):
         self.assertIn('inline script', seen['policy'][0])
 
 
-class Steps(unittest.TestCase):
-    """0.5.0 (ticket 76): a build with the PunchOut payment method has no way from the cart to the old review."""
+class Handoffs(unittest.TestCase):
+    """0.5.0: the GET handoffs the checkout's answer sends the browser to, and the address book's select."""
 
-    def test_a_review_build_runs_all_three_steps(self):
-        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.4.23'}, 'checkout': {'payment_method': False}}), ['auto', 'double_click', 'review'])
-        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.4.23'}}), ['auto', 'double_click', 'review'])
+    def test_only_get_requests_for_the_handoff_count(self):
+        page = _Page()
+        seen = browser.handoffs(page)
+        page.fire('request', _Request('http://127.0.0.1:8080/punchout/handoff?key=wc_order_abc&visit=1', 'GET'))
+        page.fire('request', _Request('http://127.0.0.1:8080/?wc-ajax=checkout', 'POST'))
+        page.fire('request', _Request('http://127.0.0.1:8080/punchout/return', 'POST'))
+        page.fire('request', _Request('http://127.0.0.1:8080/punchout/handoff/', 'GET'))
+        self.assertEqual(seen, ['http://127.0.0.1:8080/punchout/handoff?key=wc_order_abc&visit=1', 'http://127.0.0.1:8080/punchout/handoff/'])
 
-    def test_a_checkout_build_runs_the_start_link_steps_only(self):
-        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.4.23'}, 'checkout': {'payment_method': True}}), ['auto', 'double_click'])
-        self.assertEqual(browser.steps_for({'versions': {'plugin': '0.5.0'}}), ['auto', 'double_click'])
+    def test_the_address_book_select_is_found_by_the_entries_it_offers(self):
+        selects = [('billing_country', ['ZA', 'GB']), ('shipping_address_book', ['', 'a1', 'a2', 'add_new']), ('shipping_country', ['ZA'])]
+        self.assertEqual(browser.address_book_select(selects, ['a1', 'a2']), 'shipping_address_book')
+        self.assertIsNone(browser.address_book_select(selects, ['a1', 'a9']))
+        self.assertIsNone(browser.address_book_select(selects, []))
+        self.assertIsNone(browser.address_book_select([], ['a1']))
 
 
 class Returns(unittest.TestCase):

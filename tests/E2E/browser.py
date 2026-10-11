@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A real browser on the start link and the review (0.4.23 and later), against the disposable local fixture.
+"""A real browser on the start link, the checkout and the state page (0.5.0), against the disposable local fixture.
 
 Opt-in, like driver.py, and on the same fixture (tests/README.md, "Real-browser run"). It needs Python Playwright
 and a local Chromium named with --chromium (or POW_E2E_CHROMIUM); it never downloads a browser. Headless. One run
@@ -12,16 +12,17 @@ seeds the fixture as the driver does (tests/E2E/fixture.php), serves the site on
   2. double click: with "Login link needs a click" on (fixture step start_click, put back by retire), the page
      waits; two presses 80 ms apart on its button send one POST and land inside the visit. Back to the page and one
      more press: the same browser lands again.
-  3. review: in the first browser, both products go into the cart and the cart's Punchout exit opens the review.
-     The connection sends no delivery line, so the review shows no amount beside any delivery method, no
-     estimate row and no tax wording, its words are the seeded settings, and its update control says
-     "Update delivery". Submit then hands the cart to the punchback URL once, and the visit is returned.
-     Only on a build that still leaves through the review: one with the PunchOut payment method (0.5.0) has no way
-     from the cart to it, and its checkout is driver.py's checkout leg (`steps_for`).
-  4. states (0.5.0, ticket 77; fixture step `states` chooses a state page and turns "Ask before leaving" on, retire
+  3. states (0.5.0, ticket 77; fixture step `states` chooses a state page and turns "Ask before leaving" on, retire
      puts both back): a start link used once and opened in another browser lands on the state page's Link expired,
      drawn in the theme; once a visit is ended (fixture step `end_visit`), its next page lands on Session ended and
      the browser is signed out, and the page after is an ordinary page.
+  4. checkout (0.5.0, with WooCommerce's own checkout script): both products go into the cart, the classic cart's
+     button carries the Checkout button label ("Review") and opens the checkout, which offers PunchOut and nothing
+     else, its button the place-order label ("Submit"); the ship-to box, ticked as it opened, is unticked and ticked
+     again by a click; a saved shipping entry is chosen from the address book's select; Submit is pressed. The
+     handoff posts the cart to the punchback URL once (the receiver gets one cXML whose ShipTo is the chosen entry),
+     the spent handoff lands on the Sent state drawn in the theme, and the visit is returned with one order shipped
+     to that entry. The HTTP driver cannot tick a box; this is the one case that needs the browser.
   5. leave: with a line in the cart, pressing Cancel and return opens the question as a modal dialog (the plugin's
      own script) with "Keep shopping" focused, and sends nothing; Keep shopping closes it and the visit stays open;
      the dialog's leave button then answers with the plain Not sent page, which posts one empty message to the
@@ -90,11 +91,25 @@ def leave_start(page):
     return START not in page.url
 
 
-def steps_for(seed):
-    """The steps a run takes on the seeded build: the review step only where the cart still leads to the review."""
-    payment_method = bool((seed.get('checkout') or {}).get('payment_method'))
-    steps = ['auto', 'double_click']
-    return steps + ['review'] if driver.path_for(seed['versions']['plugin'], 'auto', payment_method) == 'review' else steps
+def handoffs(page):
+    """The addresses of the GET handoffs the page asks for, in order (0.5.0: the checkout's answer sends it there)."""
+    seen = []
+
+    def request(req):
+        if req.method == 'GET' and urllib.parse.urlsplit(req.url).path.rstrip('/').endswith('/punchout/handoff'):
+            seen.append(req.url)
+
+    page.on('request', request)
+    return seen
+
+
+def address_book_select(names_and_options, keys):
+    """The name of the checkout select that offers every one of the account's saved address `keys`, from
+    [(name, [option values])] as the page lists its selects, or None."""
+    for name, options in names_and_options:
+        if name and keys and set(keys) <= set(options):
+            return name
+    return None
 
 
 def returns(page):
@@ -206,70 +221,111 @@ class BrowserRun(driver.Run):
             context.close()
             self.wp('start_click', POW_E2E_START_CLICK='no')
 
-    # -- 3. the review, with the connection's delivery line off --------------
+    # -- 4. the checkout, with WooCommerce's own script -----------------------
 
-    def review(self, context, page, payload, seed, receiver):
+    def checkout(self, chromium, seed, receiver, states):
+        """Cart "Review" -> checkout offers PunchOut only, "Submit" -> the ship-to box ticked again -> a saved
+        shipping entry -> Submit -> the Sent state; the receiver gets one cXML carrying that entry as ShipTo."""
         url = self.args.url
-        for sku, product in seed['products'].items():
-            answer = context.request.post(url + '/?wc-ajax=add_to_cart', form={'product_id': str(product['id']), 'quantity': '1'})
-            try:
-                data = answer.json()
-            except Exception:  # noqa: BLE001 - an unreadable answer is a failed add
-                data = {'error': True}
-            self.must(answer.status == 200 and not data.get('error') and 'cart_hash' in data, 'review: add_to_cart ' + sku, http=answer.status)
+        labels = (seed.get('checkout') or {}).get('labels') or {}
+        book = seed.get('saved_addresses')
+        self.must(isinstance(book, dict) and book.get('chosen') in (book.get('entries') or {}), 'checkout: seed_gives_the_account_saved_addresses')
+        entries, chosen = book['entries'], book['chosen']
+        page_id = states['state_page']['id']
+        context = chromium.new_context()
+        try:
+            page = context.new_page()
+            seen = handoffs(page)
+            start, payload = self.setup(seed, receiver, 'checkout', 'buyer.three')
+            page.goto(start, wait_until='commit')
+            leave_start(page)
+            self.must(in_visit(page), 'checkout: the_link_lands_inside_the_visit', url=page.url)
+            for sku, product in seed['products'].items():
+                answer = context.request.post(url + '/?wc-ajax=add_to_cart', form={'product_id': str(product['id']), 'quantity': '1'})
+                self.must(answer.status == 200, 'checkout: add_to_cart ' + sku, http=answer.status)
 
-        page.goto(url + '/?page_id=' + str(seed['pages']['cart']), wait_until='load')
-        cart = page.content()
-        self.save('cart-browser.html', cart)
-        exit_ = driver.cart_exit(cart, page.url)
-        self.must(exit_ is not None, 'review: the_cart_offers_the_punchout_exit', url=page.url)
-        kind, target = exit_
-        if kind == 'form':
+            page.goto(url + '/?page_id=' + str(seed['pages']['classic_cart']), wait_until='load')
+            self.save('cart-browser.html', page.content())
+            button = page.locator('.wc-proceed-to-checkout a.checkout-button')
+            self.must(button.count() >= 1, 'checkout: the_cart_offers_the_checkout_button', url=page.url)
+            self.check(button.first.inner_text().strip() == labels.get('proceed'), 'checkout: the_cart_button_carries_the_label', shown=button.first.inner_text().strip(), setting=labels.get('proceed'))
+            self.check(page.locator('form.pow-return-form, .pow-return-button').count() == 0, 'checkout: the_cart_has_no_return_button')
             with page.expect_navigation(timeout=SECONDS * 1000):
-                page.click('form.pow-return-form [type="submit"]')
-        else:
-            page.goto(target, wait_until='load')
-        self.must(page.locator('.pow-confirmation form').count() == 1, 'review: the_exit_opens_the_review', url=page.url)
+                button.first.click()
+            page.wait_for_selector('form.checkout #place_order', timeout=SECONDS * 1000)
+            # WooCommerce's script refreshes the order review over AJAX as the page settles.
+            page.wait_for_timeout(1500)
+            self.save('checkout-browser.html', page.content())
+            methods = page.locator('form.checkout input[name="payment_method"]')
+            offered = [methods.nth(i).get_attribute('value') for i in range(methods.count())]
+            self.must(offered == ['punchout'], 'checkout: only_punchout_is_offered', methods=offered)
+            self.check(page.locator('#place_order').inner_text().strip() == labels.get('place_order'), 'checkout: the_button_is_the_place_order_label', shown=page.locator('#place_order').inner_text().strip(), setting=labels.get('place_order'))
 
-        # As a buyer would: pick the first address and a delivery method when none is chosen; the page updates itself.
-        choice = page.locator('#pow-delivery-choice')
-        if choice.count() and not choice.input_value():
-            with page.expect_navigation(timeout=SECONDS * 1000):
-                choice.select_option(index=1)
-        groups = page.evaluate("() => [...new Set([...document.querySelectorAll('input[type=radio][name^=\"rates[\"]')].map(r => r.name))]")
-        for name in groups:
-            radios = page.locator('input[type="radio"][name="' + name + '"]')
-            if not page.locator('input[type="radio"][name="' + name + '"]:checked').count():
-                with page.expect_navigation(timeout=SECONDS * 1000):
-                    radios.first.check()
+            # The ship-to box as it opened (ticked), then unticked and ticked again, as a buyer who changes her mind does.
+            box = page.locator('#ship-to-different-address-checkbox')
+            self.must(box.count() == 1, 'checkout: the_shipping_section_is_offered')
+            self.check(box.is_checked(), 'checkout: the_shipping_section_opens_ticked')
+            box.uncheck()
+            page.wait_for_timeout(400)
+            box.check()
+            page.wait_for_timeout(600)
+            self.check(box.is_checked() and page.locator('#shipping_address_1').is_visible(), 'checkout: the_ship_to_box_is_ticked_again_and_the_fields_show')
 
-        html = page.content()
-        self.save('review-browser.html', html)
-        labels = (seed.get('review') or {}).get('labels') or {}
-        priced = [title for title in [(seed.get('shipping') or {}).get('priced_title')] if title]
-        for name, ok, detail in driver.review_findings(html, labels, bool(seed['connection']['emit_delivery_line']), priced):
-            self.check(ok, 'review: ' + name, **detail)
-        shown = page.locator('.pow-confirmation').inner_text()
-        self.check('Delivery estimate' not in shown and 'Recalculate' not in shown, 'review: the_visible_text_names_no_estimate', text=shown[:300])
+            # The other saved entry, chosen from the address book's select (found by the entries it offers, never by name).
+            selects = page.evaluate("() => [...document.querySelectorAll('form.checkout select')].map(s => [s.name, [...s.options].map(o => o.value)])")
+            select = address_book_select(selects, list(entries))
+            self.must(select is not None, 'checkout: the_saved_addresses_are_offered', selects=[name for name, _ in selects])
+            page.select_option('form.checkout select[name="' + select + '"]', chosen)
+            deadline = time.monotonic() + SECONDS
+            while page.locator('#shipping_address_1').input_value() != entries[chosen].get('address_1') and time.monotonic() < deadline:
+                page.wait_for_timeout(250)
+            if page.locator('#shipping_address_1').input_value() != entries[chosen].get('address_1'):
+                # No script filled the fields: fill them as the address book's script would.
+                for field, value in entries[chosen].items():
+                    target = page.locator('#shipping_' + field)
+                    if target.count() == 1 and value is not None and target.evaluate('e => e.tagName') == 'INPUT':
+                        target.fill(str(value))
+            page.wait_for_timeout(1500)
+            self.check(page.locator('#shipping_address_1').input_value() == entries[chosen].get('address_1'), 'checkout: the_chosen_entry_fills_the_shipping_fields', shown=page.locator('#shipping_address_1').input_value(), chosen=entries[chosen].get('address_1'))
+            note = page.locator('#order_comments')
+            if note.count():
+                note.fill('Leave at the gate. Browser run ' + seed['run'] + '.')
 
-        before = len(receiver.captured)
-        page.click('button[name="pow_delivery_action"][value="submit"]')
-        deadline = time.monotonic() + SECONDS
-        while len(receiver.captured) == before and time.monotonic() < deadline:
-            page.wait_for_timeout(250)
-        page.wait_for_timeout(500)
-        posted = receiver.captured[before:]
-        self.check(len(posted) == 1, 'review: submit_hands_the_cart_to_the_punchback_url_once', posts=len(posted))
-        if posted:
-            fields = posted[0]['fields']
-            field = next((name for name in ('cxml-base64', 'cxml-urlencoded') if name in fields), None)
-            xml = poom.decode_field(field, fields[field][0]) if field else ''
-            self.save('poom-browser.xml', xml)
-            self.check('<PunchOutOrderMessage>' in xml, 'review: the_browser_posts_a_punchout_order_message', field=field)
-        state = self.visit_state(payload, 'review')
-        visit = state['visit'] or {}
-        self.check(visit.get('status') == 'returned' and visit.get('login_live') is False and len(state['orders']) == 1, 'review: the_visit_is_returned_with_one_order', status=visit.get('status'), login_live=visit.get('login_live'), orders=len(state['orders']))
-        return posted
+            before = len(receiver.captured)
+            page.click('#place_order')
+            deadline = time.monotonic() + SECONDS * 2
+            while len(receiver.captured) == before and time.monotonic() < deadline:
+                page.wait_for_timeout(250)
+            page.wait_for_timeout(500)
+            posted = receiver.captured[before:]
+            self.check(len(posted) == 1, 'checkout: submit_hands_the_order_to_the_punchback_url_once', posts=len(posted), handoffs=len(seen))
+            self.must(bool(seen), 'checkout: the_checkout_answer_sent_the_browser_to_the_handoff')
+            if posted:
+                fields = posted[0]['fields']
+                field = next((name for name in ('cxml-base64', 'cxml-urlencoded') if name in fields), None)
+                xml = poom.decode_field(field, fields[field][0]) if field else ''
+                self.save('poom-browser.xml', xml)
+                self.check('<PunchOutOrderMessage>' in xml and '<ItemIn' in xml, 'checkout: the_browser_posts_a_punchout_order_message', field=field)
+                ship, billing = driver.ship_to_text(xml).lower(), (seed['billing']['address_1'] or '').lower()
+                self.check(entries[chosen]['address_1'].lower() in ship and bool(billing) and billing not in ship, 'checkout: ship_to_is_the_chosen_saved_entry_not_billing', ship_to=driver.ship_to_text(xml), chosen=entries[chosen]['address_1'])
+
+            # The spent handoff: this browser asks for it again and lands on the Sent state, drawn in the theme.
+            page.goto(seen[0], wait_until='load')
+            self.save('sent-browser.html', page.content())
+            shown = page.locator('.pow-state--sent .pow-state__title')
+            self.check(driver.state_location(page.url) == (page_id, 'sent') and shown.count() == 1 and shown.is_visible() and shown.inner_text().strip() == states['state_page']['sent_title'], 'checkout: the_spent_handoff_lands_on_the_sent_state_in_the_theme', url=page.url)
+            self.check(not signed_in(context), 'checkout: the_browser_is_signed_out')
+
+            state = self.visit_state(payload, 'checkout')
+            visit, orders = state['visit'] or {}, state['orders']
+            self.check(visit.get('status') == 'returned' and visit.get('login_live') is False and len(orders) == 1, 'checkout: the_visit_is_returned_with_one_order', status=visit.get('status'), login_live=visit.get('login_live'), orders=len(orders))
+            if orders:
+                order = orders[0]
+                self.check(order['status'] == 'punchout-quote' and order.get('payment_method') == 'punchout', 'checkout: the_order_is_a_punchout_quote_placed_with_the_method', status=order['status'], payment_method=order.get('payment_method'))
+                self.check((order.get('shipping') or {}).get('address_1') == entries[chosen]['address_1'], 'checkout: the_order_ships_to_the_chosen_entry', shipping=order.get('shipping'))
+            self.check(state['account_profile'] == seed['account_profile'], 'checkout: the_bound_accounts_profile_and_saved_addresses_are_unchanged', changed=driver.profile_changes(seed['account_profile'], state['account_profile']))
+        finally:
+            context.close()
 
 
 class StateRun(BrowserRun):
@@ -432,6 +488,7 @@ def main(argv=None):
         seed = json.loads((args.out / 'fixture.json').read_text())
         run.version = seed['versions']['plugin']
         run.must(driver.at_least(run.version, (0, 4, 23)), 'release_has_the_start_page', version=run.version)
+        run.must(bool((seed.get('checkout') or {}).get('payment_method')), 'release_has_the_punchout_payment_method', version=run.version)
         print('PunchOut %s on WooCommerce %s, WordPress %s; Chromium %s; site %s' % (run.version, seed['versions']['woocommerce'], seed['versions']['wordpress'], args.chromium, args.url), flush=True)
 
         with sync_playwright() as playwright:
@@ -439,15 +496,11 @@ def main(argv=None):
             try:
                 print('Chromium ' + chromium.version, flush=True)
                 run.notes.append('Chromium ' + chromium.version)
-                steps = steps_for(seed)
                 context, page, payload = run.auto(chromium, seed, receiver)
-                run.double_click(chromium, seed, receiver)
-                if 'review' in steps:
-                    run.review(context, page, payload, seed, receiver)
-                else:
-                    run.notes.append('review step not run: this build leaves the cart through checkout (driver.py, checkout leg)')
                 context.close()
+                run.double_click(chromium, seed, receiver)
                 states = run.states(chromium, seed, receiver)
+                run.checkout(chromium, seed, receiver, states)
                 run.leave(chromium, seed, receiver, states)
             finally:
                 chromium.close()
