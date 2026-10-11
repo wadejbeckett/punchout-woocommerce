@@ -39,6 +39,9 @@ class Settings {
 	public const LEAVE_CONFIRM_FILTER = 'punchout_leave_confirm_label';
 	public const LEAVE_STAY_FILTER    = 'punchout_leave_stay_label';
 
+	/** Filter over "Saved addresses only in a visit" (0.5.1), applied to the saved setting; it runs last. */
+	public const SAVED_ADDRESSES_FILTER = 'punchout_visit_saved_addresses_only';
+
 	/** At most this many extra classes are kept. */
 	private const MAX_BUTTON_CLASSES = 20;
 
@@ -120,6 +123,12 @@ class Settings {
 		'leave_confirmation'   => 'no',
 		'leave_confirm_label'  => '',
 		'leave_stay_label'     => '',
+
+		// 0.5.1: 'yes' (the default) makes a visit's checkout choose from the bound account's saved delivery
+		// addresses only: an address-book selector loses its "add new" choice, every other address field posts
+		// hidden, and a posted delivery address that is not a saved entry is refused (Checkout\SavedAddresses).
+		// The filter punchout_visit_saved_addresses_only runs last.
+		'visit_saved_addresses_only' => 'yes',
 
 		// The site's own button classes, space-separated, added to the cancel
 		// control so it matches the theme without the plugin naming it.
@@ -275,6 +284,11 @@ class Settings {
 	private function filtered_label( string $key, string $default, string $filter ): string {
 		$label = trim( (string) apply_filters( $filter, $this->button_label( $key, $default ) ) );
 		return '' !== $label ? $label : $default;
+	}
+
+	/** True when a visit's checkout offers the account's saved delivery addresses only (0.5.1; on by default); the filter runs last. */
+	public function visit_saved_addresses_only(): bool {
+		return (bool) apply_filters( self::SAVED_ADDRESSES_FILTER, 'yes' === $this->get( 'visit_saved_addresses_only', 'yes' ) );
 	}
 
 	/** True when the StartPage link waits for one real click instead of submitting itself (0.4.23; off by default). */

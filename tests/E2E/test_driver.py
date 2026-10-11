@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -569,6 +570,30 @@ class CheckoutInAVisit(unittest.TestCase):
     def test_an_address_fills_the_fields_the_form_has_for_its_section(self):
         choice = driver.address_choice(self.form(), 'shipping_', DEPOT)
         self.assertEqual(choice, {'shipping_first_name': 'Dock', 'shipping_last_name': 'Two', 'shipping_address_1': '2 Depot Road', 'shipping_address_2': '', 'shipping_city': 'Depot Town', 'shipping_state': 'GP', 'shipping_postcode': '2001', 'shipping_country': 'ZA'})
+
+    def test_the_saved_only_form_offers_no_add_new_and_posts_its_address_fields_hidden(self):
+        # The 0.5.0 form as 0.5.1 draws it in a visit: no add_new, every address input hidden, the country and state selects hidden inputs.
+        page = CHECKOUT_76.replace('<option value="add_new">Add New Address</option>', '')
+        page = re.sub(r'<input type="(?:text|tel|email)" name="((?:billing|shipping)_[a-z_0-9]+)"', r'<input type="hidden" name="\1"', page)
+        page = re.sub(r'<select name="((?:billing|shipping)_(?:country|state))">.*?<option value="([A-Z]+)" selected="selected">[^<]*</option>.*?</select>', r'<input type="hidden" name="\1" value="\2">', page)
+        page = page.replace('</form>', '<input type="radio" name="shipping_method[0]" value="free_shipping:1" checked="checked"></form>')
+        findings = {name: (ok, detail) for name, ok, detail in driver.saved_only_findings(self.form(page), 'shipping_address_book')}
+        self.assertEqual(findings['no_add_new_choice_in_the_visit'][0], True, findings)
+        self.assertEqual(findings['the_address_fields_post_hidden'], (True, {'typable': {}}))
+        choice = driver.address_choice(self.form(page), 'shipping_', DEPOT)
+        self.assertEqual(choice['shipping_address_1'], '2 Depot Road', 'A hidden field still takes the value a script would set')
+        self.assertEqual(choice['shipping_state'], 'GP')
+
+    def test_the_050_form_fails_the_saved_only_findings(self):
+        findings = {name: (ok, detail) for name, ok, detail in driver.saved_only_findings(self.form(), 'shipping_address_book')}
+        self.assertEqual(findings['no_add_new_choice_in_the_visit'][0], False)
+        ok, detail = findings['the_address_fields_post_hidden']
+        self.assertFalse(ok)
+        self.assertEqual(detail['typable']['shipping_address_1'], 'input[text]')
+        self.assertEqual(detail['typable']['shipping_country'], 'select')
+        self.assertNotIn('shipping_address_book', detail['typable'], 'The selector itself stays visible')
+        without = {name: ok for name, ok, _ in driver.saved_only_findings(self.form(), None)}
+        self.assertEqual(list(without), ['the_address_fields_post_hidden'], 'A shop without an address book has no select to check')
 
     def test_an_address_a_select_does_not_offer_is_refused(self):
         with self.assertRaises(ValueError):

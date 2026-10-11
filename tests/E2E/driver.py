@@ -663,6 +663,26 @@ def billing_findings(form, billing):
     return bool(compared) and not differs, {'compared': compared, 'differs': differs}
 
 
+def saved_only_findings(form, select):
+    """0.5.1, "Saved addresses only in a visit": [(name, ok, detail)] for the checkout form as drawn in a visit. The
+    address book's select `select` (None when the form has none) offers no add_new choice, and every other billing
+    and shipping field is an input of type hidden (it still posts; nothing can be typed). The shipping-rate radios
+    (`shipping_method[...]`) are not address fields."""
+    findings = []
+    if select is not None:
+        offered = form.options(select)
+        findings.append(('no_add_new_choice_in_the_visit', 'add_new' not in offered, {'select': select, 'offered': offered}))
+    typable = {}
+    for control in form.controls:
+        name = control.name or ''
+        if not name.startswith(('billing_', 'shipping_')) or name.startswith('shipping_method') or name == select or name.endswith('_address_book') or control.disabled:
+            continue
+        if control.tag != 'input' or control.type != 'hidden':
+            typable[name] = control.tag + ('[' + control.type + ']' if control.tag == 'input' else '')
+    findings.append(('the_address_fields_post_hidden', not typable, {'typable': typable}))
+    return findings
+
+
 def update_order_review_nonce(html):
     """The nonce WooCommerce's checkout script sends with wc-ajax=update_order_review, or None."""
     match = re.search(r'"update_order_review_nonce"\s*:\s*"([0-9a-f]+)"', html)
@@ -957,7 +977,8 @@ class Run:
         return button and the cart-exits page the labelled checkout link; billing opens on the account's saved billing
         profile even after the buyer typed another address in this visit; the shipping section opens ticked on the
         account's default saved address, and the buyer chooses its other saved address, which ShipTo must carry (the
-        account's profile and saved addresses are compared after Submit, in `main`). Still to come with the later
+        account's profile and saved addresses are compared after Submit, in `main`). Saved addresses only (0.5.1):
+        no "add new" choice, the address fields post hidden, and a typed address is refused before any order. Still to come with the later
         0.5.0 tickets (spec "Testing Decisions"): a file and no delivery amount on the page."""
         url = self.args.url
         checkout = seed.get('checkout') or {}
@@ -1065,6 +1086,21 @@ class Run:
         ticked, shown = form.value('ship_to_different_address'), form.value('shipping_address_1')
         self.check(ticked == '1' and shown == entries[default].get('address_1'), 'the_shipping_section_opens_ticked_on_the_default_saved_address', ticked=ticked, shown=shown, default=entries[default].get('address_1'))
         self.chosen_address = entries[book['chosen']]
+        # 0.5.1, "Saved addresses only in a visit" (on by default): the select offers no "add new", the address
+        # fields post hidden, and an address typed into them (as a forged post would) is refused before any order.
+        for name, ok, detail in saved_only_findings(form, select):
+            self.check(ok, name, **detail)
+        typed = dict(self.chosen_address, address_1='3 One-off Lane', city='Oneoff City')
+        choice = dict(fields, ship_to_different_address='1')
+        choice.update(address_choice(form, 'shipping_', typed))
+        if select:
+            choice[select] = book['chosen']
+        answer = self.post_checkout(browser, form, 'Typed address.', choice, shipping=shipping)
+        self.save('checkout-typed-address.json', answer['raw'])
+        self.check(answer['result'] == 'failure' and any('saved delivery addresses' in m for m in answer['messages']), 'a_typed_delivery_address_is_refused', result=answer['result'], messages=answer['messages'])
+        typed_state = self.inspect(self.payload, 'typed-address')
+        self.check(typed_state['orders'] == [] and (typed_state['visit'] or {}).get('status') == 'active', 'the_typed_address_leaves_no_order_and_the_visit_open', orders=[(o['id'], o['status']) for o in typed_state['orders']], visit=typed_state['visit'])
+
         fields.update(address_choice(form, 'shipping_', self.chosen_address))
         if select:
             fields[select] = book['chosen']
@@ -1154,8 +1190,8 @@ class Run:
     def second_leg(self, seed, receiver):
         """The second leg, each case in a visit of its own. The order lifecycle (ticket 74): two racing Submits, a
         zero-total cart (with a currency refusal first, and a note cXML cannot carry as typed), and a line without a
-        SKU. Checkout in a visit (ticket 76): a Submit held while its order is pending, with a one-off delivery
-        address; and what stays refused, in a visit and outside any visit."""
+        SKU. Checkout in a visit (ticket 76): a Submit held while its order is pending, shipping to the other saved
+        entry; and what stays refused, in a visit and outside any visit."""
         for label, leg in (('race', self.race_leg), ('zero', self.zero_total_leg), ('sku', self.skuless_leg), ('pending', self.pending_leg), ('refuse', self.refusal_leg)):
             try:
                 leg(seed, receiver)
@@ -1284,21 +1320,21 @@ class Run:
     def pending_leg(self, seed, receiver):
         """Ticket 76. A Submit held once WooCommerce has created its order, before the payment method runs: the
         pending order already carries its visit's provenance, and the visit can open neither order-received nor
-        order-pay for it. The buyer types a one-off delivery address (the address book's choice that is not a saved
-        entry): it reaches ShipTo and stays on the order, and the account saves nothing. Then the Submit completes and
-        hands off."""
+        order-pay for it. The buyer chooses the account's other saved delivery address (0.5.1: a one-off address can
+        no longer be typed in a visit): it reaches ShipTo and stays on the order, and the account saves nothing. Then
+        the Submit completes and hands off."""
         url, label = self.args.url, 'pending'
         browser = Browser(url)
         sku, product = next(iter(seed['products'].items()))
         visit = self.punch_in(browser, seed, receiver, items=[(sku, product['id'], 1)], label=label, redeem='post')
         _, form = self.open_checkout(browser, seed, label)
-        one_off = dict(seed['ship_to'], first_name='Site', last_name='Office', company='', address_1='3 One-off Lane', city='Oneoff City')
-        choice = address_choice(form, 'shipping_', one_off)
-        saved = list(((seed.get('saved_addresses') or {}).get('entries') or {}))
-        select = address_book_select(form, saved)
-        new_entry = [o for o in form.options(select) if o not in saved] if select else []
-        if new_entry:
-            choice[select] = new_entry[0]
+        book = seed.get('saved_addresses') or {}
+        self.must(book.get('chosen') in (book.get('entries') or {}), label + ': seed_gives_the_account_saved_addresses')
+        chosen = book['entries'][book['chosen']]
+        choice = address_choice(form, 'shipping_', chosen)
+        select = address_book_select(form, list(book['entries']))
+        if select:
+            choice[select] = book['chosen']
         choice['ship_to_different_address'] = '1'
         answers = {}
         held = threading.Thread(target=lambda: answers.__setitem__('held', self.post_checkout(browser, form, 'Pending run ' + seed['run'] + '.', choice, headers={'X-Pow-E2E-Pause': '8'})), daemon=True)
@@ -1320,11 +1356,11 @@ class Run:
         xml, _, _ = self.capture_leg(browser, handoff, receiver, visit, label)
         self.save('pending-poom.xml', xml)
         ship = ship_to_text(xml)
-        self.check(one_off['address_1'].lower() in ship.lower() and one_off['city'].lower() in ship.lower(), label + ': ship_to_is_the_one_off_address', ship_to=ship)
+        self.check(chosen['address_1'].lower() in ship.lower() and chosen['city'].lower() in ship.lower(), label + ': ship_to_is_the_chosen_saved_entry', ship_to=ship)
         result = self.inspect(visit['payload'], label)
         orders = result['orders']
-        self.check(len(orders) == 1 and orders[0]['status'] == 'punchout-quote' and orders[0]['shipping'].get('address_1') == one_off['address_1'], label + ': the_one_off_address_stays_on_the_order', orders=[(o['id'], o['status'], o['shipping'].get('address_1')) for o in orders])
-        self.check(result['account_profile'] == seed['account_profile'], label + ': the_one_off_address_is_not_saved_to_the_account', changed=profile_changes(seed['account_profile'], result['account_profile']))
+        self.check(len(orders) == 1 and orders[0]['status'] == 'punchout-quote' and orders[0]['shipping'].get('address_1') == chosen['address_1'], label + ': the_chosen_entry_stays_on_the_order', orders=[(o['id'], o['status'], o['shipping'].get('address_1')) for o in orders])
+        self.check(result['account_profile'] == seed['account_profile'], label + ': nothing_is_saved_to_the_account', changed=profile_changes(seed['account_profile'], result['account_profile']))
         self.quote_orders += [o['id'] for o in orders]
         self.quiet_orders += [t['id'] for t in result['trashed']]
 

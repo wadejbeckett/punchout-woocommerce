@@ -303,6 +303,7 @@ wp punchout generate-key
 | Setup edge limit | 120/min | Per IP before method checks, body reads, parsing or audit storage on `/punchout/setup`; 0 uses the default (120) |
 | Log retention | 400 days | Audit-table trim horizon |
 | Checkout button label | "Proceed to checkout" | 0.5.0: during a visit, the text of the cart's proceed button, the Cart widget's checkout button and the Cart block's button, which lead to WooCommerce's checkout; blank = the default; filter `punchout_checkout_button_label` |
+| Saved addresses only in a visit | on | 0.5.1: during a visit, checkout offers only the delivery addresses saved on the connection's account: an address book's "add new" choice is removed, the billing and shipping fields post hidden (the chosen saved address fills them; nothing can be typed), and a posted delivery address that is not a saved entry is refused before any order exists. An account with no saved delivery address takes what checkout posts. Filter `punchout_visit_saved_addresses_only` |
 | Cancel button label | "Cancel and return" | Text on the abandon control (Cancel and return); blank = the default; filter `pow_abandon_button_label` |
 | Ask before leaving | off | 0.5.0: during a visit, the abandon control asks first when the cart has items (see "Leaving without a cart"); the question is the shortcode's `question` attribute |
 | Leave button label | "Return without sending" | 0.5.0: the question's button that leaves without sending; blank = the default; filter `punchout_leave_confirm_label` |

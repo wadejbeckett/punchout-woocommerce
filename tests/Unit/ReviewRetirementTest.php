@@ -238,14 +238,15 @@ namespace {
 			}
 		}
 
-		public function test_the_release_is_0_5_0_everywhere(): void {
+		public function test_the_release_is_0_5_1_everywhere(): void {
 			$main   = (string) file_get_contents( self::root() . '/punchout-woocommerce.php' );
 			$readme = (string) file_get_contents( self::root() . '/readme.txt' );
-			self::assertMatchesRegularExpression( '/^ \* Version:\s+0\.5\.0$/m', $main );
-			self::assertMatchesRegularExpression( "/^const VERSION\s+= '0\.5\.0';$/m", $main );
-			self::assertMatchesRegularExpression( '/^Stable tag: 0\.5\.0$/m', $readme );
+			self::assertMatchesRegularExpression( '/^ \* Version:\s+0\.5\.1$/m', $main );
+			self::assertMatchesRegularExpression( "/^const VERSION\s+= '0\.5\.1';$/m", $main );
+			self::assertMatchesRegularExpression( '/^Stable tag: 0\.5\.1$/m', $readme );
 			$changelog = substr( $readme, (int) strpos( $readme, '== Changelog ==' ) );
-			self::assertMatchesRegularExpression( '/\A== Changelog ==\s+= 0\.5\.0 =/', $changelog, 'The newest changelog entry is 0.5.0' );
+			self::assertMatchesRegularExpression( '/\A== Changelog ==\s+= 0\.5\.1 =/', $changelog, 'The newest changelog entry is 0.5.1' );
+			self::assertStringContainsString( '= 0.5.0 =', $changelog, 'The 0.5.0 entry stays' );
 		}
 
 		/** The public plugin page never says "approval": the purchasing system approves, not the shop (its history too). */

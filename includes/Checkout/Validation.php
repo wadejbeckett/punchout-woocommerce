@@ -23,6 +23,9 @@ defined( 'ABSPATH' ) || exit;
  *   another;
  * - a note that cannot be made valid for cXML (OrderMessage::clean_note()). A note is otherwise cleaned of control
  *   characters and capped at 2,000 characters on its way into the message, not refused;
+ * - with "Saved addresses only in a visit" on (0.5.1), a posted delivery address that is not one of the account's
+ *   saved entries (Checkout\SavedAddresses::refuses(): the street, town, postcode and country compared after trim
+ *   and lowercase; an account with no saved delivery address takes what is posted);
  * - while the connection sends ShipTo, a posted delivery address with a street that cXML cannot carry
  *   (OrderMessage::to_cxml(): a field past its bound, a control character, no company or person, a country that is
  *   not an ISO code), which would otherwise vanish silently from the message (security review, 11 October).
@@ -33,7 +36,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Validation {
 
-	public function __construct( private PaymentMethod $method ) {}
+	public function __construct( private PaymentMethod $method, private ?SavedAddresses $saved_addresses = null ) {}
 
 	public function register(): void {
 		add_action( 'woocommerce_after_checkout_validation', [ $this, 'validate' ], 10, 2 );
@@ -82,6 +85,10 @@ final class Validation {
 
 		if ( null === OrderMessage::clean_note( $note ) ) {
 			$problems[] = __( 'Your note contains characters that cannot be sent to your purchasing system. Change the note and submit again.', 'punchout-woocommerce' );
+		}
+
+		if ( null !== $this->saved_addresses && $this->saved_addresses->refuses( $data ) ) {
+			$problems[] = __( 'Choose one of the saved delivery addresses. A delivery address cannot be typed during this session.', 'punchout-woocommerce' );
 		}
 
 		if ( $this->ship_to_unusable( $data ) ) {

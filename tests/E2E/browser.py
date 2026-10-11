@@ -225,7 +225,9 @@ class BrowserRun(driver.Run):
 
     def checkout(self, chromium, seed, receiver, states):
         """Cart "Review" -> checkout offers PunchOut only, "Submit" -> the ship-to box ticked again -> a saved
-        shipping entry -> Submit -> the Sent state; the receiver gets one cXML carrying that entry as ShipTo."""
+        shipping entry -> Submit -> the Sent state; the receiver gets one cXML carrying that entry as ShipTo. Saved
+        addresses only (0.5.1): the select offers no "add new" and the shipping fields are hidden inputs, which the
+        address book's script still fills on a card change."""
         url = self.args.url
         labels = (seed.get('checkout') or {}).get('labels') or {}
         book = seed.get('saved_addresses')
@@ -269,22 +271,28 @@ class BrowserRun(driver.Run):
             page.wait_for_timeout(400)
             box.check()
             page.wait_for_timeout(600)
-            self.check(box.is_checked() and page.locator('#shipping_address_1').is_visible(), 'checkout: the_ship_to_box_is_ticked_again_and_the_fields_show')
+            self.check(box.is_checked() and page.locator('#shipping_address_1').count() == 1, 'checkout: the_ship_to_box_is_ticked_again_and_the_fields_are_there')
+            # 0.5.1: the shipping fields are hidden inputs (they post; nothing can be typed), the selector stays visible.
+            typable = page.evaluate("() => [...document.querySelectorAll('form.checkout [name^=\"shipping_\"]')].filter(e => !e.name.endsWith('_address_book') && !(e.tagName === 'INPUT' && e.type === 'hidden')).map(e => e.name)")
+            self.check(typable == [] and page.locator('#shipping_address_1').get_attribute('type') == 'hidden', 'checkout: the_shipping_fields_are_hidden_inputs', typable=typable)
 
             # The other saved entry, chosen from the address book's select (found by the entries it offers, never by name).
             selects = page.evaluate("() => [...document.querySelectorAll('form.checkout select')].map(s => [s.name, [...s.options].map(o => o.value)])")
             select = address_book_select(selects, list(entries))
             self.must(select is not None, 'checkout: the_saved_addresses_are_offered', selects=[name for name, _ in selects])
+            offered = dict(selects)[select]
+            self.check('add_new' not in offered and page.locator('form.checkout select[name="' + select + '"]').is_visible(), 'checkout: no_add_new_choice_and_the_selector_stays_visible', offered=offered)
             page.select_option('form.checkout select[name="' + select + '"]', chosen)
             deadline = time.monotonic() + SECONDS
             while page.locator('#shipping_address_1').input_value() != entries[chosen].get('address_1') and time.monotonic() < deadline:
                 page.wait_for_timeout(250)
+            self.check(page.locator('#shipping_address_1').input_value() == entries[chosen].get('address_1'), 'checkout: the_address_books_script_fills_the_hidden_fields', shown=page.locator('#shipping_address_1').input_value(), chosen=entries[chosen].get('address_1'))
             if page.locator('#shipping_address_1').input_value() != entries[chosen].get('address_1'):
-                # No script filled the fields: fill them as the address book's script would.
+                # No script filled the fields: set them as the address book's script would (hidden inputs take no typing).
                 for field, value in entries[chosen].items():
                     target = page.locator('#shipping_' + field)
                     if target.count() == 1 and value is not None and target.evaluate('e => e.tagName') == 'INPUT':
-                        target.fill(str(value))
+                        target.evaluate('(e, v) => { e.value = v; }', str(value))
             page.wait_for_timeout(1500)
             self.check(page.locator('#shipping_address_1').input_value() == entries[chosen].get('address_1'), 'checkout: the_chosen_entry_fills_the_shipping_fields', shown=page.locator('#shipping_address_1').input_value(), chosen=entries[chosen].get('address_1'))
             note = page.locator('#order_comments')

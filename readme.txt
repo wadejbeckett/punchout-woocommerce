@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.5.0
+Stable tag: 0.5.1
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -65,6 +65,9 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.5.1 =
+* New setting "Saved addresses only in a visit" (`visit_saved_addresses_only`, on by default; filter `punchout_visit_saved_addresses_only` runs last). During a live visit the buyer chooses one of the connection account's saved delivery addresses and cannot add, edit or type one (`Checkout\SavedAddresses`): WooCommerce's checkout fields are rewritten last (after any address book has drawn its selector), an address-book selector in the billing or shipping group loses its "add new" choice (a default of "add new" moves to the first saved entry) and every other billing and shipping field posts as WooCommerce's own hidden field type, keeping its id, name, value, classes and required flag, so an address book's script still fills the same fields on a card change and nothing can be typed. Server-side, a posted delivery address whose street, town, postcode or country is not one of the account's saved entries (WooCommerce's own customer shipping address, an address-book API found by shape, and address entries in the account's user meta found by shape) is refused before any order exists; an account with no saved delivery address takes what checkout posts, so a shop without an address book still works. Outside a visit, and with the setting off, nothing changes.
 
 = 0.5.0 =
 * A visit leaves through WooCommerce's classic checkout. The payment method "PunchOut" (`Checkout\PaymentMethod`) is offered only while a live visit owns the request, and then it is the only method; its settings are its title, description and place-order button text (default "Place order"). Submit builds the cXML PunchOutOrderMessage from the placed order (`Checkout\OrderMessage`: the order's lines, ex-tax unit prices, the product and variation ids as the auxiliary id, ShortName as the name, the order's shipping address as ShipTo while the connection sends ShipTo), wins the visit's return and redirects to the theme-free GET handoff `/punchout/handoff` (served once, only to the browser and visit that won; no-store, noindex, nosniff, no-referrer), which posts the message and ends the login. The order stays as a Punchout Quote, set last so the "PunchOut order received" e-mail is sent once.

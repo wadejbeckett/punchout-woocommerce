@@ -239,7 +239,11 @@ final class Plugin {
 		$handoff = new Checkout\Handoff( $this->sessions, $this->audit );
 		$payment_method->register();
 		// The order lifecycle around Submit: refusals before an order exists, zero-total carts, a Submit after the return.
-		( new Checkout\Validation( $payment_method ) )->register();
+		// 0.5.1: in a visit the buyer chooses one of the account's saved delivery addresses and types none (the
+		// checkout fields rewritten last; a posted address that is not a saved entry refused before any order).
+		$saved_addresses = new Checkout\SavedAddresses( $this, $payment_method, $this->settings );
+		$saved_addresses->register();
+		( new Checkout\Validation( $payment_method, $saved_addresses ) )->register();
 		// A PunchOut order carries its visit's provenance from the moment checkout creates it, so it is never payable.
 		( new Checkout\Provenance( $this, $this->registry, $payment_method ) )->register();
 		( new Checkout\Lifecycle( $payment_method ) )->register();
