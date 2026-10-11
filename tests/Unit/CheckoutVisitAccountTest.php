@@ -37,6 +37,14 @@ namespace {
 		}
 	}
 
+	/** The audit trail as the fence writes it. */
+	final class VisitAccountLog extends POW\Audit\Log {
+		/** @var list<array{0: string, 1: array<string, mixed>}> */
+		public array $rows = [];
+		public function __construct() {}
+		public function write_checked( string $event, array $context = [] ): bool { $this->rows[] = [ $event, $context ]; return true; }
+	}
+
 	/** A session store whose visit lookup cannot answer. */
 	final class VisitAccountBrokenStore extends POW\Sessions\Store {
 		public function find_for_login( int $user_id, string $wp_session_token, array $statuses = [ Session::ACTIVE ] ): ?Session { throw new RuntimeException( 'Session lookup failed.' ); }
@@ -74,10 +82,13 @@ namespace {
 			}
 		}
 
+		private VisitAccountLog $log;
+
 		/** The container answering "which visit is this request inside" with $visit (false: the lookup cannot answer). */
 		private function plugin( Session|false|null $visit ): POW\Plugin {
 			$plugin = ( new ReflectionClass( POW\Plugin::class ) )->newInstanceWithoutConstructor();
 			( new ReflectionProperty( $plugin, 'settings' ) )->setValue( $plugin, new POW\Settings() );
+			( new ReflectionProperty( $plugin, 'audit' ) )->setValue( $plugin, $this->log = new VisitAccountLog() );
 			if ( false === $visit ) {
 				$GLOBALS['pow_test_current_user_id'] = self::ACCOUNT;
 				( new ReflectionProperty( $plugin, 'sessions' ) )->setValue( $plugin, new VisitAccountBrokenStore() );
@@ -180,6 +191,87 @@ namespace {
 			$account = $this->account( $this->visit() );
 			$account->register();
 			self::assertSame( [ [ 10, [ $account, 'checkout_value' ], 2 ] ], $GLOBALS['pow_payment_method_hooks']['woocommerce_checkout_get_value'] );
+		}
+
+		// ----------------------------------------------------------------------------- the account fence (0.5.0)
+
+		/** The refusal as WordPress's metadata filters see it: null lets the write through, false refuses it. */
+		private function write( VisitAccount $account, string $operation, int $user_id, string $key, mixed $check = null ): mixed {
+			return $account->{ 'refuse_' . $operation }( $check, $user_id, $key, 'value' );
+		}
+
+		public function test_inside_a_live_visit_nothing_else_writes_the_bound_accounts_meta_either(): void {
+			$account = $this->account( $this->visit() );
+			foreach ( [ 'add', 'update', 'delete' ] as $operation ) {
+				self::assertFalse( $this->write( $account, $operation, self::ACCOUNT, 'wc_address_book_shipping' ), $operation . ': an address-book entry is refused' );
+				self::assertFalse( $this->write( $account, $operation, self::ACCOUNT, 'shipping_address_1' ), $operation . ': a profile field is refused' );
+				self::assertFalse( $this->write( $account, $operation, self::ACCOUNT, 'wc_address_book_address_shipping_depot' ), $operation );
+				self::assertFalse( $this->write( $account, $operation, self::ACCOUNT, '_woocommerce_load_saved_cart_after_login' ), $operation . ': the merge flag is not an allowed key' );
+			}
+		}
+
+		public function test_the_keys_a_visits_own_life_writes_pass(): void {
+			$account = $this->account( $this->visit() );
+			foreach ( [ 'session_tokens', 'wc_last_active', 'last_update', '_woocommerce_persistent_cart_1', '_woocommerce_persistent_cart_12' ] as $key ) {
+				foreach ( [ 'add', 'update', 'delete' ] as $operation ) {
+					self::assertNull( $this->write( $account, $operation, self::ACCOUNT, $key ), $operation . ' ' . $key . ' is the login\'s, WooCommerce\'s activity stamp or the cart row' );
+				}
+			}
+			self::assertSame( [], $this->log->rows, 'Nothing allowed is audited' );
+		}
+
+		public function test_another_users_meta_and_every_write_outside_a_visit_are_left_to_wordpress(): void {
+			self::assertNull( $this->write( $this->account( $this->visit() ), 'update', 21, 'wc_address_book_shipping' ), 'Another account\'s row is not the visit\'s' );
+			self::assertNull( $this->write( $this->account( $this->visit() ), 'update', 0, 'wc_address_book_shipping' ) );
+			self::assertNull( $this->write( $this->account( null ), 'update', self::ACCOUNT, 'wc_address_book_shipping' ), 'The account holder on its own login keeps its address book' );
+			self::assertNull( $this->write( $this->account( null ), 'delete', self::ACCOUNT, 'shipping_address_1' ) );
+		}
+
+		public function test_a_write_another_filter_already_answered_keeps_that_answer(): void {
+			$account = $this->account( $this->visit() );
+			self::assertTrue( $this->write( $account, 'delete', self::ACCOUNT, '_woocommerce_load_saved_cart_after_login', true ), 'The cart guard\'s "kept" answer for the merge flag stands' );
+			self::assertFalse( $this->write( $account, 'update', self::ACCOUNT, 'wc_address_book_shipping', false ) );
+			self::assertSame( [], $this->log->rows );
+		}
+
+		public function test_a_request_whose_visit_cannot_be_established_writes_nothing_to_its_own_account(): void {
+			$account = $this->account( false );
+			self::assertFalse( $this->write( $account, 'update', self::ACCOUNT, 'wc_address_book_shipping' ), 'The signed-in account is not provably an ordinary shopper' );
+			self::assertNull( $this->write( $account, 'update', 21, 'wc_address_book_shipping' ), 'Another account is not this request\'s' );
+			self::assertNull( $this->write( $account, 'update', self::ACCOUNT, 'session_tokens' ) );
+		}
+
+		public function test_each_refusal_is_audited_once_per_request_and_key_naming_the_visit_and_the_key(): void {
+			$account = $this->account( $this->visit() );
+			$this->write( $account, 'update', self::ACCOUNT, 'wc_address_book_shipping' );
+			$this->write( $account, 'update', self::ACCOUNT, 'wc_address_book_shipping' );
+			$this->write( $account, 'delete', self::ACCOUNT, 'wc_address_book_shipping' );
+			$this->write( $account, 'delete', self::ACCOUNT, 'wc_address_book_address_shipping_depot' );
+			self::assertCount( 2, $this->log->rows, 'One row per key, however often the request retries' );
+			[ $event, $context ] = $this->log->rows[0];
+			self::assertSame( 'visit_account_write_refused', $event );
+			self::assertSame( [ 5, 42, self::ACCOUNT, 'refused' ], [ $context['partner_id'], $context['session_id'], $context['user_id'], $context['result'] ] );
+			self::assertSame( 'wc_address_book_shipping', $context['detail']['meta_key'] );
+			self::assertSame( 'update', $context['detail']['operation'] );
+			self::assertSame( 'wc_address_book_address_shipping_depot', $this->log->rows[1][1]['detail']['meta_key'] );
+		}
+
+		public function test_an_audit_that_fails_never_lets_the_write_through(): void {
+			$account = $this->account( $this->visit() );
+			( new ReflectionProperty( $this->plugin( $this->visit() ), 'audit' ) );
+			$plugin = ( new ReflectionProperty( $account, 'plugin' ) )->getValue( $account );
+			( new ReflectionProperty( $plugin, 'audit' ) )->setValue( $plugin, null );
+			self::assertFalse( $this->write( $account, 'update', self::ACCOUNT, 'wc_address_book_shipping' ), 'Without an audit trail the refusal still stands' );
+		}
+
+		/** Early, so the refusal is the first answer, and again last, so nothing in between can turn it back into a write. */
+		public function test_the_fence_is_registered_on_every_user_meta_write_early_and_last(): void {
+			$account = $this->account( $this->visit() );
+			$account->register();
+			$hooks = $GLOBALS['pow_payment_method_hooks'];
+			foreach ( [ 'add' => 'add_user_metadata', 'update' => 'update_user_metadata', 'delete' => 'delete_user_metadata' ] as $operation => $hook ) {
+				self::assertSame( [ [ 1, [ $account, 'refuse_' . $operation ], 3 ], [ PHP_INT_MAX, [ $account, 'refuse_' . $operation ], 3 ] ], $hooks[ $hook ], $hook );
+			}
 		}
 	}
 }

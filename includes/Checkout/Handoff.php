@@ -27,12 +27,20 @@ defined( 'ABSPATH' ) || exit;
  *
  * The page is kept under a hash of the visit's login token and the order key, and only for TTL seconds. It is
  * served once, with no-store, noindex, nosniff and no-referrer, to a GET that presents that same login cookie and
- * that order, and only when the visit row it names has returned with that login and that order: the request whose
- * delete removes the kept page is the one that serves it, so two GETs at once cannot both post the cart. Serving it
- * clears the login cookie in that browser (the login itself was ended when the visit won) and leaves a small marker
- * cookie naming the visit, keyed so it cannot be forged, by which a later Submit from a stale tab is recognised.
- * Anything else gets a short page with no form, so a refresh, a back button or a second tab never posts the cart
- * twice.
+ * that order, and only when the visit row it names has returned with that login and that order. The kept page is
+ * read first and claimed (deleted) only once the order in the address and the visit row match, so a GET naming
+ * another order spends nothing; the request whose delete removes the kept page is the one that serves it, so two
+ * GETs at once cannot both post the cart. Serving it clears the login cookie in that browser (the login itself was
+ * ended when the visit won) and leaves a small marker cookie naming the visit, keyed so it cannot be forged, by
+ * which a later Submit from a stale tab is recognised. Anything else gets a short page with no form, so a refresh,
+ * a back button or a second tab never posts the cart twice.
+ *
+ * The page cannot be framed (X-Frame-Options DENY) and carries a Content-Security-Policy that names its own inline
+ * script and styles by hash and lets its form post only to the origin of the visit's BrowserFormPost URL
+ * (page_headers()), as the start page does for itself. Cancel and return's Not sent page carries the same.
+ *
+ * A GET that presents neither a login cookie nor the sent marker is nobody's: it goes to Session ended (or the plain
+ * no-form page) before any order is looked up, so the route cannot be used to probe order ids and keys.
  *
  * The Sent state is where a Submit that arrives after the visit has returned is sent (0.5.0, ticket 74): the site's
  * state page when one is chosen (Http\StatePage, ticket 77), else the theme-free GET /punchout/sent, with the
@@ -75,23 +83,44 @@ final class Handoff {
 	}
 
 	/**
-	 * The kept page for this login and order, removed as it is read (served once), or null.
+	 * The kept page for this login and order, as kept (nothing claimed), or null.
 	 *
 	 * @return array{session_id: int, order_id: int, markup: string}|null
 	 */
-	public static function take( string $login_token, string $order_key ): ?array {
+	public static function peek( string $login_token, string $order_key ): ?array {
 		$key = self::key( $login_token, $order_key );
 		if ( '' === $key ) { return null; }
 		try {
 			$record = get_transient( $key );
-			// The delete is the claim: of two requests that read the page at once, only the one whose delete removed
-			// it may serve it.
-			if ( false === $record || true !== delete_transient( $key ) ) { return null; }
 		} catch ( \Throwable $error ) {
 			return null;
 		}
 		if ( ! is_array( $record ) || ! is_int( $record['session_id'] ?? null ) || ! is_int( $record['order_id'] ?? null ) || ! is_string( $record['markup'] ?? null ) || '' === $record['markup'] ) { return null; }
 		return [ 'session_id' => $record['session_id'], 'order_id' => $record['order_id'], 'markup' => $record['markup'] ];
+	}
+
+	/**
+	 * Claim the kept page: the delete is the claim, so of two requests that read the page at once only the one whose
+	 * delete removed it may serve it. True when this request's delete removed it.
+	 */
+	public static function claim( string $login_token, string $order_key ): bool {
+		$key = self::key( $login_token, $order_key );
+		if ( '' === $key ) { return false; }
+		try {
+			return true === delete_transient( $key );
+		} catch ( \Throwable $error ) {
+			return false;
+		}
+	}
+
+	/**
+	 * The kept page for this login and order, removed as it is read (served once), or null.
+	 *
+	 * @return array{session_id: int, order_id: int, markup: string}|null
+	 */
+	public static function take( string $login_token, string $order_key ): ?array {
+		$kept = self::peek( $login_token, $order_key );
+		return null !== $kept && self::claim( $login_token, $order_key ) ? $kept : null;
 	}
 
 	/** Whether a page is still kept for this login and order (never served, not expired). Takes nothing. */
@@ -199,14 +228,28 @@ final class Handoff {
 		// phpcs:enable
 		$login_token = (string) wp_get_session_token();
 
-		$kept  = self::take( $login_token, $order_key );
+		// Nobody's browser: neither the login the page was kept for nor the marker a served page leaves. Session
+		// ended (or the plain page) before any order is looked up.
+		if ( '' === $login_token && 0 === self::marker_in_request() ) {
+			$ended = StatePage::link( StatePage::ENDED );
+			if ( null !== $ended ) {
+				wp_safe_redirect( $ended, 303 );
+				return;
+			}
+			$this->no_form_page( 200 );
+			return;
+		}
+
+		$kept  = self::peek( $login_token, $order_key );
 		$visit = null;
 		try {
 			$visit = null !== $kept && $kept['order_id'] === $order_id ? $this->sessions->find( $kept['session_id'] ) : null;
 		} catch ( \Throwable $error ) {
 			$visit = null;
 		}
-		if ( null === $kept || null === $visit || Session::RETURNED !== $visit->status || '' === $visit->wp_session_token || ! hash_equals( $visit->wp_session_token, $login_token ) || $visit->order_id !== $order_id ) {
+		// Claimed only once the order in the address and the visit row match; a wrong request spends nothing.
+		if ( null === $kept || null === $visit || Session::RETURNED !== $visit->status || '' === $visit->wp_session_token || ! hash_equals( $visit->wp_session_token, $login_token ) || $visit->order_id !== $order_id
+		|| ! self::claim( $login_token, $order_key ) ) {
 			$target = $this->spent_target( $order_id, $order_key );
 			if ( null !== $target ) {
 				wp_safe_redirect( $target, 303 );
@@ -231,7 +274,59 @@ final class Handoff {
 			// Reporting never stands in the way of the prepared handoff.
 		}
 		self::html_headers( 200 );
+		self::send_page_headers( $kept['markup'], $visit->browser_form_post_url );
 		echo $kept['markup']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the handoff template, escaped within.
+	}
+
+	/** The visit the sent marker cookie of this request names (its key checked), else 0. */
+	private static function marker_in_request(): int {
+		$marker = $_COOKIE[ self::SENT_MARKER ] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- parsed and keyed by marked_visit().
+		return is_string( $marker ) ? self::marked_visit( $marker ) : 0;
+	}
+
+	/**
+	 * The headers the page that posts the cart carries, as the start page carries them for itself: it cannot be
+	 * framed, and its policy runs nothing but its own inline script and styles (named by hash) and lets its form
+	 * post only to the origin of the receiver (the visit's BrowserFormPost URL).
+	 *
+	 * @return list<string>
+	 */
+	public static function page_headers( string $markup, string $receiver_url ): array {
+		return [ 'X-Frame-Options: DENY', 'Content-Security-Policy: ' . self::page_policy( $markup, $receiver_url ) ];
+	}
+
+	/** Send page_headers(), before the page. */
+	public static function send_page_headers( string $markup, string $receiver_url ): void {
+		foreach ( self::page_headers( $markup, $receiver_url ) as $header ) { header( $header, true ); }
+	}
+
+	/**
+	 * The page's Content-Security-Policy: default-src 'none'; every inline <script> in the markup by hash; every
+	 * <style> element and style attribute by hash (attributes need 'unsafe-hashes', and are hashed as the browser
+	 * reads them, entities decoded); form-action the receiver's origin (scheme, host and port), 'none' when the URL
+	 * has no origin; frame-ancestors 'none'; base-uri 'none'. A template override must keep to inline script and
+	 * style: an external script or stylesheet is not run.
+	 */
+	public static function page_policy( string $markup, string $receiver_url ): string {
+		$hash = static fn( string $source ): string => "'sha256-" . base64_encode( hash( 'sha256', $source, true ) ) . "'";
+		preg_match_all( '#<script(?:\s[^>]*)?>(.*?)</script\s*>#is', $markup, $scripts );
+		preg_match_all( '#<style(?:\s[^>]*)?>(.*?)</style\s*>#is', $markup, $elements );
+		preg_match_all( '#\sstyle\s*=\s*(?:"([^"]*)"|\'([^\']*)\')#i', $markup, $attributes );
+		$decoded = array_map( static fn( string $value ): string => html_entity_decode( $value, ENT_QUOTES | ENT_HTML5, 'UTF-8' ), array_values( array_filter( array_merge( $attributes[1], $attributes[2] ), static fn( string $value ): bool => '' !== $value ) ) );
+		$styles  = array_values( array_unique( array_merge( array_map( $hash, $elements[1] ), array_map( $hash, $decoded ) ) ) );
+		$script  = [] !== $scripts[1] ? implode( ' ', array_values( array_unique( array_map( $hash, $scripts[1] ) ) ) ) : "'none'";
+		$style   = [] !== $styles ? ( [] !== $decoded ? "'unsafe-hashes' " : '' ) . implode( ' ', $styles ) : "'none'";
+		return "default-src 'none'; script-src " . $script . '; style-src ' . $style . '; form-action ' . self::origin( $receiver_url ) . "; frame-ancestors 'none'; base-uri 'none'";
+	}
+
+	/** scheme://host[:port] of a URL, or 'none' when it has no host. */
+	private static function origin( string $url ): string {
+		$parts = wp_parse_url( trim( $url ) );
+		$host  = is_array( $parts ) ? strtolower( (string) ( $parts['host'] ?? '' ) ) : '';
+		if ( '' === $host || 1 !== preg_match( '/\A[a-z0-9.\-\[\]:]+\z/', $host ) ) { return "'none'"; }
+		$scheme = strtolower( (string) ( $parts['scheme'] ?? 'https' ) );
+		$port   = isset( $parts['port'] ) ? ':' . (int) $parts['port'] : '';
+		return $scheme . '://' . $host . $port;
 	}
 
 	/** GET /punchout/sent: the Sent state, theme-free and with no form. */

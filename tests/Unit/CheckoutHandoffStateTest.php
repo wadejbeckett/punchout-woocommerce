@@ -13,6 +13,10 @@
 declare( strict_types = 1 );
 
 namespace {
+	// The POW\Checkout seams (header(), the answers that end a request) must be in place before Handoff::handle()
+	// first runs: PHP settles an unqualified call on the global function for good once it has fallen back to it.
+	require_once dirname( __DIR__ ) . '/Support/checkout-hooks.php';
+
 	use PHPUnit\Framework\TestCase;
 	use POW\Checkout\Handoff;
 	use POW\Orders\QuoteOrder;

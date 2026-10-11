@@ -13,6 +13,7 @@ namespace POW\Http;
 use POW\Support\Transport;
 
 use POW\Audit\Log;
+use POW\Checkout\Handoff;
 use POW\Cart\LeaveConfirmation;
 use POW\Cart\SessionKey;
 use POW\Cxml\Builder;
@@ -238,6 +239,7 @@ final class ReturnEndpoint {
 		$this->teardown( $user->ID, $session );
 
 		self::html_headers( 200 );
+		Handoff::send_page_headers( $markup, $session->browser_form_post_url );
 		echo $markup; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within.
 	}
 
@@ -261,6 +263,7 @@ final class ReturnEndpoint {
 		wp_clear_auth_cookie();
 		$this->audit_best_effort( 'return_replayed', [ 'partner_id' => $visit->partner_id, 'session_id' => $visit->id, 'user_id' => $visit->user_id, 'direction' => 'out', 'result' => 'ok' ] );
 		self::html_headers( 200 );
+		Handoff::send_page_headers( $kept['markup'], $visit->browser_form_post_url );
 		echo $kept['markup']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the winner's rendered template, escaped within.
 		return true;
 	}

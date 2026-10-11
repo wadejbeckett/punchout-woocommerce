@@ -11,20 +11,8 @@
 
 declare( strict_types = 1 );
 
-namespace POW\Checkout {
-	/** What a caught Submit answered: wp_send_json() and wp_safe_redirect() end the request. */
-	final class LateSubmitAnswer extends \RuntimeException {
-		public function __construct( public string $kind, public mixed $payload ) { parent::__construct( $kind ); }
-	}
-	if ( ! function_exists( __NAMESPACE__ . '\wp_send_json' ) ) {
-		function wp_send_json( mixed $response, ?int $status = null, int $flags = 0 ): void { throw new LateSubmitAnswer( 'json', $response ); }
-	}
-	if ( ! function_exists( __NAMESPACE__ . '\wp_safe_redirect' ) ) {
-		function wp_safe_redirect( string $location, int $status = 302, string $by = 'WordPress' ): bool { throw new LateSubmitAnswer( 'redirect', [ $location, $status ] ); }
-	}
-}
-
 namespace {
+	// The answers that end a request (LateSubmitAnswer) come from the shared checkout seams.
 	require_once dirname( __DIR__ ) . '/Support/checkout-hooks.php';
 
 	use PHPUnit\Framework\TestCase;

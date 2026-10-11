@@ -32,6 +32,8 @@ use POW\Partners\Secrets;
 use POW\Sessions\HandoffReplay;
 use POW\Sessions\Store;
 require_once dirname( __DIR__ ) . '/Support/return-database.php';
+// The POW\Checkout seams (header()) before Checkout\Handoff::send_page_headers() first runs from the Not sent page.
+require_once dirname( __DIR__ ) . '/Support/checkout-hooks.php';
 
 final class CancelAndReturnTest extends TestCase {
 	private ReturnDatabase $db;
@@ -108,6 +110,10 @@ final class CancelAndReturnTest extends TestCase {
 		self::assertSame( [ true ], $GLOBALS['pow_test_cart_emptied'] ?? [], 'This basket only' );
 		self::assertSame( 200, end( $GLOBALS['pow_test_status_headers'] ) );
 		self::assertContains( 'X-Content-Type-Options: nosniff', $GLOBALS['pow_test_setup_io']['headers'] );
+		// Security review, 11 October: the Not sent page cannot be framed, runs only its own script and posts only to the receiver's origin.
+		self::assertContains( 'X-Frame-Options: DENY', $GLOBALS['pow_test_setup_io']['headers'] );
+		self::assertContains( 'Content-Security-Policy: ' . POW\Checkout\Handoff::page_policy( $response, 'https://buyer.example.test/return' ), $GLOBALS['pow_test_setup_io']['headers'] );
+		self::assertStringContainsString( 'form-action https://buyer.example.test;', implode( "\n", $GLOBALS['pow_test_setup_io']['headers'] ) );
 		$xml = self::message( $response );
 		self::assertStringContainsString( '<PunchOutOrderMessage>', $xml );
 		self::assertStringNotContainsString( '<ItemIn', $xml, 'Empty: the cXML cancel semantic' );

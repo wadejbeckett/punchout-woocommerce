@@ -659,11 +659,37 @@ final class RouteGuard {
 
 		$path = is_object( $request ) && method_exists( $request, 'get_route' ) ? (string) $request->get_route() : '';
 
-		if ( ! ( self::locked_handler( $handler ) || self::locked_route( is_string( $route ) ? $route : '' ) || self::locked_route( $path ) ) || ! $this->inside_visit() ) {
-			return $result;
+		if ( ( self::locked_handler( $handler ) || self::locked_route( is_string( $route ) ? $route : '' ) || self::locked_route( $path ) ) && $this->inside_visit() ) {
+			return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
 		}
 
-		return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
+		// 0.5.0: the Store API's order and checkout reads name an order in the address. Inside a visit only the
+		// visit's own order answers; a colleague's Quote on the same account, an ordinary order, or one that cannot
+		// be read, is refused. Outside a visit WooCommerce's own order-key check stands.
+		$order_id = max( self::store_order_id( $path ), self::store_order_id( is_string( $route ) ? $route : '' ) );
+		if ( $order_id > 0 && ! $this->store_order_allowed( $order_id ) ) {
+			return new \WP_Error( 'pow_visit_locked', $this->locked_message(), [ 'status' => 403 ] );
+		}
+
+		return $result;
+	}
+
+	/** The order id a Store API order or checkout read names (/wc/store/v1/order/{id}, /wc/store/v1/checkout/{id}), else 0. */
+	private static function store_order_id( string $route ): int {
+		$route = self::normalised_route( $route );
+		return 1 === preg_match( '#^/wc/store/v1/(?:order|checkout)/([1-9][0-9]*)$#', $route, $match ) ? (int) $match[1] : 0;
+	}
+
+	/** Whether a Store API read of this order may go ahead: outside a visit always; inside one only for the visit's own order. */
+	private function store_order_allowed( int $order_id ): bool {
+		try {
+			$visit = $this->plugin->current_session();
+			if ( null === $visit ) { return true; }
+			$order = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+			return $this->order_belongs_to_visit( $order instanceof \WC_Order ? $order : null, $visit );
+		} catch ( \Throwable $e ) {
+			return false;
+		}
 	}
 
 	private static function locked_handler( mixed $handler ): bool {
@@ -686,6 +712,17 @@ final class RouteGuard {
 		return false;
 	}
 
+	/** A route as it is compared: percent-decoding repeated until stable (bounded), lower case, repeated slashes collapsed. */
+	private static function normalised_route( string $route ): string {
+		for ( $i = 0; $i < 3; ++$i ) {
+			$decoded = rawurldecode( $route );
+			if ( $decoded === $route ) { break; }
+			$route = $decoded;
+		}
+		$route = strtolower( (string) preg_replace( '#/+#', '/', '/' . $route ) );
+		return '/' . trim( $route, '/' );
+	}
+
 	/**
 	 * Only the routes the shared-login lockdown names, so a plugin or theme
 	 * route a visit legitimately uses is never caught by accident.
@@ -696,13 +733,7 @@ final class RouteGuard {
 	 * authoritative check; this one refuses before any handler is matched.
 	 */
 	private static function locked_route( string $route ): bool {
-		for ( $i = 0; $i < 3; ++$i ) {
-			$decoded = rawurldecode( $route );
-			if ( $decoded === $route ) { break; }
-			$route = $decoded;
-		}
-		$route = strtolower( (string) preg_replace( '#/+#', '/', '/' . $route ) );
-		$route = '/' . trim( $route, '/' );
+		$route = self::normalised_route( $route );
 
 		foreach ( [ '/wp/v2/users', '/wp/v2/application-passwords' ] as $locked ) {
 			if ( $route === $locked || str_starts_with( $route, $locked . '/' ) ) {

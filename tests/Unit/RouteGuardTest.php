@@ -1022,6 +1022,46 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertNull( $this->guard( null )->guard_rest_dispatch( null, $request, '/wp/v2/users/me', $users ), 'Outside a visit REST is untouched' );
 	}
 
+	/**
+	 * The Store API's order and checkout reads name an order by id and key in the address (security review, 11
+	 * October): inside a visit they answer only for the visit's own order, so a colleague's Quote on the same account
+	 * cannot be read from a visit. Outside a visit WooCommerce's own key check stands.
+	 */
+	public function test_the_store_api_order_and_checkout_reads_are_fenced_to_the_visits_own_order_inside_a_visit(): void {
+		$visit   = $this->guard( $this->visit() );
+		$shopper = $this->guard( null );
+		$handler = [ 'callback' => [ new RouteGuardPostsController(), 'get_items' ] ];
+		$own     = new WC_Order( 501 );
+		$own->update_meta_data( POW\Orders\QuoteOrder::META_SESSION_ID, (string) self::VISIT );
+		$other = new WC_Order( 502 );
+		$other->update_meta_data( POW\Orders\QuoteOrder::META_SESSION_ID, '45' );
+		$GLOBALS['pow_test_orders'] = [ 501 => $own, 502 => $other, 503 => new WC_Order( 503 ) ];
+
+		foreach ( [ '/wc/store/v1/order/%d' => '/wc/store/v1/order/(?P<id>[\d]+)', '/wc/store/v1/checkout/%d' => '/wc/store/v1/checkout/(?P<id>[\d]+)' ] as $path => $pattern ) {
+			self::assertNull( $visit->guard_rest_dispatch( null, new RouteGuardRestRequest( sprintf( $path, 501 ) ), $pattern, $handler ), $path . ': the visit\'s own order is readable' );
+			foreach ( [ 502 => 'a colleague\'s order', 503 => 'an ordinary order', 999 => 'no such order' ] as $id => $why ) {
+				$refusal = $visit->guard_rest_dispatch( null, new RouteGuardRestRequest( sprintf( $path, $id ) ), $pattern, $handler );
+				self::assertTrue( is_wp_error( $refusal ), $path . ': ' . $why . ' is refused inside a visit' );
+				self::assertSame( 'pow_visit_locked', $refusal->get_error_code() );
+				self::assertNull( $shopper->guard_rest_dispatch( null, new RouteGuardRestRequest( sprintf( $path, $id ) ), $pattern, $handler ), 'Outside a visit WooCommerce answers' );
+			}
+		}
+		// Spelled differently, the same read.
+		self::assertTrue( is_wp_error( $visit->guard_rest_dispatch( null, new RouteGuardRestRequest( '/WC/Store/V1//Order/502/' ), '/wc/store/v1/order/(?P<id>[\d]+)', $handler ) ) );
+		self::assertTrue( is_wp_error( $visit->guard_rest_dispatch( null, new RouteGuardRestRequest( '/wc/store/v1/order/502' ), '', null ) ), 'The request path alone names the order' );
+		// The rest of the Store API, and the cart, stay the visit\'s.
+		foreach ( [ '/wc/store/v1/cart', '/wc/store/v1/checkout', '/wc/store/v1/order', '/wc/store/v1/products/501' ] as $route ) {
+			self::assertNull( $visit->guard_rest_dispatch( null, new RouteGuardRestRequest( $route ), $route, $handler ), $route . ' stays available inside a visit' );
+		}
+		// An order whose lookup fails is not provably the visit\'s.
+		$GLOBALS['pow_test_get_order_errors'] = [ 501 => new RuntimeException( 'Order lookup failed.' ) ];
+		try {
+			self::assertTrue( is_wp_error( $visit->guard_rest_dispatch( null, new RouteGuardRestRequest( '/wc/store/v1/order/501' ), '/wc/store/v1/order/(?P<id>[\d]+)', $handler ) ) );
+		} finally {
+			unset( $GLOBALS['pow_test_get_order_errors'] );
+		}
+	}
+
 	public function test_application_passwords_are_unavailable_inside_a_visit(): void {
 		self::assertFalse( $this->guard( $this->visit() )->deny_application_passwords( true, null ), 'A visit cannot mint an application password' );
 		self::assertTrue( $this->guard( null )->deny_application_passwords( true, null ), 'Outside a visit the native answer stands' );
