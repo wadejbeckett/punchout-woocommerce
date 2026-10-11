@@ -30,7 +30,8 @@ defined( 'ABSPATH' ) || exit;
  *   has many (an address book's own AJAX actions on My Account, a profile form, any plugin that saves a preference
  *   on the signed-in user). Inside a live visit every add, update and delete of the visit's account's user meta is
  *   refused through WordPress's own metadata short-circuits (`add_user_metadata`, `update_user_metadata`,
- *   `delete_user_metadata`), early and again last, except the keys a visit's own life writes: the login's
+ *   `delete_user_metadata`, and the by-row-id pair `update_user_metadata_by_mid` and `delete_user_metadata_by_mid`
+ *   that WooCommerce's own data store writes through), early and again last, except the keys a visit's own life writes: the login's
  *   `session_tokens` row, WooCommerce's `wc_last_active` stamp, the profile's `last_update` and the persistent
  *   cart row (`_woocommerce_persistent_cart_*`, off in a visit anyway). Each refused key is audited once per request
  *   as `visit_account_write_refused`. An answer another filter already gave stands (the cart guard keeps the
@@ -78,6 +79,32 @@ final class VisitAccount {
 			add_filter( $operation . '_user_metadata', [ $this, 'refuse_' . $operation ], 1, 3 );
 			add_filter( $operation . '_user_metadata', [ $this, 'refuse_' . $operation ], PHP_INT_MAX, 3 );
 		}
+		foreach ( [ 'update', 'delete' ] as $operation ) {
+			add_filter( $operation . '_user_metadata_by_mid', [ $this, 'refuse_' . $operation . '_by_mid' ], 1, 2 );
+			add_filter( $operation . '_user_metadata_by_mid', [ $this, 'refuse_' . $operation . '_by_mid' ], PHP_INT_MAX, 2 );
+		}
+	}
+
+	/** `update_user_metadata_by_mid`: the row the id names, fenced like a keyed write. */
+	public function refuse_update_by_mid( mixed $check, mixed $meta_id = 0 ): mixed {
+		return $this->refuse_meta_write_by_id( 'update_by_mid', $check, $meta_id );
+	}
+
+	/** `delete_user_metadata_by_mid`: the row the id names, fenced like a keyed write. */
+	public function refuse_delete_by_mid( mixed $check, mixed $meta_id = 0 ): mixed {
+		return $this->refuse_meta_write_by_id( 'delete_by_mid', $check, $meta_id );
+	}
+
+	/** A write by meta row id: the row is read (get_metadata_by_mid) and judged by its user and key; a row that does not exist is WordPress's to refuse. */
+	private function refuse_meta_write_by_id( string $operation, mixed $check, mixed $meta_id ): mixed {
+		if ( null !== $check || ! function_exists( 'get_metadata_by_mid' ) ) { return $check; }
+		try {
+			$row = is_numeric( $meta_id ) ? get_metadata_by_mid( 'user', (int) $meta_id ) : false;
+		} catch ( \Throwable $error ) {
+			return null;
+		}
+		if ( ! is_object( $row ) || ! isset( $row->user_id, $row->meta_key ) ) { return null; }
+		return $this->refuse_meta_write( $operation, null, $row->user_id, (string) $row->meta_key );
 	}
 
 	/** `add_user_metadata`: inside a live visit, no new meta on the visit's account. */

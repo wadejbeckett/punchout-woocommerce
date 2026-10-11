@@ -37,6 +37,11 @@ namespace {
 		}
 	}
 
+	// A user meta row read by its id, as WordPress reads it for the by-id writes (user_id, meta_key); a test lists them.
+	if ( ! function_exists( 'get_metadata_by_mid' ) ) {
+		function get_metadata_by_mid( string $meta_type, mixed $meta_id ): object|false { return $GLOBALS['pow_test_user_meta_rows'][ (int) $meta_id ] ?? false; }
+	}
+
 	/** The audit trail as the fence writes it. */
 	final class VisitAccountLog extends POW\Audit\Log {
 		/** @var list<array{0: string, 1: array<string, mixed>}> */
@@ -68,7 +73,7 @@ namespace {
 		private array $read = [];
 
 		protected function setUp(): void {
-			foreach ( [ 'wpdb', 'pow_test_options', 'pow_test_filters', 'pow_payment_method_hooks', 'pow_test_current_user_id' ] as $key ) {
+			foreach ( [ 'wpdb', 'pow_test_options', 'pow_test_filters', 'pow_payment_method_hooks', 'pow_test_current_user_id', 'pow_test_user_meta_rows' ] as $key ) {
 				$this->saved[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 				unset( $GLOBALS[ $key ] );
 			}
@@ -264,6 +269,30 @@ namespace {
 			self::assertFalse( $this->write( $account, 'update', self::ACCOUNT, 'wc_address_book_shipping' ), 'Without an audit trail the refusal still stands' );
 		}
 
+		/**
+		 * WooCommerce's own data store (WC_Customer::save(), an address book's entries through it) updates and
+		 * deletes user meta by its row id, which WordPress short-circuits through the *_by_mid filters, not the
+		 * keyed ones: the fence answers those too, reading the row the id names.
+		 */
+		public function test_a_write_by_meta_row_id_is_fenced_by_the_row_it_names(): void {
+			$GLOBALS['pow_test_user_meta_rows'] = [
+				7 => (object) [ 'umeta_id' => 7, 'user_id' => self::ACCOUNT, 'meta_key' => 'wc_address_book_shipping', 'meta_value' => '' ],
+				8 => (object) [ 'umeta_id' => 8, 'user_id' => self::ACCOUNT, 'meta_key' => 'session_tokens', 'meta_value' => '' ],
+				9 => (object) [ 'umeta_id' => 9, 'user_id' => 21, 'meta_key' => 'wc_address_book_shipping', 'meta_value' => '' ],
+			];
+			$account = $this->account( $this->visit() );
+			$log     = $this->log;
+			self::assertFalse( $account->refuse_update_by_mid( null, 7, 'value', false ), 'The visit\'s account\'s book, by row id' );
+			self::assertFalse( $account->refuse_delete_by_mid( null, '7' ) );
+			self::assertNull( $account->refuse_update_by_mid( null, 8, 'value', false ), 'The login\'s row is allowed' );
+			self::assertNull( $account->refuse_delete_by_mid( null, 9 ), 'Another account\'s row' );
+			self::assertNull( $account->refuse_delete_by_mid( null, 99 ), 'A row that does not exist is WordPress\'s to refuse' );
+			self::assertTrue( $account->refuse_delete_by_mid( true, 7 ), 'An earlier answer stands' );
+			self::assertNull( $this->account( null )->refuse_delete_by_mid( null, 7 ), 'Outside a visit' );
+			self::assertSame( [ 'wc_address_book_shipping' ], array_map( static fn( array $row ): string => $row[1]['detail']['meta_key'], $log->rows ), 'Audited once, by key' );
+			self::assertSame( 'update_by_mid', $log->rows[0][1]['detail']['operation'] );
+		}
+
 		/** Early, so the refusal is the first answer, and again last, so nothing in between can turn it back into a write. */
 		public function test_the_fence_is_registered_on_every_user_meta_write_early_and_last(): void {
 			$account = $this->account( $this->visit() );
@@ -272,6 +301,8 @@ namespace {
 			foreach ( [ 'add' => 'add_user_metadata', 'update' => 'update_user_metadata', 'delete' => 'delete_user_metadata' ] as $operation => $hook ) {
 				self::assertSame( [ [ 1, [ $account, 'refuse_' . $operation ], 3 ], [ PHP_INT_MAX, [ $account, 'refuse_' . $operation ], 3 ] ], $hooks[ $hook ], $hook );
 			}
+			self::assertSame( [ [ 1, [ $account, 'refuse_update_by_mid' ], 2 ], [ PHP_INT_MAX, [ $account, 'refuse_update_by_mid' ], 2 ] ], $hooks['update_user_metadata_by_mid'] );
+			self::assertSame( [ [ 1, [ $account, 'refuse_delete_by_mid' ], 2 ], [ PHP_INT_MAX, [ $account, 'refuse_delete_by_mid' ], 2 ] ], $hooks['delete_user_metadata_by_mid'] );
 		}
 	}
 }

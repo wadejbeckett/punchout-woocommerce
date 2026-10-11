@@ -223,6 +223,33 @@ CHECKOUT = (
 )
 
 
+class HandoffPolicy(unittest.TestCase):
+    """Security review (11 October): the handoff page's headers, as the start page's are checked."""
+
+    SCRIPT = "document.getElementById( 'pow-handoff-form' ).submit();"
+    PAGE = ('<html><body style="margin:4em auto"><main class="pow-state pow-state--sending"><p style="color:#666">Ref</p>'
+            '<form method="post" action="http://127.0.0.1:9/punchout/cxml/x" id="pow-handoff-form"><input type="hidden" name="cxml-base64" value="PD94"></form></main>'
+            '<script>' + SCRIPT + '</script></body></html>')
+
+    def policy(self, receiver="http://127.0.0.1:9"):
+        return ("default-src 'none'; script-src " + sha256(self.SCRIPT) + "; style-src 'unsafe-hashes' " + sha256('margin:4em auto') + ' ' + sha256('color:#666')
+                + '; form-action ' + receiver + "; frame-ancestors 'none'; base-uri 'none'")
+
+    def findings(self, headers, body=PAGE):
+        return {name: ok for name, ok, _ in driver.handoff_policy_findings(headers, body, 'http://127.0.0.1:9')}
+
+    def test_the_hardened_handoff_passes(self):
+        self.assertEqual(self.findings({'X-Frame-Options': 'DENY', 'Content-Security-Policy': self.policy()}), {'the_page_cannot_be_framed': True, 'the_page_policy_is_strict_and_posts_only_to_the_receiver': True, 'the_page_policy_names_its_own_script_and_styles_by_hash': True})
+
+    def test_missing_or_loose_headers_fail(self):
+        self.assertFalse(self.findings({'Content-Security-Policy': self.policy()})['the_page_cannot_be_framed'])
+        self.assertFalse(self.findings({'X-Frame-Options': 'DENY'})['the_page_policy_is_strict_and_posts_only_to_the_receiver'])
+        self.assertFalse(self.findings({'X-Frame-Options': 'DENY', 'Content-Security-Policy': self.policy('http://127.0.0.1:10')})['the_page_policy_is_strict_and_posts_only_to_the_receiver'], 'Another origin')
+        self.assertFalse(self.findings({'X-Frame-Options': 'DENY', 'Content-Security-Policy': self.policy().replace("'unsafe-hashes'", "'unsafe-inline'")})['the_page_policy_is_strict_and_posts_only_to_the_receiver'])
+        self.assertFalse(self.findings({'X-Frame-Options': 'DENY', 'Content-Security-Policy': self.policy().replace(sha256(self.SCRIPT), sha256('other'))})['the_page_policy_names_its_own_script_and_styles_by_hash'])
+        self.assertFalse(self.findings({'X-Frame-Options': 'DENY', 'Content-Security-Policy': self.policy()}, self.PAGE.replace('</body>', '<script src="/x.js"></script></body>'))['the_page_policy_names_its_own_script_and_styles_by_hash'], 'An external script is not run')
+
+
 class CheckoutButtons(unittest.TestCase):
 
     def test_the_cart_proceed_button_is_found_with_its_label_and_target(self):
@@ -422,16 +449,48 @@ class OrderMessageLeg(unittest.TestCase):
         self.assertEqual(driver.fill_template('Attachment: plan.pdf', day), 'Attachment: plan.pdf')
 
     def test_checkout_extras_are_read_and_a_malformed_file_is_refused(self):
-        good = {'date_offset_days': 7, 'fields': {'e_date': '{date:%d %B, %Y}', 'h_date': '{date:%d-%m-%Y}'}, 'order_details': [{'meta_key': '_date_ts', 'label': 'Preferred delivery date', 'format': 'unix_date'}], 'instructions': ['Preferred delivery date: {date:%Y-%m-%d}']}
+        good = {'date_offset_days': 7, 'fields': {'e_date': '{date:%d %B, %Y}', 'h_date': '{date:%d-%m-%Y}'}, 'order_details': [{'meta_key': '_date_ts', 'label': 'Preferred delivery date', 'format': 'unix_date'}], 'instructions': ['Preferred delivery date: {date:%Y-%m-%d}'], 'uploads': [{'settings': 'fileCheckout', 'name': 'order-notes.csv', 'content': 'a,b\n1,2\n', 'type': 'text/csv'}],
+                'account_writes': [{'settings': 'book', 'nonce': 'delete_security', 'action': 'book_delete', 'fields': {'type': 'shipping', 'name': '{chosen}'}}]}
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'extras.json'
             path.write_text(json.dumps(good))
             self.assertEqual(driver.load_extras(path), good)
-            self.assertEqual(driver.load_extras(None), {'date_offset_days': 7, 'fields': {}, 'order_details': [], 'instructions': []})
-            for bad in ([], {'fields': []}, {'fields': {'a': 1}}, {'order_details': [{'meta_key': '_k', 'label': 'L'}]}, {'order_details': [{'meta_key': '_k', 'label': 'L', 'format': 'date'}]}, {'instructions': 'x'}, {'date_offset_days': 1}, {'unknown': 1}):
+            self.assertEqual(driver.load_extras(None), {'date_offset_days': 7, 'fields': {}, 'order_details': [], 'instructions': [], 'uploads': [], 'account_writes': []})
+            for bad in ([], {'fields': []}, {'fields': {'a': 1}}, {'order_details': [{'meta_key': '_k', 'label': 'L'}]}, {'order_details': [{'meta_key': '_k', 'label': 'L', 'format': 'date'}]}, {'instructions': 'x'}, {'date_offset_days': 1}, {'unknown': 1},
+                        {'uploads': {}}, {'uploads': [{'settings': 'x', 'name': 'a.csv'}]}, {'uploads': [{'settings': '', 'name': 'a.csv', 'content': 'x', 'type': 'text/csv'}]}, {'uploads': [{'settings': 'x', 'name': '../a.csv', 'content': 'x', 'type': 'text/csv'}]}, {'uploads': [{'settings': 'x', 'name': 'a.csv', 'content': 1, 'type': 'text/csv'}]},
+                        {'account_writes': {}}, {'account_writes': [{'settings': 'book', 'nonce': 'n', 'action': 'Book Delete', 'fields': {}}]}, {'account_writes': [{'settings': 'book', 'nonce': 'n', 'action': 'book_delete'}]}, {'account_writes': [{'settings': 'book', 'nonce': 'n', 'action': 'book_delete', 'fields': {'type': 1}}]}):
                 path.write_text(json.dumps(bad))
                 with self.assertRaises(ValueError, msg=json.dumps(bad)):
                     driver.load_extras(path)
+
+    def test_a_scripts_settings_are_read_from_the_checkout_page_with_the_endpoint_made_absolute(self):
+        page = CHECKOUT + '<script id="x">\nvar fileCheckout = {"endpoint":"\\/?wc-ajax=file_upload","nonce":"0a1b2c3d4e","maxBytes":1048576,"i18n":{"wait":"Wait"}};\n</script>'
+        settings = driver.script_settings(page, 'fileCheckout', BASE)
+        self.assertEqual(settings['endpoint'], BASE + '/?wc-ajax=file_upload')
+        self.assertEqual(settings['nonce'], '0a1b2c3d4e')
+        self.assertIsNone(driver.script_settings(page, 'otherCheckout', BASE), 'A settings object the page does not carry')
+        self.assertIsNone(driver.script_settings(CHECKOUT, 'fileCheckout', BASE))
+
+    def test_an_upload_is_a_multipart_post_of_the_nonce_and_the_file(self):
+        body, content_type = driver.multipart([('nonce', '0a1b2c3d4e')], [('file', 'order-notes.csv', b'a,b\n1,2\n', 'text/csv')])
+        self.assertTrue(content_type.startswith('multipart/form-data; boundary='))
+        boundary = content_type.split('boundary=')[1]
+        self.assertIn(('--' + boundary + '\r\nContent-Disposition: form-data; name="nonce"\r\n\r\n0a1b2c3d4e\r\n').encode(), body)
+        self.assertIn(('Content-Disposition: form-data; name="file"; filename="order-notes.csv"\r\nContent-Type: text/csv\r\n\r\na,b\n1,2\n\r\n').encode(), body)
+        self.assertTrue(body.endswith(('--' + boundary + '--\r\n').encode()))
+
+    def test_an_account_write_posts_the_action_the_pages_nonce_and_the_fields_naming_the_saved_entries(self):
+        write = {'settings': 'book', 'nonce': 'delete_security', 'action': 'book_delete', 'fields': {'type': 'shipping', 'name': '{chosen}', 'other': '{default}'}}
+        entries = driver.account_write_entries(write, {'delete_security': 'abc', 'default_security': 'def'}, {'default': 'a1', 'chosen': 'a2', 'entries': {}})
+        self.assertEqual(entries, [('action', 'book_delete'), ('nonce', 'abc'), ('type', 'shipping'), ('name', 'a2'), ('other', 'a1')])
+        self.assertEqual(driver.account_write_entries(write, None, None)[1], ('nonce', ''))
+
+    def test_an_upload_answer_is_read_as_success_or_the_refusal(self):
+        self.assertEqual(driver.upload_answer(200, '{"success":true,"data":{"name":"order-notes.csv","size":8}}'), (True, 'order-notes.csv', None))
+        self.assertEqual(driver.upload_answer(200, '{"success":true,"data":{"pending":{"name":"order-notes.csv","size":"8 B"},"message":"Attached"}}'), (True, 'order-notes.csv', None), 'The name on the one record the answer holds')
+        self.assertEqual(driver.upload_answer(200, '{"success":true,"data":{"message":"Attached"}}'), (True, None, None))
+        self.assertEqual(driver.upload_answer(400, '{"success":false,"data":{"code":"attachment_type","message":"Not allowed"}}'), (False, None, 'attachment_type'))
+        self.assertEqual(driver.upload_answer(200, 'not json'), (False, None, 'unreadable'))
 
     def test_the_submission_posts_the_extra_fields_and_the_chosen_shipping_method(self):
         form = driver.checkout_form(CHECKOUT_WITH_EXTRAS, BASE + '/?page_id=258')

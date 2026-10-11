@@ -182,6 +182,28 @@ def start_page_findings(status, headers, body, url):
     ]
 
 
+def handoff_policy_findings(headers, body, receiver_origin):
+    """Security review (11 October): the page that posts the cart (the handoff, and Cancel and return's Not sent page)
+    cannot be framed, and its Content-Security-Policy runs nothing but the page's own inline script and styles (each
+    named by hash; style attributes under 'unsafe-hashes') and lets its form post only to the receiver's origin.
+    [(check, ok, detail)]"""
+    policy = _policy(headers.get('Content-Security-Policy'))
+    scripts = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script\s*>', body or '', re.S | re.I)
+    styles = re.findall(r'<style(?:\s[^>]*)?>(.*?)</style\s*>', body or '', re.S | re.I)
+    attributes = [htmllib.unescape(v) for v in re.findall(r'\sstyle\s*=\s*"([^"]*)"', body or '', re.I) if v]
+    strict = (policy.get('default-src') == ["'none'"] and policy.get('form-action') == [receiver_origin] and policy.get('frame-ancestors') == ["'none'"]
+              and policy.get('base-uri') == ["'none'"] and not any(source in ("'unsafe-inline'", "'unsafe-eval'", '*') for sources in policy.values() for source in sources))
+    named = (bool(scripts) and all(_sha256(script) in policy.get('script-src', []) for script in scripts)
+             and all(_sha256(style) in policy.get('style-src', []) for style in styles + attributes)
+             and (not attributes or "'unsafe-hashes'" in policy.get('style-src', []))
+             and re.search(r'<script\s[^>]*\bsrc=|<link\s|\son[a-z]+=', body or '', re.I) is None)
+    return [
+        ('the_page_cannot_be_framed', (headers.get('X-Frame-Options') or '').upper() == 'DENY', {'x_frame_options': headers.get('X-Frame-Options')}),
+        ('the_page_policy_is_strict_and_posts_only_to_the_receiver', strict, {'policy': headers.get('Content-Security-Policy'), 'receiver': receiver_origin}),
+        ('the_page_policy_names_its_own_script_and_styles_by_hash', named, {'scripts': len(scripts), 'styles': len(styles), 'style_attributes': len(attributes)}),
+    ]
+
+
 def _text(fragment):
     return re.sub(r'\s+', ' ', htmllib.unescape(re.sub(r'<[^>]+>', '', fragment))).strip()
 
@@ -267,8 +289,12 @@ def shipping_rate(form, instance_id):
 
 # -- 0.5.0 ticket 75: what the connection screen sets, checked in the order's cXML ---------------------------
 
-EXTRAS_DEFAULT = {'date_offset_days': 7, 'fields': {}, 'order_details': [], 'instructions': []}
+EXTRAS_DEFAULT = {'date_offset_days': 7, 'fields': {}, 'order_details': [], 'instructions': [], 'uploads': [], 'account_writes': []}
 _DATE_TEMPLATE = re.compile(r'\{date:([^}]*)\}')
+_UPLOAD_KEYS = {'settings', 'name', 'content', 'type'}
+_ACCOUNT_WRITE_KEYS = {'settings', 'nonce', 'action', 'fields'}
+_ACTION_NAME = re.compile(r'^[a-z0-9_]{1,64}$')
+_PLAIN_FILE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._ -]{0,120}$')
 
 
 def delivery_date(today, offset_days):
@@ -289,15 +315,21 @@ def load_extras(path):
     repository names no other plugin: the fields a checkout plugin draws, posted with the run's delivery date
     ("fields": {name: template}); the order details its order meta adds to the connection ("order_details": [{meta_key,
     label, format}]); and the text each must reach DeliveryInstructions as ("instructions": [template]). Templates may
-    hold {date:<strftime format>}; the date is "date_offset_days" (at least 2) ahead, on a weekday. None reads as no
-    extras. ValueError for anything else."""
+    hold {date:<strftime format>}; the date is "date_offset_days" (at least 2) ahead, on a weekday. "uploads" lists
+    files a checkout plugin takes by AJAX before the order is placed ([{settings, name, content, type}]: the name of
+    the inline settings object its script reads from the page, holding `endpoint` and `nonce`; the file's plain
+    name, text content and media type). "account_writes" lists admin-ajax actions another plugin offers the
+    signed-in account for changing what it keeps on the account ([{settings, nonce, action, fields}]: the settings
+    object on the checkout page, the key of the nonce in it, the action, and the fields to post, in which {chosen}
+    and {default} name the account's saved shipping entries); each is sent from inside the visit and must change
+    nothing. None reads as no extras. ValueError for anything else."""
     if path is None:
         return copy.deepcopy(EXTRAS_DEFAULT)
     data = json.loads(Path(path).read_text())
     if not isinstance(data, dict) or set(data) - set(EXTRAS_DEFAULT):
         raise ValueError('Checkout extras must be an object with only ' + ', '.join(EXTRAS_DEFAULT))
     extras = dict(copy.deepcopy(EXTRAS_DEFAULT), **data)
-    fields, details, lines, offset = extras['fields'], extras['order_details'], extras['instructions'], extras['date_offset_days']
+    fields, details, lines, offset, uploads, writes = extras['fields'], extras['order_details'], extras['instructions'], extras['date_offset_days'], extras['uploads'], extras['account_writes']
     if not isinstance(fields, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in fields.items()):
         raise ValueError('"fields" must map field names to text')
     if not isinstance(details, list) or not all(isinstance(d, dict) and set(d) == {'meta_key', 'label', 'format'} and all(isinstance(v, str) for v in d.values()) and d['format'] in ('text', 'unix_date') for d in details):
@@ -306,7 +338,68 @@ def load_extras(path):
         raise ValueError('"instructions" must list text')
     if not isinstance(offset, int) or isinstance(offset, bool) or offset < 2:
         raise ValueError('"date_offset_days" must be a whole number of days, at least 2')
+    if not isinstance(uploads, list) or not all(isinstance(u, dict) and set(u) == _UPLOAD_KEYS and all(isinstance(v, str) for v in u.values()) and u['settings'] and _PLAIN_FILE_NAME.match(u['name']) and u['type'] for u in uploads):
+        raise ValueError('"uploads" must list {settings, name (a plain file name), content, type}')
+    if not isinstance(writes, list) or not all(isinstance(w, dict) and set(w) == _ACCOUNT_WRITE_KEYS and isinstance(w['settings'], str) and w['settings'] and isinstance(w['nonce'], str) and w['nonce']
+                                                   and isinstance(w['action'], str) and _ACTION_NAME.match(w['action']) and isinstance(w['fields'], dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in w['fields'].items()) for w in writes):
+        raise ValueError('"account_writes" must list {settings, nonce, action, fields}')
     return extras
+
+
+def account_write_entries(write, settings, book):
+    """What an account write posts to admin-ajax.php: the action, the nonce the page settings carry under the
+    write's nonce key, and the fields with {chosen} and {default} filled from the account's saved shipping book."""
+    names = {'chosen': str((book or {}).get('chosen') or ''), 'default': str((book or {}).get('default') or '')}
+    fill = lambda text: text.replace('{chosen}', names['chosen']).replace('{default}', names['default'])  # noqa: E731
+    return [('action', write['action']), ('nonce', str((settings or {}).get(write['nonce']) or ''))] + [(k, fill(v)) for k, v in write['fields'].items()]
+
+
+def script_settings(html, name, origin):
+    """The inline settings object `name` a checkout plugin's script reads from the page (as wp_localize_script
+    writes it: `var name = {...};`), with its `endpoint` made absolute against `origin`; None when the page has none."""
+    match = re.search(r'\bvar ' + re.escape(name) + r' = (\{.*?\});\s*(?:\n|</script>)', html or '', re.S)
+    if not match:
+        return None
+    try:
+        settings = json.loads(match.group(1))
+    except ValueError:
+        return None
+    if not isinstance(settings, dict):
+        return None
+    settings['endpoint'] = urllib.parse.urljoin(origin + '/', str(settings.get('endpoint') or ''))
+    return settings
+
+
+def multipart(fields, files):
+    """(body, content type) of a multipart/form-data POST: `fields` as [(name, value)], `files` as [(field, file
+    name, bytes, media type)], as a browser sends a file chosen in a form."""
+    boundary = '----powE2E' + uuid.uuid4().hex
+    out = []
+    for name, value in fields:
+        out.append(('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n' % (boundary, name, value)).encode('utf-8'))
+    for field, filename, content, media_type in files:
+        out.append(('--%s\r\nContent-Disposition: form-data; name="%s"; filename="%s"\r\nContent-Type: %s\r\n\r\n' % (boundary, field, filename, media_type)).encode('utf-8'))
+        out.append(content)
+        out.append(b'\r\n')
+    out.append(('--%s--\r\n' % boundary).encode('ascii'))
+    return b''.join(out), 'multipart/form-data; boundary=' + boundary
+
+
+def upload_answer(status, body):
+    """(ok, the stored file name, the refusal code) from a checkout plugin's AJAX upload answer (WordPress's
+    wp_send_json_success / wp_send_json_error shape); 'unreadable' when it is not JSON."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return False, None, 'unreadable'
+    if not isinstance(data, dict):
+        return False, None, 'unreadable'
+    payload = data.get('data') if isinstance(data.get('data'), dict) else {}
+    if status == 200 and data.get('success') is True:
+        # The stored file's name, as the plugin reports it: on the data itself or on the one record it holds.
+        name = payload.get('name') if isinstance(payload.get('name'), str) else next((v.get('name') for v in payload.values() if isinstance(v, dict) and isinstance(v.get('name'), str)), None)
+        return True, name, None
+    return False, None, payload.get('code') or 'refused'
 
 
 def checkout_expected(seed, note, extra_lines):
@@ -740,6 +833,7 @@ class Run:
         self.extras = copy.deepcopy(EXTRAS_DEFAULT)
         self.extra_lines = []
         self.chosen_address = None  # 0.5.0 ticket 76: the saved delivery address the main leg chose
+        self.uploaded = []  # the files the main leg uploaded before Submit (the extras' uploads)
         self.main_order = None  # {'id', 'key'} of the main visit's Punchout Quote
 
     def check(self, ok, name, **detail):
@@ -855,7 +949,7 @@ class Run:
 
     # -- 0.5.0: the cart's checkout button and WooCommerce's checkout -----------
 
-    def checkout_path(self, browser, seed):
+    def checkout_path(self, browser, seed, receiver=None):
         """Leave through WooCommerce's classic checkout and return the handoff page.
 
         The order lifecycle's second leg (ticket 74) is `late_submits` and `second_leg`; the connection's message
@@ -894,6 +988,21 @@ class Run:
         form = checkout_form(page, page_url)
         self.must(status == 200 and form is not None, 'the_checkout_button_opens_woocommerce_checkout_in_the_visit', http=status, url=page_url)
 
+        # Security review (11 October), the account fence: what another plugin lets the signed-in account change on
+        # the account (the extras' account_writes: an address book's delete and make-default actions on admin-ajax),
+        # sent from inside the visit with the nonces the checkout page carries, changes nothing on the shared account
+        # and is audited as refused. The book is checked again when checkout reopens below, and the profile in main.
+        for write in self.extras['account_writes']:
+            settings = script_settings(page, write['settings'], url)
+            self.must(settings is not None and bool(settings.get(write['nonce'])), 'checkout_draws_the_account_write_settings ' + write['action'], found=settings is not None)
+            body, content_type = forms.encode(account_write_entries(write, settings, seed.get('saved_addresses')), forms.URLENCODED)
+            status, _, answer = browser.request(url + '/wp-admin/admin-ajax.php', body, content_type, accept='*/*')
+            self.check(status == 200, 'the_account_write_is_answered_not_redirected ' + write['action'], http=status, answer=_text(answer)[:120])
+        if self.extras['account_writes']:
+            fenced = self.inspect(self.payload, 'account-writes')
+            self.check(fenced['account_profile'] == seed['account_profile'], 'an_account_write_from_inside_the_visit_changes_nothing', changed=profile_changes(seed['account_profile'], fenced['account_profile']))
+            self.check((fenced.get('audit') or {}).get('visit_account_write_refused', 0) >= 1, 'the_refused_account_write_is_audited', audit=fenced.get('audit'))
+
         # Ticket 76: the buyer types another billing address (WooCommerce's script keeps it in the visit's session),
         # then opens checkout again: billing opens on the account's saved billing profile, not on what was typed.
         nonce = update_order_review_nonce(page)
@@ -931,6 +1040,21 @@ class Run:
             shipping = shipping_rate(form, seed['shipping']['instance_id'])
             self.must(shipping is not None, 'checkout_offers_the_priced_method', instance=seed['shipping']['instance_id'])
 
+        # A file a checkout plugin takes by AJAX before the order is placed (the extras' uploads): sent from the
+        # visit's own browser, so it waits in the visit's own session; its name must then reach the cXML through an
+        # order detail (the extras' instructions say as what).
+        self.uploaded = []
+        for upload in self.extras['uploads']:
+            settings = script_settings(page, upload['settings'], url)
+            self.must(settings is not None and settings.get('endpoint', '').startswith(url + '/') and bool(settings.get('nonce')), 'checkout_draws_the_upload_settings ' + upload['settings'], found=settings is not None)
+            body, content_type = multipart([('nonce', str(settings['nonce']))], [('file', upload['name'], upload['content'].encode('utf-8'), upload['type'])])
+            status, _, answer = browser.request(settings['endpoint'], body, content_type, accept='application/json')
+            ok, stored, code = upload_answer(status, answer)
+            self.must(ok and stored == upload['name'], 'the_file_uploads_before_submit ' + upload['name'], http=status, stored=stored, code=code)
+            self.uploaded.append(upload['name'])
+        if self.uploaded:
+            self.notes.append('uploaded before Submit: ' + ', '.join(self.uploaded))
+
         # Ticket 76: the shipping section opens ticked on the account's default saved address; the buyer chooses the
         # other saved address (its fields filled as the address book's script fills them).
         book = seed.get('saved_addresses')
@@ -965,6 +1089,9 @@ class Run:
         self.check(status == 200, 'the_handoff_answers', http=status)
         self.check('no-store' in (headers.get('Cache-Control') or '').lower(), 'the_handoff_is_not_stored', cache_control=headers.get('Cache-Control'))
         self.check((headers.get('Referrer-Policy') or '').lower() == 'no-referrer', 'the_handoff_sends_no_referrer', referrer_policy=headers.get('Referrer-Policy'))
+        if receiver is not None:
+            for name, ok, detail in handoff_policy_findings(headers, handoff, receiver.url):
+                self.check(ok, 'handoff: ' + name, **detail)
         # 0.5.0 (ticket 77): the page that posts the cart stays plain and carries the Sending state's classes.
         self.check(state_page(handoff) == 'sending' and bool(state_text(handoff, 'title')) and state_text(handoff, 'button') is not None, 'the_handoff_page_is_the_sending_state', state=state_page(handoff))
         return handoff
@@ -1365,10 +1492,12 @@ class Run:
         self.check(confirm is not None and bool(dialog) and dialog['open'], label + ': leave: the_page_draws_the_dialog_open', dialog=dialog)
         self.must(confirm is not None, label + ': leave: dialog_form')
         tab = leaver.clone()
-        status, _, page = leaver.submit(confirm)
+        status, leave_headers, page = leaver.submit(confirm)
         self.save('states-leave-not-sent.html', page)
         handoff = handoff_form(page, url)
         self.check(status == 200 and state_page(page) == 'not-sent' and handoff is not None, label + ': leave: the_answer_leaves_with_the_not_sent_state', http=status, state=state_page(page))
+        for name, ok, detail in handoff_policy_findings(leave_headers, page, receiver.url):
+            self.check(ok, label + ': leave: ' + name, **detail)
         self.must(handoff is not None, label + ': leave: handoff_form')
         xml, _, _ = self.capture_leg(leaver, handoff, receiver, leaving, label + ' leave')
         root = poom.parse_xml(xml)
@@ -1539,7 +1668,7 @@ def main(argv=None):
 
         browser = Browser(args.url)
         run.punch_in(browser, seed, receiver)
-        handoff = run.checkout_path(browser, seed)
+        handoff = run.checkout_path(browser, seed, receiver)
         field, value, xml, posted = run.capture(browser, handoff, receiver)
 
         results = poom.check(xml, run.expected(seed), capture={'field': field, 'content_type': posted['content_type']})
@@ -1578,6 +1707,8 @@ def main(argv=None):
                 ok, detail = order_lines_match(order['lines'], poom.lines(xml, connection_freight_sku(seed)))
                 run.check(ok, 'cxml_lines_equal_the_orders_lines', **detail)
                 run.check(order['customer_note'] == run.note, 'order_keeps_the_buyers_note', note=order['customer_note'])
+                for name in run.uploaded:
+                    run.check(name in [v for v in (order.get('details') or {}).values() if isinstance(v, str)], 'the_order_keeps_the_uploaded_file_name_under_an_order_details_key ' + name, details=order.get('details'))
                 # 0.5.0 (ticket 74): checkout's stock hold is released, and the unpaid-order clean-up leaves the order alone.
                 run.check(order['reserved_stock'] == 0 and order['coupon_holds'] == 0, 'order_holds_no_stock_and_no_coupon', reserved_stock=order['reserved_stock'], coupon_holds=order['coupon_holds'])
                 run.check(order['auto_cancel'] is False, 'order_is_never_auto_cancelled')

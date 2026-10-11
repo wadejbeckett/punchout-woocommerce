@@ -41,7 +41,7 @@
  *   to POW_E2E_FIXTURE (mode 600). Prints nothing secret.
  * - inspect: reads back what the run left (POW_E2E_PAYLOAD names the visit by
  *   its setup payloadID): the visit's status, whether its login still
- *   verifies, and the orders that name the visit, with what each still holds
+ *   verifies, its audit rows counted by event, and the orders that name the visit, with what each still holds
  *   (stock held for it, coupon holds) and whether WooCommerce's unpaid-order
  *   clean-up would cancel it; the visit's orders in the bin; the coupon's
  *   remaining holds; each product's stock; the bound account's profile as the
@@ -579,10 +579,21 @@ final class PowEndToEndFixture {
 				'stock'        => $stock,
 				// 0.5.0 (ticket 76): the bound account's profile now, against the seed's.
 				'account_profile' => self::account_profile( (int) $seed['account'] ),
+				// The visit's audit rows, counted by event (the account fence's refusals among them).
+				'audit'           => $visit ? self::audit_counts( $visit->id ) : [],
 				'guest_orders'    => '' !== (string) getenv( 'POW_E2E_GUEST_EMAIL' ) ? count( wc_get_orders( [ 'limit' => -1, 'return' => 'ids', 'status' => array_keys( wc_get_order_statuses() ), 'billing_email' => (string) getenv( 'POW_E2E_GUEST_EMAIL' ) ] ) ) : null,
 			]
 		);
 		echo 'inspected visit ' . ( $visit ? $visit->id : 'none' ) . ': ' . count( $found['orders'] ) . ' order(s), ' . count( $found['trashed'] ) . " in the bin\n";
+	}
+
+	/** @return array<string, int> The visit's audit rows counted by event. */
+	private static function audit_counts( int $session_id ): array {
+		global $wpdb;
+		$rows = $wpdb->get_results( $wpdb->prepare( 'SELECT event, COUNT(*) AS n FROM ' . POW\Installer::log_table() . ' WHERE session_id = %d GROUP BY event', $session_id ), ARRAY_A );
+		$out  = [];
+		foreach ( (array) $rows as $row ) { $out[ (string) $row['event'] ] = (int) $row['n']; }
+		return $out;
 	}
 
 	/** One case of the browser run: the start page waits for a press ('yes') or posts itself ('no'). Retire puts it back. */
