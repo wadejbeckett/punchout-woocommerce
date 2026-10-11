@@ -27,7 +27,7 @@ final class StoreWordingTest extends TestCase {
 		$description = substr( $readme, 0, (int) strpos( $readme, '== Changelog ==' ) );
 		self::assertNotSame( '', $description );
 		self::assertSame( 0, preg_match( '/approv/i', $description, $m ), 'readme.txt says "' . ( $m[0] ?? '' ) . '"' );
-		self::assertStringContainsString( 'Buyers send the cart to their purchasing system;', $description );
+		self::assertStringContainsString( 'Buyers send the cart to their purchasing system from your store', $description );
 	}
 
 	public function test_the_readme_introductions_say_no_approval(): void {

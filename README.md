@@ -2,7 +2,7 @@
 
 An AGPLv3 WordPress plugin that makes a WooCommerce store a **cXML PunchOut supplier site** for direct-cXML procurement buyers, configured independently per company.
 
-A buyer opens the store from their procurement system. It sends a cXML `PunchOutSetupRequest`; the plugin authenticates the customer, opens a new visit on that customer's one bound WooCommerce account and returns a one-time StartPage login URL. The buyer shops the ordinary WooCommerce cart at that account's prices, reviews the destination, native shipping methods and notes, then returns the cart to the purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines). Checkout is blocked inside the visit.
+A buyer opens the store from their procurement system. It sends a cXML `PunchOutSetupRequest`; the plugin authenticates the customer, opens a new visit on that customer's one bound WooCommerce account and returns a one-time StartPage login URL. The buyer shops the ordinary WooCommerce cart at that account's prices and leaves through the shop's classic checkout, where PunchOut is the only payment method offered: Submit places the order (a non-payable **Punchout Quote** on the store) and sends it to the purchasing system as a cXML `PunchOutOrderMessage` (requisition/RFQ lines). Nothing is paid inside a visit; no other payment method is offered there.
 
 **Status: supplier implementation; release acceptance and receiver certification are separate gates.** The generated samples are checked against the exact offline cXML 1.2.008 and 1.2.071 DTDs. This does not establish consumption by a buyer system, including Dynamics 365. See [Receiver acceptance](#receiver-acceptance) before onboarding.
 
@@ -47,10 +47,12 @@ Buyer's procurement system         The store (this plugin)              Buyer's 
         │                                │ 7. shop: normal WC()->cart,         │
         │                                │    buyer-priced catalogue           │
         │                                │◀───────────────────────────────────▶│
-        │                                │ 8. the one cart exit:               │
-        │                                │    "Punchout", then "Submit"        │
-        │                                │        → /punchout/confirm          │
-        │                                │        review, confirm and return   │
+        │                                │ 8. the way out: the cart's          │
+        │                                │    checkout button ("Review"), the  │
+        │                                │    classic checkout with PunchOut   │
+        │                                │    as the only payment method,      │
+        │                                │    "Submit" places the order and    │
+        │                                │    → /punchout/handoff (served once)│
         │ 9. browser POSTs the cXML PunchOutOrderMessage (cxml-base64          │
         │    hidden field) top-level to the BrowserFormPost URL; this          │
         │    visit's own login token and WooCommerce session row are           │
@@ -59,11 +61,11 @@ Buyer's procurement system         The store (this plugin)              Buyer's 
         │◀───────────────────────────────┼─────────────────────────────────────│
 ```
 
-Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. The one-time token links the pending visit to the login that redeems it. The mid-visit abandon control posts an **empty** PunchOutOrderMessage, the cXML cancel semantic, and adds no delivery charge. The builder can carry a `SupplierOrderInfo` order reference in verified cXML 1.2.071 and 1.2.008 omits it, but no return path supplies one: a visit cannot pay here, so no order of ours exists for a returned basket to name.
+Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. The one-time token links the pending visit to the login that redeems it. The mid-visit abandon control (Cancel and return) posts an **empty** PunchOutOrderMessage, the cXML cancel semantic, and adds no delivery charge. The builder can carry a `SupplierOrderInfo` order reference in verified cXML 1.2.071 and 1.2.008 omits it, but no path supplies one: a PunchOut order is never payable here, so no order of ours is a reference the purchasing system could use.
 
 ### Key design decisions
 
-**PunchOut only.** The reviewed cart return is the only exit from a punchout visit. Classic checkout, Blocks checkout and direct payment entry points are all blocked inside a visit; ordinary shoppers, including anyone who signs into the bound account with a password, are unaffected.
+**Checkout with PunchOut, and nothing paid.** A visit leaves through WooCommerce's classic checkout with the `punchout` payment method, the only one offered there (0.5.0). Another method forced into the form, the Store API (block) checkout, order-pay, order-received and PunchOut outside a visit are refused server-side; a PunchOut order carries its visit's provenance from creation and is never payable by any route. During a visit checkout saves nothing to the bound account. Ordinary shoppers, including anyone who signs into the bound account with a password, keep WooCommerce's checkout exactly as it is.
 
 **Multi-tenant registry, policy over code.** Every customer difference is a column, not a branch: identities, cXML version, return encoding, the bound customer account, TTLs, IP allowlist, ALL-CAPS outbound transform, delivery configuration, the My Account pages a visit may open. Adding a second buyer is a registry row plus a certification exercise. The one number that is not per customer is the open-visit cap (`Sessions\Store::MAX_OPEN_VISITS`, 50), deliberately a constant with no filter.
 
@@ -84,16 +86,16 @@ Steps 1–3 are server-to-server; steps 5+ are the buyer's browser. The one-time
 ```
 punchout-woocommerce/
 ├── punchout-woocommerce.php        Plugin header, constants, bootstrap, HPOS declare,
-│                                   pow()/pow_is_punchout()/pow_return_button() helpers
+│                                   pow()/pow_is_punchout()/pow_abandon_button() helpers
 ├── uninstall.php                   Drops the tables, the options and the plugin's own
 │                                   rows in the WooCommerce sessions table; no user is touched
 ├── readme.txt                      WordPress plugin directory format
 ├── bin/build-zip.sh                Builds the distributable zip (runtime files only)
 ├── phpunit.xml.dist
 ├── templates/                      Theme-overridable buyer-facing surfaces
-│   ├── return-button.php           The "Punchout" cart button (opens the review)
-│   ├── abandon-button.php          The "return without a cart" control
-│   ├── handoff.php                 The auto-submitting cart-return page
+│   ├── abandon-button.php          The "Cancel and return" control (and its leave question)
+│   ├── handoff.php                 The auto-submitting cart-return page (Sending / Not sent)
+│   ├── state.php                   [punchout_state]: Sent, Not sent, Link expired, Session ended
 │   ├── account/dashboard.php       The My Account dashboard inside a visit (no logout link)
 │   └── docs/                       The integration documentation page
 │       ├── page.php                The page itself
@@ -115,17 +117,24 @@ punchout-woocommerce/
     ├── Partners/                   Partner row, Registry (CRUD/auth), Secrets (sodium)
     ├── Sessions/                   Session row+state machine, Store, Current (the one
     │                               "which visit is this request inside" resolver),
-    │                               Tokens, ReplayPolicy, ConsentFence
-    ├── Http/                       Router, Setup/Start/Return endpoints, RateLimiter
+    │                               Tokens, ReplayPolicy, HandoffReplay
+    ├── Http/                       Router, Setup/Start/Return endpoints, StatePage,
+    │                               EndedVisit, RateLimiter
+    ├── Checkout/                   The PunchOut payment method, Submission (order → cXML,
+    │                               the win, the handoff), OrderMessage, Validation,
+    │                               Lifecycle, LateSubmit, Provenance, VisitAccount
     ├── Buyers/Identity.php         Who punched in, read off the request — a value
     │                               object, never an account
     ├── Cart/                       SessionKey (the per-visit key), NativeSessionGuard,
     │                               NativeSessionHandler/Row (one basket per visit),
-    │                               Guard, Surface (button/shortcode), PoomMapper
-    ├── Orders/                     Status (punchout-quote), QuoteOrder (create, convert,
-    │                               retention, buyer attribution)
-    ├── Addresses/                  Company delivery book, destination resolution and the
-    │                               mandatory per-visit delivery review
+    │                               Guard, Surface (cart buttons, cancel control),
+    │                               LeaveConfirmation, PoomMapper (line naming)
+    ├── Orders/                     Status (punchout-quote), QuoteOrder (convert, retention,
+    │                               buyer attribution), QuoteCompatibility (old Quotes),
+    │                               Attachment (old Quotes' files, read-only)
+    ├── Addresses/                  Company delivery book (administrator surface, migration
+    │                               source), the account book API, code maps and the
+    │                               snapshot decoders old visits still need
     ├── Account/IntegrationTab.php  My Account: the setup-XML download (and the opt-in owner reset)
     ├── Account/VisitEndpoints.php  The My Account pages a visit may open: the form's groups, the dashboard entry, the payment rule, the pages that never open
     ├── Account/VisitDashboard.php  Inside a visit, swaps WooCommerce's dashboard template for the plugin's copy without the logout link
@@ -143,7 +152,7 @@ Three custom indexed tables (options/postmeta neither index nor GC well for per-
 | Table | Holds |
 |---|---|
 | `wp_pow_partners` | Company-connection registry: identities, sealed secrets (current+previous), cXML version, deployment mode, return encoding, delivery configuration, ALL-CAPS flag, IP allowlist, the bound customer account every buyer of this connection punches in as (`owner_user_id`), TTLs, the My Account pages its visits may open (`visit_endpoints`, `dashboard` for the account page itself), whether buyers may add delivery addresses to the company book (`buyer_addresses`, off by default) and the actions the bound account may take itself (`owner_settings`, empty by default; `reset_connection` is the only one). Schema 10 (0.5.0) adds what the cXML built from a WooCommerce order carries: each line's Description (`line_description`, `name` by default) and the "Order details sent" (`order_details`, JSON, empty by default). The open-visit cap is a constant, not a column |
-| `wp_pow_sessions` | One row per PunchOutSetupRequest — a visit, not a person, so many open rows naming one `user_id` is the normal state: BuyerCookie, BrowserFormPost URL, the bound account, hashed one-time token, exact WP session token, the per-visit WooCommerce session key (`wc_session_key`, UNIQUE, NULL until the token is redeemed), the buyer identity, name and indexed identity hash read from the request, state machine (`pending → active → returned/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics, confirmed delivery choice and cart/policy/rate/notes snapshot |
+| `wp_pow_sessions` | One row per PunchOutSetupRequest — a visit, not a person, so many open rows naming one `user_id` is the normal state: BuyerCookie, BrowserFormPost URL, the bound account, hashed one-time token, exact WP session token, the per-visit WooCommerce session key (`wc_session_key`, UNIQUE, NULL until the token is redeemed), the buyer identity, name and indexed identity hash read from the request, state machine (`pending → active → returned/closed/expired`), payloadID + body hash (replay), stored response (pending replay), captured ShipTo/SelectedItem/extrinsics, and the delivery choice and consent snapshot columns visits returned before 0.5.0 wrote (kept, read-only) |
 | `wp_pow_log` | The audit/compliance trail: every transaction, full POOM XML archives, secrets redacted; retention-trimmed by cron |
 
 ---
@@ -175,8 +184,8 @@ The notes say what sharing a page means:
 - Orders shows the order list, shared by every buyer of the connection. A single order's page stays closed in a visit unless it is that visit's own quote order.
 - Downloads are shared by every buyer of the connection.
 - Addresses and account details belong to the company admin, who should change them from a normal login. Account details hold the shared login's e-mail address and password.
-- The four payment-method pages are shown disabled. They open only for a connection whose exit policy allows WooCommerce's own checkout, and every connection is punchout-only.
-- Log out, lost password, order-pay, order-received and the Punchout integration tab are shown disabled, marked "Stays closed in a visit". WooCommerce has no account content for the first four (order-pay and order-received are checkout pages, and checkout stays refused in every visit), and the tab shows nothing inside a visit.
+- The four payment-method pages are shown disabled: nothing is paid in a visit, so no connection opens them.
+- Log out, lost password, order-pay, order-received and the Punchout integration tab are shown disabled, marked "Stays closed in a visit". WooCommerce has no account content for the first four (order-pay and order-received are refused in every visit: a PunchOut order is never paid, and Submit lands on the handoff instead), and the tab shows nothing inside a visit.
 - Pages added by other plugins are off by default. Creating users inside a visit is blocked, whatever those pages offer.
 
 **Defaults.** A new connection ticks the dashboard and nothing else. WooCommerce's other pages and every page another plugin adds stay off until an administrator ticks them. An upgrade changes no existing connection's list: a list saved under 0.4.5 has no dashboard, so its dashboard stays closed until it is ticked.
@@ -204,36 +213,28 @@ When it is ticked and the connection is active, the bound account, signed in nor
 
 It is the administrator's reset (same fence, revoke, end-visits and issue sequence under the connection lock), never a rotation, and the purchasing system stops working until the new secret is pasted in. Registration re-checks under the lock that the request comes from the bound account, the connection is active and still grants the action, and the request is not inside a visit. Inside a visit the tab and the reset do not exist. With the box unticked the tab is exactly as before and a reset POST gets no answer.
 
-The return button label is not offered here. It is one plugin-wide setting (**Punchout button label**, below), not a per-connection value, so there is nothing per connection to hand to the account holder.
+The buyer-facing button labels are not offered here. They are plugin-wide settings (**Checkout button label** and the others below), not per-connection values, so there is nothing per connection to hand to the account holder.
 
-## Company delivery book and confirmation
+## Delivery: the order's address, the account's saved addresses and the company book
 
-Cart confirmation currently supports **ZAR only**. Set the WooCommerce store currency and the receiving catalogue currency to ZAR. Confirmation refuses a different currency; the plugin does not convert currencies.
+**At checkout (0.5.0).** The buyer chooses the delivery address on WooCommerce's classic checkout: one of the bound account's saved shipping addresses (through the site's address-book plugin, when it has one), or a one-off address typed there, which stays on that order only. Billing opens on the account's saved billing profile. During a visit checkout **saves nothing to the bound account**: not its billing or shipping details, and not the entries of an address-book plugin that saves through WooCommerce's checkout customer-data filter (`Checkout\VisitAccount` answers `woocommerce_checkout_update_customer_data` false, first and last). Buyers cannot add or change saved addresses; shop administrators keep them on the account. The order's shipping address is what the cXML `ShipTo` carries while the connection sends ShipTo.
 
-The core book belongs to the connection's bound store account. Shop administrators manage **Company delivery addresses** on the customer administration screen; buyers select any enabled entry inside their own visit. The book is read-only inside a visit unless the connection ticks **Buyers may add delivery addresses to the company book**; then a buyer can only add an entry (enabled, coded with the connection's prefix, preselected for that cart, and audited as `address_book_buyer_added` with the visit's session, a buyer hash and the buyer's name when sent). Buyers never change or remove entries. No third-party address-book plugin, additional credential store or directory integration is required.
+**The company delivery book** (0.3.0–0.4.23's address list, **Company delivery addresses** on the customer administration screen) stays an administrator surface and the source of `wp punchout migrate-addresses <connection>`, which copies its enabled entries into the bound account's saved addresses through the address-book API found by shape (`Addresses\AccountBook`: a function named `get_address_book( WC_Customer, type )` in any namespace, with `addresses()`, `default_key()` and `add()`; never a product name). Since 0.5.0 no visit reads the book, and the connection setting that let buyers add to it is retired (the column stays and reads off).
 
-Add an address manually, or preview and explicitly copy the bound account's normal WooCommerce billing or shipping address. New entries and imports start disabled. Review the saved entry, then enable it separately (`use_for_punchout`). A normal Woo address save never synchronises the book. Inbound `ShipTo` and the bound account's own profile address are per-visit candidates for explicit review — on a fresh visit the latter is the company's default destination, not one employee's — and neither silently replaces the company master data or provides an address-list pull API.
+Address codes are company-scoped references, not URLs or registered receiver records. They allow `A–Z`, `0–9`, `_` and `-`, up to 32 characters; the optional prefix is limited to 24 characters and address labels to 190. Changed or removed issued codes leave their claims retired permanently, so another address cannot reuse them. Orders returned before 0.5.0 may carry a code (`_pow_delivery_code`); the order's cXML sends none.
 
-Every physical cart return requires the **same punchout visit** to review and confirm a full destination, a native shipping method for each package and optional notes. Two visits on one bound account are two independent confirmations, and neither can confirm or invalidate the other's. This includes pickup, a singleton address or method, and all export flags being off. The cart control opens `/punchout/confirm`; `[punchout_delivery_confirmation]` renders the same review on a page. Both post to that dedicated nonced route. A direct `/punchout/return` POST cannot bypass the confirmation checks. Virtual-only baskets record delivery as `not_required`.
-
-A valid existing shipping choice of that visit is preserved; otherwise WooCommerce's native default helper selects within the current cart context. The plugin adds no cheapest-rate or pickup preference. Unknown delivery is `null`/unavailable, never zero. With `emit_delivery_line` enabled, the default `delivery_unknown_policy=require_rate` refuses confirmation if a rate is unavailable. Explicit `quote_separately` allows the buyer to acknowledge the omission and continue without a freight line or Quote shipping charge. A real quoted zero remains a known rate. With charge export off, the available estimate or unavailable state is reviewed and retained locally without a charge.
-
-Confirmation binds the cart, destination, rates, configuration and notes to the visit — including the key of the basket it was taken from, so one visit's consent can never validate another's cart. Changes require fresh review. A selected company entry must still exist, be enabled and match its confirmed address, label and code at confirmation and final return. Removal or disablement requires an eligible reselection; a changed selected entry requires reconfirmation. After confirmation, an unrelated revision of the book does not invalidate an unchanged selected entry; an open review must be updated once. Completed return and Quote snapshots remain immutable after later master edits.
-
-Notes are sanitised plain text, at most 2,000 characters and 8,000 bytes. They are local by default. `delivery_notes_policy=item_detail_extrinsic` additionally copies the basket note into every merchandise `ItemDetail/Extrinsic` named `DeliveryInstructions`, excluding freight, under either verified DTD. Agree this repetition with the receiver before enabling it.
-
-Address codes are company-scoped references, not URLs or registered receiver records. They allow `A–Z`, `0–9`, `_` and `-`, up to 32 characters; the optional prefix is limited to 24 characters and address labels to 190. Changed or removed issued codes leave their claims retired permanently, so another address cannot reuse them. A blank code preserves an existing code; for a new entry, a configured prefix generates one, otherwise it remains uncoded.
+**Delivery cost is WooCommerce's.** The order keeps its normal shipping line, the store's own estimate; the plugin adds no delivery or tax wording anywhere a buyer reads. Only while a connection's **Send delivery cost** is on does the message add one freight line (see below).
 
 ### Independent delivery configuration
 
-These are actual connection keys; optional emission is off by default. The supplier review remains mandatory independently of receiver export.
+These are actual connection keys; optional emission is off by default. The shop's checkout decides the shipping address and method, independently of receiver export.
 
 | Key | Default | Effect |
 |---|---|---|
-| `emit_ship_to` | `false` | Export the full confirmed destination in `ShipTo`, with or without a code |
-| `emit_delivery_code` | `false` | Export a usable code through the fields allowed by the exact cXML version |
-| `emit_delivery_line` | `false` | Include one native freight total and matching optional Quote shipping items |
-| `delivery_unknown_policy` | `require_rate` | When charge export is enabled, refuse an unavailable estimate; `quote_separately` permits acknowledged omission |
+| `emit_ship_to` | `false` | "Send ShipTo": export the order's shipping address as the full `ShipTo`, with or without a code |
+| `emit_delivery_code` | `false` | Export a usable code through the fields allowed by the exact cXML version (orders returned before 0.5.0 only; the order's cXML sends none) |
+| `emit_delivery_line` | `false` | "Send delivery cost": include one freight line, the order's shipping total before tax, with the estimate sentence |
+| `delivery_unknown_policy` | `require_rate` | Retired with the review page (0.5.0): WooCommerce's checkout decides the method. Kept on the row for orders returned before 0.5.0 |
 | `delivery_notes_policy` | `off` | Keep notes local; `item_detail_extrinsic` additionally exports repeated merchandise notes |
 | `delivery_code_prefix` | empty | Optional prefix for generated company codes |
 | `delivery_code_extrinsic_name` | `DeliveryAddressCode` | Name of the optional direct `ItemIn/Extrinsic` |
@@ -244,7 +245,7 @@ These are actual connection keys; optional emission is off by default. The suppl
 | `line_description` | `name` | 0.5.0, cXML from the order: each line's Description is the product name; `name_short_description` adds " - " and the product's short description (a variation's parent's) as plain text: tags stripped, entities decoded, whitespace collapsed, left out when it only repeats the name, shortened so the whole fits 2,000 characters (`punchout_line_description_limit` can lower it). ShortName is always the name |
 | `order_details` | empty | 0.5.0, cXML from the order: up to 10 order meta keys, each with a label and a format, `text` or `unix_date` (a Unix timestamp sent as its UTC calendar day, `YYYY-MM-DD`, through `gmdate`, whatever the server's timezone). Each one with a value follows the buyer's note in DeliveryInstructions as "Label: value"; the parts are joined by " \| " because the builder flattens line breaks, within 2,000 characters, shortening only the note. Text values are plain text on one line, at most 500 characters |
 
-The connection screen edits `emit_delivery_line` ("Send delivery cost"), `emit_ship_to` ("Send ShipTo"), `line_description` ("Line description") and `order_details` ("Order details sent", one per line: `meta key | label | format`). In the cXML built from a WooCommerce order (0.5.0), "Send delivery cost" adds one freight line, the order's shipping total before tax named after its shipping method with the delivery estimate note (which then also leads DeliveryInstructions), only while it is on and the order has a shipping line; off, the order keeps its shipping line in WooCommerce and the returned Total is the products'.
+The connection screen edits `emit_delivery_line` ("Send delivery cost"), `emit_ship_to` ("Send ShipTo"), `line_description` ("Line description") and `order_details` ("Order details sent", one per line: `meta key | label | format`). In the cXML built from a WooCommerce order (0.5.0), "Send delivery cost" adds one freight line, the order's shipping total before tax named after its shipping method with the estimate sentence ("The delivery charge is an estimate; the supplier confirms the final amount before dispatch.", fixed and translatable, filter `punchout_delivery_estimate_note`; it then also leads DeliveryInstructions), only while it is on and the order has a shipping line; off, the order keeps its shipping line in WooCommerce and the returned Total is the products'. A free-shipping order with it on sends a 0.00 freight line.
 
 | Outbound field | cXML 1.2.008 | cXML 1.2.071 |
 |---|---|---|
@@ -298,24 +299,23 @@ wp punchout generate-key
 | Login link button | "Open the catalog" | Text on the button of the page the login link opens (0.4.23); blank = the default; filter `punchout_start_link_button_label` |
 | Login link lifetime | 300 s | One-time StartPage token TTL; at most 7 days (604800 s), per-partner override within the same cap |
 | Session lifetime | 4 h | Punchout login TTL (per-partner override); at most 7 days (604800 s). A longer stored value is used as 7 days |
-| Review page title | "Review" | Shown as the page title, the last breadcrumb and the document title while the delivery review is drawn inside the theme (posing as the Cart page); blank = the default |
-| Review Submit button | "Submit" | Text on the review page's button that sends the cart (0.4.23); blank = the default; filter `punchout_review_submit_label` |
-| Review items heading | "Items" | Heading over the item lines on the review page (0.4.23); blank = the default; filter `punchout_review_items_heading` |
-| Review total label | "Total" | Label of the amount sent to the purchasing system on the review page (0.4.23); blank = the default; filter `punchout_review_total_label`. When the connection does not send the delivery line, the review shows this one row (the merchandise), no delivery estimate or tax sentence, and each delivery method by its title only |
-| Review tax sentence | off | On: one sentence, "Amounts exclude tax.", under the review's totals, only for connections that send the delivery line. Off: the review names tax nowhere (0.4.23) |
 | Setup rate limit | 30/min | Per partner+IP on `/punchout/setup`; 0 uses the default (30). The public self-test preserves positive values and uses 10/min when this is 0. |
 | Setup edge limit | 120/min | Per IP before method checks, body reads, parsing or audit storage on `/punchout/setup`; 0 uses the default (120) |
 | Log retention | 400 days | Audit-table trim horizon |
-| Punchout button label | "Punchout" | Text on the cart-return button; blank = the default |
-| Cancel button label | "Return without a cart" | Text on the abandon control; blank = the default |
+| Checkout button label | "Proceed to checkout" | 0.5.0: during a visit, the text of the cart's proceed button, the Cart widget's checkout button and the Cart block's button, which lead to WooCommerce's checkout; blank = the default; filter `punchout_checkout_button_label` |
+| Cancel button label | "Return without a cart" | Text on the abandon control (Cancel and return); blank = the default; filter `pow_abandon_button_label` |
 | Ask before leaving | off | 0.5.0: during a visit, the abandon control asks first when the cart has items (see "Leaving without a cart"); the question is the shortcode's `question` attribute |
 | Leave button label | "Return without sending" | 0.5.0: the question's button that leaves without sending; blank = the default; filter `punchout_leave_confirm_label` |
 | Stay button label | "Keep shopping" | 0.5.0: the question's button that closes it; blank = the default; filter `punchout_leave_stay_label` |
 | State page | none | 0.5.0: a page holding `[punchout_state]`; with one chosen, the visit's end draws inside the theme (see "State page"); none keeps the plain pages |
 | State page button label | "Continue to your purchasing system" | 0.5.0: the fallback button of the plain page that posts the cart, and the state page's button when its shortcode names a `button_url`; blank = the default; filter `punchout_state_button_label` |
-| Extra button classes | empty | Space-separated classes added to the Punchout exit, the abandon control, the review page's Submit/Update buttons and the add-address form's Add and use this address button; pow-* and the classes a visit hides (checkout-button, checkout, wc-block-mini-cart__footer-checkout) are ignored; the Cart block's own button does not receive them |
+| Extra button classes | empty | Space-separated classes added to the abandon control (Cancel and return); pow-* classes are ignored. The checkout buttons keep WooCommerce's own classes |
 | Default UNSPSC | empty | Classification fallback for unmapped SKUs |
 | Convert quotes to | Pending payment | Status the order action moves a Punchout Quote to |
+
+The PunchOut **payment method** has its own settings at **WooCommerce ▸ Settings ▸ Payments ▸ PunchOut** (0.5.0): its title (default "PunchOut"), its description (blank by default) and the place-order button's text (default "Place order"). Nothing else is a setting: titles, body text and the leave question ship as neutral, translatable defaults that a layout overrides as shortcode attributes.
+
+Retired in 0.5.0 with the review page, and listed in the changelog: Punchout button label, Attachment field, Attachment label, Attachment help text, Delivery estimate note, Review page title, Review Submit button, Review items heading, Review total label and Review tax sentence. A save keeps a stored value of any of them as it was, so a rollback to 0.4.23 finds its words again.
 | Quote retention | 90 days | Unconverted quotes cancelled (never deleted) after this; 0 = keep for ever |
 
 ---
@@ -347,7 +347,7 @@ Punchout onboarding is a data exchange followed by testing in the buyer's own pu
 | Exact UOM codes and currency configured in the receiver | Verify mapped merchandise and freight units and currency, not just XML parsing |
 | Agreed extrinsic names and value sources (`UserEmail`, `UniqueUsername`, `UniqueName`, `UserPrintableName`) | Attribution: the name and e-mail are recorded on the visit and stamped on the quote order, and a returning identity supersedes its own earlier visit. They select no account and create none, so a buyer changing e-mail address no longer creates anything |
 | Which cart-return encoding the receiver accepts (`cxml-base64` / `cxml-urlencoded`) | Per-connection switch, verified with an actual received basket |
-| Whether an empty PunchOutOrderMessage closes a session cleanly | the abandon control's behaviour |
+| Whether an empty PunchOutOrderMessage closes a session cleanly | Cancel and return's behaviour |
 | IP allowlisting requirements and the agreed destination, code, notes and freight mapping | Deployment plus independent optional-field acceptance; no address-list API is implied |
 
 **Deployment checklist (outside the plugin):** the buyer-facing URL must be the canonical host with no redirect in the path; any WAF/bot-management layer needs a skip rule for `POST /punchout/setup` (a challenge page kills setup invisibly); CDN cache rules must bypass `/punchout/*` and cookie-carrying requests; `robots.txt` gets `Disallow: /punchout/`. Prove all of it by POSTing a real setup body through the full public path.
@@ -356,27 +356,23 @@ Punchout onboarding is a data exchange followed by testing in the buyer's own pu
 
 ---
 
-## Placing the button
+## The way out of a visit (0.5.0)
 
-Three equivalent ways; all render only inside an active punchout session and output nothing otherwise:
+Inside a live visit the cart's proceed button and the Cart widget's checkout button lead to WooCommerce's classic checkout and carry the **Checkout button label** (`Cart\Surface::maybe_unhook_checkout_button()`: every callback on `woocommerce_proceed_to_checkout` and on the mini-cart buttons hook is cleared, express-pay buttons included, and only the labelled buttons come back; "View cart" is unchanged). The Cart block's button keeps its native link and takes the label through `assets/js/cart-blocks.js`. `[punchout_cart_exits]` renders WooCommerce's checkout link for every shopper, carrying the label in a live visit. A theme whose cart draws its own buttons without those hooks places the visit's button itself (gate it on `pow-visit` or `POW\pow_is_punchout()`).
 
-- Shortcode: `[punchout_return_button]` (page builders, widgets, block editor shortcode block)
-- PHP: `pow_return_button();` in any template
-- Automatic: injected on the cart page at `woocommerce_after_cart_totals` priority 5, outside the proceed-to-checkout container (themes and page-builder cart elements hide or replace that container wholesale). Inside a visit every callback on `woocommerce_proceed_to_checkout` and on the mini-cart buttons hook is cleared and every link to the checkout page is hidden, so the return control stands alone; outside one the cart is untouched
+At checkout the `punchout` method is the only one offered (`Checkout\PaymentMethod`, available only while a live visit owns the request, filtered in last so another plugin's gateway rules cannot remove it); its button text is the method's place-order setting, set before any method is selected so "Place order" never flashes. Before any order exists checkout refuses, with a plain message naming the item, a line without a SKU, a cart priced in another currency than the store's and a note cXML cannot carry (`Checkout\Validation`); the note is cleaned of control characters and capped at 2,000 characters. Submit (`Checkout\Submission`) builds the cXML from the placed order (`Checkout\OrderMessage`), stamps the provenance keys, saves the handoff and wins the visit's return under the visit lock; after the win each remaining step runs on its own and cannot stop the handoff: the stock reservation and coupon holds are released, the cart emptied and the order set to **Punchout Quote** last, which is the one trigger of the "PunchOut order received" e-mail. A build failure answers failure with a plain message and leaves the order pending, never failed; WooCommerce reuses it on resubmit. A zero-total cart still reaches the method, PunchOut orders are excluded from WooCommerce's unpaid-order auto-cancel, and no failed or cancelled e-mail is ever sent (`Checkout\Lifecycle`). Of two racing Submits the loser trashes its own order and releases its holds; a Submit after the return is caught before WooCommerce's nonce check and sent to the Sent state (`Checkout\LateSubmit`, `GET /punchout/sent`).
 
-The cart-return control opens the mandatory delivery review at `/punchout/confirm`. For a dedicated review placement, use `[punchout_delivery_confirmation]`; its forms still post to the protected confirmation route. Custom cart markup cannot bypass the final return checks.
+The checkout response redirects to the theme-free GET handoff `/punchout/handoff` (`Checkout\Handoff`): no-store, noindex, nosniff and no-referrer, served once, only to the browser and visit that won (keyed to the order key and that visit's login; claimed by its delete, so two GETs at once get one page), it auto-posts the message and ends the login; the checkout response itself never clears the login cookie. The page carries `pow-state pow-state--sending` and the **State page button label** on its fallback button. With a state page chosen, a spent handoff and a late Submit go to the Sent state there.
 
-Markup comes from `templates/return-button.php` — override it by copying to `{theme}/punchout-woocommerce/return-button.php`, or point the `pow_template_return-button` filter anywhere. Same pattern for `handoff.php` and `abandon-button.php`.
-
-Label: the **Punchout button label** setting (blank = "Punchout"), or the `pow_return_button_label` filter, which runs after it — so a filter always wins over the saved value.
+**Retired in 0.5.0:** the review page (`/punchout/confirm`, `[punchout_delivery_confirmation]`), the cart's "Punchout" return button and its template, setting and `pow_return_button_label` filter. `[punchout_return_button]` and `pow_return_button()` stay for this one release and render nothing, so a layout that still carries them shows nothing rather than a tag; the next release removes them. The 0.4.x stylesheet that hid checkout links in a visit is gone with them.
 
 ## Leaving without a cart
 
-`[punchout_abandon_button]` (or `pow_abandon_button();`) renders the mid-session abandon control — a POST of an empty PunchOutOrderMessage, the cXML cancel semantic, so the buyer's procurement application learns the session ended with no items. Same endpoint, same nonce and the same authorisation checks as the cart return; it has no automatic placement, because no core hook means "the session chrome". Label: the **Cancel button label** setting, or the `pow_abandon_button_label` filter, which runs after it.
+`[punchout_abandon_button]` (or `pow_abandon_button();`) renders the mid-session abandon control, Cancel and return — a POST to `/punchout/return` of an empty PunchOutOrderMessage, the cXML cancel semantic, so the buyer's procurement application learns the session ended with no items. Since 0.5.0 that endpoint does only this: every POST is the cancel, authorised by the visit's own login token and the `pow_return` nonce, closing that one visit and tearing down that login, basket and cookie only; a repeated click gets the same page again (`Sessions\HandoffReplay`). It has no automatic placement, because no core hook means "the session chrome". Label: the **Cancel button label** setting, or the `pow_abandon_button_label` filter, which runs after it.
 
 **Ask before leaving (0.5.0).** With the setting on and a line in the cart, the control also draws a `<dialog class="pow-leave">` that asks first: `[punchout_abandon_button question="Return without sending?"]` (default "Return without sending your cart?"), with the **Leave button label** (`.pow-leave__confirm`) and the **Stay button label** (`.pow-leave__stay`, focused; it closes the dialog without a script, `formmethod="dialog"`). Pressing the control opens the dialog through the plugin's own script (`assets/js/leave-confirmation.js`); only the dialog's own form carries `pow_leave=confirmed`, and only that post leaves. Without the script, the control's post comes back to the page it came from with `?pow_leave=ask`, where the dialog is drawn open (`Cart\LeaveConfirmation`, checked again by `/punchout/return`). An empty cart leaves at once, and so does every cancel while the setting is off. The page Cancel and return answers with stays plain (it posts the empty message) and carries `pow-state pow-state--not-sent`. A theme override of `abandon-button.php` must keep the dialog, or the buyer is asked again and again.
 
-Both controls are submit buttons inside real forms, never links, and both are placed in a builder's global header or footer as often as on the cart — i.e. outside the `.woocommerce` wrapper most themes hang their button styling off. The plugin therefore adds a generic default-button class for the active theme where one exists; `pow_button_classes` replaces the whole list.
+The control is a submit button inside a real form, never a link, and is placed in a builder's global header or footer as often as on the cart — i.e. outside the `.woocommerce` wrapper most themes hang their button styling off. It carries only its own class plus the **Extra button classes**; `pow_button_classes` replaces the whole list.
 
 ## State page (0.5.0)
 
@@ -394,11 +390,11 @@ The markup is `<div class="pow-state pow-state--<state>">` with `pow-state__titl
 
 ## Punchout Quote orders
 
-A successful cart-return winner optionally records a WooCommerce **Punchout Quote** (`punchout-quote`) with the mapped lines, quantities and ex-tax prices, delivery address and returned cXML basket. The endpoint prepares the document and handoff before selecting the winner; only that winner creates the quote from the same mapped snapshot. Construction starts in native `auto-draft` at the first insert, so intermediate saves cannot expose a payable order or an incomplete convertible quote. The completed construction is then promoted to Punchout Quote. WooCommerce's new-order hook is deferred until the order leaves staging, through normal promotion or best-effort cancellation. The quote records the basket; the requisition itself lives in the buyer's procurement system.
+A visit's Submit leaves a WooCommerce **Punchout Quote** (`punchout-quote`): the order WooCommerce's own checkout placed, with its lines, its shipping address and shipping line, the buyer's note and the returned cXML basket, set to this status last, after the handoff is won and the holds released (0.5.0, `Checkout\Submission`). Until 0.4.23 the quote was assembled from the reviewed cart by the plugin; those Quotes are read as they were written (`Orders\QuoteCompatibility`). The quote records the basket; the requisition itself lives in the buyer's procurement system.
 
 Three properties come from WooCommerce core rather than from code here, which is what makes the status safe to leave in the orders list: **no stock movement** (stock reduction binds completed/processing/on-hold and payment-complete only), **no transactional email** (core's email list is a fixed set of status pairs; no custom status can join it), and **no Analytics revenue** (excluded by filter, so the operator's own Analytics setting is untouched and deactivating the plugin reverts it). The status has its own link in the orders list filter row and its own "Change status to Punchout Quote" bulk action.
 
-Quote persistence and diagnostic failures do not block the prepared handoff. Cancellation, logging, audit (`quote_order_failed`) and the administrator notification are individually best effort; notifications are limited to once an hour after successful mail submission. An unsuccessful cancellation is reported as unconfirmed. A creation hook may fail after inserting an auto-draft but before returning its ID, so an unknown ID does not mean no row exists. Such abandoned auto-drafts remain non-payable under native WooCommerce rules, but native WordPress/CPT and WooCommerce/HPOS cleanup can permanently delete them once older than a week. They are not durable audit evidence, and the plugin's quote-retention setting does not preserve them. Check known IDs and available diagnostics promptly; simultaneous reporting failures cannot guarantee an audit record.
+A Submit whose message cannot be built answers failure with a plain message and leaves the order pending (never failed, never cancelled by WooCommerce's unpaid-order clean-up); WooCommerce reuses that pending order on the next Submit. The loser of two racing Submits trashes its own order and releases its stock and coupon holds. Each step after the win (holds, cart, status) runs on its own and is audited when it fails; none can stop the handoff.
 
 **Converting.** The order screen's *Order actions* box offers **Convert Punchout Quote to order** on a quote and on nothing else. It moves the order to the **Convert quotes to** status (Pending payment, Processing or On hold), leaves a note, and writes a `quote_order_converted` audit row naming the administrator who did it. The converted quote is a normal WooCommerce order: Processing and On hold run native stock reduction where applicable, and normal email and fulfilment hooks remain enabled. The returned basket XML stays on the order. A failed conversion is recorded as `quote_order_convert_failed` with an error result, without a success audit row.
 
@@ -406,33 +402,31 @@ Quote persistence and diagnostic failures do not block the prepared handoff. Can
 
 Before deploying, verify conversion on staging for each configured target: the status and note must land, Processing/On hold must apply normal stock reduction where applicable, and Pending payment must leave an unreduced quote's stock unchanged. Check native email behaviour with a mail logger. Stub tests do not prove these WooCommerce effects.
 
-**Order meta.** The returned document and confirmation provenance use protected, underscore-prefixed keys:
+**Order meta.** The returned document and the visit's provenance use protected, underscore-prefixed keys. A 0.5.0 order writes the first eight; the delivery keys below them belong to Quotes returned before 0.5.0 and are read, never written:
 
 | Key | Holds |
 |---|---|
 | `_pow_poom_xml` | The cXML PunchOutOrderMessage that was returned to the buyer |
 | `_pow_session_id` | The punchout session (`wp_pow_sessions.id`) the order came from |
 | `_pow_partner_id` | The customer connection |
-| `_pow_delivery_code` | The code on the confirmed destination, when one is available |
-| `_pow_delivery` | Accepted native delivery estimate, package rates, freight configuration and emission state |
-| `_pow_delivery_choice` | Exact stored destination-choice JSON from the return winner |
-| `_pow_delivery_confirmation` | Exact stored confirmation JSON, including cart/policy binding and notes; Quotes created before 0.4.23 may carry a preferred delivery date (schema 2) |
-| `_pow_delivery_notes` | Confirmed plain notes, also copied to the native order customer note |
-| `_pow_preferred_delivery_date` | The buyer's preferred delivery date (Y-m-d) on a Quote created before 0.4.23, copied from its schema-2 confirmation. 0.4.23 writes none, even from a confirmation that still carries a date. Checked against the confirmation at attach, never sent in the PunchOutOrderMessage; old Quotes still show it |
+| `_pow_partner_name` | The connection's name as it stood when the order was placed |
+| `_pow_buyer_cookie` | The BuyerCookie of the visit, the purchasing system's own correlator |
+| `_pow_delivery_code` | Before 0.5.0: the code on the confirmed destination, when one was available |
+| `_pow_delivery` | Before 0.5.0: the accepted delivery estimate, package rates, freight configuration and emission state |
+| `_pow_delivery_choice` | Before 0.5.0: the stored destination-choice JSON of the return winner |
+| `_pow_delivery_confirmation` | Before 0.5.0: the stored confirmation JSON, cart/policy binding and notes; Quotes created before 0.4.23 may carry a preferred delivery date (schema 2) |
+| `_pow_delivery_notes` | Before 0.5.0: the confirmed plain notes, also copied to the native order customer note (a 0.5.0 order keeps the note WooCommerce's checkout saved) |
+| `_pow_preferred_delivery_date` | The buyer's preferred delivery date (Y-m-d) on a Quote created before 0.4.23. Never sent in the PunchOutOrderMessage; old Quotes still show it on the order screen and in the e-mail. A delivery date belongs to the shop's checkout and reaches the cXML through "Order details sent" |
 | `_pow_buyer_identity` | The buyer's e-mail or identity from the cXML request (`UserEmail`, `UniqueUsername`, `UniqueName`, `Contact/Email`); written empty when the request named nobody, and absent altogether on a quote taken before 0.4.0 |
 | `_pow_buyer_name` | The buyer's own spelling of their name (`UserPrintableName`, `UserFullName`, `User`); written empty when the request sent no name, and absent altogether on a quote taken before 0.4.0 |
-| `_pow_buyer_cookie` | The BuyerCookie of the visit, the purchasing system's own correlator |
-| `_pow_partner_name` | The connection's name as it stood when the quote was made |
 
 The order's `customer_id` stays the bound store account, because that is who shopped. The same two facts appear twice more for people who never read order meta: as an order note, and as a **Bought by** line under the billing address on the order screen — `Bought by {name} ({email}) via PunchOut ({connection})`, the e-mail alone when no name was sent, and a plain statement that the purchasing system named nobody when neither was. The address is parenthesised rather than wrapped in angle brackets because an order note is rendered through kses, which would read `<{email}>` as a tag and delete the address. A quote taken before 0.4.0 carries no buyer meta and gets no line at all, rather than being told it named nobody. No e-mail is ever sent to a buyer.
 
-The confirmed cart-return path uses the winner's immutable destination, delivery estimate and notes; it never resolves a fresh fallback over an accepted snapshot. A direct Quote caller without a prepared destination falls back to inbound `ShipTo`, then to the bound account's saved shipping address.
-
-When `emit_delivery_line` is enabled and the confirmed rate is known, the POOM adds one quantity-one freight line equal to the sum of selected native package rates. The matching optional Quote adds native shipping items per package with the same ex-tax sum, exactly once; freight is never added as merchandise or a second fee. Quote totals and emitted XML use the same integer-cent amounts. When charge export is off, or the buyer acknowledges an unavailable estimate under `quote_separately`, the Quote keeps delivery metadata and an estimate note but adds no shipping charge. Later company-book changes cannot rewrite this completed snapshot.
+**The cXML from the order** (`Checkout\OrderMessage`): the lines are the order's product lines (SKU; the product and variation ids as the auxiliary id; the ex-tax unit price from the discounted line total divided by the quantity; EA; the Classification; capitals and flattening as the connection sets them); the Description is the name, or with `line_description` = `name_short_description` the name, " - " and the plain short description; ShortName is always the name. ShipTo is the order's shipping address while the connection sends ShipTo. DeliveryInstructions holds the cleaned note, then the connection's "Order details sent". Freight travels only with "Send delivery cost". The envelope is unchanged: From and To reversed, Sender identity only, BuyerCookie echoed, the visit's deployment mode, "create" only, ShortName as a child element, cXML 1.2.008 by default, a top-level browser form POST to that visit's BrowserFormPost URL, and the empty message for Cancel and return. SupplierOrderInfo stays omitted on 1.2.008.
 
 ## Integration documentation page
 
-The page covers endpoints, identities, the annotated setup request, returned carts, status codes, company addresses and confirmation, independent delivery flags, rate limits and secret rotation. Store administrators also receive a complete Dynamics setup template for each active company; the holder of that connection's bound store account downloads the same XML from My Account. It uses the company's static From, Sender, To, cXML version, mode and HTTPS supplier setup URL, retains only a SharedSecret placeholder, and leaves buyer-system runtime fields blank. UserEmail is added separately through the buyer system's extrinsics mapping and is not duplicated in the downloaded XML. The populated fictional buyer-sent specimen is parsed by `Cxml\Parser` and checked against its exact offline DTD; outbound examples use `Cxml\Builder` and the real freight-line producer with invented rates. Flags-off and full enabled examples use exact verified DTD fixtures; displayed totals are derived from the same lines. These samples do not certify a receiving tenant or execute native shipping callbacks.
+The page covers endpoints, identities, the annotated setup request, returned carts, status codes, delivery and the order's cXML, independent delivery flags, rate limits and secret rotation. Store administrators also receive a complete Dynamics setup template for each active company; the holder of that connection's bound store account downloads the same XML from My Account. It uses the company's static From, Sender, To, cXML version, mode and HTTPS supplier setup URL, retains only a SharedSecret placeholder, and leaves buyer-system runtime fields blank. UserEmail is added separately through the buyer system's extrinsics mapping and is not duplicated in the downloaded XML. The populated fictional buyer-sent specimen is parsed by `Cxml\Parser` and checked against its exact offline DTD; outbound examples use `Cxml\Builder` and the real freight-line producer with invented rates. Flags-off and full enabled examples use exact verified DTD fixtures; displayed totals are derived from the same lines. These samples do not certify a receiving tenant or execute native shipping callbacks.
 
 Publish it by creating a page and adding the shortcode, then send buyers that page's URL:
 
@@ -452,18 +446,17 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 
 | Hook | Type | Purpose |
 |---|---|---|
-| `pow_return_button_label` | filter | RFQ button text (applied after the setting) |
 | `pow_abandon_button_label` | filter | "Return without a cart" text (applied after the setting) |
-| `pow_button_classes` | filter | Class list of either exit control (`$classes, $base, $themed`) |
-| `pow_template_{return-button,abandon-button,handoff,state,docs/page,docs/self-test,account/dashboard}` | filter | Replace any buyer-facing template |
+| `punchout_checkout_button_label` | filter | 0.5.0: the cart's checkout-button text in a visit (applied after the setting; a blank result keeps the default) |
+| `pow_button_classes` | filter | Class list of a plugin control (`$classes, $base, $themed`): the cancel control and the checkout links |
+| `pow_template_{abandon-button,handoff,state,docs/page,docs/self-test,account/dashboard}` | filter | Replace any buyer-facing template. A theme override of `abandon-button.php` must keep the leave dialog, or the buyer is asked again and again |
+| `punchout_delivery_estimate_note` | filter | 0.5.0: the estimate sentence on the freight line, sent only with "Send delivery cost"; a blank result sends none |
 | `pow_delivery_codes_enabled` | filter | Legacy custom-docs-template display hint; the bundled docs show all delivery settings, and this filter does not control emission |
 | `pow_handoff_copy` / `pow_expired_token_message` | filter | Buyer-facing strings (0.5.0: `pow_handoff_copy` also gets the state, `sending` or `not-sent`) |
 | `punchout_state_button_label`, `punchout_leave_confirm_label`, `punchout_leave_stay_label` | filter | 0.5.0: the state page's button and the leave question's two buttons (applied after the settings; a blank result keeps the default) |
 | `shortcode_atts_punchout_state`, `shortcode_atts_punchout_abandon_button` | filter | 0.5.0: WordPress's own attribute filters for the state page's words and the leave question |
 | `pow_start_redirect` | filter | Post-login destination |
 | `punchout_visit_front_page_redirect` | filter | Where the site's front page sends a buyer inside an active visit (`$url, $visit`); default the landing page, `''` keeps the front page. Never for administrators or shop managers, outside a visit or when the landing page is the front page |
-| `punchout_review_title` | filter | The review page's title while drawn inside the theme (applied after the setting); `''` turns the relabel off. It reaches anything that reads `get_the_title()`/`single_post_title()` for the posed page (WooCommerce and most theme breadcrumbs and title bars), not SEO-plugin breadcrumbs that keep their own stored titles |
-| `punchout_review_page_id` / `punchout_review_in_theme` | filter | Which page the theme-drawn review poses as (0 = none); whether the review is drawn inside the theme at all |
 | `punchout_line_description_limit` | filter | 0.5.0: the most characters a line Description with the short description may have (default and ceiling 2,000) |
 | `punchout_order_details_sent` | filter | 0.5.0: the connection's "Order details sent" for one order (`$entries, $order, $partner`); entries are checked again after the filter |
 | `pow_client_ip` | filter | Trust a proxy header for rate limiting / allowlists / audit |
@@ -478,11 +471,12 @@ wp punchout rotate-secret 1   # dual-slot rotation; prints the new secret once
 wp punchout close-rotation 1  # drop the previous secret
 wp punchout generate-key      # POW_SECRET_KEY material for wp-config.php
 wp punchout gc                # run housekeeping now
+wp punchout migrate-addresses 1 [--dry-run]   # copy the company book's enabled entries into the bound account's saved addresses
 ```
 
 ## Tests
 
-`tests/` holds a pure-PHP unit suite for the codec and session/token logic — no WordPress loaded, WP-free by design. Run `php tests/run-tests.php` anywhere (a PHPUnit-compatible shim runs without Composer), or `phpunit -c phpunit.xml.dist` where PHPUnit exists. DOM-based codec tests skip automatically on a PHP without `ext-dom`. See `tests/README.md`.
+`tests/` holds a pure-PHP unit suite for the codec, the checkout path and session/token logic — no WordPress loaded, WP-free by design. Run `php tests/run-tests.php` anywhere (a PHPUnit-compatible shim runs without Composer), or `phpunit -c phpunit.xml.dist` where PHPUnit exists. DOM-based codec tests skip automatically on a PHP without `ext-dom`. The opt-in native suites, the end-to-end HTTP driver and the real-browser run (which drives the checkout in Chromium) need a disposable local fixture. See `tests/README.md`.
 
 ---
 
@@ -492,8 +486,9 @@ wp punchout gc                # run housekeeping now
 - **edit/inspect re-entry**: non-create operations answer cXML 450 and the POOM declares `operationAllowed="create"`. The registry retains `allow_reentry` for compatibility; no re-entry flow is implemented.
 - **Ariba network hops, CredentialMac, client certificates, `ds:Signature`**: only direct punchout with SharedSecret auth is implemented.
 - **Invoicing (`InvoiceDetailRequest`), order-status write-back, catalog uploads**: out of scope.
-- **Per-company payment gateway lists and external address-list APIs**: not implemented. Checkout is simply unavailable inside a punchout visit; native Woo shipping calculates the reviewed delivery estimate. A company book or inbound `ShipTo` does not imply an external address service.
-- **A parallel requisition cart**: rejected by design; the live cart is the single source of truth for both exits.
+- **Paying inside a visit, per-company payment gateway lists and external address-list APIs**: not implemented. PunchOut is the only payment method a visit sees, a PunchOut order is never payable, and the address-book API is found by shape on the site. A company book or inbound `ShipTo` does not imply an external address service.
+- **Checkout block support**: a visit needs the classic checkout; the plugin declares itself incompatible with the cart and checkout blocks.
+- **A parallel requisition cart**: rejected by design; the live cart is the single source of truth.
 
 ## Receiver acceptance
 

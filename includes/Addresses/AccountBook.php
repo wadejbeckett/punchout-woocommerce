@@ -141,7 +141,7 @@ final class AccountBook {
 	 * @return list<array>|null
 	 */
 	public function choices_locked( Partner $partner ): ?array {
-		if ( ! self::available() || $partner->owner_user_id <= 0 || 'company' === apply_filters( 'punchout_address_provider', 'auto', $partner ) ) { return null; }
+		if ( ! self::available() || $partner->owner_user_id <= 0 ) { return null; }
 		$entries = $this->read( $partner->owner_user_id );
 		if ( $entries instanceof \WP_Error || [] === $entries ) { return null; }
 		$codes = $this->codes_for( $partner, $entries );
