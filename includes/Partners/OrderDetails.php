@@ -18,8 +18,8 @@ defined( 'ABSPATH' ) || exit;
  * its UTC calendar day). Stored in `partners.order_details` as canonical JSON, '' for none.
  *
  * normalise() is the floor under every writer and reader: a malformed, hand-edited or filtered list keeps only its
- * well-formed entries, at most MAX_ENTRIES, one per meta key. parse_lines() and lines() are the connection form's
- * text: one entry per line, "meta key | label | format".
+ * well-formed entries, at most MAX_ENTRIES, one per meta key, none of the plugin's own keys (RESERVED_PREFIX).
+ * parse_lines() and lines() are the connection form's text: one entry per line, "meta key | label | format".
  */
 final class OrderDetails {
 
@@ -31,6 +31,13 @@ final class OrderDetails {
 	public const KEY_LIMIT     = 190;
 	public const LABEL_LIMIT   = 100;
 	private const SEPARATOR    = '|';
+
+	/**
+	 * The plugin's own order keys (the cXML copy, the visit, the connection, the buyer's identity and cookie) are
+	 * never order details: a key beginning with this prefix, in any case, is refused wherever a list is written or
+	 * read (security review, 11 October).
+	 */
+	public const RESERVED_PREFIX = '_pow_';
 
 	/**
 	 * The well-formed entries of $value (a stored JSON string or a list), in order.
@@ -103,11 +110,16 @@ final class OrderDetails {
 	private static function entry( mixed $raw ): ?array {
 		if ( ! is_array( $raw ) || ! is_string( $raw['meta_key'] ?? null ) || ! is_string( $raw['format'] ?? null ) ) { return null; }
 		$key = trim( $raw['meta_key'] );
-		if ( '' === $key || mb_strlen( $key ) > self::KEY_LIMIT || str_contains( $key, self::SEPARATOR ) || 1 !== preg_match( '/\A[^\x00-\x1F\x7F]+\z/u', $key ) ) { return null; }
+		if ( '' === $key || mb_strlen( $key ) > self::KEY_LIMIT || str_contains( $key, self::SEPARATOR ) || 1 !== preg_match( '/\A[^\x00-\x1F\x7F]+\z/u', $key ) || self::reserved( $key ) ) { return null; }
 		if ( ! in_array( $raw['format'], self::FORMATS, true ) ) { return null; }
 		$label = is_string( $raw['label'] ?? null ) ? self::label( $raw['label'] ) : null;
 		if ( null === $label ) { return null; }
 		return [ 'meta_key' => $key, 'label' => '' !== $label ? $label : $key, 'format' => $raw['format'] ];
+	}
+
+	/** Whether a key is one of the plugin's own (RESERVED_PREFIX, in any case). */
+	public static function reserved( string $key ): bool {
+		return str_starts_with( strtolower( $key ), self::RESERVED_PREFIX );
 	}
 
 	/** A label as plain text on one line: tags and control characters removed, spaces collapsed, at most LABEL_LIMIT. */

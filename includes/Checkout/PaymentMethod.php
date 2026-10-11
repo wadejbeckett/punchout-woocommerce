@@ -96,6 +96,18 @@ final class PaymentMethod {
 		}
 	}
 
+	/** The live visit's connection, or null when no live visit owns this request (or that cannot be established). */
+	public function partner(): ?\POW\Partners\Partner {
+		try {
+			$visit = $this->plugin->current_session();
+			if ( null === $visit || Session::ACTIVE !== $visit->status ) { return null; }
+			$partner = $this->registry->find( $visit->partner_id );
+			return null !== $partner && $partner->is_active() ? $partner : null;
+		} catch ( \Throwable $error ) {
+			return null;
+		}
+	}
+
 	/** Whether the request is inside any visit, and also when that cannot be established (fail closed). */
 	private function inside_visit(): bool {
 		try {

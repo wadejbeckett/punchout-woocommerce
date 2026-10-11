@@ -35,6 +35,7 @@ final class Samples {
 	public const PAYLOAD_ID = '1757318400.1.100001@shop.example.com';
 	public const TIMESTAMP  = '2026-09-08T09:00:00+00:00';
 	public const VERSION    = '1.2.008';
+	/** The currency the samples were first written in; the store's own is used whenever WooCommerce can say (currency()). */
 	public const CURRENCY   = 'ZAR';
 
 	private static ?SetupMessage $parsed = null;
@@ -42,6 +43,12 @@ final class Samples {
 	/**
 	 * The annotated inbound fixture. Invented identities only.
 	 */
+	/** The store's own currency (WooCommerce > Settings > General), as the returned cart is priced; CURRENCY without WooCommerce. */
+	public static function currency(): string {
+		$currency = function_exists( 'get_woocommerce_currency' ) ? trim( (string) get_woocommerce_currency() ) : '';
+		return 1 === preg_match( '/\A[A-Z]{3}\z/', $currency ) ? $currency : self::CURRENCY;
+	}
+
 	public static function setup_request(): string {
 		return <<<XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -228,7 +235,7 @@ XML;
 			[ 'package_key' => 0, 'rate_id' => 'flat_rate:1', 'method_id' => 'flat_rate', 'instance_id' => 1, 'label' => 'Example package one', 'amount_cents' => 1700, 'taxes' => [] ],
 			[ 'package_key' => 1, 'rate_id' => 'flat_rate:2', 'method_id' => 'flat_rate', 'instance_id' => 2, 'label' => 'Example package two', 'amount_cents' => 1800, 'taxes' => [] ],
 		];
-		$delivery = [ 'status' => $config['emit_delivery_line'] ? 'quoted' : 'disabled', 'amount_cents' => array_sum( array_column( $rates, 'amount_cents' ) ), 'currency' => self::CURRENCY, 'code' => $args['delivery_code'], 'emit' => $config['emit_delivery_line'], 'rates' => $rates, 'freight' => [ 'supplier_part_id' => 'DELIVERY', 'uom' => 'EA', 'classification_domain' => 'supplier', 'classification' => 'freight' ] ];
+		$delivery = [ 'status' => $config['emit_delivery_line'] ? 'quoted' : 'disabled', 'amount_cents' => array_sum( array_column( $rates, 'amount_cents' ) ), 'currency' => self::currency(), 'code' => $args['delivery_code'], 'emit' => $config['emit_delivery_line'], 'rates' => $rates, 'freight' => [ 'supplier_part_id' => 'DELIVERY', 'uom' => 'EA', 'classification_domain' => 'supplier', 'classification' => 'freight' ] ];
 		if ( $delivery['emit'] ) {
 			// One quantity-one freight line, as the order's cXML sends it while the connection sends delivery cost.
 			$args['items'][] = [ 'line_type' => 'freight', 'quantity' => 1, 'supplier_part_id' => $delivery['freight']['supplier_part_id'], 'aux_id' => '', 'unit_price_cents' => $delivery['amount_cents'], 'description' => implode( '; ', array_column( $rates, 'label' ) ), 'uom' => $delivery['freight']['uom'], 'classification_domain' => $delivery['freight']['classification_domain'], 'classification' => $delivery['freight']['classification'] ];
@@ -259,7 +266,7 @@ XML;
 			'user_agent'          => 'PunchOut for WooCommerce',
 			'buyer_cookie'        => self::parsed()->buyer_cookie,
 			'operation_allowed'   => 'create',
-			'currency'            => self::CURRENCY,
+			'currency'            => self::currency(),
 			'total_cents'         => self::total_cents(),
 			'supplier_order_info' => null,
 			'items'               => self::items(),

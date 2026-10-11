@@ -346,6 +346,59 @@ final class QuoteOrder {
 		return $moved;
 	}
 
+	/**
+	 * Housekeeping (security review, 11 October): a pending order carrying a visit's provenance whose visit is no
+	 * longer active (returned, closed, expired, past its time, or gone) and older than $age seconds (the handoff TTL)
+	 * is moved to the bin with no status change, so no e-mail is sent and nothing WooCommerce would resume lingers.
+	 * A pending order of a live visit is WooCommerce's to resume on the next Submit; an order or visit that cannot
+	 * be read is left alone. Returns how many were binned.
+	 */
+	public function trash_stale_pending( int $age ): int {
+		if ( ! function_exists( 'wc_get_orders' ) || ! function_exists( 'wc_get_order' ) ) {
+			return 0;
+		}
+		try {
+			$order_ids = wc_get_orders(
+				[
+					'status'       => 'pending',
+					'meta_key'     => self::META_SESSION_ID, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key -- the provenance key, indexed with the rest of the order meta.
+					'meta_compare' => 'EXISTS',
+					'date_created' => '<' . ( time() - max( 0, $age ) ),
+					'limit'        => 100,
+					'return'       => 'ids',
+					'orderby'      => 'date',
+					'order'        => 'ASC',
+				]
+			);
+		} catch ( \Throwable $e ) {
+			$this->transition_failure( 'pending_order_sweep_failed', [], 'query_failed' );
+			return 0;
+		}
+
+		$binned = 0;
+		foreach ( (array) $order_ids as $order_id ) {
+			$context = [ 'order_id' => (int) $order_id ];
+			try {
+				$order = wc_get_order( (int) $order_id );
+				if ( ! $order instanceof \WC_Order || 'pending' !== $order->get_status() ) { continue; }
+				$session_id = (int) $order->get_meta( self::META_SESSION_ID );
+				if ( $session_id <= 0 ) { continue; }
+				$context['session_id'] = $session_id;
+				$context['partner_id'] = (int) $order->get_meta( self::META_PARTNER_ID );
+				$visit = $this->sessions->find( $session_id );
+				if ( null !== $visit && ! \POW\Http\EndedVisit::over( $visit ) ) { continue; }
+				$order->delete( false );
+				$context['result'] = 'stale';
+				$this->audit->write( 'pending_order_trashed', $context );
+				++$binned;
+			} catch ( \Throwable $e ) {
+				$this->transition_failure( 'pending_order_trash_failed', $context, 'operation_failed' );
+			}
+		}
+
+		return $binned;
+	}
+
 	/** Record failure without re-reading a broken order or exposing third-party exception text. */
 	private function transition_failure( string $event, array $context, string $reason ): void {
 		$context['result'] = 'error';

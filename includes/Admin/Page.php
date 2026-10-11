@@ -204,7 +204,7 @@ final class Page {
 		return [
 			'enabled'              => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
 			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
-			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Return without a cart”.', 'punchout-woocommerce' ) ],
+			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Cancel and return”.', 'punchout-woocommerce' ) ],
 			'checkout_button_label' => [ __( 'Checkout button label', 'punchout-woocommerce' ), 'text', __( 'During a visit, text on the cart’s proceed button and the Cart widget’s checkout button, which open checkout with PunchOut as the only payment method. Blank uses the default: “Proceed to checkout”.', 'punchout-woocommerce' ) ],
 			'leave_confirmation'   => [ __( 'Ask before leaving', 'punchout-woocommerce' ), 'checkbox', __( 'During a visit, the cancel control ([punchout_abandon_button]) asks first when the cart has items, with the shortcode’s question attribute (for example [punchout_abandon_button question="Return without sending?"]; default “Return without sending your cart?”). An empty cart leaves at once. Off by default.', 'punchout-woocommerce' ) ],
 			'leave_confirm_label'  => [ __( 'Leave button label', 'punchout-woocommerce' ), 'text', __( 'The confirmation’s button that leaves without sending the cart. Blank uses the default: “Return without sending”.', 'punchout-woocommerce' ) ],
@@ -645,7 +645,7 @@ final class Page {
 				esc_html(
 					sprintf(
 						/* translators: %d: the most order details a connection sends */
-						__( 'One per line, at most %d: order meta key | label | format. The format is text, or unix_date for a Unix timestamp, sent as its calendar day in UTC (YYYY-MM-DD). Each one with a value is added to DeliveryInstructions after the buyer’s note as “label: value”. DeliveryInstructions are sent only while this connection’s delivery_notes_policy is item_detail_extrinsic.', 'punchout-woocommerce' ),
+						__( 'One per line, at most %d: order meta key | label | format. The format is text, or unix_date for a Unix timestamp, sent as its calendar day in UTC (YYYY-MM-DD). Each one with a value is added to DeliveryInstructions after the buyer’s note as “label: value”. Each value travels to the purchasing system: list only keys whose values may leave the shop. Keys beginning with _pow_ (the plugin’s own) are refused. DeliveryInstructions are sent only while this connection’s delivery_notes_policy is item_detail_extrinsic.', 'punchout-woocommerce' ),
 						OrderDetails::MAX_ENTRIES
 					)
 				)

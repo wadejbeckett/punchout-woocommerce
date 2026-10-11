@@ -285,5 +285,29 @@ namespace {
 				}
 			}
 		}
+
+		/** Rulings of 11 October: the cancel control's default label is "Cancel and return", everywhere it is stated. */
+		public function test_the_cancel_controls_default_label_is_cancel_and_return(): void {
+			$root = self::root();
+			self::assertStringContainsString( "__( 'Cancel and return', 'punchout-woocommerce' )", (string) file_get_contents( $root . '/includes/Cart/Surface.php' ) );
+			foreach ( [ 'includes/Cart/Surface.php', 'includes/Admin/Page.php', 'README.md', 'docs/delivery.md' ] as $file ) {
+				self::assertStringNotContainsString( 'Return without a cart', (string) file_get_contents( $root . '/' . $file ), $file );
+			}
+			self::assertStringContainsString( '“Cancel and return”', (string) file_get_contents( $root . '/includes/Admin/Page.php' ) );
+			self::assertStringContainsString( '| Cancel button label | "Cancel and return" |', (string) file_get_contents( $root . '/README.md' ) );
+		}
+
+		/** Uninstall removes the payment method's own option with the rest. */
+		public function test_uninstall_deletes_the_payment_methods_settings(): void {
+			$uninstall = (string) file_get_contents( self::root() . '/uninstall.php' );
+			self::assertStringContainsString( "delete_option( 'woocommerce_punchout_settings' );", $uninstall );
+			self::assertTrue( strpos( $uninstall, "delete_option( 'woocommerce_punchout_settings' );" ) > strpos( $uninstall, 'POW_KEEP_DATA' ), 'Kept with the rest when data is kept' );
+		}
+
+		/** The troubleshooting page says what a checkout with no payment method at all means. */
+		public function test_the_troubleshooting_page_explains_a_checkout_with_no_payment_method(): void {
+			$doc = (string) file_get_contents( self::root() . '/docs/troubleshooting.md' );
+			self::assertMatchesRegularExpression( '/\| Checkout offers no payment method at all[^|]*\|[^|]*wp_pow_sessions/', $doc );
+		}
 	}
 }

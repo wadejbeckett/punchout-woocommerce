@@ -186,7 +186,8 @@ namespace {
 				self::assertSame( 'ttl', $context['result'] );
 				self::assertSame( 7, $context['partner_id'] );
 			}
-			self::assertCount( 1, $GLOBALS['pow_test_order_queries'], 'Unconverted quotes are swept in the same run.' );
+			self::assertCount( 2, $GLOBALS['pow_test_order_queries'], 'Unconverted quotes and stale pending orders are swept in the same run.' );
+			self::assertSame( [ 'punchout-quote', 'pending' ], array_column( $GLOBALS['pow_test_order_queries'], 'status' ) );
 		}
 
 		/** An unverified expiry is not a closed visit, so it must not leave evidence saying it was. */

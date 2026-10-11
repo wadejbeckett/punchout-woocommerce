@@ -422,10 +422,22 @@ namespace {
 		public function test_a_freight_line_needs_a_shipping_line_and_follows_capitals(): void {
 			$on = $this->partner( [ 'emit_delivery_line' => 1, 'allcaps_transform' => 1 ] );
 			self::assertCount( 2, $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, '', 'ZAR', '0.00' ), $on )['items'], 'No shipping line, no freight' );
-			$free = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, '', 'ZAR', '0.00', [ new OrderMessageShipping( 'Free shipping' ) ] ), $on )['items'][2];
-			self::assertSame( [ 0, 'FREE SHIPPING', 'DELIVERY' ], [ $free['unit_price_cents'], $free['description'], $free['supplier_part_id'] ], 'A free method is a real zero, in capitals for an all-caps connection' );
+			$priced = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, '', 'ZAR', '12.00', [ new OrderMessageShipping( 'Courier' ) ] ), $on )['items'][2];
+			self::assertSame( [ 1200, 'DELIVERY' ], [ $priced['unit_price_cents'], $priced['supplier_part_id'] ] );
+			self::assertStringStartsWith( 'COURIER', $priced['description'], 'In capitals for an all-caps connection' );
 			$untitled = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, '', 'ZAR', '12.00', [ new OrderMessageShipping( '<b></b>' ) ] ), $this->partner( [ 'emit_delivery_line' => 1 ] ) )['items'][2];
 			self::assertSame( 'Delivery', $untitled['description'] );
+		}
+
+		/** Ruling of 11 October: a free-shipping order sends no freight line and no estimate sentence, even with "Send delivery cost" on. */
+		public function test_a_free_shipping_order_sends_no_freight_line_and_no_estimate_sentence(): void {
+			$on   = $this->partner( [ 'emit_delivery_line' => 1 ] );
+			$args = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, 'Note.', 'ZAR', '0.00', [ new OrderMessageShipping( 'Free shipping' ) ] ), $on, 'The delivery charge is an estimate.' );
+			self::assertSame( [ 'E2E-ALPHA', 'E2E-BETA' ], array_column( $args['items'], 'supplier_part_id' ), 'Nothing to charge, no line' );
+			self::assertSame( 9250, $args['total_cents'] );
+			self::assertSame( 'Note.', $args['delivery_notes'], 'And no estimate sentence' );
+			$args = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, 'Note.', 'ZAR', '0.004', [ new OrderMessageShipping( 'Rounds to nothing' ) ] ), $on, 'The delivery charge is an estimate.' );
+			self::assertCount( 2, $args['items'] );
 		}
 
 		public function test_ship_to_reaches_the_message_only_while_the_connection_sends_it(): void {

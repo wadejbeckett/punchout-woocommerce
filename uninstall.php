@@ -59,6 +59,9 @@ global $wpdb;
 delete_option( 'pow_settings' );
 delete_option( 'pow_db_version' );
 delete_option( 'pow_rewrite_version' );
+// The PunchOut payment method's own settings (title, description, place-order label), kept by WooCommerce's
+// settings API under the gateway's option key.
+delete_option( 'woocommerce_punchout_settings' );
 
 wp_clear_scheduled_hook( 'pow_gc' );
 

@@ -21,7 +21,7 @@ use POW\Settings;
 final class ButtonLabelTest extends TestCase {
 
 	private const RETURN_DEFAULT  = 'Proceed to checkout';
-	private const ABANDON_DEFAULT = 'Return without a cart';
+	private const ABANDON_DEFAULT = 'Cancel and return';
 
 	protected function setUp(): void {
 		$GLOBALS['pow_test_filters'] = [];
@@ -49,7 +49,7 @@ final class ButtonLabelTest extends TestCase {
 
 	public function test_defaults_are_the_shipped_strings(): void {
 		self::assertSame( 'Proceed to checkout', Settings::resolve_label( '', self::RETURN_DEFAULT ) );
-		self::assertSame( 'Return without a cart', Settings::resolve_label( '', self::ABANDON_DEFAULT ) );
+		self::assertSame( 'Cancel and return', Settings::resolve_label( '', self::ABANDON_DEFAULT ) );
 		self::assertStringNotContainsString( 'basket', self::ABANDON_DEFAULT );
 	}
 

@@ -39,12 +39,13 @@ defined( 'ABSPATH' ) || exit;
  *   the list) that has a value, as "Label: value": text as plain text on one line (at most DETAIL_LIMIT), a Unix
  *   timestamp as its UTC calendar day (gmdate, Y-m-d), whatever the server's timezone. The parts are joined by
  *   " | " (the builder flattens line breaks), at most NOTE_LIMIT in all; only the note is shortened.
- * - Freight: only while the connection sends delivery cost (`emit_delivery_line`) and the order has a shipping line:
- *   one quantity-one freight line, the order's shipping total before tax, named after its shipping method(s) with the
- *   estimate sentence (estimate_sentence(): a fixed translatable sentence, filter `punchout_delivery_estimate_note`,
- *   blank sends none), which then also leads DeliveryInstructions. Otherwise the order's shipping line stays the
- *   store's estimate and never reaches the message, and the Total is the products'. The plugin adds no delivery
- *   wording of its own anywhere a buyer reads.
+ * - Freight: only while the connection sends delivery cost (`emit_delivery_line`), the order has a shipping line and
+ *   its shipping total before tax is more than zero: one quantity-one freight line, that total, named after its
+ *   shipping method(s) with the estimate sentence (estimate_sentence(): a fixed translatable sentence, filter
+ *   `punchout_delivery_estimate_note`, blank sends none), which then also leads DeliveryInstructions. Otherwise (off,
+ *   no shipping line, or free shipping: ruling of 11 October, no 0.00 line and no estimate sentence) the order's
+ *   shipping line stays the store's estimate and never reaches the message, and the Total is the products'. The
+ *   plugin adds no delivery wording of its own anywhere a buyer reads.
  * - Envelope: From and To reversed from the setup, Sender identity only (no shared secret exists here), the visit's
  *   BuyerCookie and deployment mode, the connection's dialect, "create" only, no SupplierOrderInfo.
  */
@@ -227,14 +228,15 @@ final class OrderMessage {
 	}
 
 	/**
-	 * The freight line for the order's shipping, or null when the order has no shipping line. Named after the
-	 * shipping method(s) as plain text, joined with "; ", with the estimate sentence; capitals with the connection.
+	 * The freight line for the order's shipping, or null when the order has no shipping line or nothing to charge
+	 * (a shipping total of zero: free shipping sends no line). Named after the shipping method(s) as plain text,
+	 * joined with "; ", with the estimate sentence; capitals with the connection.
 	 *
 	 * @return array<string, mixed>|null
 	 */
 	private static function freight( \WC_Order $order, Partner $partner, string $estimate_note ): ?array {
 		$methods = method_exists( $order, 'get_shipping_methods' ) ? (array) $order->get_shipping_methods() : [];
-		if ( [] === $methods ) { return null; }
+		if ( [] === $methods || Money::to_cents( (float) $order->get_shipping_total() ) <= 0 ) { return null; }
 		$labels = [];
 		foreach ( $methods as $method ) {
 			$label = is_object( $method ) && method_exists( $method, 'get_name' ) ? self::plain_text( (string) $method->get_name() ) : '';

@@ -145,7 +145,7 @@ final class Surface {
 			'pow_abandon_button_label',
 			$this->plugin->settings()->button_label(
 				'abandon_button_label',
-				__( 'Return without a cart', 'punchout-woocommerce' )
+				__( 'Cancel and return', 'punchout-woocommerce' )
 			)
 		);
 

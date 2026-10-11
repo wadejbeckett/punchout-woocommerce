@@ -243,9 +243,9 @@ These are actual connection keys; optional emission is off by default. The shop'
 | `freight_classification_domain` | `supplier` | Freight classification domain |
 | `freight_classification` | `freight` | Freight classification value |
 | `line_description` | `name` | 0.5.0, cXML from the order: each line's Description is the product name; `name_short_description` adds " - " and the product's short description (a variation's parent's) as plain text: tags stripped, entities decoded, whitespace collapsed, left out when it only repeats the name, shortened so the whole fits 2,000 characters (`punchout_line_description_limit` can lower it). ShortName is always the name |
-| `order_details` | empty | 0.5.0, cXML from the order: up to 10 order meta keys, each with a label and a format, `text` or `unix_date` (a Unix timestamp sent as its UTC calendar day, `YYYY-MM-DD`, through `gmdate`, whatever the server's timezone). Each one with a value follows the buyer's note in DeliveryInstructions as "Label: value"; the parts are joined by " \| " because the builder flattens line breaks, within 2,000 characters, shortening only the note. Text values are plain text on one line, at most 500 characters |
+| `order_details` | empty | 0.5.0, cXML from the order: up to 10 order meta keys, each with a label and a format, `text` or `unix_date` (a Unix timestamp sent as its UTC calendar day, `YYYY-MM-DD`, through `gmdate`, whatever the server's timezone). Each one with a value follows the buyer's note in DeliveryInstructions as "Label: value"; the parts are joined by " \| " because the builder flattens line breaks, within 2,000 characters, shortening only the note. Text values are plain text on one line, at most 500 characters. Every value listed travels to the purchasing system; a key beginning with `_pow_` (the plugin's own) is refused wherever a list is written or read |
 
-The connection screen edits `emit_delivery_line` ("Send delivery cost"), `emit_ship_to` ("Send ShipTo"), `line_description` ("Line description") and `order_details` ("Order details sent", one per line: `meta key | label | format`). In the cXML built from a WooCommerce order (0.5.0), "Send delivery cost" adds one freight line, the order's shipping total before tax named after its shipping method with the estimate sentence ("The delivery charge is an estimate; the supplier confirms the final amount before dispatch.", fixed and translatable, filter `punchout_delivery_estimate_note`; it then also leads DeliveryInstructions), only while it is on and the order has a shipping line; off, the order keeps its shipping line in WooCommerce and the returned Total is the products'. A free-shipping order with it on sends a 0.00 freight line.
+The connection screen edits `emit_delivery_line` ("Send delivery cost"), `emit_ship_to` ("Send ShipTo"), `line_description` ("Line description") and `order_details` ("Order details sent", one per line: `meta key | label | format`). In the cXML built from a WooCommerce order (0.5.0), "Send delivery cost" adds one freight line, the order's shipping total before tax named after its shipping method with the estimate sentence ("The delivery charge is an estimate; the supplier confirms the final amount before dispatch.", fixed and translatable, filter `punchout_delivery_estimate_note`; it then also leads DeliveryInstructions), only while it is on, the order has a shipping line and its shipping total before tax is more than zero; off, with no shipping line, or on a free-shipping order (no 0.00 line, no estimate sentence), the order keeps its shipping line in WooCommerce and the returned Total is the products'.
 
 | Outbound field | cXML 1.2.008 | cXML 1.2.071 |
 |---|---|---|
@@ -303,7 +303,7 @@ wp punchout generate-key
 | Setup edge limit | 120/min | Per IP before method checks, body reads, parsing or audit storage on `/punchout/setup`; 0 uses the default (120) |
 | Log retention | 400 days | Audit-table trim horizon |
 | Checkout button label | "Proceed to checkout" | 0.5.0: during a visit, the text of the cart's proceed button, the Cart widget's checkout button and the Cart block's button, which lead to WooCommerce's checkout; blank = the default; filter `punchout_checkout_button_label` |
-| Cancel button label | "Return without a cart" | Text on the abandon control (Cancel and return); blank = the default; filter `pow_abandon_button_label` |
+| Cancel button label | "Cancel and return" | Text on the abandon control (Cancel and return); blank = the default; filter `pow_abandon_button_label` |
 | Ask before leaving | off | 0.5.0: during a visit, the abandon control asks first when the cart has items (see "Leaving without a cart"); the question is the shortcode's `question` attribute |
 | Leave button label | "Return without sending" | 0.5.0: the question's button that leaves without sending; blank = the default; filter `punchout_leave_confirm_label` |
 | Stay button label | "Keep shopping" | 0.5.0: the question's button that closes it; blank = the default; filter `punchout_leave_stay_label` |
@@ -446,7 +446,7 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 
 | Hook | Type | Purpose |
 |---|---|---|
-| `pow_abandon_button_label` | filter | "Return without a cart" text (applied after the setting) |
+| `pow_abandon_button_label` | filter | "Cancel and return" text (applied after the setting) |
 | `punchout_checkout_button_label` | filter | 0.5.0: the cart's checkout-button text in a visit (applied after the setting; a blank result keeps the default) |
 | `pow_button_classes` | filter | Class list of a plugin control (`$classes, $base, $themed`): the cancel control and the checkout links |
 | `pow_template_{abandon-button,handoff,state,docs/page,docs/self-test,account/dashboard}` | filter | Replace any buyer-facing template. A theme override of `abandon-button.php` must keep the leave dialog, or the buyer is asked again and again |

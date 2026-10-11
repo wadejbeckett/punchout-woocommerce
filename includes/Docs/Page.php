@@ -263,6 +263,7 @@ final class Page {
 			'poom'           => Samples::poom(),
 			'poom_total'     => Samples::poom_total(),
 			'delivery_samples' => Samples::delivery_examples(),
+			'currency'       => Samples::currency(),
 			'cxml_version'   => Samples::VERSION,
 			'rate_limit'     => $this->settings->int( 'rate_limit_per_min' ),
 			'connections'    => $privileged ? self::connection_rows( $partners, $home_url . '/punchout/setup' ) : [],

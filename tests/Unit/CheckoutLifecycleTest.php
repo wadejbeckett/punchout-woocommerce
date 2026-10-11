@@ -28,10 +28,11 @@ namespace {
 		public string $prefix = 'wp_';
 		public string $last_error = '';
 		public string $status = 'active';
+		public int $emit_ship_to = 1;
 		public function prepare( string $sql, mixed ...$args ): string { return $sql; }
 		public function get_row( string $sql, mixed $format = null ): ?array {
 			if ( ! str_contains( $sql, 'pow_partners' ) ) { throw new LogicException( 'Unexpected query: ' . $sql ); }
-			return [ 'id' => 5, 'name' => 'Example connection', 'status' => $this->status, 'owner_user_id' => 20, 'from_identity' => 'BUYER-TEST', 'to_identity' => 'supplier-test' ];
+			return [ 'id' => 5, 'name' => 'Example connection', 'status' => $this->status, 'owner_user_id' => 20, 'from_identity' => 'BUYER-TEST', 'to_identity' => 'supplier-test', 'emit_ship_to' => $this->emit_ship_to ];
 		}
 	}
 
@@ -86,11 +87,19 @@ namespace {
 			return Session::from_row( [ 'id' => 42, 'partner_id' => 5, 'user_id' => 20, 'status' => 'active', 'buyer_cookie' => '{C}', 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] );
 		}
 
-		/** @return list<string> What checkout validation refused, for this posted note. */
-		private function refusals( ?Session $visit, string $note = 'Leave at the gate.' ): array {
+		/** @return list<string> What checkout validation refused, for this posted note (and the other posted fields). */
+		private function refusals( ?Session $visit, string $note = 'Leave at the gate.', array $posted = [] ): array {
 			$errors = new WP_Error();
-			( new Validation( $this->method( $visit ) ) )->validate( [ 'payment_method' => 'punchout', 'order_comments' => $note ], $errors );
+			( new Validation( $this->method( $visit ) ) )->validate( $posted + [ 'payment_method' => 'punchout', 'order_comments' => $note ], $errors );
 			return $errors->get_error_messages();
+		}
+
+		/** The posted shipping address, as WooCommerce hands it to its validation step (shipping_* keys). */
+		private static function shipping( array $overrides = [] ): array {
+			$address = $overrides + [ 'first_name' => 'Receiving', 'last_name' => 'Desk', 'company' => 'Buyer Co', 'address_1' => '1 Example Street', 'address_2' => '', 'city' => 'Example City', 'state' => 'GP', 'postcode' => '2001', 'country' => 'ZA', 'phone' => '' ];
+			$posted  = [];
+			foreach ( $address as $field => $value ) { $posted[ 'shipping_' . $field ] = $value; }
+			return $posted;
 		}
 
 		public function test_a_cart_that_can_be_sent_passes(): void {
@@ -117,6 +126,28 @@ namespace {
 			$refusals = $this->refusals( $this->visit(), "Gate \xC3\x28 code" ); // Not UTF-8.
 			self::assertCount( 1, $refusals );
 			self::assertStringContainsString( 'note', $refusals[0] );
+		}
+
+		/**
+		 * Security review, 11 October: an address the message cannot carry (a field past its bound, a control
+		 * character, no name, a country that is not an ISO code) used to vanish silently from the cXML. With a street
+		 * posted and the connection sending ShipTo, it is refused before any order exists.
+		 */
+		public function test_a_posted_shipping_address_cxml_cannot_carry_is_refused_while_the_connection_sends_ship_to(): void {
+			self::assertSame( [], $this->refusals( $this->visit(), 'Note.', self::shipping() ), 'A usable address passes' );
+			foreach ( [ [ 'country' => 'South Africa' ], [ 'address_1' => str_repeat( 'x', 191 ) ], [ 'city' => "Example\x01City" ], [ 'first_name' => '', 'last_name' => '', 'company' => '' ], [ 'postcode' => str_repeat( '9', 33 ) ] ] as $broken ) {
+				$refusals = $this->refusals( $this->visit(), 'Note.', self::shipping( $broken ) );
+				self::assertCount( 1, $refusals, json_encode( $broken ) );
+				self::assertStringContainsString( 'delivery address', $refusals[0] );
+				self::assertStringContainsString( 'purchasing system', $refusals[0] );
+			}
+			self::assertSame( [], $this->refusals( $this->visit(), 'Note.', self::shipping( [ 'address_1' => '', 'address_2' => '', 'country' => 'South Africa' ] ) ), 'No street posted: nothing to carry, nothing to refuse' );
+			self::assertSame( [], $this->refusals( $this->visit(), 'Note.', [ 'billing_country' => 'South Africa' ] ), 'No shipping fields at all' );
+		}
+
+		public function test_the_shipping_address_is_not_checked_while_the_connection_sends_no_ship_to(): void {
+			$this->db->emit_ship_to = 0;
+			self::assertSame( [], $this->refusals( $this->visit(), 'Note.', self::shipping( [ 'country' => 'South Africa' ] ) ) );
 		}
 
 		public function test_a_note_with_control_characters_or_past_the_limit_is_cleaned_and_capped_later_not_refused(): void {

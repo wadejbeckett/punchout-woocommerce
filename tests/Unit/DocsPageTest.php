@@ -368,8 +368,11 @@ final class DocsPageTest extends TestCase {
 	public function test_confirmation_and_delivery_examples_render_even_with_legacy_codes_hint_off(): void {
 		$vars = $this->page_vars();
 		$vars['delivery_samples'] = [ [ 'version' => '1.2.071', 'xml' => '<cXML>delivery-example</cXML>', 'total' => '123.45', 'freight_total' => '6.78' ] ];
+		$vars['currency']         = 'EUR';
 		$html = Templates::render( 'docs/page', $vars );
 		foreach ( [ '/punchout/handoff', '/punchout/return', 'emit_ship_to', 'emit_delivery_code', 'emit_delivery_line', 'order_details', '123.45', '6.78', '&lt;cXML&gt;delivery-example&lt;/cXML&gt;' ] as $text ) { self::assertStringContainsString( $text, $html ); }
+		self::assertStringContainsString( 'one freight line of EUR 6.78; total including merchandise and freight EUR 123.45', $html, 'The store\'s currency words the amounts' );
+		self::assertStringNotContainsString( 'ZAR', $html );
 		self::assertStringNotContainsString( '<cXML>', $html );
 		self::assertStringNotContainsString( 'Available when delivery codes are enabled', $html );
 		// The dual exit is gone: the public page may not describe a checkout exit or a per-buyer entitlement.
@@ -560,6 +563,7 @@ final class DocsPageTest extends TestCase {
 			'setup_response' => '<cXML>response</cXML>',
 			'poom'           => '<cXML>poom</cXML>',
 			'poom_total'     => 'R 599.00',
+			'currency'       => 'ZAR',
 			'delivery_samples' => [],
 			'cxml_version'   => '1.2.008',
 			'rate_limit'     => 30,

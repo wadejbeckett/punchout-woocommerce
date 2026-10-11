@@ -133,7 +133,7 @@ final class Actions {
 					'partners',
 					sprintf(
 						/* translators: %s: the refused lines, separated by semicolons */
-						__( 'Not saved, and no other change on the form was kept either. Each line of Order details sent is "meta key | label | text" or "meta key | label | unix_date", with each meta key once. These lines are not: %s', 'punchout-woocommerce' ),
+						__( 'Not saved, and no other change on the form was kept either. Each line of Order details sent is "meta key | label | text" or "meta key | label | unix_date", with each meta key once and none beginning with _pow_ (the plugin’s own keys never leave the shop this way). These lines are not: %s', 'punchout-woocommerce' ),
 						implode( '; ', $details['rejected'] )
 					),
 					'error'

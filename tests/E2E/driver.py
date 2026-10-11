@@ -1110,9 +1110,9 @@ class Run:
         expected = {
             'buyer_cookie': visit['cookie'], 'buyer': connection['buyer'], 'supplier': connection['supplier'], 'deployment_mode': connection['deployment_mode'],
             'currency': seed['currency'], 'shared_secret': seed['secret'], 'lines': {sku: {'qty': 1, 'unit': '0.00', 'aux': '%d|0' % product['id']}},
-            # 0.5.0 (ticket 75): with Send delivery cost on, the order's shipping line is the freight line, here free
-            # shipping at 0.00; off, none.
-            'freight': '0.00' if connection['emit_delivery_line'] else None,
+            # 0.5.0 (ticket 75), ruling of 11 October: free shipping sends no freight line, even with Send delivery
+            # cost on (nothing to charge).
+            'freight': None,
             'freight_sku': connection['freight_supplier_part_id'], 'ship_to_contains': None, 'notes': None,
         }
         for check in poom.check(xml, expected, capture={'field': field, 'content_type': posted['content_type']}):
@@ -1125,8 +1125,9 @@ class Run:
         if orders:
             instructions = [e.text or '' for e in poom.parse_xml(xml).iter('Extrinsic') if e.get('name') == 'DeliveryInstructions']
             # 0.5.0 (ticket 75): the note shares DeliveryInstructions with the estimate sentence (only with a freight
-            # line) and the order details, and only the note is shortened so that the whole stays within 2,000.
-            lead = seed['estimate_note'] if connection['emit_delivery_line'] else ''
+            # line, and free shipping sends none) and the order details, and only the note is shortened so that the
+            # whole stays within 2,000.
+            lead = ''
             details = list(seed.get('instructions_expected') or [])
             fits = [instructions_fit(i, lead, orders[0]['customer_note'], details) for i in instructions]
             self.check(bool(fits) and all(ok and detail['shortened'] for ok, detail in fits), label + ': the_note_reaches_the_cxml_cleaned_and_capped', got=[detail for _, detail in fits], lead=bool(lead), details=details)
@@ -1426,8 +1427,8 @@ class Run:
         base = {
             'buyer_cookie': self.cookie, 'buyer': connection['buyer'], 'supplier': connection['supplier'], 'deployment_mode': connection['deployment_mode'],
             'currency': seed['currency'], 'shared_secret': seed['secret'], 'lines': lines,
-            # The fixture's only shipping method is free shipping, so an emitted freight line would be 0.00.
-            'freight': '0.00' if connection['emit_delivery_line'] else None, 'freight_sku': connection['freight_supplier_part_id'],
+            # Free shipping sends no freight line (ruling of 11 October); the checkout path's priced method replaces this below.
+            'freight': None, 'freight_sku': connection['freight_supplier_part_id'],
             'ship_to_contains': [seed['ship_to']['address_1'], seed['ship_to']['city']] if connection['emit_ship_to'] else None,
             'notes': self.note if connection['delivery_notes_policy'] == 'item_detail_extrinsic' else None,
         }

@@ -26,7 +26,10 @@ defined( 'ABSPATH' ) || exit;
  *   revoked again (the delegated-login gate refuses it meanwhile);
  * - audit-table retention trim;
  * - unconverted Punchout Quote orders past their retention cancelled
- *   (never deleted — QuoteOrder::expire()).
+ *   (never deleted — QuoteOrder::expire());
+ * - pending orders carrying a visit's provenance whose visit is over,
+ *   older than the handoff TTL, moved to the bin with no status change
+ *   (QuoteOrder::trash_stale_pending()).
  *
  * No account is touched and no hook is fired. Buyers are not users of this
  * plugin: every buyer of a connection shops as that connection's own
@@ -74,6 +77,8 @@ final class Cron {
 		$this->revoke_surviving_logins();
 		$this->audit->trim( $this->settings->int( 'log_retention_days' ) );
 		$this->quotes->expire();
+		// A pending order whose visit is over, older than the handoff's own lifetime, goes to the bin (no e-mail).
+		$this->quotes->trash_stale_pending( \POW\Checkout\Handoff::TTL );
 		\POW\Orders\Attachment::sweep();
 	}
 

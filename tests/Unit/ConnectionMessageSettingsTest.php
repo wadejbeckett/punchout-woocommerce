@@ -122,4 +122,23 @@ final class ConnectionMessageSettingsTest extends TestCase {
 		self::assertSame( [], $too_many['rejected'] );
 		self::assertSame( [ 'entries' => [], 'rejected' => [], 'too_many' => false ], OrderDetails::parse_lines( " \n\t\n" ) );
 	}
+
+	/**
+	 * Security review, 11 October: the plugin's own order keys (the cXML copy, the buyer's identity, the visit) are
+	 * never "order details": a key beginning with _pow_ is refused wherever a list is written or read, and the form
+	 * says where the values go.
+	 */
+	public function test_the_plugins_own_order_keys_are_refused_as_order_details(): void {
+		$parsed = OrderDetails::parse_lines( "_pow_poom_xml | Copy | text\n_POW_buyer_identity | Who | text\n_cafw_attachment_name | Attachment | text" );
+		self::assertSame( [ '_pow_poom_xml | Copy | text', '_POW_buyer_identity | Who | text' ], $parsed['rejected'] );
+		self::assertSame( [ [ 'meta_key' => '_cafw_attachment_name', 'label' => 'Attachment', 'format' => 'text' ] ], $parsed['entries'] );
+		self::assertSame( [], OrderDetails::normalise( [ [ 'meta_key' => '_pow_session_id', 'label' => 'Visit', 'format' => 'text' ] ] ), 'A stored or filtered list drops them too' );
+		self::assertSame( '', OrderDetails::encode( '[{"meta_key":"_pow_partner_id","label":"Connection","format":"text"}]' ) );
+		self::assertSame( [ [ 'meta_key' => 'pow_not_ours', 'label' => 'pow_not_ours', 'format' => 'text' ] ], OrderDetails::parse_lines( 'pow_not_ours' )['entries'], 'Only the underscore prefix is the plugin\'s' );
+		$form = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/Admin/Page.php' );
+		self::assertStringContainsString( 'Each value travels to the purchasing system', $form, 'The form says where the values go' );
+		self::assertStringContainsString( '_pow_', $form, 'The form names the refused prefix' );
+		$actions = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/Admin/Actions.php' );
+		self::assertStringContainsString( '_pow_', $actions, 'The refusal notice names the reserved prefix' );
+	}
 }

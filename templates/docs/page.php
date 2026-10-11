@@ -20,6 +20,7 @@
  * @var string                $setup_response The PunchOutSetupResponse sample.
  * @var string                $poom           The PunchOutOrderMessage sample.
  * @var string                $poom_total     Formatted total of the sample basket.
+ * @var string                $currency       The store's currency code, in which every sample is priced.
  * @var list<array{version:string,xml:string,total:string,freight_total:string}> $delivery_samples Full enabled examples from the live Builder.
  * @var string                $cxml_version   cXML version of the samples.
  * @var int                   $rate_limit     Configured setup requests per minute (nonpositive = default 30).
@@ -155,7 +156,7 @@ defined( 'ABSPATH' ) || exit;
 	<h4><?php esc_html_e( 'Full enabled examples', 'punchout-woocommerce' ); ?></h4>
 	<p><?php esc_html_e( 'These examples enable emit_ship_to, emit_delivery_code and emit_delivery_line, with delivery_notes_policy=item_detail_extrinsic. The invented two-package estimate becomes one freight line, as the order’s shipping total does while the connection sends delivery cost, then passes through the live Builder. Document totals and the amounts shown here are summed from those lines. The examples do not run a carrier or create an order.', 'punchout-woocommerce' ); ?></p>
 	<?php foreach ( $delivery_samples as $pow_sample ) : ?>
-		<p><?php printf( /* translators: 1: exact cXML version, 2: freight total in ZAR, 3: basket total in ZAR. */ esc_html__( 'cXML %1$s: one freight line of ZAR %2$s; total including merchandise and freight ZAR %3$s, excluding tax.', 'punchout-woocommerce' ), esc_html( $pow_sample['version'] ), esc_html( $pow_sample['freight_total'] ), esc_html( $pow_sample['total'] ) ); ?></p>
+		<p><?php printf( /* translators: 1: exact cXML version, 2: the store's currency code, 3: freight total, 4: basket total. */ esc_html__( 'cXML %1$s: one freight line of %2$s %3$s; total including merchandise and freight %2$s %4$s, excluding tax.', 'punchout-woocommerce' ), esc_html( $pow_sample['version'] ), esc_html( $currency ?? '' ), esc_html( $pow_sample['freight_total'] ), esc_html( $pow_sample['total'] ) ); ?></p>
 		<pre class="pow-docs-sample"><?php echo esc_html( $pow_sample['xml'] ); ?></pre>
 	<?php endforeach; ?>
 	<p><?php esc_html_e( 'The automated sample checks validate the exact declared 1.2.008 and 1.2.071 DTDs using verified offline fixtures. Supplier support and valid XML do not establish receiver consumption: confirm destination, code, repeated notes, freight, units and currency in your own receiving system, including any Dynamics 365 tenant.', 'punchout-woocommerce' ); ?></p>

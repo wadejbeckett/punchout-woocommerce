@@ -22,7 +22,12 @@ defined( 'ABSPATH' ) || exit;
  *   currency a connection's catalogue is set up in on the buyer's side: a currency switcher must not send prices in
  *   another;
  * - a note that cannot be made valid for cXML (OrderMessage::clean_note()). A note is otherwise cleaned of control
- *   characters and capped at 2,000 characters on its way into the message, not refused.
+ *   characters and capped at 2,000 characters on its way into the message, not refused;
+ * - while the connection sends ShipTo, a posted delivery address with a street that cXML cannot carry
+ *   (OrderMessage::to_cxml(): a field past its bound, a control character, no company or person, a country that is
+ *   not an ISO code), which would otherwise vanish silently from the message (security review, 11 October).
+ *   WooCommerce hands this step the shipping fields as the order will have them (the billing address when the
+ *   ship-to box is unticked).
  *
  * Because no order is created, nothing is held, mailed or left pending, and the visit stays open.
  */
@@ -42,7 +47,7 @@ final class Validation {
 		if ( ! $errors instanceof \WP_Error || ! $this->method->live_visit() ) { return; }
 		try {
 			$note = is_array( $data ) && is_string( $data['order_comments'] ?? null ) ? $data['order_comments'] : '';
-			foreach ( $this->problems( $note ) as $message ) {
+			foreach ( $this->problems( $note, is_array( $data ) ? $data : [] ) as $message ) {
 				$errors->add( 'pow_checkout', $message );
 			}
 		} catch ( \Throwable $error ) {
@@ -50,8 +55,14 @@ final class Validation {
 		}
 	}
 
-	/** @return list<string> */
-	private function problems( string $note ): array {
+	/** The fields of the posted shipping address the cXML ShipTo reads. */
+	private const ADDRESS_FIELDS = [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'phone' ];
+
+	/**
+	 * @param array<string, mixed> $data The posted checkout data.
+	 * @return list<string>
+	 */
+	private function problems( string $note, array $data = [] ): array {
 		$problems = [];
 		$cart     = function_exists( 'WC' ) ? WC()->cart : null;
 		foreach ( null !== $cart ? (array) $cart->get_cart() : [] as $line ) {
@@ -73,6 +84,28 @@ final class Validation {
 			$problems[] = __( 'Your note contains characters that cannot be sent to your purchasing system. Change the note and submit again.', 'punchout-woocommerce' );
 		}
 
+		if ( $this->ship_to_unusable( $data ) ) {
+			$problems[] = __( 'The delivery address cannot be sent to your purchasing system as typed (a field is too long, holds a character that cannot be sent, has no name, or the country is not recognised). Change the address and submit again.', 'punchout-woocommerce' );
+		}
+
 		return $problems;
+	}
+
+	/**
+	 * Whether the posted shipping address has a street but cannot be carried as cXML ShipTo, while the connection
+	 * sends ShipTo. Without a street there is nothing to carry; without ShipTo nothing is lost.
+	 *
+	 * @param array<string, mixed> $data
+	 */
+	private function ship_to_unusable( array $data ): bool {
+		$address = [];
+		foreach ( self::ADDRESS_FIELDS as $field ) {
+			$value             = $data[ 'shipping_' . $field ] ?? '';
+			$address[ $field ] = is_scalar( $value ) ? trim( (string) $value ) : '';
+		}
+		if ( '' === $address['address_1'] . $address['address_2'] ) { return false; }
+		$partner = $this->method->partner();
+		if ( null === $partner || ! $partner->emit_ship_to ) { return false; }
+		return null === OrderMessage::to_cxml( $address );
 	}
 }
