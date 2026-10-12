@@ -612,6 +612,32 @@ if ( ! function_exists( 'get_queried_object' ) ) {
 	}
 }
 
+if ( ! function_exists( 'get_queried_object_id' ) ) {
+	function get_queried_object_id(): int { // phpcs:ignore
+		return (int) ( $GLOBALS['pow_test_query']['page'] ?? 0 );
+	}
+}
+
+/*
+ * The main query's other answers (0.5.2, the pages a visit may open): each is a flag in pow_test_query, false unless a
+ * test sets it — 'archive', 'home' (the blog index), 'search' and '404'.
+ */
+if ( ! function_exists( 'is_archive' ) ) {
+	function is_archive(): bool { return (bool) ( $GLOBALS['pow_test_query']['archive'] ?? false ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'is_home' ) ) {
+	function is_home(): bool { return (bool) ( $GLOBALS['pow_test_query']['home'] ?? false ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'is_search' ) ) {
+	function is_search(): bool { return (bool) ( $GLOBALS['pow_test_query']['search'] ?? false ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'is_404' ) ) {
+	function is_404(): bool { return (bool) ( $GLOBALS['pow_test_query']['404'] ?? false ); } // phpcs:ignore
+}
+
 if ( ! function_exists( 'has_shortcode' ) ) {
 	/** WordPress's answer for a plain shortcode: the tag opens a shortcode in the content. */
 	function has_shortcode( string $content, string $tag ): bool { // phpcs:ignore

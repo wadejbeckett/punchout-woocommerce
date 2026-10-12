@@ -198,7 +198,7 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		$_COOKIE  = [];
 		$_SERVER['SCRIPT_FILENAME'] = '/srv/www/wp-admin/index.php';
 
-		foreach ( [ 'wp', 'wpdb', 'pow_route_guard_test', 'pow_test_current_user_id', 'pow_test_options', 'pow_test_users', 'pow_test_roles', 'pow_test_login_token', 'pow_test_login_tokens', 'pow_test_login_token_index', 'pow_test_orders', 'pow_test_filters', 'pow_test_valid_nonce', 'pow_test_wc' ] as $key ) {
+		foreach ( [ 'wp', 'wpdb', 'pow_route_guard_test', 'pow_test_current_user_id', 'pow_test_options', 'pow_test_users', 'pow_test_roles', 'pow_test_login_token', 'pow_test_login_tokens', 'pow_test_login_token_index', 'pow_test_orders', 'pow_test_filters', 'pow_test_valid_nonce', 'pow_test_wc', 'pow_test_query', 'pow_test_posts' ] as $key ) {
 			$this->saved[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 			unset( $GLOBALS[ $key ] );
 		}
@@ -1404,6 +1404,175 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		// A subdirectory site: the landing page is under the home path, not the home path itself.
 		self::assertSame( 'https://example.test/store/shop/', POW\RouteGuard::front_page_target( true, 'get', $visit, false, 'https://example.test/store/shop/', 'https://example.test/store/' ) );
 		self::assertSame( '', POW\RouteGuard::front_page_target( true, 'get', $visit, false, 'https://example.test/store', 'https://example.test/store/' ) );
+	}
+
+	// ------------------------------------------------------------------ the pages a visit may open (0.5.2)
+
+	private const ABOUT     = 30;
+	private const ALLOWED   = 31;
+	private const POST      = 32;
+	private const STATE     = 33;
+	private const PRIVACY   = 34;
+	private const TERMS     = 35;
+	private const LANDING   = 36;
+	private const LEAVE     = 37;
+	private const SHORTCODE = 38;
+	private const BLOG      = 39;
+
+	/** A site with ordinary pages, a blog, the plugin's own pages and WooCommerce's terms and privacy pages; $settings over that. */
+	private function site( array $settings = [] ): void {
+		$GLOBALS['pow_test_posts'] = [
+			self::ABOUT     => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/about/', 'content' => 'About us' ],
+			self::ALLOWED   => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/terms-of-trade/', 'content' => 'Terms of trade' ],
+			self::POST      => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/2026/10/news/', 'content' => 'News' ],
+			self::STATE     => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/session/', 'content' => 'Visit state' ],
+			self::PRIVACY   => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/privacy/', 'content' => 'Privacy' ],
+			self::TERMS     => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/terms/', 'content' => 'Terms' ],
+			self::LANDING   => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/catalogue/', 'content' => 'Catalogue' ],
+			self::LEAVE     => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/finish/', 'content' => '<div>[punchout_cart_exits] [punchout_abandon_button question="Leave?"]</div>' ],
+			self::SHORTCODE => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/sent/', 'content' => '[punchout_state sent_title="Sent"]' ],
+			self::BLOG      => [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/news/', 'content' => '' ],
+		];
+		$GLOBALS['pow_test_options'] = [
+			POW\Settings::OPTION_KEY       => array_replace( [ 'enabled' => 'yes', 'landing_page_id' => self::LANDING, 'state_page_id' => self::STATE ], $settings ),
+			'wp_page_for_privacy_policy'   => self::PRIVACY,
+			'woocommerce_terms_page_id'    => self::TERMS,
+			'page_for_posts'               => self::BLOG,
+		];
+	}
+
+	/** guard() for a request whose main query answers $query, inside $visit; the redirect it produced, or null. */
+	private function page( ?POW\Sessions\Session $visit, array $query, string $method = 'GET' ): ?RouteGuardRedirect {
+		$before = $_SERVER['REQUEST_METHOD'] ?? null;
+		$_SERVER['REQUEST_METHOD'] = $method;
+		$GLOBALS['pow_test_query'] = $query;
+		try { return $this->guarded( $this->guard( $visit ) ); }
+		finally {
+			if ( null === $before ) { unset( $_SERVER['REQUEST_METHOD'] ); } else { $_SERVER['REQUEST_METHOD'] = $before; }
+		}
+	}
+
+	/** The pure rule, with neutral request facts: null = not judged (opens, the filter is not asked), else the answer before the filter. */
+	public function test_the_page_rule_judges_only_other_pages_of_an_active_visit(): void {
+		$visit = $this->visit();
+		$page  = [ 'singular' => true, 'id' => self::ABOUT ];
+		$rule  = static fn( array $request, string $mode = 'shop', string $method = 'GET', ?POW\Sessions\Session $v = null, bool $privileged = false, array $open = [ self::ALLOWED ] ): ?bool => POW\RouteGuard::visit_page_open( $mode, $method, $v ?? $visit, $privileged, $request, $open );
+
+		self::assertFalse( $rule( $page ), 'A page outside the shop is refused in a visit when only shop pages open' );
+		self::assertFalse( $rule( $page, 'shop', 'head' ), 'HEAD as GET' );
+		self::assertTrue( $rule( [ 'singular' => true, 'id' => self::ALLOWED ] ), 'unless it is on the list' );
+		self::assertTrue( $rule( $page, 'all' ), 'Every page opens by default (0.5.1 behaviour)' );
+		self::assertTrue( $rule( $page, 'anything else' ), 'An unknown mode reads as the default' );
+		self::assertFalse( $rule( [ 'archive' => true ] ), 'An archive outside the shop is refused' );
+		self::assertTrue( $rule( [ 'archive' => true ], 'all' ) );
+		self::assertTrue( $rule( [ 'archive' => true, 'id' => self::ALLOWED ] ), 'The blog index is its page: on the list, it opens' );
+
+		foreach ( [ 'front', 'feed', 'search', 'missing', 'shop', 'plugin' ] as $open ) {
+			self::assertNull( $rule( $page + [ $open => true ] ), $open . ' is never judged' );
+		}
+		self::assertNull( $rule( [] ), 'Neither a single page nor an archive (an endpoint of the site\'s own) is not judged' );
+		self::assertNull( $rule( $page, 'shop', 'POST' ), 'A form posted to a page is not judged' );
+		self::assertNull( $rule( $page, 'shop', 'GET', $this->visit( self::VISIT, 'ordered' ) ), 'Only an active visit' );
+		self::assertNull( POW\RouteGuard::visit_page_open( 'shop', 'GET', null, false, $page, [] ), 'Outside a visit nothing is judged' );
+		self::assertNull( $rule( $page, 'shop', 'GET', null, true ), 'An administrator or shop manager is never judged' );
+	}
+
+	public function test_by_default_every_page_opens_in_a_visit_as_in_0_5_1(): void {
+		$this->site();
+		self::assertSame( 'all', ( new POW\Settings() )->visit_pages(), 'The default changes nothing on upgrade' );
+		self::assertSame( [], ( new POW\Settings() )->visit_open_pages() );
+		foreach ( [ [ 'page' => self::ABOUT ], [ 'page' => self::POST ], [ 'archive' => true ], [ 'home' => true, 'page' => self::BLOG, 'singular' => false ] ] as $query ) {
+			self::assertNull( $this->page( $this->visit(), $query ), json_encode( $query ) );
+		}
+	}
+
+	public function test_with_shop_pages_only_a_visit_is_sent_from_any_other_page_to_the_landing_page_with_the_notice(): void {
+		$this->site( [ 'visit_pages' => 'shop', 'visit_open_pages' => (string) self::ALLOWED ] );
+		WC()->session = new stdClass();
+		$redirect = $this->page( $this->visit(), [ 'page' => self::ABOUT ] );
+		self::assertNotNull( $redirect, 'An ordinary page of the site is refused in a visit' );
+		self::assertSame( 'https://shop.example.test/catalogue/', $redirect->url, 'to the landing page' );
+		self::assertSame( 302, $redirect->status );
+		self::assertCount( 1, $this->notices() );
+		self::assertStringContainsString( 'not available in this catalog session', $this->notices()[0][1], 'with the refusal notice every closed page gives' );
+
+		foreach ( [
+			'a blog post'                  => [ 'page' => self::POST ],
+			'a post, tag, date or author archive' => [ 'archive' => true ],
+			'the blog index'               => [ 'home' => true, 'page' => self::BLOG, 'singular' => false ],
+			'a page HEAD'                  => [ 'page' => self::ABOUT, 'method' => 'HEAD' ],
+		] as $label => $query ) {
+			$method = $query['method'] ?? 'GET';
+			unset( $query['method'] );
+			self::assertNotNull( $this->page( $this->visit(), $query, $method ), $label . ' is refused' );
+		}
+	}
+
+	public function test_with_shop_pages_only_the_shop_and_the_visits_own_pages_still_open(): void {
+		$this->site( [ 'visit_pages' => 'shop', 'visit_open_pages' => ' ' . self::ALLOWED . ', 999' ] );
+		foreach ( [
+			'the shop'                     => [ 'shop' => true, 'archive' => true ],
+			'a product'                    => [ 'product' => true, 'page' => 500 ],
+			'a product category, tag, attribute or brand' => [ 'product_taxonomy' => true, 'archive' => true ],
+			'the cart'                     => [ 'cart' => true, 'page' => 501 ],
+			'search'                       => [ 'search' => true ],
+			'a missing page'               => [ '404' => true ],
+			'a feed'                       => [ 'feed' => true, 'archive' => true ],
+			'the landing page'             => [ 'page' => self::LANDING ],
+			'the state page'               => [ 'page' => self::STATE ],
+			'a page drawing a state'       => [ 'page' => self::SHORTCODE ],
+			'a page holding the visit\'s own buttons' => [ 'page' => self::LEAVE ],
+			'the privacy page checkout links to' => [ 'page' => self::PRIVACY ],
+			'the terms page checkout links to'   => [ 'page' => self::TERMS ],
+			'a page on the list'           => [ 'page' => self::ALLOWED ],
+		] as $label => $query ) {
+			$GLOBALS['pow_route_guard_test']['feed'] = ! empty( $query['feed'] );
+			self::assertNull( $this->page( $this->visit(), $query ), $label . ' opens' );
+		}
+		$GLOBALS['pow_route_guard_test']['feed'] = false;
+		$GLOBALS['pow_route_guard_test']['checkout'] = true;
+		self::assertNull( $this->page( $this->visit(), [ 'page' => 502 ] ), 'checkout opens' );
+		$GLOBALS['pow_route_guard_test']['checkout'] = false;
+		$GLOBALS['pow_test_options']['page_for_posts'] = self::ALLOWED;
+		self::assertNull( $this->page( $this->visit(), [ 'home' => true, 'page' => self::ALLOWED, 'singular' => false ] ), 'a blog index on the list opens' );
+	}
+
+	public function test_with_shop_pages_only_nothing_changes_outside_an_active_visit_or_for_a_post(): void {
+		$this->site( [ 'visit_pages' => 'shop' ] );
+		self::assertNull( $this->page( null, [ 'page' => self::ABOUT ] ), 'An ordinary shopper, the bound account outside a visit included' );
+		self::assertNull( $this->page( $this->visit( self::VISIT, 'ordered' ), [ 'page' => self::ABOUT ] ), 'A visit that has left active' );
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ], 'POST' ), 'A form posted to a page' );
+		$GLOBALS['pow_test_users'][ self::ACCOUNT ]->allcaps['manage_woocommerce'] = true;
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ] ), 'An administrator or shop manager' );
+	}
+
+	public function test_the_page_filter_has_the_last_word_on_other_pages_only(): void {
+		$this->site( [ 'visit_pages' => 'shop' ] );
+		$seen = [];
+		$GLOBALS['pow_test_filters'][ POW\RouteGuard::PAGE_OPEN_FILTER ] = static function ( bool $open, mixed $object, POW\Sessions\Session $visit ) use ( &$seen ): bool { $seen[] = [ $open, $object->ID ?? null, $visit->id ]; return true; };
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ] ), 'Code can open a page' );
+		self::assertSame( [ [ false, self::ABOUT, self::VISIT ] ], $seen, 'The filter is told the answer, the page and the visit' );
+		$seen = [];
+		self::assertNull( $this->page( $this->visit(), [ 'product' => true, 'page' => 500 ] ) );
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::STATE ] ) );
+		self::assertSame( [], $seen, 'Shop pages and the visit\'s own pages are not the filter\'s to close' );
+
+		$this->site();
+		$GLOBALS['pow_test_filters'][ POW\RouteGuard::PAGE_OPEN_FILTER ] = static fn( bool $open ): bool => false;
+		self::assertNotNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ] ), 'With every page open, code can still close one' );
+		self::assertNull( $this->page( null, [ 'page' => self::ABOUT ] ), 'never outside a visit' );
+		self::assertSame( 'punchout_visit_page_open', POW\RouteGuard::PAGE_OPEN_FILTER );
+	}
+
+	public function test_the_list_of_pages_reads_ids_in_any_spelling(): void {
+		self::assertSame( [ 12, 53061, 7 ], POW\Settings::page_ids( ' 12, 53061 ,, 7 12 abc -3 0' ) );
+		self::assertSame( [ 4, 5 ], POW\Settings::page_ids( [ '4', 5, 'x', 4 ] ) );
+		self::assertSame( [], POW\Settings::page_ids( null ) );
+		$GLOBALS['pow_test_options'] = [ POW\Settings::OPTION_KEY => [ 'visit_pages' => 'shop', 'visit_open_pages' => '12,53062' ] ];
+		self::assertSame( 'shop', ( new POW\Settings() )->visit_pages() );
+		self::assertSame( [ 12, 53062 ], ( new POW\Settings() )->visit_open_pages() );
+		$GLOBALS['pow_test_options'] = [ POW\Settings::OPTION_KEY => [ 'visit_pages' => 'SHOP' ] ];
+		self::assertSame( 'all', ( new POW\Settings() )->visit_pages(), 'Anything but the exact value reads as the default' );
 	}
 
 	public function test_no_site_glue_hook_and_no_exit_policy_remain_in_the_guard(): void {

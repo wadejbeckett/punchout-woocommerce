@@ -18,13 +18,19 @@ namespace POW\Account {
 	}
 	function has_shortcode( string $content, string $tag ): bool { return isset($GLOBALS['pow_account_test']) ? str_contains($content,'[' . $tag . ']') : \has_shortcode($content,$tag); }
 	function get_permalink( int $id ): string { return isset($GLOBALS['pow_account_test']) ? 'https://shop.example.test/integration-guide/' : (string) \get_permalink($id); }
+	// Every callback a hook receives is kept, in order: one hook may carry more than one of the tab's methods.
 	function add_action( string $hook, callable $callback, int $priority = 10, int $accepted_args = 1 ): bool {
 		if ( ! isset($GLOBALS['pow_account_test']) ) { return \add_action($hook,$callback,$priority,$accepted_args); }
-		$GLOBALS['pow_account_test']['hooks'][$hook]=$callback; return true;
+		$GLOBALS['pow_account_test']['hooks'][$hook][]=$callback; return true;
 	}
 	function add_filter( string $hook, callable $callback, int $priority = 10, int $accepted_args = 1 ): bool {
 		if ( ! isset($GLOBALS['pow_account_test']) ) { return \add_filter($hook,$callback,$priority,$accepted_args); }
-		$GLOBALS['pow_account_test']['hooks'][$hook]=$callback; return true;
+		$GLOBALS['pow_account_test']['hooks'][$hook][]=$callback; return true;
+	}
+	// A redirect ends the request; throwing from the seam records it and skips the exit that follows.
+	function wp_safe_redirect( string $location, int $status = 302 ): bool {
+		if ( ! isset($GLOBALS['pow_account_test']) ) { return \wp_safe_redirect($location,$status); }
+		throw new \AccountTabRedirect( $location, $status );
 	}
 	function header( string $header, bool $replace = true ): void {
 		if ( isset( $GLOBALS['pow_account_test'] ) ) { $GLOBALS['pow_account_test']['headers'][] = $header; return; }
@@ -40,7 +46,13 @@ namespace {
 	use POW\Audit\Log;
 	use POW\Partners\{Registry, Secrets};
 	use POW\Sessions\Session;
+	use POW\Settings;
 	use POW\Support\Templates;
+
+	/** The redirect the tab would have sent. */
+	final class AccountTabRedirect extends RuntimeException {
+		public function __construct( public string $url, public int $status ) { parent::__construct( 'redirect ' . $url ); }
+	}
 
 	/** Exercises real Registry methods against a small recording SQL boundary, not native persistence. */
 	final class AccountDatabase {
@@ -157,6 +169,18 @@ namespace {
 		}
 		protected function tearDown(): void { foreach ($this->saved as $key=>[$exists,$value]) { if ($exists) {$GLOBALS[$key]=$value;} else {unset($GLOBALS[$key]);} } }
 		private function make_tab(): IntegrationTab { return new IntegrationTab($this->plugin,$this->registry,$this->audit); }
+		/** Who sees the tab (0.5.2): the setting as saved, read by a fresh plugin and tab as a new request would. */
+		private function tab_mode( string $mode ): void {
+			$GLOBALS['pow_test_options']['pow_settings']['account_tab'] = $mode;
+			$this->plugin = (new ReflectionClass(POW\Plugin::class))->newInstanceWithoutConstructor();
+			$this->tab = $this->make_tab();
+		}
+		/** The redirect the tab's GET guard sent, or null when it let the request through. */
+		private function get_guard(): ?AccountTabRedirect {
+			try { $this->tab->redirect_hidden_tab(); } catch ( AccountTabRedirect $redirect ) { return $redirect; }
+			return null;
+		}
+		private function menu(): array { return $this->tab->add_menu_item(['orders'=>'Orders','customer-logout'=>'Log out']); }
 		/** The request is inside a visit of this very account: the tab must vanish, not merely refuse to write. */
 		private function enter_visit(): void {
 			(new ReflectionProperty(POW\Plugin::class,'current_session'))->setValue($this->plugin,Session::from_row(['id'=>81,'partner_id'=>20,'user_id'=>7,'status'=>Session::ACTIVE,'wc_session_key'=>self::VISIT_KEY]));
@@ -223,7 +247,8 @@ namespace {
 			self::assertStringContainsString('<Identity>EXAMPLE</Identity>',$ok['body']);
 			self::assertStringNotContainsString('<html',$ok['body']);
 
-			$this->seed(['owner_user_id'=>8]);
+			// An account that owns no connection reaches the tab only while it is shown to every account (0.5.1 behaviour).
+			$this->tab_mode('everyone'); $this->seed(['owner_user_id'=>8]);
 			$refused=$this->invoke('download_emission',$this->invoke('template_download_result'));
 			self::assertSame(403,$refused['status']);
 			self::assertSame([],$refused['headers']);
@@ -283,7 +308,7 @@ namespace {
 			self::assertStringNotContainsString($this->db->rows[0]['secret_current'],json_encode($view));
 		}
 		public function test_refused_download_page_survives_view_and_link_lookup_failure(): void {
-			$this->seed(['owner_user_id'=>8]); $result=$this->invoke('template_download_result'); self::assertSame(403,$result['status']);
+			$this->tab_mode('everyone'); $this->seed(['owner_user_id'=>8]); $result=$this->invoke('template_download_result'); self::assertSame(403,$result['status']);
 			$this->db->fail_lookup=true; $GLOBALS['pow_account_test']['fail_pages']=true;
 			$view=$this->invoke('result_vars',$result);
 			self::assertSame('unavailable',$view['state']);
@@ -308,7 +333,9 @@ namespace {
 			self::assertStringContainsString('My Account pages open during a visit</th><td><code>None</code>',$html);
 		}
 		public function test_another_owners_connection_is_not_in_view(): void {
-			$this->seed(['owner_user_id'=>8]); $view=$this->invoke('view_vars');
+			$this->seed(['owner_user_id'=>8]);
+			ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean(),'By default an account that owns no connection has no tab at all');
+			$this->tab_mode('everyone'); $view=$this->invoke('view_vars');
 			self::assertSame('none',$view['state']); self::assertSame([],$view['connection']);
 			self::assertStringNotContainsString('Example Company',Templates::render('account/integration',$view));
 		}
@@ -352,6 +379,7 @@ namespace {
 			self::assertNotSame('nonce-' . IntegrationTab::RESET_NONCE,$view['reset_nonce'],'Not the bare action: the nonce names the credential it would reset');
 			$this->seed(['owner_settings'=>'reset_connection','secret_current'=>(new Secrets(str_repeat('a',32)))->seal('another-secret')]);
 			self::assertNotSame($view['reset_nonce'],$this->invoke('view_vars')['reset_nonce'],'Another credential, another nonce');
+			$this->tab_mode('everyone');
 			foreach ([['owner_settings'=>''],[],['owner_settings'=>'reset_connection','status'=>'disabled'],['owner_settings'=>'reset_connection','owner_user_id'=>8]] as $case) {
 				$this->seed($case); $view=$this->invoke('view_vars'); self::assertFalse($view['can_reset'],json_encode($case)); self::assertSame('',$view['reset_nonce'],json_encode($case));
 			}
@@ -472,12 +500,100 @@ namespace {
 		public function test_endpoint_hooks_are_registered_even_when_feature_is_disabled(): void {
 			$GLOBALS['pow_test_options']['pow_settings']['enabled']='no'; $this->tab=$this->make_tab(); $this->tab->register();
 			$hooks=$GLOBALS['pow_account_test']['hooks'];
-			foreach (['init'=>'add_endpoint','query_vars'=>'add_query_var','woocommerce_account_menu_items'=>'add_menu_item','woocommerce_account_punchout-integration_endpoint'=>'render','template_redirect'=>'handle_post'] as $hook=>$method) { self::assertSame([$this->tab,$method],$hooks[$hook]); }
+			foreach (['init'=>'add_endpoint','query_vars'=>'add_query_var','woocommerce_account_menu_items'=>'add_menu_item','woocommerce_account_punchout-integration_endpoint'=>'render','template_redirect'=>'handle_post'] as $hook=>$method) { self::assertContains([$this->tab,$method],$hooks[$hook]); }
+			self::assertContains([$this->tab,'redirect_hidden_tab'],$hooks['template_redirect'],'0.5.2: a GET of a tab the account is not shown lands on the dashboard');
 			self::assertSame(['orders','punchout-integration'],$this->tab->add_query_var(['orders','punchout-integration']));
 			self::assertSame(['orders','punchout-integration'],$this->tab->add_query_var(['orders']));
-			self::assertSame([$this->tab,'add_wc_query_var'],$hooks['woocommerce_get_query_vars']);
+			self::assertSame([[$this->tab,'add_wc_query_var']],$hooks['woocommerce_get_query_vars']);
 			self::assertSame(['orders'=>'orders','punchout-integration'=>'punchout-integration'],$this->tab->add_wc_query_var(['orders'=>'orders']));
 			self::assertSame([],$this->tab->add_menu_item([])); ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean());
+		}
+
+		// ------------------------------------------------------------------ who sees the tab (0.5.2)
+
+		/** The tab was built for self-service applications, which are gone: by default it is the bound account's alone. */
+		public function test_by_default_only_an_account_that_owns_a_connection_sees_the_tab(): void {
+			self::assertSame('owners',(new Settings())->account_tab(),'The default is accounts bound to a connection');
+			$this->seed();
+			self::assertSame(['orders','punchout-integration','customer-logout'],array_keys($this->menu()),'The bound account sees the tab');
+			ob_start(); $this->tab->render(); self::assertStringContainsString('pow-account-integration',ob_get_clean());
+			self::assertSame(200,$this->invoke('template_download_result')['status'],'and downloads its setup XML');
+			$this->seed(['owner_user_id'=>8]);
+			self::assertSame(['orders','customer-logout'],array_keys($this->menu()),'An account that owns no connection gets no menu item');
+			ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean(),'and no page');
+			$refused=$this->invoke('template_download_result');
+			self::assertSame(403,$refused['status']); self::assertSame('',$refused['xml']);
+			self::assertStringContainsString('could not be authorised',$refused['notice']['text'],'Refused before any connection is read for it');
+			$this->seed(['owner_user_id'=>8,'owner_settings'=>'reset_connection']); $_POST=['pow_account_action'=>'reset_connection','_wpnonce'=>'x','pow_confirm_reset'=>'1'];
+			self::assertNull($this->invoke('owner_reset_result'),'and no reset');
+			self::assertSame([],$this->db->writes); self::assertSame([],$this->audit->events);
+		}
+
+		/** Ownership is the test, not the connection's state: a pending or disabled connection's account still reads its state there. */
+		public function test_the_owner_of_a_pending_or_disabled_connection_keeps_the_tab(): void {
+			foreach (['pending','disabled','active'] as $status) {
+				$this->seed(['status'=>$status]);
+				self::assertArrayHasKey('punchout-integration',$this->menu(),$status);
+				self::assertSame($status,$this->invoke('view_vars')['state'],$status);
+			}
+		}
+
+		public function test_a_signed_in_account_with_no_connection_sees_no_tab_and_its_address_lands_on_the_dashboard(): void {
+			$this->seed(['owner_user_id'=>8]); $_SERVER['REQUEST_METHOD']='GET'; $_POST=[];
+			$redirect=$this->get_guard();
+			self::assertNotNull($redirect,'A direct GET of the tab by an account that is not shown it is redirected');
+			self::assertSame('https://shop.example.test/account/',$redirect->url,'to the account dashboard');
+			self::assertSame(302,$redirect->status);
+			$_SERVER['REQUEST_METHOD']='HEAD'; self::assertNotNull($this->get_guard(),'HEAD as GET');
+			$_SERVER['REQUEST_METHOD']='GET';
+			$GLOBALS['pow_account_test']['endpoint']='orders'; self::assertNull($this->get_guard(),'Another account page is not this tab');
+			$GLOBALS['pow_account_test']['endpoint']='punchout-integration'; $GLOBALS['pow_account_test']['account']=false; self::assertNull($this->get_guard(),'Not the account page');
+			$GLOBALS['pow_account_test']['account']=true;
+			$_SERVER['REQUEST_METHOD']='POST'; self::assertNull($this->get_guard(),'A POST is the POST handler\'s, which answers nothing for this account');
+			$_SERVER['REQUEST_METHOD']='GET';
+			$GLOBALS['pow_test_current_user_id']=0; self::assertNull($this->get_guard(),'Signed out: WooCommerce shows its login form');
+			$GLOBALS['pow_test_current_user_id']=7;
+			$this->enter_visit(); self::assertNull($this->get_guard(),'Inside a visit the route guard answers first, with the landing page');
+			$this->tab_mode('owners'); $this->seed();
+			self::assertNull($this->get_guard(),'The bound account opens its tab');
+		}
+
+		public function test_shown_to_every_account_keeps_the_0_5_1_behaviour(): void {
+			$this->tab_mode('everyone'); $this->seed(['owner_user_id'=>8]);
+			self::assertSame(['orders','punchout-integration','customer-logout'],array_keys($this->menu()),'Every signed-in account sees the tab');
+			self::assertSame('none',$this->invoke('view_vars')['state'],'with the no-connection state');
+			$_SERVER['REQUEST_METHOD']='GET'; self::assertNull($this->get_guard());
+			$this->enter_visit();
+			self::assertSame(['orders','customer-logout'],array_keys($this->menu()),'and never inside a visit');
+		}
+
+		public function test_shown_to_nobody_hides_it_from_the_owner_too(): void {
+			$this->tab_mode('off'); $this->seed(['owner_settings'=>'reset_connection']);
+			self::assertSame(['orders','customer-logout'],array_keys($this->menu()));
+			ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean());
+			self::assertSame(403,$this->invoke('template_download_result')['status']);
+			$_POST=['pow_account_action'=>'reset_connection','_wpnonce'=>'x','pow_confirm_reset'=>'1'];
+			self::assertNull($this->invoke('owner_reset_result'),'The opt-in reset lives on the tab, so it goes with it');
+			$_SERVER['REQUEST_METHOD']='GET'; $_POST=[];
+			self::assertSame('https://shop.example.test/account/',$this->get_guard()?->url);
+			self::assertSame([],$this->db->writes);
+		}
+
+		public function test_an_unanswerable_owner_lookup_hides_the_tab(): void {
+			$this->seed(); $this->db->fail_lookup=true;
+			self::assertSame(['orders','customer-logout'],array_keys($this->menu()));
+			ob_start(); $this->tab->render(); self::assertSame('',ob_get_clean());
+			$this->db->fail_lookup=false; $this->db->rows[]=array_replace($this->db->rows[0],['id'=>21,'sender_identity'=>'OTHER']);
+			self::assertSame(['orders','customer-logout'],array_keys($this->menu()),'An account named by two connections is ambiguous, so it sees nothing');
+		}
+
+		public function test_an_unknown_saved_value_reads_as_the_default(): void {
+			foreach (['', 'Everyone', 'all', 'nobody', 'yes'] as $saved) {
+				$GLOBALS['pow_test_options']['pow_settings']['account_tab']=$saved;
+				self::assertSame('owners',(new Settings())->account_tab(),var_export($saved,true));
+			}
+			$GLOBALS['pow_test_options']['pow_settings']['account_tab']=['everyone'];
+			self::assertSame('owners',(new Settings())->account_tab());
 		}
 	}
 }

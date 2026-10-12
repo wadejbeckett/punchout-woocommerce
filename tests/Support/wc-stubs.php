@@ -109,6 +109,35 @@ if ( ! function_exists( 'get_woocommerce_currency_symbol' ) ) {
 	}
 }
 
+/*
+ * WooCommerce's page conditionals (0.5.2, the pages a visit may open): each is a flag in pow_test_query, false unless a
+ * test sets it — 'shop', 'product', 'product_taxonomy' and 'cart'. The terms and privacy page ids are WooCommerce's
+ * readings of the two options, 0 when unset.
+ */
+if ( ! function_exists( 'is_shop' ) ) {
+	function is_shop(): bool { return (bool) ( $GLOBALS['pow_test_query']['shop'] ?? false ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'is_product' ) ) {
+	function is_product(): bool { return (bool) ( $GLOBALS['pow_test_query']['product'] ?? false ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'is_product_taxonomy' ) ) {
+	function is_product_taxonomy(): bool { return (bool) ( $GLOBALS['pow_test_query']['product_taxonomy'] ?? false ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'is_cart' ) ) {
+	function is_cart(): bool { return (bool) ( $GLOBALS['pow_test_query']['cart'] ?? false ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'wc_terms_and_conditions_page_id' ) ) {
+	function wc_terms_and_conditions_page_id(): int { return max( 0, (int) ( $GLOBALS['pow_test_options']['woocommerce_terms_page_id'] ?? 0 ) ); } // phpcs:ignore
+}
+
+if ( ! function_exists( 'wc_privacy_policy_page_id' ) ) {
+	function wc_privacy_policy_page_id(): int { return max( 0, (int) ( $GLOBALS['pow_test_options']['wp_page_for_privacy_policy'] ?? 0 ) ); } // phpcs:ignore
+}
+
 if ( ! class_exists( 'WC_Product' ) ) {
 	/** A catalogue product, as much of one as an order line needs. */
 	class WC_Product { // phpcs:ignore
