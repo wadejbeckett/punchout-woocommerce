@@ -103,18 +103,33 @@ final class VisitLockdownNative {
 	 * @param array<string, string> $query
 	 */
 	private function page_refused( POW\RouteGuard $guard, array $query ): bool {
-		global $wp;
+		global $wp, $wp_actions;
 		$saved = [ $_GET, $_SERVER['REQUEST_URI'] ?? null, $_SERVER['QUERY_STRING'] ?? null ];
 		$_GET  = $query;
 		$_SERVER['QUERY_STRING'] = http_build_query( $_GET );
 		$_SERVER['REQUEST_URI']  = '/?' . $_SERVER['QUERY_STRING'];
 		$GLOBALS['wp_the_query'] = new WP_Query();
 		$GLOBALS['wp_query']     = $GLOBALS['wp_the_query'];
+		// A real request reaches template_redirect after the 'wp' action, and WooCommerce (11.x) answers is_cart()
+		// and is_checkout() only once that has run, then keeps the answer for the rest of the request. This CLI
+		// process never runs 'wp', so the count is set for this simulated request only, without running its
+		// callbacks, and WooCommerce's kept answers are cleared before and after, as a fresh request would have them.
+		$wp_ran = $wp_actions['wp'] ?? null;
+		$fresh  = static function (): void {
+			$utils = 'Automattic\\WooCommerce\\Blocks\\Utils\\CartCheckoutUtils';
+			foreach ( [ 'is_cart_page', 'is_checkout_page' ] as $kept ) {
+				if ( class_exists( $utils ) && property_exists( $utils, $kept ) ) { ( new ReflectionProperty( $utils, $kept ) )->setValue( null, null ); }
+			}
+		};
 		try {
 			$wp->parse_request();
 			$wp->query_posts();
+			$wp_actions['wp'] = max( 1, (int) $wp_ran );
+			$fresh();
 			return $this->redirected( fn() => $guard->guard() );
 		} finally {
+			if ( null === $wp_ran ) { unset( $wp_actions['wp'] ); } else { $wp_actions['wp'] = $wp_ran; }
+			$fresh();
 			[ $_GET, $uri, $query_string ] = $saved;
 			if ( null === $uri ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $uri; }
 			if ( null === $query_string ) { unset( $_SERVER['QUERY_STRING'] ); } else { $_SERVER['QUERY_STRING'] = $query_string; }
