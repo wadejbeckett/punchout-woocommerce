@@ -200,6 +200,23 @@ A listed page runs as the shared account, so anything it saves per user is share
 
 A visit never creates a WordPress user through WordPress's user insert, the routine that registration forms, the users REST route and other plugins' AJAX actions (a sub-account form, say) all use. Inside a visit it is refused and audited as `visit_user_create_refused`, once per request, with the script, AJAX action, `wc-ajax` action, REST route and path that asked. Code that writes the users table directly, without WordPress, is outside any hook and is not covered.
 
+### Pages outside the shop in a visit (0.5.2)
+
+A visit is a buyer from a purchasing system filling a cart, and the store's other pages (About, a contact form, a blog, marketing pages) are not part of that. Until 0.5.2 the plugin closed only My Account pages, orders and payment pages in a visit, so keeping a buyer off a content page meant hiding it page by page in the theme or page builder.
+
+**The setting.** **Other pages in a visit** (`visit_pages`) on the Settings tab:
+
+- **Every page** (`all`, the default): nothing is closed beyond the account, order and payment pages above. An upgrade changes nothing.
+- **Shop pages only, plus the pages listed** (`shop`): inside a live visit, a GET or HEAD of any other page, post, attachment or archive (blog index, post categories and tags, dates, authors, another post type's pages) sends the buyer to the landing page, with the same notice every closed page gives.
+
+What stays open with shop pages only: the shop, products, product categories, tags, attributes and brands (every taxonomy WooCommerce registers for products), search, the cart, checkout (order-pay and order-received keep their own refusals), the My Account pages the connection ticks, the landing page, the state page and any page holding `[punchout_state]`, pages holding `[punchout_abandon_button]` or `[punchout_cart_exits]`, the terms and privacy pages checkout links to (WooCommerce's terms page and WordPress's privacy page), the site's front page (which has its own redirect to the landing page), feeds and the 404 page. Administrators and shop managers, ordinary shoppers and the bound account outside a visit are never judged, and neither is a POST.
+
+**Pages a visit may also open** (`visit_open_pages`) takes page IDs, separated by commas, that open besides the shop, for example a terms-of-trade page linked from the footer that WooCommerce does not know as its terms page. Any post ID works the same way; the blog index opens when its page is listed.
+
+**The filter.** `punchout_visit_page_open` (`bool $open, $object, Session $visit`) has the last word on every page outside the shop in an active visit, in either mode: return true to open a page, false to close one. `$object` is the queried object (a `WP_Post` for a single page or post and for the blog index, a term, author or post type for other archives, else null). It is not asked for the shop's own pages or the visit's own pages above.
+
+Theme and page-builder links to closed pages (menus, footers) are not removed; hide them in a visit with the `pow-visit` body class or `POW\pow_is_punchout()`, as for account links.
+
 ### Account holder actions (0.4.8)
 
 The connection's edit screen has a row **Account holder actions** with one checkbox: **Reset connection from the My Account “Punchout integration” tab**. It is off by default, for new and existing connections; saving stores `reset_connection` in `owner_settings` and the save is audited as `partner_saved`.
@@ -295,6 +312,9 @@ wp punchout generate-key
 |---|---|---|
 | Enable punchout | off | Master switch; off = endpoints and surfaces inert |
 | Landing page | shop page | Post-login redirect + route-guard home; inside an active visit the site's front page also redirects here (0.4.22) |
+| Other pages in a visit | every page | 0.5.2: "Shop pages only, plus the pages listed" sends a buyer in a visit from any page outside the shop to the landing page with a notice (see "Pages outside the shop in a visit"); "Every page" keeps the behaviour before 0.5.2 |
+| Pages a visit may also open | empty | 0.5.2: comma-separated page IDs a visit opens besides the shop while only shop pages open |
+| Punchout integration tab in My Account | accounts bound to a connection | 0.5.2: who sees the setup-XML tab (and its opt-in reset): accounts bound to a connection, every signed-in account (the behaviour before 0.5.2) or nobody (administrators hand out the setup XML from Integration docs). Never inside a visit |
 | Login link needs a click | off | Off: a GET of the login link shows a page that posts itself back, so a mail scanner that only fetches the link does not use it up. On: the buyer presses the button on that page once, for scanners that also run scripts (0.4.23) |
 | Login link button | "Open the catalog" | Text on the button of the page the login link opens (0.4.23); blank = the default; filter `punchout_start_link_button_label` |
 | Login link lifetime | 300 s | One-time StartPage token TTL; at most 7 days (604800 s), per-partner override within the same cap |
@@ -439,7 +459,7 @@ Shortcode only — core's Shortcode block inserts it in the block editor, so a c
 
 It carries a **self-test**: paste a PunchOutSetupRequest or ProfileRequest, get back the cXML Status the live endpoint would have answered with, and why. Nothing is stored, no session is created, and any `SharedSecret` in the paste is redacted before it is echoed back. For an anonymous visitor the three authentication stages collapse into one result — splitting them on a public page would be a credential oracle — and the run is throttled on the setup endpoint's own rate limiter and written to the audit log (`docs_self_test`).
 
-Store administrators get the same page with more on it at **WooCommerce > PunchOut > Integration docs**: a per-connection block with the complete setup XML and a self-test that names the exact authentication stage. The holder of a connection's bound store account downloads the same template from **My Account → Punchout integration**; ownership is resolved server-side and the request carries a nonce. That tab is the one surviving customer-facing surface and it is download-only — no editing, no secret, no rotation — unless an administrator switches on the opt-in **Reset connection** for that connection (see *Account holder actions*), and it does not exist inside a punchout visit.
+Store administrators get the same page with more on it at **WooCommerce > PunchOut > Integration docs**: a per-connection block with the complete setup XML and a self-test that names the exact authentication stage. The holder of a connection's bound store account downloads the same template from **My Account → Punchout integration**; ownership is resolved server-side and the request carries a nonce. That tab is the one surviving customer-facing surface and it is download-only — no editing, no secret, no rotation — unless an administrator switches on the opt-in **Reset connection** for that connection (see *Account holder actions*), and it does not exist inside a punchout visit. Since 0.5.2 the setting **Punchout integration tab in My Account** (`account_tab`) decides who sees it: by default only an account a connection is bound to (whatever the connection's status); **Every signed-in account** restores the behaviour before 0.5.2 (other accounts saw the tab with its no-connection state); **Nobody** hides it, the reset included, and administrators hand out the setup XML from **Integration docs**. A GET of the tab's address by an account it is not shown to lands on the account dashboard.
 
 Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (or `docs/self-test.php`), or via the `pow_template_docs/page` filter.
 
@@ -458,6 +478,7 @@ Override the markup by copying to `{theme}/punchout-woocommerce/docs/page.php` (
 | `shortcode_atts_punchout_state`, `shortcode_atts_punchout_abandon_button` | filter | 0.5.0: WordPress's own attribute filters for the state page's words and the leave question |
 | `pow_start_redirect` | filter | Post-login destination |
 | `punchout_visit_front_page_redirect` | filter | Where the site's front page sends a buyer inside an active visit (`$url, $visit`); default the landing page, `''` keeps the front page. Never for administrators or shop managers, outside a visit or when the landing page is the front page |
+| `punchout_visit_page_open` | filter | 0.5.2: whether a page outside the shop opens in an active visit (`$open, $object, $visit`); true opens, false closes, in either "Other pages in a visit" mode. Not asked for the shop's own pages, the visit's own pages, administrators or shop managers, or outside a visit |
 | `punchout_line_description_limit` | filter | 0.5.0: the most characters a line Description with the short description may have (default and ceiling 2,000) |
 | `punchout_order_details_sent` | filter | 0.5.0: the connection's "Order details sent" for one order (`$entries, $order, $partner`); entries are checked again after the filter |
 | `pow_client_ip` | filter | Trust a proxy header for rate limiting / allowlists / audit |

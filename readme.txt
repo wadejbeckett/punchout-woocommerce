@@ -4,7 +4,7 @@ Tags: punchout, cxml, procurement, b2b, woocommerce
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.5.1
+Stable tag: 0.5.2
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -24,7 +24,7 @@ PunchOut for WooCommerce lets enterprise buyers "punch out" from their procureme
 
 **Security first.** Constant-time secret comparison, sodium-sealed secrets (wp-config key), single-use hashed StartPage tokens, per-customer rate limiting and IP allowlists, XXE-hardened XML parsing with no runtime DTD fetches, no-store/noindex on every punchout response, a full audit trail with secrets redacted, and session teardown at every exit.
 
-**One visit, one basket.** Every punchout visit gets its own WordPress auth cookie, its own session token and its own WooCommerce session row, so two employees of one customer shopping at the same moment never see each other's basket or delivery selection. Inside a visit the request is also refused at wp-admin, the users REST routes, application passwords, My Account (except the pages the connection ticks), another visit's basket and another visit's quote order, and no user can be created through WordPress's user insert.
+**One visit, one basket.** Every punchout visit gets its own WordPress auth cookie, its own session token and its own WooCommerce session row, so two employees of one customer shopping at the same moment never see each other's basket or delivery selection. Inside a visit the request is also refused at wp-admin, the users REST routes, application passwords, My Account (except the pages the connection ticks), another visit's basket and another visit's quote order, and no user can be created through WordPress's user insert. A setting can also keep a visit on the shop's own pages, sending it from any other page to the landing page.
 
 **Placement flexibility.** The cart's own checkout button is the way out (relabelled by a setting during a visit, also on the Cart block and in the mini-cart), `[punchout_cart_exits]` renders it anywhere, `[punchout_abandon_button]` places Cancel and return, and `[punchout_state]` draws Sent, Not sent, Link expired and Session ended inside your theme — with theme-overridable templates and filters for every string.
 
@@ -65,6 +65,13 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.5.2 =
+* New setting "Punchout integration tab in My Account" (`account_tab`): "Accounts bound to a connection (default)", "Every signed-in account (the behaviour before 0.5.2)" or "Nobody (administrators hand out the setup XML from Integration docs)". The tab was built for the self-service application flow retired in 0.4.0; by default it now shows only to an account a connection is bound to, whatever the connection's status, so retail, trade and staff accounts no longer see it or its no-connection state. The menu item, the page, the setup-XML download and the opt-in reset all follow the setting (`Account\IntegrationTab::actor()`); an owner lookup that fails, or an account two connections name, sees nothing; a GET of the tab's address by an account it is not shown to lands on the account dashboard. The tab still never shows inside a visit.
+* New setting "Other pages in a visit" (`visit_pages`): "Every page (default)" keeps the behaviour before 0.5.2, so an upgrade changes no visit; "Shop pages only, plus the pages listed" sends a buyer in a live visit from any other page, post or archive to the landing page with the notice every closed page gives (`RouteGuard::visit_page_open()`). The shop, products, product categories, tags, attributes and brands, search, the cart, checkout and the connection's ticked My Account pages stay open, and so do the landing page, the state page, the terms and privacy pages checkout links to and pages holding `[punchout_state]`, `[punchout_abandon_button]` or `[punchout_cart_exits]`. Only GET and HEAD are judged, never for administrators or shop managers and never outside an active visit; the front page keeps its own redirect.
+* New setting "Pages a visit may also open" (`visit_open_pages`, comma-separated page IDs, empty by default): the pages a visit opens besides the shop while "Shop pages only" is chosen.
+* New filter `punchout_visit_page_open` (`$open, $object, $visit`): the last word on a page outside the shop in a visit, in either mode.
+* No schema change (10).
 
 = 0.5.1 =
 * New setting "Saved addresses only in a visit" (`visit_saved_addresses_only`, on by default; filter `punchout_visit_saved_addresses_only` runs last). During a live visit the buyer chooses one of the connection account's saved delivery addresses and cannot add, edit or type one (`Checkout\SavedAddresses`): WooCommerce's checkout fields are rewritten last (after any address book has drawn its selector), an address-book selector in the billing or shipping group loses its "add new" choice (a default of "add new" moves to the first saved entry) and every other billing and shipping field posts as WooCommerce's own hidden field type, keeping its id, name, value, classes and required flag, so an address book's script still fills the same fields on a card change and nothing can be typed. Server-side, a posted delivery address whose street, town, postcode or country is not one of the account's saved entries (WooCommerce's own customer shipping address, an address-book API found by shape, and address entries in the account's user meta found by shape) is refused before any order exists; an account with no saved delivery address takes what checkout posts, so a shop without an address book still works. Outside a visit, and with the setting off, nothing changes.

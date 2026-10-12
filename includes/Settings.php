@@ -18,8 +18,10 @@ defined( 'ABSPATH' ) || exit;
  * Per-partner configuration lives in the partners table (Partners\Registry);
  * this option holds operational knobs only. There is no storefront-wide
  * entitlement: a visit leaves through the shop's checkout with the PunchOut
- * payment method or through Cancel and return, and nothing here decides what
- * a visit may reach.
+ * payment method or through Cancel and return. Since 0.5.2 one store-wide
+ * choice decides which pages outside the shop a visit may open
+ * (`visit_pages`, `visit_open_pages`; RouteGuard applies it), and another who
+ * sees the My Account "Punchout integration" tab (`account_tab`).
  *
  * The sodium key that seals partner secrets is NOT a setting: it must live
  * in wp-config.php as POW_SECRET_KEY so a database dump alone cannot
@@ -41,6 +43,17 @@ class Settings {
 
 	/** Filter over "Saved addresses only in a visit" (0.5.1), applied to the saved setting; it runs last. */
 	public const SAVED_ADDRESSES_FILTER = 'punchout_visit_saved_addresses_only';
+
+	/** Who sees the My Account "Punchout integration" tab (0.5.2): accounts bound to a connection (default), every signed-in account (0.5.1), nobody. */
+	public const ACCOUNT_TAB_OWNERS   = 'owners';
+	public const ACCOUNT_TAB_EVERYONE = 'everyone';
+	public const ACCOUNT_TAB_OFF      = 'off';
+	public const ACCOUNT_TAB_MODES    = [ self::ACCOUNT_TAB_OWNERS, self::ACCOUNT_TAB_EVERYONE, self::ACCOUNT_TAB_OFF ];
+
+	/** Which pages outside the shop a visit opens (0.5.2): every page (default, 0.5.1 behaviour), or the shop's own pages plus the pages listed. */
+	public const VISIT_PAGES_ALL  = 'all';
+	public const VISIT_PAGES_SHOP = 'shop';
+	public const VISIT_PAGE_MODES = [ self::VISIT_PAGES_ALL, self::VISIT_PAGES_SHOP ];
 
 	/** At most this many extra classes are kept. */
 	private const MAX_BUTTON_CLASSES = 20;
@@ -129,6 +142,21 @@ class Settings {
 		// hidden, and a posted delivery address that is not a saved entry is refused (Checkout\SavedAddresses).
 		// The filter punchout_visit_saved_addresses_only runs last.
 		'visit_saved_addresses_only' => 'yes',
+
+		// 0.5.2: who sees the My Account "Punchout integration" tab (its setup-XML download and the opt-in reset):
+		// 'owners' (the default) = an account bound to a connection, whatever the connection's status; 'everyone' =
+		// every signed-in account, as in 0.5.1; 'off' = nobody (administrators hand out the setup XML from the
+		// Integration docs tab). Never inside a visit, whatever this says (Account\IntegrationTab).
+		'account_tab'          => self::ACCOUNT_TAB_OWNERS,
+
+		// 0.5.2: which pages outside the shop a live visit opens. 'all' (the default) keeps 0.5.1: every page opens.
+		// 'shop' opens the shop's own pages (products, the shop, product categories, tags, attributes and brands,
+		// search, the cart, checkout, the visit's ticked My Account pages), the landing page, the state page, the
+		// terms and privacy pages checkout links to, pages holding the visit's own shortcodes, and the pages listed in
+		// 'visit_open_pages' (comma-separated page IDs); any other page or archive sends the buyer to the landing
+		// page with the refusal notice (RouteGuard). The filter punchout_visit_page_open has the last word.
+		'visit_pages'          => self::VISIT_PAGES_ALL,
+		'visit_open_pages'     => '',
 
 		// The site's own button classes, space-separated, added to the cancel
 		// control so it matches the theme without the plugin naming it.
@@ -289,6 +317,44 @@ class Settings {
 	/** True when a visit's checkout offers the account's saved delivery addresses only (0.5.1; on by default); the filter runs last. */
 	public function visit_saved_addresses_only(): bool {
 		return (bool) apply_filters( self::SAVED_ADDRESSES_FILTER, 'yes' === $this->get( 'visit_saved_addresses_only', 'yes' ) );
+	}
+
+	/** Who sees the My Account "Punchout integration" tab (0.5.2): one of ACCOUNT_TAB_MODES; anything else reads as the default, 'owners'. */
+	public function account_tab(): string {
+		$mode = $this->get( 'account_tab', self::ACCOUNT_TAB_OWNERS );
+		return is_string( $mode ) && in_array( $mode, self::ACCOUNT_TAB_MODES, true ) ? $mode : self::ACCOUNT_TAB_OWNERS;
+	}
+
+	/** Which pages outside the shop a visit opens (0.5.2): 'shop' when saved exactly so, else 'all' (the default). */
+	public function visit_pages(): string {
+		return self::VISIT_PAGES_SHOP === $this->get( 'visit_pages', self::VISIT_PAGES_ALL ) ? self::VISIT_PAGES_SHOP : self::VISIT_PAGES_ALL;
+	}
+
+	/**
+	 * The pages a visit may also open while only shop pages open (0.5.2), as saved, read again.
+	 *
+	 * @return list<int>
+	 */
+	public function visit_open_pages(): array {
+		return self::page_ids( $this->get( 'visit_open_pages', '' ) );
+	}
+
+	/**
+	 * A list of page IDs as typed: separated by commas or white space (or already a list); each a positive whole
+	 * number, kept once, in the order given; anything else is dropped.
+	 *
+	 * @return list<int>
+	 */
+	public static function page_ids( mixed $raw ): array {
+		$parts = is_array( $raw ) ? $raw : ( is_string( $raw ) ? ( preg_split( '/[\s,]+/', $raw ) ?: [] ) : [] );
+		$ids   = [];
+		foreach ( $parts as $part ) {
+			if ( is_int( $part ) ) { $part = (string) $part; }
+			if ( ! is_string( $part ) || 1 !== preg_match( '/\A[1-9][0-9]{0,18}\z/', trim( $part ) ) ) { continue; }
+			$id = (int) trim( $part );
+			if ( $id > 0 && ! in_array( $id, $ids, true ) ) { $ids[] = $id; }
+		}
+		return $ids;
 	}
 
 	/** True when the StartPage link waits for one real click instead of submitting itself (0.4.23; off by default). */

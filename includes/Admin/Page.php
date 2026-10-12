@@ -204,6 +204,16 @@ final class Page {
 		return [
 			'enabled'              => [ __( 'Enable punchout', 'punchout-woocommerce' ), 'checkbox', __( 'Master switch. Off = the /punchout/* endpoints and all buyer-facing surfaces are inert.', 'punchout-woocommerce' ) ],
 			'landing_page_id'      => [ __( 'Landing page', 'punchout-woocommerce' ), 'page', __( 'Where buyers land after auto-login. Default: the shop page.', 'punchout-woocommerce' ) ],
+			'visit_pages'          => [
+				__( 'Other pages in a visit', 'punchout-woocommerce' ),
+				'select',
+				__( 'Which pages outside the shop a buyer may open during a visit. Every page: nothing is closed (the behaviour before 0.5.2). Shop pages only: products, the shop, product categories, tags, attributes and brands, search, the cart, checkout and the My Account pages the connection ticks stay open, and so do the landing page, the state page, the terms and privacy pages checkout links to, pages holding [punchout_state], [punchout_abandon_button] or [punchout_cart_exits], and the pages listed below; any other page, post or archive sends the buyer to the landing page with a notice. Administrators and shop managers are never sent away.', 'punchout-woocommerce' ),
+				[
+					\POW\Settings::VISIT_PAGES_ALL  => __( 'Every page (default)', 'punchout-woocommerce' ),
+					\POW\Settings::VISIT_PAGES_SHOP => __( 'Shop pages only, plus the pages listed', 'punchout-woocommerce' ),
+				],
+			],
+			'visit_open_pages'     => [ __( 'Pages a visit may also open', 'punchout-woocommerce' ), 'text', __( 'With shop pages only: page IDs a visit may open besides the shop, separated by commas (for example 12, 345). Any other post ID works the same way. Ignored with every page open.', 'punchout-woocommerce' ) ],
 			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Cancel and return”.', 'punchout-woocommerce' ) ],
 			'checkout_button_label' => [ __( 'Checkout button label', 'punchout-woocommerce' ), 'text', __( 'During a visit, text on the cart’s proceed button and the Cart widget’s checkout button, which open checkout with PunchOut as the only payment method. Blank uses the default: “Proceed to checkout”.', 'punchout-woocommerce' ) ],
 			'visit_saved_addresses_only' => [ __( 'Saved addresses only in a visit', 'punchout-woocommerce' ), 'checkbox', __( 'During a visit, checkout offers only the delivery addresses saved on the connection’s account: an address book’s “add new” choice is removed, the address fields are not editable (the chosen saved address fills them), and a delivery address that is not a saved one is refused. An account with no saved delivery address takes what checkout posts. On by default.', 'punchout-woocommerce' ) ],
@@ -213,6 +223,16 @@ final class Page {
 			'state_page_id'        => [ __( 'State page', 'punchout-woocommerce' ), 'page', __( 'A page holding the [punchout_state] shortcode. Once a cart has been sent, and when a link has expired or a session has ended, the buyer’s browser is sent there, so Sent, Not sent, Link expired and Session ended draw inside your theme (classes pow-state and pow-state--sent, --not-sent, --expired, --ended, --sending). Titles and text are shortcode attributes, for example [punchout_state sent_title="Sent"]. The page that posts the cart itself always stays plain. None keeps the plain pages.', 'punchout-woocommerce' ), [ 'none' => __( 'None: the plain pages (default)', 'punchout-woocommerce' ) ] ],
 			'state_button_label'   => [ __( 'State page button label', 'punchout-woocommerce' ), 'text', __( 'Text on the button of the page that posts the cart to the purchasing system (pressed only when it cannot continue by itself), and on the state page’s button when its shortcode names a button_url. Blank uses the default: “Continue to your purchasing system”.', 'punchout-woocommerce' ) ],
 			'extra_button_classes' => [ __( 'Extra button classes', 'punchout-woocommerce' ), 'text', __( 'Space-separated CSS classes added to the “Cancel and return” control ([punchout_abandon_button]), so it matches your theme’s buttons. Classes starting with pow- are ignored. The cart’s checkout button keeps WooCommerce’s own classes.', 'punchout-woocommerce' ) ],
+			'account_tab'          => [
+				__( 'Punchout integration tab in My Account', 'punchout-woocommerce' ),
+				'select',
+				__( 'Who sees the tab with the connection’s setup-XML download (and the reset, where a connection allows it). The tab never shows inside a punchout visit. With nobody, administrators hand out the setup XML from the Integration docs tab.', 'punchout-woocommerce' ),
+				[
+					\POW\Settings::ACCOUNT_TAB_OWNERS   => __( 'Accounts bound to a connection (default)', 'punchout-woocommerce' ),
+					\POW\Settings::ACCOUNT_TAB_EVERYONE => __( 'Every signed-in account (the behaviour before 0.5.2)', 'punchout-woocommerce' ),
+					\POW\Settings::ACCOUNT_TAB_OFF      => __( 'Nobody (administrators hand out the setup XML from Integration docs)', 'punchout-woocommerce' ),
+				],
+			],
 			'start_link_click'     => [ __( 'Login link needs a click', 'punchout-woocommerce' ), 'checkbox', __( 'The login link opens a short page that continues to the catalog by itself, so a mail scanner that only fetches the link does not use it up. Tick this to make the buyer press a button on that page instead, for scanners that also run scripts. Off by default.', 'punchout-woocommerce' ) ],
 			'start_link_button_label' => [ __( 'Login link button', 'punchout-woocommerce' ), 'text', __( 'Text on the button of the short page the login link opens. Blank uses the default: “Open the catalog”.', 'punchout-woocommerce' ) ],
 			'token_ttl'            => [ __( 'Login link lifetime (s)', 'punchout-woocommerce' ), 'number', __( 'One-time StartPage token TTL. Default 300. At most 604800 (7 days).', 'punchout-woocommerce' ) ],
@@ -318,6 +338,8 @@ final class Page {
 		return \POW\Settings::stored_retired() + [
 			'enabled'              => ( isset( $input['enabled'] ) && 'yes' === $input['enabled'] ) ? 'yes' : 'no',
 			'landing_page_id'      => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
+			'visit_pages'          => in_array( $input['visit_pages'] ?? null, \POW\Settings::VISIT_PAGE_MODES, true ) ? (string) $input['visit_pages'] : \POW\Settings::VISIT_PAGES_ALL,
+			'visit_open_pages'     => implode( ',', \POW\Settings::page_ids( $input['visit_open_pages'] ?? '' ) ),
 			'abandon_button_label' => sanitize_text_field( (string) ( $input['abandon_button_label'] ?? '' ) ),
 			'checkout_button_label' => \POW\Settings::sanitise_label( $input['checkout_button_label'] ?? '' ),
 			'visit_saved_addresses_only' => ( isset( $input['visit_saved_addresses_only'] ) && 'yes' === $input['visit_saved_addresses_only'] ) ? 'yes' : 'no',
@@ -327,6 +349,7 @@ final class Page {
 			'state_page_id'        => max( 0, (int) ( $input['state_page_id'] ?? 0 ) ),
 			'state_button_label'   => \POW\Settings::sanitise_label( $input['state_button_label'] ?? '' ),
 			'extra_button_classes' => implode( ' ', \POW\Settings::button_class_tokens( $input['extra_button_classes'] ?? '' ) ),
+			'account_tab'          => in_array( $input['account_tab'] ?? null, \POW\Settings::ACCOUNT_TAB_MODES, true ) ? (string) $input['account_tab'] : \POW\Settings::ACCOUNT_TAB_OWNERS,
 			'start_link_click'     => ( isset( $input['start_link_click'] ) && 'yes' === $input['start_link_click'] ) ? 'yes' : 'no',
 			'start_link_button_label' => \POW\Settings::sanitise_label( $input['start_link_button_label'] ?? '' ),
 			'token_ttl'            => \POW\Partners\Partner::clamp_ttl( (int) ( $input['token_ttl'] ?? 300 ), 30 ),

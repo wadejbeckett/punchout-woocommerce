@@ -2,6 +2,12 @@
 /**
  * The connection's setup-XML download in WooCommerce My Account.
  *
+ * Since 0.5.2 the tab is shown according to the "Punchout integration tab in
+ * My Account" setting (Settings::account_tab()): by default only to an
+ * account a connection is bound to, else to every signed-in account (the
+ * behaviour before 0.5.2) or to nobody. A GET of its address by an account it
+ * is not shown to lands on the account dashboard.
+ *
  * A read-only surface for the account a connection is bound to: the
  * generated Dynamics setup XML, with a placeholder where the shared secret
  * goes. Nothing here creates, changes, rotates or deactivates anything —
@@ -31,6 +37,7 @@ use POW\Http\Router;
 use POW\Partners\Registration;
 use POW\Partners\Registry;
 use POW\Plugin;
+use POW\Settings;
 use POW\Support\Templates;
 
 defined( 'ABSPATH' ) || exit;
@@ -63,6 +70,7 @@ final class IntegrationTab {
 		add_filter( 'woocommerce_account_menu_items', [ $this, 'add_menu_item' ] );
 		add_action( 'woocommerce_account_' . self::ENDPOINT . '_endpoint', [ $this, 'render' ] );
 		add_action( 'template_redirect', [ $this, 'handle_post' ] );
+		add_action( 'template_redirect', [ $this, 'redirect_hidden_tab' ] );
 	}
 
 	public function add_endpoint(): void {
@@ -108,6 +116,10 @@ final class IntegrationTab {
 	 *
 	 * An unanswerable visit lookup refuses as well: Sessions\Current's
 	 * contract is that a throw is not "no visit".
+	 *
+	 * Last (0.5.2), the account must be one the tab is shown to
+	 * (shown_to()), so the menu item, the page, the download and the reset
+	 * all follow the "Punchout integration tab in My Account" setting.
 	 */
 	private function actor(): int {
 		try {
@@ -115,8 +127,45 @@ final class IntegrationTab {
 			if ( null !== $this->plugin->current_session() ) { return 0; }
 			$id = get_current_user_id();
 			$user = $id > 0 ? get_userdata( $id ) : false;
-			return $user && user_can( $user, 'read' ) ? $id : 0;
+			return $user && user_can( $user, 'read' ) && $this->shown_to( $id ) ? $id : 0;
 		} catch ( \Throwable $e ) { return 0; }
+	}
+
+	/**
+	 * Whether the tab is shown to this account (0.5.2).
+	 *
+	 * Nobody: never. Every signed-in account: always (0.5.1). Accounts bound
+	 * to a connection (the default): when the registry names a connection
+	 * this account owns, whatever its status, so the holder of a pending or
+	 * disabled connection still reads its state. A lookup that fails, or
+	 * finds the account named by two connections, answers no.
+	 */
+	private function shown_to( int $id ): bool {
+		$mode = $this->plugin->settings()->account_tab();
+		if ( Settings::ACCOUNT_TAB_OFF === $mode ) { return false; }
+		if ( Settings::ACCOUNT_TAB_EVERYONE === $mode ) { return true; }
+		try {
+			$partner = $this->registry->find_by_owner( $id );
+			return null !== $partner && $partner->is_owned_by( $id );
+		} catch ( \Throwable $e ) { return false; }
+	}
+
+	/**
+	 * A GET (or HEAD) of the tab's address by a signed-in account the tab is
+	 * not shown to lands on the account dashboard instead of an empty page
+	 * (0.5.2). Inside a visit the route guard has already answered with the
+	 * landing page; a signed-out request keeps WooCommerce's login form; a
+	 * POST is handle_post()'s, which answers nothing for such an account.
+	 */
+	public function redirect_hidden_tab(): void {
+		if ( ! in_array( $_SERVER['REQUEST_METHOD'] ?? 'GET', [ 'GET', 'HEAD' ], true ) || ! is_user_logged_in() ) { return; }
+		if ( ! is_account_page() || ! is_wc_endpoint_url( self::ENDPOINT ) ) { return; }
+		try {
+			if ( null !== $this->plugin->current_session() ) { return; }
+		} catch ( \Throwable $e ) { return; }
+		if ( 0 !== $this->actor() ) { return; }
+		wp_safe_redirect( wc_get_page_permalink( 'myaccount' ), 302 );
+		exit;
 	}
 
 	public function render(): void {

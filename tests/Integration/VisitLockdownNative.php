@@ -27,6 +27,15 @@
  * opens a second, new connection that lists only its dashboard, and proves
  * that a visit creates no user.
  *
+ * 0.5.2: with "Other pages in a visit" set to shop pages only it proves a
+ * visit is sent from an ordinary page, a blog post and a post archive to the
+ * landing page, while the shop, a product category, search, the cart, the
+ * state page, the privacy page and a listed page still open, and that the
+ * same page opens outside a visit and with every page open. It also proves
+ * the My Account tab is the bound account's alone by default. It adds a few
+ * published pages, a post and a product category for that, and leaves them,
+ * and puts the settings it changes back.
+ *
  * @package POW
  * @license AGPL-3.0-or-later
  */
@@ -85,6 +94,100 @@ final class VisitLockdownNative {
 		try { $operation(); return false; }
 		catch ( VisitLockdownRedirect $redirect ) { return true; }
 		finally { remove_filter( 'wp_redirect', [ $this, 'catch_redirect' ], PHP_INT_MAX ); }
+	}
+
+	/**
+	 * guard() for a front-end GET of $query, parsed and queried as WordPress does for a real request; true when the
+	 * guard would have redirected.
+	 *
+	 * @param array<string, string> $query
+	 */
+	private function page_refused( POW\RouteGuard $guard, array $query ): bool {
+		global $wp;
+		$saved = [ $_GET, $_SERVER['REQUEST_URI'] ?? null, $_SERVER['QUERY_STRING'] ?? null ];
+		$_GET  = $query;
+		$_SERVER['QUERY_STRING'] = http_build_query( $_GET );
+		$_SERVER['REQUEST_URI']  = '/?' . $_SERVER['QUERY_STRING'];
+		$GLOBALS['wp_the_query'] = new WP_Query();
+		$GLOBALS['wp_query']     = $GLOBALS['wp_the_query'];
+		try {
+			$wp->parse_request();
+			$wp->query_posts();
+			return $this->redirected( fn() => $guard->guard() );
+		} finally {
+			[ $_GET, $uri, $query_string ] = $saved;
+			if ( null === $uri ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $uri; }
+			if ( null === $query_string ) { unset( $_SERVER['QUERY_STRING'] ); } else { $_SERVER['QUERY_STRING'] = $query_string; }
+		}
+	}
+
+	/**
+	 * 0.5.2: "Other pages in a visit". With shop pages only, the site's other pages send a visit to the landing
+	 * page; the shop's own pages, the visit's own pages and a listed page open; outside a visit, and with every page
+	 * open (the default), nothing changes. The settings and the privacy page option are put back afterwards.
+	 */
+	private function visit_pages(): void {
+		[ $first ] = $this->visits;
+		$suffix = bin2hex( random_bytes( 4 ) );
+		$make   = static function ( string $title, string $type = 'page', string $content = '' ) use ( $suffix ): int {
+			$id = wp_insert_post( [ 'post_title' => $title . ' ' . $suffix, 'post_type' => $type, 'post_status' => 'publish', 'post_content' => $content ], true );
+			if ( is_wp_error( $id ) || (int) $id <= 0 ) { throw new RuntimeException( 'Visit-pages fixture page could not be created.' ); }
+			return (int) $id;
+		};
+		$about   = $make( 'Lockdown about' );
+		$listed  = $make( 'Lockdown listed' );
+		$news    = $make( 'Lockdown news', 'post' );
+		$state   = $make( 'Lockdown state', 'page', '[punchout_state]' );
+		$privacy = $make( 'Lockdown privacy' );
+		$term    = wp_insert_term( 'Lockdown category ' . $suffix, 'product_cat' );
+		if ( is_wp_error( $term ) ) { throw new RuntimeException( 'Visit-pages fixture category could not be created.' ); }
+		$category = (string) get_term( (int) $term['term_id'], 'product_cat' )->slug;
+
+		$settings       = get_option( POW\Settings::OPTION_KEY );
+		$privacy_before = get_option( 'wp_page_for_privacy_policy' );
+		$guard          = fn(): POW\RouteGuard => new POW\RouteGuard( POW\Plugin::instance(), $this->registry, new POW\Settings() );
+		try {
+			update_option( 'wp_page_for_privacy_policy', $privacy );
+			update_option( POW\Settings::OPTION_KEY, array_replace( is_array( $settings ) ? $settings : [], [ 'visit_pages' => 'shop', 'visit_open_pages' => (string) $listed ] ) );
+			pow_native_enter_visit( $first );
+			$shop = $guard();
+			$this->check( $this->page_refused( $shop, [ 'page_id' => (string) $about ] ), 'shop pages only: an ordinary page is refused inside a visit' );
+			$this->check( $this->page_refused( $shop, [ 'p' => (string) $news ] ), 'shop pages only: a blog post is refused inside a visit' );
+			$this->check( $this->page_refused( $shop, [ 'cat' => (string) get_option( 'default_category' ) ] ), 'shop pages only: a post category archive is refused inside a visit' );
+			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $listed ] ), 'shop pages only: a listed page opens' );
+			$this->check( ! $this->page_refused( $shop, [ 'post_type' => 'product' ] ), 'shop pages only: the shop opens' );
+			$this->check( ! $this->page_refused( $shop, [ 'product_cat' => $category ] ), 'shop pages only: a product category opens' );
+			$this->check( ! $this->page_refused( $shop, [ 's' => 'lockdown' ] ), 'shop pages only: search opens' );
+			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) wc_get_page_id( 'cart' ) ] ), 'shop pages only: the cart opens' );
+			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $state ] ), 'shop pages only: a page drawing the visit\'s state opens' );
+			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $privacy ] ), 'shop pages only: the privacy page checkout links to opens' );
+			pow_native_leave_visit( $this->account );
+			$this->check( ! $this->page_refused( $guard(), [ 'page_id' => (string) $about ] ), 'shop pages only: the bound account outside a visit opens the same page' );
+			update_option( POW\Settings::OPTION_KEY, array_replace( is_array( $settings ) ? $settings : [], [ 'visit_pages' => 'all' ] ) );
+			pow_native_enter_visit( $first );
+			$this->check( ! $this->page_refused( $guard(), [ 'page_id' => (string) $about ] ), 'every page (the default): the ordinary page opens inside a visit' );
+		} finally {
+			update_option( POW\Settings::OPTION_KEY, $settings );
+			update_option( 'wp_page_for_privacy_policy', $privacy_before );
+			pow_native_leave_visit( $this->admin );
+		}
+	}
+
+	/** 0.5.2: by default the My Account tab is the bound account's alone; another customer has no menu item. */
+	private function account_tab_owners(): void {
+		$plugin = POW\Plugin::instance();
+		$tab    = new POW\Account\IntegrationTab( $plugin, $this->registry, $plugin->audit() ?? throw new RuntimeException( 'Plugin services unavailable.' ) );
+		$other  = pow_native_bound_account( 'lockdown-other' );
+		try {
+			pow_native_leave_visit( $this->account );
+			$this->check( array_key_exists( POW\Account\IntegrationTab::ENDPOINT, $tab->add_menu_item( [ 'dashboard' => 'Dashboard' ] ) ), 'the bound account outside a visit has the Punchout integration tab' );
+			pow_native_leave_visit( $other );
+			$this->check( ! array_key_exists( POW\Account\IntegrationTab::ENDPOINT, $tab->add_menu_item( [ 'dashboard' => 'Dashboard' ] ) ), 'a customer account bound to no connection has no Punchout integration tab' );
+			pow_native_enter_visit( $this->visits[0] );
+			$this->check( ! array_key_exists( POW\Account\IntegrationTab::ENDPOINT, $tab->add_menu_item( [ 'dashboard' => 'Dashboard' ] ) ), 'and the bound account inside a visit has none either' );
+		} finally {
+			pow_native_leave_visit( $this->admin );
+		}
 	}
 
 	private function threw( callable $operation ): bool {
@@ -849,6 +952,8 @@ final class VisitLockdownNative {
 			$this->foreign_basket();
 			$this->foreign_order();
 			$this->checkout();
+			$this->visit_pages();
+			$this->account_tab_owners();
 			$this->user_creation();
 			$this->logout();
 		} finally {

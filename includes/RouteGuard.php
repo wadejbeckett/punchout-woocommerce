@@ -36,6 +36,11 @@ defined( 'ABSPATH' ) || exit;
  * The one per-connection question here is which My Account pages a visit
  * may open. It is the connection's `visit_endpoints` column: the pages an
  * administrator ticked, `dashboard` standing for the account page itself.
+ *
+ * The one store-wide question (0.5.2) is which other pages a visit may open:
+ * every page (the default), or only the shop's own pages and the pages the
+ * store lists (Settings::visit_pages(), visit_open_pages(); the pure rule is
+ * visit_page_open(), the filter `punchout_visit_page_open` runs last).
  */
 final class RouteGuard {
 
@@ -164,6 +169,145 @@ final class RouteGuard {
 			wp_safe_redirect( $front, 302 );
 			exit;
 		}
+
+		// 0.5.2: with "Other pages in a visit" set to shop pages only, a page outside the shop sends the buyer to
+		// the landing page, with the same notice as every closed page.
+		if ( $this->page_refused( $visit ) ) {
+			$this->redirect_to_landing();
+			return;
+		}
+	}
+
+	/** Filter over whether a page outside the shop opens in a visit (0.5.2): bool $open, the queried object, Session $visit. */
+	public const PAGE_OPEN_FILTER = 'punchout_visit_page_open';
+
+	/** The plugin's own shortcodes whose pages a visit needs: the state, the cancel control, the checkout link. */
+	private const VISIT_SHORTCODES = [ Http\StatePage::SHORTCODE, 'punchout_abandon_button', 'punchout_cart_exits' ];
+
+	/**
+	 * Whether this request is a page outside the shop that its visit may not open (0.5.2).
+	 *
+	 * The facts come from WordPress's and WooCommerce's own answers about the main query; the decision is
+	 * visit_page_open(); for a page it judges, the filter `punchout_visit_page_open` (bool $open, the queried
+	 * object: a WP_Post for a single page or post or the blog index, a term, author or post type for other archives,
+	 * else null; Session $visit) has the last word. A rule that cannot be read lets the page through rather than
+	 * send the buyer round between refusals: these are the site's content pages; the shop's own doors (account,
+	 * orders, payment, wp-admin, REST) keep failing closed on their own.
+	 */
+	private function page_refused( ?Session $visit ): bool {
+		if ( null === $visit ) {
+			return false;
+		}
+		try {
+			$open = self::visit_page_open(
+				$this->settings->visit_pages(),
+				(string) ( $_SERVER['REQUEST_METHOD'] ?? 'GET' ),
+				$visit,
+				Registry::privileged( get_current_user_id() ),
+				$this->page_request(),
+				$this->settings->visit_open_pages()
+			);
+			if ( null === $open ) {
+				return false;
+			}
+			$object = function_exists( 'get_queried_object' ) ? get_queried_object() : null;
+
+			return ! (bool) apply_filters( self::PAGE_OPEN_FILTER, $open, $object, $visit );
+		} catch ( \Throwable $error ) {
+			return false;
+		}
+	}
+
+	/**
+	 * The main query as the page rule reads it: WordPress's and WooCommerce's answers, each false where the function
+	 * is missing, the page's ID (a single page or post, or the blog index's own page) and whether it is one of the
+	 * visit's own pages (landing, state, terms, privacy, or one holding the plugin's visit shortcodes).
+	 *
+	 * @return array<string, bool|int>
+	 */
+	private function page_request(): array {
+		$is = static fn( string $conditional ): bool => function_exists( $conditional ) && (bool) $conditional();
+
+		$singular = $is( 'is_singular' );
+		$home     = $is( 'is_home' );
+		$id       = 0;
+		if ( $singular && function_exists( 'get_queried_object_id' ) ) {
+			$id = (int) get_queried_object_id();
+		} elseif ( $home && function_exists( 'get_queried_object_id' ) ) {
+			// The blog index is its own page only when the site has a posts page and this is it.
+			$posts_page = (int) get_option( 'page_for_posts', 0 );
+			$id         = $posts_page > 0 && (int) get_queried_object_id() === $posts_page ? $posts_page : 0;
+		}
+
+		return [
+			'front'    => $is( 'is_front_page' ),
+			'feed'     => $is( 'is_feed' ),
+			'search'   => $is( 'is_search' ),
+			'missing'  => $is( 'is_404' ),
+			'shop'     => $is( 'is_shop' ) || $is( 'is_product_taxonomy' ) || $is( 'is_product' ) || $is( 'is_cart' ) || $is( 'is_checkout' ) || $is( 'is_account_page' ),
+			'singular' => $singular,
+			'archive'  => $is( 'is_archive' ) || $home,
+			'id'       => $id,
+			'plugin'   => $this->visit_own_page( $id, $singular ),
+		];
+	}
+
+	/** The landing, state, terms or privacy page, a page drawing a state, or a page holding the plugin's visit shortcodes. */
+	private function visit_own_page( int $id, bool $singular ): bool {
+		$own = [
+			$this->settings->int( 'landing_page_id' ),
+			$this->settings->int( 'state_page_id' ),
+			function_exists( 'wc_terms_and_conditions_page_id' ) ? (int) wc_terms_and_conditions_page_id() : 0,
+			function_exists( 'wc_privacy_policy_page_id' ) ? (int) wc_privacy_policy_page_id() : (int) get_option( 'wp_page_for_privacy_policy', 0 ),
+		];
+		if ( $id > 0 && in_array( $id, $own, true ) ) {
+			return true;
+		}
+		if ( ! $singular || ! function_exists( 'get_queried_object' ) || ! function_exists( 'has_shortcode' ) ) {
+			return false;
+		}
+		$post    = get_queried_object();
+		$content = is_object( $post ) && isset( $post->post_content ) ? (string) $post->post_content : '';
+		foreach ( self::VISIT_SHORTCODES as $shortcode ) {
+			if ( '' !== $content && has_shortcode( $content, $shortcode ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Pure rule for the pages a visit may open (0.5.2).
+	 *
+	 * Null when the request is not judged, so it opens and the filter is not asked: no visit, a visit that is not
+	 * active, an administrator or shop manager, a method other than GET or HEAD, the front page (its own redirect),
+	 * a feed, a search, a missing page, one of the shop's own pages (`shop`), one of the visit's own pages
+	 * (`plugin`), or a request that is neither a single post or page nor an archive. Otherwise whether it opens
+	 * before the filter: with $mode 'shop', only a single page or post (or the blog index's page) whose `id` is in
+	 * $open_ids; with any other $mode, every page.
+	 *
+	 * @param array<string, bool|int> $request  Facts: front, feed, search, missing, shop, plugin, singular, archive (bool), id (int).
+	 * @param list<int>               $open_ids The pages the store lists.
+	 */
+	public static function visit_page_open( string $mode, string $method, ?Session $visit, bool $privileged, array $request, array $open_ids ): ?bool {
+		if ( null === $visit || Session::ACTIVE !== $visit->status || $privileged || ! in_array( strtoupper( $method ), [ 'GET', 'HEAD' ], true ) ) {
+			return null;
+		}
+		foreach ( [ 'front', 'feed', 'search', 'missing', 'shop', 'plugin' ] as $never_judged ) {
+			if ( ! empty( $request[ $never_judged ] ) ) {
+				return null;
+			}
+		}
+		if ( empty( $request['singular'] ) && empty( $request['archive'] ) ) {
+			return null;
+		}
+		if ( Settings::VISIT_PAGES_SHOP !== $mode ) {
+			return true;
+		}
+		$id = (int) ( $request['id'] ?? 0 );
+
+		return $id > 0 && in_array( $id, $open_ids, true );
 	}
 
 	/** Filter for the front-page redirect inside a visit: the target URL, '' keeps the front page. */
