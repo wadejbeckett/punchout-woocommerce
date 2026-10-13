@@ -155,4 +155,24 @@ final class PoomEnvelopeTest extends TestCase {
 		self::assertStringContainsString( 'quantity="2.5"', $xml );
 		self::assertStringContainsString( 'quantity="3"', $xml, 'whole floats emit as integers' );
 	}
+
+	public function test_characters_xml_cannot_carry_are_dropped_so_the_document_stays_well_formed(): void {
+		// An imported name or SKU can hold a C0 control character; written as a character reference it makes the
+		// whole message malformed and the receiver rejects every line.
+		$lines = $this->two_lines();
+		$lines[0]['short_name']       = "Blue\x0BOverall";
+		$lines[0]['description']      = "Blue\x01 Overall";
+		$lines[0]['supplier_part_id'] = "CcSku\x1F-001a";
+		$xml = $this->poom( $lines );
+
+		$previous = libxml_use_internal_errors( true );
+		$doc      = new DOMDocument();
+		$loaded   = $doc->loadXML( $xml );
+		libxml_clear_errors();
+		libxml_use_internal_errors( $previous );
+		self::assertTrue( $loaded, 'The message parses as XML 1.0' );
+		self::assertStringContainsString( '<SupplierPartID>CcSku-001a</SupplierPartID>', $xml );
+		self::assertStringContainsString( 'BlueOverall', $xml );
+		self::assertStringContainsString( 'Café grade', $this->poom( $this->two_lines() ), 'Multibyte text is untouched' );
+	}
 }
