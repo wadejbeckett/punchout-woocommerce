@@ -61,6 +61,12 @@ final class Parser {
 			throw new ParseException( 'Unparseable XML', 406 );
 		}
 
+		// The byte check above cannot read a body in another encoding (UTF-16
+		// hides "<!ENTITY" from it); the parsed DOCTYPE is checked as well.
+		if ( null !== $doc->doctype && ( $doc->doctype->entities->length > 0 || false !== stripos( (string) $doc->doctype->internalSubset, '<!ENTITY' ) ) ) {
+			throw new ParseException( 'Entity declarations are not accepted', 406 );
+		}
+
 		$root = $doc->documentElement;
 
 		if ( 'cXML' !== $root->tagName ) {

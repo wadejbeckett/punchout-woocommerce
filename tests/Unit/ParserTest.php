@@ -217,6 +217,25 @@ XML;
 		}
 	}
 
+	public function test_entity_declarations_are_rejected_in_any_encoding(): void {
+		// The raw-byte check cannot see "<!ENTITY" in a UTF-16 body; libxml decodes it and would expand the entity.
+		$xml = str_replace(
+			'<?xml version="1.0" encoding="utf-8"?>',
+			'<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE cXML [<!ENTITY a "AAAA"><!ENTITY b "&a;&a;&a;&a;">]>',
+			$this->d365_setup_request()
+		);
+		$xml = str_replace( '<BuyerCookie>', '<BuyerCookie>&b;', $xml );
+
+		foreach ( [ "\xFF\xFE" . mb_convert_encoding( $xml, 'UTF-16LE', 'UTF-8' ), "\xFE\xFF" . mb_convert_encoding( $xml, 'UTF-16BE', 'UTF-8' ) ] as $body ) {
+			try {
+				$this->parser->parse( $body );
+				self::fail( 'Expected ParseException' );
+			} catch ( ParseException $e ) {
+				self::assertSame( 406, $e->cxml_status );
+			}
+		}
+	}
+
 	public function test_garbage_is_406(): void {
 		foreach ( [ '', 'not xml at all', '<unclosed', '<root/>' ] as $garbage ) {
 			try {
