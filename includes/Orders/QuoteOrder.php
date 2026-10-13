@@ -387,6 +387,8 @@ final class QuoteOrder {
 				$context['partner_id'] = (int) $order->get_meta( self::META_PARTNER_ID );
 				$visit = $this->sessions->find( $session_id );
 				if ( null !== $visit && ! \POW\Http\EndedVisit::over( $visit ) ) { continue; }
+				// The order this visit's return sent: still pending only because the Quote status write failed.
+				if ( null !== $visit && $visit->order_id === (int) $order_id ) { continue; }
 				$order->delete( false );
 				$context['result'] = 'stale';
 				$this->audit->write( 'pending_order_trashed', $context );

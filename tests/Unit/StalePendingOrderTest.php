@@ -121,6 +121,16 @@ final class StalePendingOrderTest extends TestCase {
 		self::assertSame( [], QuoteOrderTestLog::$written );
 	}
 
+	public function test_the_order_a_returned_visit_sent_is_never_binned_even_when_it_stayed_pending(): void {
+		// The Quote status is written after the win; when that write fails the sent order is still pending.
+		$this->store->rows = [ 42 => Session::from_row( [ 'id' => 42, 'partner_id' => 5, 'user_id' => 20, 'status' => 'returned', 'order_id' => 501, 'expires' => gmdate( 'Y-m-d H:i:s', time() + 3600 ) ] ) ];
+		$sent  = $this->order( 501, 42 );
+		$loser = $this->order( 502, 42 );
+		self::assertSame( 1, $this->quotes()->trash_stale_pending( Handoff::TTL ) );
+		self::assertFalse( $sent->trashed, 'The order the buyer\'s system received stays' );
+		self::assertTrue( $loser->trashed );
+	}
+
 	public function test_an_order_that_is_not_pending_or_carries_no_visit_is_left_alone_whatever_the_query_returned(): void {
 		$this->store->rows = [ 42 => $this->visit( 42, 'returned' ) ];
 		$quote = $this->order( 501, 42, 'punchout-quote' );
