@@ -124,7 +124,7 @@ final class ConnectionMessageSettingsTest extends TestCase {
 	}
 
 	/**
-	 * Security review, 11 October: the plugin's own order keys (the cXML copy, the buyer's identity, the visit) are
+	 * 0.5.0 hardening: the plugin's own order keys (the cXML copy, the buyer's identity, the visit) are
 	 * never "order details": a key beginning with _pow_ is refused wherever a list is written or read, and the form
 	 * says where the values go.
 	 */

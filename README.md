@@ -361,7 +361,7 @@ Punchout onboarding is a data exchange followed by testing in the buyer's own pu
 | Item | Why |
 |---|---|
 | Their From credential (domain + identity) and Sender identity | registry row; the Sender pair is the auth lookup key |
-| Which legal entities get catalog access | Multiple entities can require separate identities or partner rows. Every returned cart currently uses ZAR. |
+| Which legal entities get catalog access | Multiple entities can require separate identities or partner rows. Every returned cart uses the store's own currency (no conversion). |
 | The cXML version their system emits | codec config |
 | Evidence of a successful cross-site browser form return in the intended browser and purchasing system | Verify the receiver retains the buyer's authenticated session |
 | Test environment access, a named buyer administrator and an acceptance window | Receiver consumption is proved in that environment |

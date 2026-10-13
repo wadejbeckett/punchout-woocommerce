@@ -1,7 +1,7 @@
 <?php
 /**
  * The plain page that posts a cart (or the empty cancel message) to the purchasing system carries the state classes
- * too (0.5.0, ticket 77): Sending after Submit, Not sent after Cancel and return. It stays theme-free, because it holds
+ * too (0.5.0): Sending after Submit, Not sent after Cancel and return. It stays theme-free, because it holds
  * the cXML and the visit's BuyerCookie; its fallback button (pressed only when the page cannot post by itself) is
  * the "State page button label" setting, and the pow_handoff_copy filter still has the last word.
  *

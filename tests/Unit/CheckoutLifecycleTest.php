@@ -1,6 +1,6 @@
 <?php
 /**
- * The order lifecycle around Submit (0.5.0, ticket 74), the parts WooCommerce asks about through its own hooks:
+ * The order lifecycle around Submit (0.5.0), the parts WooCommerce asks about through its own hooks:
  *
  * - Before an order exists (woocommerce_after_checkout_validation): a line without a SKU, a cart priced in another
  *   currency, or a note cXML cannot carry is refused with a plain message, so WooCommerce creates no order.
@@ -129,7 +129,7 @@ namespace {
 		}
 
 		/**
-		 * Security review, 11 October: an address the message cannot carry (a field past its bound, a control
+		 * 0.5.0 hardening: an address the message cannot carry (a field past its bound, a control
 		 * character, no name, a country that is not an ISO code) used to vanish silently from the cXML. With a street
 		 * posted and the connection sending ShipTo, it is refused before any order exists.
 		 */

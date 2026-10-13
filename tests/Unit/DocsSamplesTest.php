@@ -274,7 +274,7 @@ final class DocsSamplesTest extends TestCase {
 		);
 	}
 
-	/** Rulings of 11 October: the samples are priced in the store's own currency, as the returned cart is. */
+	/** Since 0.5.0: the samples are priced in the store's own currency, as the returned cart is. */
 	public function test_the_samples_are_priced_in_the_stores_currency(): void {
 		$GLOBALS['pow_test_currency'] = 'EUR';
 		try {

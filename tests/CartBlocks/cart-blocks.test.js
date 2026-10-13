@@ -21,7 +21,7 @@ function load(config, api = true) {
 
 const restricted = { restricted: true, label: 'Review' };
 
-// 0.5.0 (ticket 76): in a visit the Cart block's own button keeps its native link to checkout, where PunchOut is the
+// 0.5.0: in a visit the Cart block's own button keeps its native link to checkout, where PunchOut is the
 // only payment method, and carries the Checkout button label. Nothing points at the old review page any more.
 test('in a visit the first render and later cart refreshes carry the checkout button label and keep the native link', () => {
 	const client = load(restricted);

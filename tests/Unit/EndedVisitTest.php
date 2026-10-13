@@ -1,6 +1,6 @@
 <?php
 /**
- * A visit that has ended, seen from its browser (0.5.0, ticket 77). When a visit ends without the browser leaving
+ * A visit that has ended, seen from its browser (0.5.0). When a visit ends without the browser leaving
  * (its time ran out, an administrator ended it, the store was switched off), its login cookie stays in the browser
  * but no longer signs anyone in, so the next page used to open silently as a guest. With a state page chosen, a page
  * request from that browser is sent to the state the visit ended in instead: Session ended (or Not sent after Cancel

@@ -29,7 +29,7 @@ defined( 'ABSPATH' ) || exit;
  * - the marker the handoff leaves when it clears that cookie (Handoff::SENT_MARKER), keyed so it cannot be forged.
  * When that visit has returned, the browser is sent to the visit's handoff while its page has never been served (for
  * this login), and otherwise to the Sent state, with no auto-posting form: the cart is never posted twice. With a
- * state page chosen (0.5.0, ticket 77), a visit the login cookie names that ended without sending (its time ran
+ * state page chosen (0.5.0), a visit the login cookie names that ended without sending (its time ran
  * out, it was ended, or Cancel and return closed it) sends the Submit to Session ended or Not sent there. Anything
  * else carries on to WooCommerce untouched.
  */
@@ -73,7 +73,7 @@ final class LateSubmit {
 				if ( Session::RETURNED === $visit->status ) {
 					return Handoff::after_return( $visit, $token );
 				}
-				// 0.5.0 (ticket 77): a visit that ended without sending goes to its state, on the site's state page.
+				// 0.5.0: a visit that ended without sending goes to its state, on the site's state page.
 				$ended = EndedVisit::over( $visit ) ? StatePage::link( EndedVisit::state( $visit ) ) : null;
 				if ( null !== $ended ) { return $ended; }
 			}

@@ -88,7 +88,7 @@ class Handoffs(unittest.TestCase):
 
 
 class Returns(unittest.TestCase):
-    """0.5.0 (ticket 77): what the page sends to /punchout/return while the buyer answers the leave question."""
+    """0.5.0: what the page sends to /punchout/return while the buyer answers the leave question."""
 
     def test_only_requests_to_the_return_endpoint_count_by_method(self):
         page = _Page()

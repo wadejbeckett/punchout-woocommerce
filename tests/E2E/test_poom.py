@@ -166,7 +166,7 @@ class MessageLines(unittest.TestCase):
 
 
 class OrderMessageSettings(unittest.TestCase):
-    """0.5.0 ticket 75: each line's Description and ShortName, the exact DeliveryInstructions, the freight line's
+    """0.5.0: each line's Description and ShortName, the exact DeliveryInstructions, the freight line's
     description."""
 
     INSTRUCTIONS = 'Deliver to: Buyer Co. Leave at the gate.'

@@ -1,6 +1,6 @@
 <?php
 /**
- * A Submit that arrives after the visit has returned (0.5.0, ticket 74). The visit's login has ended, so the request
+ * A Submit that arrives after the visit has returned (0.5.0). The visit's login has ended, so the request
  * is a guest and WooCommerce would refuse it at its nonce check ("your session has expired"). PunchOut catches it
  * first, on wc_ajax_checkout and on the form post, and sends the browser to the Sent state with no auto-posting form,
  * or to the visit's own handoff while that page has never been served. The proof that this browser ran the visit is
@@ -159,7 +159,7 @@ namespace {
 			self::assertNull( $this->late()->target() );
 		}
 
-		/** 0.5.0 (ticket 77): with a state page chosen, a Submit from a visit that ended without sending goes there too. */
+		/** 0.5.0: with a state page chosen, a Submit from a visit that ended without sending goes there too. */
 		public function test_with_a_state_page_a_submit_after_the_visit_ended_or_left_without_sending_goes_there(): void {
 			$saved = [ $GLOBALS['pow_test_options'] ?? null, $GLOBALS['pow_test_posts'] ?? null ];
 			$GLOBALS['pow_test_posts'][314] = [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/visit/' ];

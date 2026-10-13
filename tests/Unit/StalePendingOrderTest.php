@@ -1,6 +1,6 @@
 <?php
 /**
- * Housekeeping of pending PunchOut orders (security review, 11 October): a pending order carrying a visit's
+ * Housekeeping of pending PunchOut orders (0.5.0 hardening): a pending order carrying a visit's
  * provenance whose visit is no longer active (returned, closed, expired, gone, or past its time) and older than the
  * handoff TTL is moved to the bin with no status change, so no e-mail is sent and nothing of the visit lingers as
  * an order WooCommerce would resume. A pending order of a live visit is WooCommerce's to resume.

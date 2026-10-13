@@ -1,6 +1,6 @@
 <?php
 /**
- * Cancel and return asks first (0.5.0, ticket 77): when the site turns on "Ask before leaving" and the visit's cart has
+ * Cancel and return asks first (0.5.0): when the site turns on "Ask before leaving" and the visit's cart has
  * items, the cancel control does not leave at once. With the plugin's own script the question opens in a dialog on
  * the page; without it, the server sends the browser back to the page it came from with the dialog open
  * (?pow_leave=ask). Either way, only a post carrying the answer (pow_leave=confirmed) leaves. An empty cart leaves at

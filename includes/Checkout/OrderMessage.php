@@ -43,7 +43,7 @@ defined( 'ABSPATH' ) || exit;
  *   its shipping total before tax is more than zero: one quantity-one freight line, that total, named after its
  *   shipping method(s) with the estimate sentence (estimate_sentence(): a fixed translatable sentence, filter
  *   `punchout_delivery_estimate_note`, blank sends none), which then also leads DeliveryInstructions. Otherwise (off,
- *   no shipping line, or free shipping: ruling of 11 October, no 0.00 line and no estimate sentence) the order's
+ *   no shipping line, or free shipping: no 0.00 line and no estimate sentence) the order's
  *   shipping line stays the store's estimate and never reaches the message, and the Total is the products'. The
  *   plugin adds no delivery wording of its own anywhere a buyer reads.
  * - Envelope: From and To reversed from the setup, Sender identity only (no shared secret exists here), the visit's

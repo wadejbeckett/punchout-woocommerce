@@ -104,12 +104,12 @@ class ReleasePath(unittest.TestCase):
         self.assertEqual(driver.path_for('0.5.0', 'review', True), 'review')
 
     def test_auto_takes_checkout_on_a_build_with_the_punchout_payment_method_whatever_its_number(self):
-        # 0.5.0 work in progress still carries the 0.4.23 number; from ticket 76 its cart has no way to the review.
+        # 0.5.0 work in progress still carries the 0.4.23 number; once checkout is the way out its cart has no way to the review.
         self.assertEqual(driver.path_for('0.4.23', 'auto', True), 'checkout')
         self.assertEqual(driver.path_for('0.4.23', 'auto', False), 'review')
 
     def test_the_review_path_is_refused_cleanly(self):
-        """0.5.0 (ticket 79): the review retired, so a review answer is a refusal with its reason, never a run."""
+        """0.5.0: the review retired, so a review answer is a refusal with its reason, never a run."""
         self.assertIsNone(driver.refuse_review('checkout', True))
         self.assertIsNone(driver.refuse_review('checkout', False))
         self.assertIn('PunchOut payment method', driver.refuse_review('review', True))
@@ -225,7 +225,7 @@ CHECKOUT = (
 
 
 class HandoffPolicy(unittest.TestCase):
-    """Security review (11 October): the handoff page's headers, as the start page's are checked."""
+    """Security hardening (0.5.0): the handoff page's headers, as the start page's are checked."""
 
     SCRIPT = "document.getElementById( 'pow-handoff-form' ).submit();"
     PAGE = ('<html><body style="margin:4em auto"><main class="pow-state pow-state--sending"><p style="color:#666">Ref</p>'
@@ -329,7 +329,7 @@ class OrderAgainstMessage(unittest.TestCase):
 
 
 class Lifecycle(unittest.TestCase):
-    """0.5.0 order lifecycle (ticket 74): what the second leg reads from pages, answers and the run's e-mail log."""
+    """0.5.0 order lifecycle: what the second leg reads from pages, answers and the run's e-mail log."""
 
     def test_a_state_page_is_named_by_its_modifier_class(self):
         page = '<main class="pow-state pow-state--sent"><h1 class="pow-state__title">Sent</h1></main>'
@@ -378,7 +378,7 @@ class Lifecycle(unittest.TestCase):
 
 
 class LongNoteWithOrderDetails(unittest.TestCase):
-    """0.5.0 with tickets 74 and 75 together: a note past 2,000 characters shares DeliveryInstructions with the
+    """0.5.0, the order lifecycle and the message settings together: a note past 2,000 characters shares DeliveryInstructions with the
     estimate sentence and the order details, and only the note is shortened so that the whole fits."""
 
     NOTE = 'Gate\x01 code 7.' + ' Use the rear entrance.' * 100
@@ -434,7 +434,7 @@ SEED_75 = {
 
 
 class OrderMessageLeg(unittest.TestCase):
-    """0.5.0 ticket 75: the checkout leg sets the connection's message settings and checks them in the cXML."""
+    """0.5.0: the checkout leg sets the connection's message settings and checks them in the cXML."""
 
     def test_the_delivery_date_is_a_weekday_the_given_days_ahead(self):
         from datetime import date
@@ -557,7 +557,7 @@ BILLING = {'first_name': 'Receiving', 'last_name': 'Desk', 'company': 'Buyer Co'
 
 
 class CheckoutInAVisit(unittest.TestCase):
-    """0.5.0 ticket 76: billing from the account, a saved delivery address chosen, refusals read from answers."""
+    """0.5.0: billing from the account, a saved delivery address chosen, refusals read from answers."""
 
     def form(self, page=CHECKOUT_76):
         return driver.checkout_form(page, BASE + '/?page_id=258')
@@ -656,7 +656,7 @@ class CheckoutInAVisit(unittest.TestCase):
 
 
 class StatePages(unittest.TestCase):
-    """0.5.0 (ticket 77): the state page as the driver reads it, and Cancel and return asking first."""
+    """0.5.0: the state page as the driver reads it, and Cancel and return asking first."""
 
     PAGE = (
         '<html><body class="page-template-default page page-id-77 logged-out">'

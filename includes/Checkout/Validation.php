@@ -28,7 +28,7 @@ defined( 'ABSPATH' ) || exit;
  *   and lowercase; an account with no saved delivery address takes what is posted);
  * - while the connection sends ShipTo, a posted delivery address with a street that cXML cannot carry
  *   (OrderMessage::to_cxml(): a field past its bound, a control character, no company or person, a country that is
- *   not an ISO code), which would otherwise vanish silently from the message (security review, 11 October).
+ *   not an ISO code), which would otherwise vanish silently from the message (0.5.0 hardening).
  *   WooCommerce hands this step the shipping fields as the order will have them (the billing address when the
  *   ship-to box is unticked).
  *

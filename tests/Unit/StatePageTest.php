@@ -1,6 +1,6 @@
 <?php
 /**
- * The state page (0.5.0, ticket 77). A visit ends on a page the site chooses in the settings: one shortcode,
+ * The state page (0.5.0). A visit ends on a page the site chooses in the settings: one shortcode,
  * [punchout_state], draws Sending, Sent, Not sent, Link expired and Session ended inside the theme, with stable classes
  * (pow-state plus one modifier, and the children pow-state__title, __text, __actions and __button) that the site
  * styles. Titles and text are neutral translatable defaults a layout overrides as shortcode attributes; the button's

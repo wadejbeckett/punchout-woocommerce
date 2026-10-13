@@ -35,7 +35,7 @@ final class OrderDetails {
 	/**
 	 * The plugin's own order keys (the cXML copy, the visit, the connection, the buyer's identity and cookie) are
 	 * never order details: a key beginning with this prefix, in any case, is refused wherever a list is written or
-	 * read (security review, 11 October).
+	 * read (0.5.0 hardening).
 	 */
 	public const RESERVED_PREFIX = '_pow_';
 

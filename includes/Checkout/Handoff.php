@@ -42,8 +42,8 @@ defined( 'ABSPATH' ) || exit;
  * A GET that presents neither a login cookie nor the sent marker is nobody's: it goes to Session ended (or the plain
  * no-form page) before any order is looked up, so the route cannot be used to probe order ids and keys.
  *
- * The Sent state is where a Submit that arrives after the visit has returned is sent (0.5.0, ticket 74): the site's
- * state page when one is chosen (Http\StatePage, ticket 77), else the theme-free GET /punchout/sent, with the
+ * The Sent state is where a Submit that arrives after the visit has returned is sent (0.5.0): the site's
+ * state page when one is chosen (Http\StatePage), else the theme-free GET /punchout/sent, with the
  * `pow-state` classes and no form. With a state page chosen, a handoff that cannot be served sends the browser there
  * too (spent_target()): Sent when that order's page was served, Not sent when the order's visit returned with it but
  * its page never reached a browser, else Session ended.

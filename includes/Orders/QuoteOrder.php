@@ -347,7 +347,7 @@ final class QuoteOrder {
 	}
 
 	/**
-	 * Housekeeping (security review, 11 October): a pending order carrying a visit's provenance whose visit is no
+	 * Housekeeping (0.5.0 hardening): a pending order carrying a visit's provenance whose visit is no
 	 * longer active (returned, closed, expired, past its time, or gone) and older than $age seconds (the handoff TTL)
 	 * is moved to the bin with no status change, so no e-mail is sent and nothing WooCommerce would resume lingers.
 	 * A pending order of a live visit is WooCommerce's to resume on the next Submit; an order or visit that cannot

@@ -1,6 +1,6 @@
 <?php
 /**
- * The state page and the leave-confirmation are configured by the site (0.5.0, ticket 77). Only button labels are
+ * The state page and the leave-confirmation are configured by the site (0.5.0). Only button labels are
  * settings: the state page's button, and the confirmation's two buttons. Each resolves like every other button
  * label: a non-blank saved value wins, its filter runs last, and a blank result keeps the neutral default. The page
  * itself is chosen in the settings (none by default: the plain pages are used), and the confirmation is off by default.

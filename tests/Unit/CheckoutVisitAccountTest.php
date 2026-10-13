@@ -1,6 +1,6 @@
 <?php
 /**
- * Checkout in a visit and the bound account (0.5.0, ticket 76).
+ * Checkout in a visit and the bound account (0.5.0).
  *
  * Every buyer of a connection shares one WooCommerce account, so checkout in a visit must write nothing to it:
  * WooCommerce saves the posted billing and shipping fields onto the customer through

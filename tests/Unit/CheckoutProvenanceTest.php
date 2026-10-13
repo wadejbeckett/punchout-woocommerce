@@ -1,6 +1,6 @@
 <?php
 /**
- * Provenance stamped as checkout creates the order (0.5.0, ticket 76).
+ * Provenance stamped as checkout creates the order (0.5.0).
  *
  * Classic checkout creates the order before it asks the payment method to process it. An order placed with the
  * PunchOut method in a live visit carries the visit's provenance from that moment (`woocommerce_checkout_create_order`,

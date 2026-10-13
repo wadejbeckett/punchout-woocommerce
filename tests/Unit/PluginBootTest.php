@@ -39,7 +39,7 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
-	 * 0.5.0 (ticket 77): the state page is presentation with no visit surface, like the cart control and the docs
+	 * 0.5.0: the state page is presentation with no visit surface, like the cart control and the docs
 	 * page, so a page holding [punchout_state] never shows the raw shortcode and keeps its no-store headers while the
 	 * switch is off. Sending browsers of ended visits there is buyer-facing runtime, so it waits for the switch.
 	 */
@@ -89,7 +89,7 @@ final class PluginBootTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
-	 * 0.5.0 (ticket 76): a visit that outlived the switch's sweep is still the shared account, so the rule that
+	 * 0.5.0: a visit that outlived the switch's sweep is still the shared account, so the rule that
 	 * checkout in a visit saves nothing to it is registered before the switch is consulted, as basket isolation is.
 	 */
 	public function test_master_off_boot_still_saves_nothing_to_the_bound_account_from_a_visit(): void {

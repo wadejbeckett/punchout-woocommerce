@@ -254,7 +254,7 @@ namespace {
 		/** The binding rule changed: a visit leaves through checkout, so no current document says checkout is blocked in a visit. */
 		public function test_no_current_document_keeps_the_old_no_checkout_rule(): void {
 			$root    = self::root();
-			$files   = array_merge( [ $root . '/AGENTS.md', $root . '/README.md', $root . '/tests/README.md', $root . '/includes/Docs/Reference.php', $root . '/templates/docs/page.php' ], glob( $root . '/docs/*.md' ) ?: [] );
+			$files   = array_merge( array_filter( [ $root . '/AGENTS.md' ], 'is_file' ), [ $root . '/README.md', $root . '/tests/README.md', $root . '/includes/Docs/Reference.php', $root . '/templates/docs/page.php' ], glob( $root . '/docs/*.md' ) ?: [] );
 			$readme  = (string) file_get_contents( $root . '/readme.txt' );
 			$current = [ 'readme.txt (description and FAQ)' => substr( $readme, 0, (int) strpos( $readme, '== Changelog ==' ) ) ];
 			foreach ( $files as $file ) { $current[ substr( $file, strlen( $root ) + 1 ) ] = (string) file_get_contents( $file ); }
@@ -269,21 +269,34 @@ namespace {
 			self::assertMatchesRegularExpression( '/= Does it change my checkout\? =\s*\n\s*\nOnly inside a punchout visit\./', $readme );
 		}
 
-		/** The repository names no client or person: the test fixtures use neutral names. */
+		/**
+		 * The test fixtures use neutral names: every e-mail address under tests/ is on a reserved domain (RFC 2606,
+		 * RFC 6761), and no fixture carries a name from the maintainer's private list. That list never lives in this
+		 * repository: it is read from POW_PRIVATE_NAMES (comma-separated) or from tests/.private-names (one per
+		 * line, ignored by git), and with neither the second check has nothing to look for.
+		 */
 		public function test_the_test_fixtures_use_neutral_names(): void {
-			// The names themselves are encoded here so that this file does not carry them either.
-			$needles  = array_map( static fn( string $encoded ): string => (string) base64_decode( $encoded, true ), [ 'cGxhY2Vob2xkZXIz', 'cGxhY2Vob2xkZXIy', 'cGxhY2Vob2xkZXI0', 'cGxhY2Vob2xkZXIx' ] );
+			$private = getenv( 'POW_PRIVATE_NAMES' );
+			$needles = false === $private ? [] : explode( ',', $private );
+			$listed  = dirname( __DIR__ ) . '/.private-names';
+			if ( is_file( $listed ) ) { $needles = array_merge( $needles, (array) file( $listed, FILE_IGNORE_NEW_LINES ) ); }
+			$needles  = array_values( array_filter( array_map( 'trim', $needles ), static fn( string $n ): bool => '' !== $n && '#' !== $n[0] ) );
+			$reserved = '/(^|\.)(example|test|invalid|localhost)$|(^|\.)example\.(com|net|org)$/i';
 			$iterator = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( dirname( __DIR__ ) ) );
 			foreach ( $iterator as $file ) {
 				if ( ! $file->isFile() || ! in_array( $file->getExtension(), [ 'php', 'py', 'js', 'md', 'json', 'xml' ], true ) ) { continue; }
 				$source = (string) file_get_contents( $file->getPathname() );
+				preg_match_all( '/[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})\b/', $source, $found );
+				foreach ( $found[1] as $i => $domain ) {
+					self::assertSame( 1, preg_match( $reserved, $domain ), $file->getFilename() . ' uses an e-mail address off a reserved domain: ' . $found[0][ $i ] );
+				}
 				foreach ( $needles as $needle ) {
-					self::assertStringNotContainsString( $needle, $source, $file->getFilename() . ' names a client or person' );
+					self::assertSame( false, stripos( $source, $needle ), $file->getFilename() . ' names a client or person from the private list' );
 				}
 			}
 		}
 
-		/** Rulings of 11 October: the cancel control's default label is "Cancel and return", everywhere it is stated. */
+		/** Since 0.5.0: the cancel control's default label is "Cancel and return", everywhere it is stated. */
 		public function test_the_cancel_controls_default_label_is_cancel_and_return(): void {
 			$root = self::root();
 			self::assertStringContainsString( "__( 'Cancel and return', 'punchout-woocommerce' )", (string) file_get_contents( $root . '/includes/Cart/Surface.php' ) );

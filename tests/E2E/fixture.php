@@ -16,24 +16,24 @@
  *   to the "rest of the world" shipping zone, so the driver can see the
  *   settings drawn and, with delivery cost on, a freight line with an amount. It makes sure one page draws the classic
  *   cart ([woocommerce_cart]), whatever the shop's own cart page is. For the
- *   0.5.0 order lifecycle (ticket 74) the products keep stock (100 each), so
+ *   0.5.0 order lifecycle the products keep stock (100 each), so
  *   checkout holds stock for the order; a third product has no SKU; and a
  *   100% coupon with a usage limit (so checkout holds it for the order) makes
- *   a zero-total cart. For the cXML from the order (0.5.0, ticket 75) the
+ *   a zero-total cart. For the cXML from the order (0.5.0) the
  *   connection sends each line's name and short description, and "Order
  *   details sent": the ones the driver passes in POW_E2E_ORDER_DETAILS (JSON,
  *   from its --checkout-extras), then one a classic checkout always writes and
  *   one no order has; with POW_E2E_SEND_DELIVERY_COST=1 it also sends delivery
  *   cost. One product's short description is markup with entities, the other
  *   only repeats its name; the seed says what each must read as. For checkout
- *   in a visit (0.5.0, ticket 76), when the site has an address-book API (found
+ *   in a visit (0.5.0), when the site has an address-book API (found
  *   by shape, as the plugin finds it) the account gets saved addresses: its own
  *   billing and shipping as each book's default and a second, named shipping
  *   entry the driver delivers to; the seed records the account's profile
  *   (billing and shipping user meta, address-book meta, names) so the driver
  *   can prove checkout changed none of it. For the run the shipping section
  *   opens ticked ("Shipping destination" set to the customer's shipping
- *   address, as the launch store has it), one ordinary payment method is on
+ *   address, as a typical store has it), one ordinary payment method is on
  *   (cheques), so "only PunchOut in a visit, never PunchOut outside one" is
  *   tested against a real alternative, and one page carries the cart-exits and
  *   return-button shortcodes. Writes the
@@ -50,7 +50,7 @@
  * - start_click: sets the start page's "Login link needs a click" setting to
  *   POW_E2E_START_CLICK ('yes' or 'no') for one case of the browser run
  *   (tests/E2E/browser.py); the seed records the setting as it was.
- * - states: for the 0.5.0 state page and leave-confirmation leg (ticket 77),
+ * - states: for the 0.5.0 state page and leave-confirmation leg,
  *   makes sure one page draws [punchout_state] (slug pow-e2e-state, one title
  *   overridden as an attribute and a button_url) and one draws
  *   [punchout_abandon_button] with a question attribute (slug pow-e2e-leave),
@@ -112,7 +112,7 @@ final class PowEndToEndFixture {
 	private const RUN_SETTINGS = [ 'checkout_button_label' => 'Review' ];
 
 	/**
-	 * The state page and leave-confirmation settings the `states` step turns on (0.5.0, ticket 77), none of them a
+	 * The state page and leave-confirmation settings the `states` step turns on (0.5.0), none of them a
 	 * default; state_page_id is the page the step finds or makes. Recorded at seed, put back by retire.
 	 */
 	private const STATE_SETTINGS = [ 'state_button_label' => 'Continue (e2e)', 'leave_confirmation' => 'yes', 'leave_confirm_label' => 'Leave (e2e)', 'leave_stay_label' => 'Stay (e2e)', 'abandon_button_label' => 'Cancel and return (e2e)' ];
@@ -132,10 +132,10 @@ final class PowEndToEndFixture {
 	private const CART_EXITS_SLUG    = 'pow-e2e-cart-exits';
 	private const CART_EXITS_CONTENT = "<!-- wp:shortcode -->\n[punchout_cart_exits]\n<!-- /wp:shortcode -->\n<!-- wp:shortcode -->\n[punchout_return_button]\n<!-- /wp:shortcode -->";
 
-	/** The second saved shipping address (0.5.0, ticket 76): a named entry, not the default, the driver delivers to. */
+	/** The second saved shipping address (0.5.0): a named entry, not the default, the driver delivers to. */
 	private const DEPOT = [ 'first_name' => 'Dock', 'last_name' => 'Two', 'company' => 'Buyer Co Depot', 'address_1' => '2 Depot Road', 'address_2' => '', 'city' => 'Depot Town', 'phone' => '', 'address_nickname' => 'Depot' ];
 
-	/** For the run: the shipping section opens ticked (the launch store's setting), and one ordinary payment method is on. */
+	/** For the run: the shipping section opens ticked (a typical store's setting), and one ordinary payment method is on. */
 	private const SHIP_TO_DESTINATION = 'shipping';
 	private const OTHER_GATEWAY        = 'cheque';
 	private const OTHER_GATEWAY_OPTION = 'woocommerce_cheque_settings';
@@ -257,7 +257,7 @@ final class PowEndToEndFixture {
 			'lines'          => $lines,
 			'buyer_cookie'   => (string) $order->get_meta( POW\Orders\QuoteOrder::META_BUYER_COOKIE ),
 			'customer_note'  => $order->get_customer_note(),
-			// 0.5.0 (ticket 76): where it ships, and its key, for the order pages a visit or a guest must not reach.
+			// 0.5.0: where it ships, and its key, for the order pages a visit or a guest must not reach.
 			'key'            => $order->get_order_key(),
 			'shipping'       => $order->get_address( 'shipping' ),
 			'billing_address_1' => $order->get_billing_address_1(),
@@ -288,7 +288,7 @@ final class PowEndToEndFixture {
 		}
 		$customer->set_billing_email( $customer->get_email() );
 		$customer->save();
-		// 0.5.0 (ticket 76): the account's saved addresses, then its profile as checkout must leave it.
+		// 0.5.0: the account's saved addresses, then its profile as checkout must leave it.
 		$book    = self::address_book( $account, $address );
 		$profile = self::account_profile( $account );
 
@@ -312,7 +312,7 @@ final class PowEndToEndFixture {
 			'allcaps_transform'     => 1,
 			'session_ttl'           => 3600,
 			'token_ttl'             => 600,
-			// The launch profile: ship-to and notes travel, no delivery cost does (unless the run asks for it).
+			// The default profile: ship-to and notes travel, no delivery cost does (unless the run asks for it).
 			'emit_ship_to'          => 1,
 			'emit_delivery_line'    => '1' === getenv( 'POW_E2E_SEND_DELIVERY_COST' ) ? 1 : 0,
 			'delivery_notes_policy' => 'item_detail_extrinsic',
@@ -387,7 +387,7 @@ final class PowEndToEndFixture {
 					'gateway_before' => $gateway_before,
 					// Whether the linked build has the PunchOut payment method (the driver's automatic path follows it).
 					'payment_method' => class_exists( 'POW\\Checkout\\PaymentMethod' ),
-					// 0.5.0 (ticket 76): the shipping section opens ticked for the run, and an ordinary method is on.
+					// 0.5.0: the shipping section opens ticked for the run, and an ordinary method is on.
 					'ship_to_destination' => self::SHIP_TO_DESTINATION,
 					'other_gateway'       => self::OTHER_GATEWAY,
 					// For retire: both settings as they were (null = not saved).
@@ -424,7 +424,7 @@ final class PowEndToEndFixture {
 		foreach ( self::RUN_SETTINGS as $key => $value ) { $before[ $key ] = $stored[ $key ] ?? null; }
 		// Not changed by the seed; recorded so that retire can undo a start_click step.
 		$before['start_link_click'] = $stored['start_link_click'] ?? null;
-		// Not changed by the seed either; recorded so that retire can undo a states step (0.5.0, ticket 77).
+		// Not changed by the seed either; recorded so that retire can undo a states step (0.5.0).
 		foreach ( array_keys( self::STATE_SETTINGS ) as $key ) { $before[ $key ] = $stored[ $key ] ?? null; }
 		$before['state_page_id'] = $stored['state_page_id'] ?? null;
 		$zone     = new WC_Shipping_Zone( 0 );
@@ -577,7 +577,7 @@ final class PowEndToEndFixture {
 				'trashed'      => $found['trashed'],
 				'coupon_holds' => $coupon_id > 0 ? (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key LIKE %s", $coupon_id, $wpdb->esc_like( '_coupon_held_' ) . '%' ) ) : null,
 				'stock'        => $stock,
-				// 0.5.0 (ticket 76): the bound account's profile now, against the seed's.
+				// 0.5.0: the bound account's profile now, against the seed's.
 				'account_profile' => self::account_profile( (int) $seed['account'] ),
 				// The visit's audit rows, counted by event (the account fence's refusals among them).
 				'audit'           => $visit ? self::audit_counts( $visit->id ) : [],
@@ -617,7 +617,7 @@ final class PowEndToEndFixture {
 		return (int) $id;
 	}
 
-	/** The state page and leave-confirmation leg (0.5.0, ticket 77): its two pages, and its settings turned on for the run. */
+	/** The state page and leave-confirmation leg (0.5.0): its two pages, and its settings turned on for the run. */
 	public function states(): void {
 		$seed = self::read( self::path( 'POW_E2E_FIXTURE' ) );
 		if ( ! array_key_exists( 'state_page_id', (array) ( $seed['settings']['settings_before'] ?? [] ) ) ) { throw new RuntimeException( 'This seed cannot put the state page settings back.' ); }

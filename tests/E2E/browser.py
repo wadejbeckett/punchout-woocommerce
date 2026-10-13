@@ -12,7 +12,7 @@ seeds the fixture as the driver does (tests/E2E/fixture.php), serves the site on
   2. double click: with "Login link needs a click" on (fixture step start_click, put back by retire), the page
      waits; two presses 80 ms apart on its button send one POST and land inside the visit. Back to the page and one
      more press: the same browser lands again.
-  3. states (0.5.0, ticket 77; fixture step `states` chooses a state page and turns "Ask before leaving" on, retire
+  3. states (0.5.0; fixture step `states` chooses a state page and turns "Ask before leaving" on, retire
      puts both back): a start link used once and opened in another browser lands on the state page's Link expired,
      drawn in the theme; once a visit is ended (fixture step `end_visit`), its next page lands on Session ended and
      the browser is signed out, and the page after is an ordinary page.
@@ -338,7 +338,7 @@ class BrowserRun(driver.Run):
 
 
 class StateRun(BrowserRun):
-    """0.5.0 (ticket 77): the state page and the leave question, in Chromium."""
+    """0.5.0: the state page and the leave question, in Chromium."""
 
     def states(self, chromium, seed, receiver):
         out = self.args.out / 'states-browser.json'

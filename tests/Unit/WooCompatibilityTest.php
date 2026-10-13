@@ -62,7 +62,7 @@ final class WooCompatibilityTest extends TestCase {
 	}
 
 	/**
-	 * 0.5.0 (ticket 76): the visit leaves through WooCommerce's classic checkout, where PunchOut is a payment method.
+	 * 0.5.0: the visit leaves through WooCommerce's classic checkout, where PunchOut is a payment method.
 	 * The Checkout block shows no PunchOut method (it has no block integration), so the plugin declares itself
 	 * incompatible with the cart and checkout blocks and WooCommerce shows its own notice, instead of a store whose
 	 * buyers silently find no way out. High-performance order storage stays declared compatible.

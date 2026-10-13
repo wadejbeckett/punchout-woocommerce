@@ -2,7 +2,7 @@
 /**
  * The order -> cXML mapper (0.5.0): what the buyer's purchasing system receives is built from the order WooCommerce
  * checkout placed, through the unchanged builder. Lines, prices, ShipTo, the buyer's note, no freight, and the
- * envelope (identities reversed, the visit's cookie and mode). Ticket 75 adds what the connection screen sets
+ * envelope (identities reversed, the visit's cookie and mode). 0.5.0 adds what the connection screen sets
  * (schema 10): the line description (the name, or the name and its cleaned short description), the "Order details
  * sent" after the note in DeliveryInstructions (text, or a Unix timestamp as its UTC day at any server timezone),
  * and the freight line only while "Send delivery cost" is on.
@@ -258,7 +258,7 @@ namespace {
 			self::assertSame( 0.0, $path->evaluate( 'count(//SharedSecret)' ) );
 		}
 
-		// ------------------------------------------------------------------ ticket 75: the line description
+		// ------------------------------------------------------------------ 0.5.0: the line description
 
 		public function test_by_default_each_line_is_described_by_its_name_whatever_its_short_description_says(): void {
 			$item = $this->args( $this->described( '<p>Brand Example, red</p>' ) )['items'][0];
@@ -310,7 +310,7 @@ namespace {
 			self::assertSame( [ 'ALPHA - BRAND EXAMPLE', 'ALPHA' ], [ $item['description'], $item['short_name'] ] );
 		}
 
-		// ------------------------------------------------------- ticket 75: DeliveryInstructions and order details
+		// ------------------------------------------------------- 0.5.0: DeliveryInstructions and order details
 
 		/**
 		 * The builder flattens every line break in element text to a space (Dynamics breaks on newlines), so the
@@ -389,7 +389,7 @@ namespace {
 			self::assertSame( "Note. | Order reference: PO-7", $this->args( $order )['delivery_notes'] );
 		}
 
-		// --------------------------------------------------------------- ticket 75: freight and ShipTo on the wire
+		// --------------------------------------------------------------- 0.5.0: freight and ShipTo on the wire
 
 		public function test_with_send_delivery_cost_off_there_is_no_freight_line_and_no_estimate_sentence(): void {
 			$order = new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, 'Note.', 'ZAR', '50.00', [ new OrderMessageShipping( 'Courier' ) ] );
@@ -429,7 +429,7 @@ namespace {
 			self::assertSame( 'Delivery', $untitled['description'] );
 		}
 
-		/** Ruling of 11 October: a free-shipping order sends no freight line and no estimate sentence, even with "Send delivery cost" on. */
+		/** Since 0.5.0: a free-shipping order sends no freight line and no estimate sentence, even with "Send delivery cost" on. */
 		public function test_a_free_shipping_order_sends_no_freight_line_and_no_estimate_sentence(): void {
 			$on   = $this->partner( [ 'emit_delivery_line' => 1 ] );
 			$args = $this->args( new OrderMessageOrder( $this->order()->get_items(), self::SHIPPING, 'Note.', 'ZAR', '0.00', [ new OrderMessageShipping( 'Free shipping' ) ] ), $on, 'The delivery charge is an estimate.' );

@@ -1,6 +1,6 @@
 <?php
 /**
- * Submit at checkout, the order lifecycle (0.5.0, ticket 74): build first, then win the visit's return under its
+ * Submit at checkout, the order lifecycle (0.5.0): build first, then win the visit's return under its
  * lock, then each remaining step on its own (release checkout's stock and coupon holds, empty the cart, the Punchout
  * Quote status last), and always the handoff. A build that fails answers failure and leaves the order pending; the
  * loser of two racing Submits bins its own order and releases its holds; nothing is ever set to failed.

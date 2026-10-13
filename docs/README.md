@@ -8,17 +8,15 @@ A returned basket is not a purchase order or payment. In Dynamics 365 it contrib
 
 ## Availability
 
-Source reviewed on 21 September 2026 for the 0.4.0 single-login release and on 11 October 2026 for 0.5.0 (checkout as the way out). Check the installed build before following development-only instructions.
+These documents describe 0.4.0 (single login) and 0.5.0 (checkout as the way out) onwards. Check the installed build before following development-only instructions.
 
 | State | Features |
 |---|---|
 | Released 0.4.0 functionality | Admin connection settings; shared-secret setup; one bound customer account per connection; one basket and quote per visit; buyer attribution on the visit and the quote; cart return; no payment in a visit; audit logging. |
 | Also in 0.4.0 | Quote recording, documentation/self-test, the setup-template download, the company address book and optional address/freight export. |
 | 0.5.0 | The visit leaves through WooCommerce's classic checkout with the PunchOut payment method; the cXML is built from the placed order; the state page and the leave question; schema 10 (line description, order details sent). The review page and its consent are retired. |
-| Separate acceptance work | Buyer-system launch and cart-return acceptance, production installation and release/version integration. |
+| Left to each store | Launch and cart-return acceptance testing with each buyer system, and production installation. |
 | Not implemented | Incoming purchase-order receiver, multi-currency conversion, ERP profile picker and manufacturer-field mapping. |
-
-An interactive preview demonstrates proposed screens; it neither configures connections nor proves live transactions.
 
 ## Read by task
 

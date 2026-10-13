@@ -1,6 +1,6 @@
 <?php
 /**
- * The handoff and the state page (0.5.0, ticket 77). The page that posts the cart stays a plain /punchout/ route and
+ * The handoff and the state page (0.5.0). The page that posts the cart stays a plain /punchout/ route and
  * is served once. Once a site has chosen a state page, every browser that comes after it goes there instead of to a
  * plain page: the Sent state after the return, and, for a handoff that cannot be served, Sent when that order's page
  * was served (a refresh, the back button, a second tab), Not sent when the order's visit returned with it but its page

@@ -480,7 +480,7 @@ final class StartEndpointTest extends TestCase {
 		}
 	}
 
-	/** 0.5.0 (ticket 77): with a state page chosen, a refused link sends the browser to its Link expired state. */
+	/** 0.5.0: with a state page chosen, a refused link sends the browser to its Link expired state. */
 	public function test_a_refused_link_goes_to_the_link_expired_state_on_the_chosen_page(): void {
 		$GLOBALS['pow_test_posts'][314] = [ 'status' => 'publish', 'permalink' => 'https://shop.example.test/visit/' ];
 		$this->endpoint = new StartEndpoint( new Store(), new Registry( new Secrets( str_repeat( 'x', 32 ) ) ), $this->settings_with( [ 'state_page_id' => 314 ] ), new Log( new QuoteOrderTestLogger() ) );

@@ -19,7 +19,7 @@ defined( 'ABSPATH' ) || exit;
 
 /**
  * Every buyer of a connection shops on the one account the connection is bound to, and the addresses that account
- * keeps are the ones the store has agreed to deliver to. Ruling of 11 October 2026: during a live visit the buyer
+ * keeps are the ones the store has agreed to deliver to. Since 0.5.1, during a live visit the buyer
  * chooses one of them, and nothing else. With the setting "Saved addresses only in a visit" on (the default; the
  * filter `punchout_visit_saved_addresses_only` runs last) and inside a live visit:
  *

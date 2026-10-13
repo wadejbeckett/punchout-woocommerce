@@ -1,0 +1,11 @@
+# Development-only records stay in the repository but out of `git archive` exports.
+/.gitattributes   export-ignore
+/.gitignore       export-ignore
+/AGENTS.md        export-ignore
+/CLAUDE.md        export-ignore
+/.agents          export-ignore
+/.claude          export-ignore
+/.remember        export-ignore
+/.specify         export-ignore
+/.superpowers     export-ignore
+/memory-bank      export-ignore

@@ -220,7 +220,7 @@ namespace {
 			self::assertSame( self::MARKUP, $this->serve( 'login-a', [ 'order' => '501', 'key' => 'wc_order_k1' ] ) );
 		}
 
-		// ------------------------------------------------------------------- hardening (security review, 11 October)
+		// ------------------------------------------------------------------- hardening (0.5.0)
 
 		/**
 		 * A GET with neither the login cookie nor the sent marker is nobody's: it is sent to Session ended (or the

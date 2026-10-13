@@ -88,7 +88,7 @@ namespace {
 		}
 
 		/**
-		 * 0.5.0 (ticket 77): the state page and the leave-confirmation settings a run turns on (step `states`) are
+		 * 0.5.0: the state page and the leave-confirmation settings a run turns on (step `states`) are
 		 * recorded at seed and put back by retire; a visit can be ended as an administrator would (step `end_visit`).
 		 */
 		public function test_the_fixture_puts_back_the_state_page_settings(): void {

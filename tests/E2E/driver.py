@@ -183,7 +183,7 @@ def start_page_findings(status, headers, body, url):
 
 
 def handoff_policy_findings(headers, body, receiver_origin):
-    """Security review (11 October): the page that posts the cart (the handoff, and Cancel and return's Not sent page)
+    """Security hardening (0.5.0): the page that posts the cart (the handoff, and Cancel and return's Not sent page)
     cannot be framed, and its Content-Security-Policy runs nothing but the page's own inline script and styles (each
     named by hash; style attributes under 'unsafe-hashes') and lets its form post only to the receiver's origin.
     [(check, ok, detail)]"""
@@ -287,7 +287,7 @@ def shipping_rate(form, instance_id):
     return None
 
 
-# -- 0.5.0 ticket 75: what the connection screen sets, checked in the order's cXML ---------------------------
+# -- 0.5.0: what the connection screen sets, checked in the order's cXML ---------------------------
 
 EXTRAS_DEFAULT = {'date_offset_days': 7, 'fields': {}, 'order_details': [], 'instructions': [], 'uploads': [], 'account_writes': []}
 _DATE_TEMPLATE = re.compile(r'\{date:([^}]*)\}')
@@ -465,7 +465,7 @@ def state_text(html, part):
 
 
 def state_findings(status, headers, body, state, page_id=None):
-    """0.5.0 (ticket 77), a state the plugin drew: the state's modifier, a title and a text, and headers that keep it
+    """0.5.0, a state the plugin drew: the state's modifier, a title and a text, and headers that keep it
     out of caches, indexes and sniffing. With `page_id`, the site's state page: drawn inside the theme as that page
     (the theme's body class names it) and giving away no referrer. [(check, ok, detail)]"""
     def header(name):
@@ -493,7 +493,7 @@ def state_location(url):
 
 
 def leave_controls(html, base_url):
-    """0.5.0 (ticket 77): the cancel control's form, its dialog's form and the dialog's facts ({id, open, question,
+    """0.5.0: the cancel control's form, its dialog's form and the dialog's facts ({id, open, question,
     confirm, stay, cancel}); (form, None, None) when the control leaves at once; (None, None, None) without it."""
     found = forms.parse_forms(html or '', base_url)
     cancel = next((f for f in found if 'pow-abandon-form' in (f.attrs.get('class') or '').split()), None)
@@ -607,7 +607,7 @@ def handoff_form(html, base_url):
     return None
 
 
-# -- 0.5.0 ticket 76: checkout in a visit and the bound account ------------------------------------------------
+# -- 0.5.0: checkout in a visit and the bound account ------------------------------------------------
 
 def address_book_select(form, keys):
     """The name of the checkout select that offers every one of the account's saved address `keys` (as the site's
@@ -852,7 +852,7 @@ class Run:
         self.path = 'checkout'
         self.extras = copy.deepcopy(EXTRAS_DEFAULT)
         self.extra_lines = []
-        self.chosen_address = None  # 0.5.0 ticket 76: the saved delivery address the main leg chose
+        self.chosen_address = None  # 0.5.0: the saved delivery address the main leg chose
         self.uploaded = []  # the files the main leg uploaded before Submit (the extras' uploads)
         self.main_order = None  # {'id', 'key'} of the main visit's Punchout Quote
 
@@ -972,14 +972,14 @@ class Run:
     def checkout_path(self, browser, seed, receiver=None):
         """Leave through WooCommerce's classic checkout and return the handoff page.
 
-        The order lifecycle's second leg (ticket 74) is `late_submits` and `second_leg`; the connection's message
-        settings (ticket 75) are checked here and in the cXML. Checkout in a visit (ticket 76): the cart carries no
+        The order lifecycle's second leg (0.5.0) is `late_submits` and `second_leg`; the connection's message
+        settings (0.5.0) are checked here and in the cXML. Checkout in a visit (0.5.0): the cart carries no
         return button and the cart-exits page the labelled checkout link; billing opens on the account's saved billing
         profile even after the buyer typed another address in this visit; the shipping section opens ticked on the
         account's default saved address, and the buyer chooses its other saved address, which ShipTo must carry (the
         account's profile and saved addresses are compared after Submit, in `main`). Saved addresses only (0.5.1):
         no "add new" choice, the address fields post hidden, and a typed address is refused before any order. Still to come with the later
-        0.5.0 tickets (spec "Testing Decisions"): a file and no delivery amount on the page."""
+        0.5.0 work: a file and no delivery amount on the page."""
         url = self.args.url
         checkout = seed.get('checkout') or {}
         labels = checkout.get('labels') or {}
@@ -994,7 +994,7 @@ class Run:
         proceed = checkout_anchor(cart, cart_url, 'checkout-button')
         self.must(status == 200 and proceed is not None, 'cart_offers_the_checkout_button', http=status)
         self.check(proceed[1] == labels['proceed'], 'cart_checkout_button_carries_the_label', shown=proceed[1], setting=labels['proceed'])
-        # Ticket 76: the return button that opened the old review renders nothing, on the cart and wherever a layout
+        # 0.5.0: the return button that opened the old review renders nothing, on the cart and wherever a layout
         # places it; the complete cart control keeps WooCommerce's checkout link, with the label.
         self.check('pow-return-form' not in cart and 'pow-return-button' not in cart, 'the_cart_has_no_return_button')
         exits_page = (seed.get('pages') or {}).get('cart_exits')
@@ -1009,7 +1009,7 @@ class Run:
         form = checkout_form(page, page_url)
         self.must(status == 200 and form is not None, 'the_checkout_button_opens_woocommerce_checkout_in_the_visit', http=status, url=page_url)
 
-        # Security review (11 October), the account fence: what another plugin lets the signed-in account change on
+        # Security hardening (0.5.0), the account fence: what another plugin lets the signed-in account change on
         # the account (the extras' account_writes: an address book's delete and make-default actions on admin-ajax),
         # sent from inside the visit with the nonces the checkout page carries, changes nothing on the shared account
         # and is audited as refused. The book is checked again when checkout reopens below, and the profile in main.
@@ -1024,7 +1024,7 @@ class Run:
             self.check(fenced['account_profile'] == seed['account_profile'], 'an_account_write_from_inside_the_visit_changes_nothing', changed=profile_changes(seed['account_profile'], fenced['account_profile']))
             self.check((fenced.get('audit') or {}).get('visit_account_write_refused', 0) >= 1, 'the_refused_account_write_is_audited', audit=fenced.get('audit'))
 
-        # Ticket 76: the buyer types another billing address (WooCommerce's script keeps it in the visit's session),
+        # 0.5.0: the buyer types another billing address (WooCommerce's script keeps it in the visit's session),
         # then opens checkout again: billing opens on the account's saved billing profile, not on what was typed.
         nonce = update_order_review_nonce(page)
         body = forms.encode(order_review_update(form, nonce or '', {'address': '9 Typed Road', 'city': 'Typed City'}), forms.URLENCODED)[0]
@@ -1046,7 +1046,7 @@ class Run:
             else:
                 self.check(ok, name, **detail)
 
-        # Ticket 75: the connection's message settings, the fixture's own checkout fields (a date, when the extras name
+        # 0.5.0: the connection's message settings, the fixture's own checkout fields (a date, when the extras name
         # them) and, with delivery cost on, the priced method, so the freight line has an amount to carry.
         connection = seed['connection']
         details = [d for d in (connection.get('order_details') or [])]
@@ -1076,7 +1076,7 @@ class Run:
         if self.uploaded:
             self.notes.append('uploaded before Submit: ' + ', '.join(self.uploaded))
 
-        # Ticket 76: the shipping section opens ticked on the account's default saved address; the buyer chooses the
+        # 0.5.0: the shipping section opens ticked on the account's default saved address; the buyer chooses the
         # other saved address (its fields filled as the address book's script fills them).
         book = seed.get('saved_addresses')
         self.must(isinstance(book, dict) and book.get('chosen') in (book.get('entries') or {}), 'seed_gives_the_account_saved_addresses')
@@ -1115,7 +1115,7 @@ class Run:
         self.save('checkout-answer.json', answer['raw'])
         redirect = answer['redirect']
         self.must(answer['result'] == 'success' and isinstance(redirect, str) and redirect.startswith(url + '/punchout/'), 'submit_answers_success_with_the_handoff_address', http=answer['status'], result=answer['result'], redirect=redirect, messages=answer['messages'])
-        # 0.5.0 (ticket 74): the checkout answer never clears the login cookie; the handoff, keyed to it, does.
+        # 0.5.0: the checkout answer never clears the login cookie; the handoff, keyed to it, does.
         self.check(not login_cookie_cleared(answer['set_cookies']) and browser.logged_in(), 'the_checkout_answer_keeps_the_login_cookie', set_cookies=[c.split('=')[0] for c in answer['set_cookies']])
 
         # A second browser holding this one's cookies as they are now asks for the handoff again afterwards.
@@ -1128,7 +1128,7 @@ class Run:
         if receiver is not None:
             for name, ok, detail in handoff_policy_findings(headers, handoff, receiver.url):
                 self.check(ok, 'handoff: ' + name, **detail)
-        # 0.5.0 (ticket 77): the page that posts the cart stays plain and carries the Sending state's classes.
+        # 0.5.0: the page that posts the cart stays plain and carries the Sending state's classes.
         self.check(state_page(handoff) == 'sending' and bool(state_text(handoff, 'title')) and state_text(handoff, 'button') is not None, 'the_handoff_page_is_the_sending_state', state=state_page(handoff))
         return handoff
 
@@ -1165,7 +1165,7 @@ class Run:
         return page, state_page(page), handoff_form(page, self.args.url)
 
     def late_submits(self, after, before, receiver):
-        """A Submit after the visit has returned (ticket 74), from the browser as the handoff left it (no login cookie)
+        """A Submit after the visit has returned (0.5.0), from the browser as the handoff left it (no login cookie)
         and as the checkout answer left it (the login cookie, whose login has ended): each reaches the Sent state, with
         no auto-posting form, and nothing is posted again."""
         posts = len(receiver.captured)
@@ -1188,9 +1188,9 @@ class Run:
         return poom.decode_field(field, value), field, posted
 
     def second_leg(self, seed, receiver):
-        """The second leg, each case in a visit of its own. The order lifecycle (ticket 74): two racing Submits, a
+        """The second leg, each case in a visit of its own. The order lifecycle (0.5.0): two racing Submits, a
         zero-total cart (with a currency refusal first, and a note cXML cannot carry as typed), and a line without a
-        SKU. Checkout in a visit (ticket 76): a Submit held while its order is pending, shipping to the other saved
+        SKU. Checkout in a visit (0.5.0): a Submit held while its order is pending, shipping to the other saved
         entry; and what stays refused, in a visit and outside any visit."""
         for label, leg in (('race', self.race_leg), ('zero', self.zero_total_leg), ('sku', self.skuless_leg), ('pending', self.pending_leg), ('refuse', self.refusal_leg)):
             try:
@@ -1273,7 +1273,7 @@ class Run:
         expected = {
             'buyer_cookie': visit['cookie'], 'buyer': connection['buyer'], 'supplier': connection['supplier'], 'deployment_mode': connection['deployment_mode'],
             'currency': seed['currency'], 'shared_secret': seed['secret'], 'lines': {sku: {'qty': 1, 'unit': '0.00', 'aux': '%d|0' % product['id']}},
-            # 0.5.0 (ticket 75), ruling of 11 October: free shipping sends no freight line, even with Send delivery
+            # 0.5.0: free shipping sends no freight line, even with Send delivery
             # cost on (nothing to charge).
             'freight': None,
             'freight_sku': connection['freight_supplier_part_id'], 'ship_to_contains': None, 'notes': None,
@@ -1287,7 +1287,7 @@ class Run:
         self.check(all(o['reserved_stock'] == 0 and o['coupon_holds'] == 0 and not o['auto_cancel'] for o in orders) and result['coupon_holds'] == 0, label + ': stock_and_coupon_holds_released', orders=orders, coupon_holds=result['coupon_holds'])
         if orders:
             instructions = [e.text or '' for e in poom.parse_xml(xml).iter('Extrinsic') if e.get('name') == 'DeliveryInstructions']
-            # 0.5.0 (ticket 75): the note shares DeliveryInstructions with the estimate sentence (only with a freight
+            # 0.5.0: the note shares DeliveryInstructions with the estimate sentence (only with a freight
             # line, and free shipping sends none) and the order details, and only the note is shortened so that the
             # whole stays within 2,000.
             lead = ''
@@ -1318,7 +1318,7 @@ class Run:
         return url + ('&pay_for_order=true' if endpoint == 'order-pay' else '')
 
     def pending_leg(self, seed, receiver):
-        """Ticket 76. A Submit held once WooCommerce has created its order, before the payment method runs: the
+        """0.5.0. A Submit held once WooCommerce has created its order, before the payment method runs: the
         pending order already carries its visit's provenance, and the visit can open neither order-received nor
         order-pay for it. The buyer chooses the account's other saved delivery address (0.5.1: a one-off address can
         no longer be typed in a visit): it reaches ShipTo and stays on the order, and the account saves nothing. Then
@@ -1365,7 +1365,7 @@ class Run:
         self.quiet_orders += [t['id'] for t in result['trashed']]
 
     def refusal_leg(self, seed, receiver):
-        """Ticket 76. What stays refused. In a visit of its own: another payment method forced into checkout, the
+        """0.5.0. What stays refused. In a visit of its own: another payment method forced into checkout, the
         Store API checkout, and another visit's order at order-pay and order-received; none of them leaves an order or
         posts anything. Outside any visit (a guest): the PunchOut method is never offered beside the shop's own, a
         forged PunchOut choice is refused and creates no order, a Punchout Quote's order-pay page never opens, and the
@@ -1424,7 +1424,7 @@ class Run:
             self.check(link is not None and link[1] == 'Proceed to checkout', prefix + 'cart_exits_keeps_woocommerces_checkout_link', link=link)
 
     def states_leg(self, seed, receiver):
-        """0.5.0 (ticket 77), with a state page chosen and "Ask before leaving" on (fixture step `states`; retire puts
+        """0.5.0, with a state page chosen and "Ask before leaving" on (fixture step `states`; retire puts
         both back). Each case in a visit of its own, its checks prefixed `states:`:
 
         - Sending and Sent: the page that posts the cart is the Sending state, its button the state page button
@@ -1592,7 +1592,7 @@ class Run:
         base = {
             'buyer_cookie': self.cookie, 'buyer': connection['buyer'], 'supplier': connection['supplier'], 'deployment_mode': connection['deployment_mode'],
             'currency': seed['currency'], 'shared_secret': seed['secret'], 'lines': lines,
-            # Free shipping sends no freight line (ruling of 11 October); the checkout path's priced method replaces this below.
+            # Free shipping sends no freight line; the checkout path's priced method replaces this below.
             'freight': None, 'freight_sku': connection['freight_supplier_part_id'],
             'ship_to_contains': [seed['ship_to']['address_1'], seed['ship_to']['city']] if connection['emit_ship_to'] else None,
             'notes': self.note if connection['delivery_notes_policy'] == 'item_detail_extrinsic' else None,
@@ -1745,13 +1745,13 @@ def main(argv=None):
                 run.check(order['customer_note'] == run.note, 'order_keeps_the_buyers_note', note=order['customer_note'])
                 for name in run.uploaded:
                     run.check(name in [v for v in (order.get('details') or {}).values() if isinstance(v, str)], 'the_order_keeps_the_uploaded_file_name_under_an_order_details_key ' + name, details=order.get('details'))
-                # 0.5.0 (ticket 74): checkout's stock hold is released, and the unpaid-order clean-up leaves the order alone.
+                # 0.5.0: checkout's stock hold is released, and the unpaid-order clean-up leaves the order alone.
                 run.check(order['reserved_stock'] == 0 and order['coupon_holds'] == 0, 'order_holds_no_stock_and_no_coupon', reserved_stock=order['reserved_stock'], coupon_holds=order['coupon_holds'])
                 run.check(order['auto_cancel'] is False, 'order_is_never_auto_cancelled')
                 run.check(state['trashed'] == [], 'nothing_of_the_visit_is_in_the_bin', trashed=state['trashed'])
                 run.quote_orders.append(order['id'])
                 run.main_order = {'id': order['id'], 'key': order.get('key')}
-                # 0.5.0 (ticket 76): the order ships to the saved address chosen, and checkout changed nothing on the
+                # 0.5.0: the order ships to the saved address chosen, and checkout changed nothing on the
                 # shared account: not its billing or shipping details, not its saved addresses.
                 if run.chosen_address:
                     run.check(order['shipping'].get('address_1') == run.chosen_address['address_1'], 'order_ships_to_the_chosen_saved_address', shipping=order['shipping'])

@@ -133,7 +133,7 @@ namespace {
 		private function set_session( ?POW\Sessions\Session $session ): void { ( new ReflectionProperty( $this->plugin, 'current_session' ) )->setValue( $this->plugin, $session ); }
 
 		/**
-		 * 0.5.0 (ticket 76, inverted from "the Cart block's button opens the review"): in a visit the Cart block's own
+		 * 0.5.0 (inverted from "the Cart block's button opens the review"): in a visit the Cart block's own
 		 * button keeps its native link to checkout, where PunchOut is the only payment method, and carries the Checkout
 		 * button label. Nothing points at the old review any more.
 		 */
@@ -193,7 +193,7 @@ namespace {
 			self::assertSame( [], $GLOBALS['pow_blocks_scripts']->inline );
 		}
 		/**
-		 * 0.5.0 (ticket 76, inverted from "classic and shortcode keep the confirmation route"): the visit leaves through
+		 * 0.5.0 (inverted from "classic and shortcode keep the confirmation route"): the visit leaves through
 		 * checkout, so the return button that opened the old review renders nothing for one release, wherever it is
 		 * placed: the shortcode, the PHP helper and the classic cart's own placement.
 		 */
@@ -220,7 +220,7 @@ namespace {
 			self::assertSame( [ 'woocommerce_widget_shopping_cart_button_view_cart', [ $this->surface, 'render_widget_checkout_button' ] ], $GLOBALS['pow_blocks_hooks']['action']['woocommerce_widget_shopping_cart_buttons'], 'The mini-cart keeps View cart and gets the labelled checkout button' );
 		}
 		/**
-		 * 0.5.0 (ticket 76): WooCommerce's express-pay buttons on the checkout page never show in a visit. Its own
+		 * 0.5.0: WooCommerce's express-pay buttons on the checkout page never show in a visit. Its own
 		 * callback is removed from the checkout hook by name, so the other things a checkout plugin hangs there (a
 		 * field, a notice) stay; the gateways a visit is offered are PunchOut alone, which draws no such button.
 		 */
@@ -279,7 +279,7 @@ namespace {
 			self::assertSame( [], $GLOBALS['pow_blocks_removed_all'] );
 		}
 		/**
-		 * 0.5.0 (ticket 76, inverted from "a visit has no checkout link"): the complete cart control keeps rendering
+		 * 0.5.0 (inverted from "a visit has no checkout link"): the complete cart control keeps rendering
 		 * WooCommerce's normal checkout link in a visit, carrying the Checkout button label.
 		 */
 		public function test_cart_exits_shortcode_is_registered_and_a_visit_gets_the_labelled_checkout_link(): void {
@@ -354,7 +354,7 @@ namespace {
 				self::assertSame( '', $this->surface->cart_exits_shortcode(), "A {$status} visit renders no exit" );
 			}
 		}
-		/** 0.5.0 (ticket 77): the cart as WooCommerce holds it, with $lines lines. */
+		/** 0.5.0: the cart as WooCommerce holds it, with $lines lines. */
 		private function cart( int $lines ): void {
 			$GLOBALS['pow_test_wc'] = new POW_Test_WC();
 			$GLOBALS['pow_test_wc']->cart = new class( $lines ) { public function __construct( private int $lines ) {} public function get_cart(): array { return array_fill( 0, $this->lines, [ 'quantity' => 1 ] ); } };
