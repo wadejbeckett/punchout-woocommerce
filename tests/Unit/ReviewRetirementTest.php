@@ -242,7 +242,7 @@ namespace {
 		public function test_the_0_5_1_entry_stays_below_the_release(): void {
 			$readme = (string) file_get_contents( self::root() . '/readme.txt' );
 			$changelog = substr( $readme, (int) strpos( $readme, '== Changelog ==' ) );
-			self::assertMatchesRegularExpression( '/\A== Changelog ==\s+= 0\.5\.2 =.*?= 0\.5\.1 =.*?= 0\.5\.0 =/s', $changelog, 'The 0.5.1 and 0.5.0 entries stay, in order' );
+			self::assertMatchesRegularExpression( '/\A== Changelog ==\s+= 0\.5\.3 =.*?= 0\.5\.2 =.*?= 0\.5\.1 =.*?= 0\.5\.0 =/s', $changelog, 'The 0.5.2, 0.5.1 and 0.5.0 entries stay, in order' );
 		}
 
 		/** The public plugin page never says "approval": the purchasing system approves, not the shop (its history too). */

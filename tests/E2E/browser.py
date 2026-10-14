@@ -318,6 +318,12 @@ class BrowserRun(driver.Run):
                 ship, billing = driver.ship_to_text(xml).lower(), (seed['billing']['address_1'] or '').lower()
                 self.check(entries[chosen]['address_1'].lower() in ship and bool(billing) and billing not in ship, 'checkout: ship_to_is_the_chosen_saved_entry_not_billing', ship_to=driver.ship_to_text(xml), chosen=entries[chosen]['address_1'])
 
+            # 0.5.3: Back from the purchasing system skips the self-posting handoff page and asks for checkout again;
+            # with the cart sent and emptied, this browser lands on the Sent state, not on an empty cart.
+            page.go_back(wait_until='load')
+            self.save('sent-back.html', page.content())
+            self.check(driver.state_location(page.url) == (page_id, 'sent') and page.locator('.pow-state--sent').count() == 1, 'checkout: back_after_submit_lands_on_the_sent_state', url=page.url)
+
             # The spent handoff: this browser asks for it again and lands on the Sent state, drawn in the theme.
             page.goto(seen[0], wait_until='load')
             self.save('sent-browser.html', page.content())

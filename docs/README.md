@@ -2,7 +2,7 @@
 
 Turn a WooCommerce store into an external purchasing catalog. Employees enter from their purchasing system, shop and return product and price information to their purchasing system.
 
-Each customer connection is bound to one ordinary WooCommerce customer account that you create, group and price: every employee of that customer shops as that account and sees exactly what it sees, while each punchout visit keeps its own basket, delivery selection and returned quote. These documents are written for store administrators. There is no buyer- or customer-facing management screen to configure: everything is at **WooCommerce > PunchOut**.
+Each customer connection is bound to one ordinary WooCommerce customer account that you create, group and price: every employee of that customer shops as that account and sees exactly what it sees, while each punchout visit keeps its own basket, delivery selection and returned quote. These documents are written for store administrators. There is no buyer- or customer-facing management screen to configure: everything is at **WooCommerce → Settings → PunchOut** (its own tab beside Payments; the PunchOut payment method's settings link there).
 
 A returned basket is not a purchase order or payment. In Dynamics 365 it contributes requisition lines. Every Submit leaves a **Punchout Quote**: the order the store's classic checkout placed with the PunchOut payment method (0.5.0), carrying the custom `punchout-quote` status, owned by the bound account and naming the buyer who sent it. It is never paid. A later authorized purchase order still needs reconciliation before fulfilment.
 

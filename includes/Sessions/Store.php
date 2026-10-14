@@ -15,6 +15,9 @@ use POW\Installer;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the SQL put together outside prepare() is only the plugin's own
+// table name ($wpdb->prefix and a fixed suffix) and column names from fixed lists; every value goes through prepare().
+
 /**
  * wpdb-backed store over wp_pow_sessions.
  *

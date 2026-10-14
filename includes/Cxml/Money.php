@@ -12,6 +12,9 @@ namespace POW\Cxml;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception messages here are never output: callers
+// log them or answer with their own fixed, escaped text.
+
 /**
  * Cents-integer money handling for cXML documents.
  *

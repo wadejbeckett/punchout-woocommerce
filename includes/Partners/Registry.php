@@ -16,6 +16,11 @@ use POW\Support\Ip;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared -- the SQL put together outside prepare() is only the plugin's own
+// table name ($wpdb->prefix and a fixed suffix) and column names from fixed lists; every value goes through prepare().
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception messages here are never output: callers
+// log them or answer with their own fixed, escaped text.
+
 /**
  * CRUD and credential resolution over the wp_pow_partners table.
  *

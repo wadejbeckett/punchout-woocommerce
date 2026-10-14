@@ -121,6 +121,14 @@ abstract class TestCase {
 		self::check( is_iterable( $haystack ) && in_array( $needle, is_array( $haystack ) ? $haystack : iterator_to_array( $haystack ), true ), $message ?: 'Failed asserting that iterable contains ' . self::export( $needle ) );
 	}
 
+	public static function assertDoesNotMatchRegularExpression( string $pattern, string $string, string $message = '' ): void {
+		self::check( 0 === preg_match( $pattern, $string ), $message ?: 'Failed asserting that a string does not match ' . $pattern );
+	}
+
+	public static function assertNotContains( mixed $needle, mixed $haystack, string $message = '' ): void {
+		self::check( is_iterable( $haystack ) && ! in_array( $needle, is_array( $haystack ) ? $haystack : iterator_to_array( $haystack ), true ), $message ?: 'Failed asserting that iterable does not contain ' . self::export( $needle ) );
+	}
+
 	public static function assertInstanceOf( string $class, mixed $actual, string $message = '' ): void {
 		self::check( $actual instanceof $class, $message ?: 'Failed asserting instance of ' . $class );
 	}

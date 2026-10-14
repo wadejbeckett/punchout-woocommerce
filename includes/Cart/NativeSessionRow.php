@@ -71,11 +71,11 @@ final class NativeSessionRow {
 		try {
 			$table = $wpdb->prefix . 'woocommerce_sessions';
 			if ( null === $this->expected ) {
-				$sql = $wpdb->prepare( 'INSERT IGNORE INTO ' . $table . ' (session_key, session_value, session_expiry) VALUES (%s, %s, %d)', $this->key, $candidate, $expiry );
+				$sql = $wpdb->prepare( 'INSERT IGNORE INTO ' . $table . ' (session_key, session_value, session_expiry) VALUES (%s, %s, %d)', $this->key, $candidate, $expiry ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- the table name is WooCommerce's own sessions table under $wpdb->prefix; every value is a placeholder.
 			} else {
-				$sql = $wpdb->prepare( 'UPDATE ' . $table . ' SET session_value = %s, session_expiry = %d WHERE session_key = %s AND BINARY session_value = BINARY %s', $candidate, $expiry, $this->key, $this->expected );
+				$sql = $wpdb->prepare( 'UPDATE ' . $table . ' SET session_value = %s, session_expiry = %d WHERE session_key = %s AND BINARY session_value = BINARY %s', $candidate, $expiry, $this->key, $this->expected ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- the table name is WooCommerce's own sessions table under $wpdb->prefix; every value is a placeholder.
 			}
-			$affected = $wpdb->query( $sql );
+			$affected = $wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- $sql is the prepare() result above.
 			if ( '' !== ( $wpdb->last_error ?? '' ) || false === $affected || ! in_array( $affected, [ 0, 1 ], true ) || ( null === $this->expected && 1 !== $affected ) ) { $this->refuse(); return false; }
 			// Zero is a verified unchanged update only, never an optimistic success assumption.
 			$row = $this->read();

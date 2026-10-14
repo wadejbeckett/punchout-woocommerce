@@ -1,6 +1,6 @@
 <?php
 /**
- * Admin screen: WooCommerce > PunchOut.
+ * Admin screens: WooCommerce > Settings > PunchOut.
  *
  * @package POW
  * @license AGPL-3.0-or-later
@@ -26,7 +26,9 @@ use POW\Settings;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Four tabs, core UI only (no custom CSS framework):
+ * One WooCommerce settings tab, "PunchOut" (WooCommerce > Settings > PunchOut, beside Payments; since 0.5.3, before
+ * that a WooCommerce > PunchOut menu item), whose four screens are WooCommerce sections. Core UI only (no custom CSS
+ * framework):
  *
  * - Settings: WordPress Settings API over the single pow_settings option —
  *   master switch plus the handful of genuinely needed knobs.
@@ -44,14 +46,34 @@ defined( 'ABSPATH' ) || exit;
  * Connection writes go through Admin\Actions (admin-post handlers, nonce +
  * capability checked); delivery forms use the injected Fields same-page handler.
  * This class only renders and registers settings.
+ *
+ * WooCommerce wraps a settings tab in its own form, so every screen here renders
+ * after WooCommerce closes it (`woocommerce_after_settings_punchout`) and keeps
+ * its own forms, nonces and buttons exactly as before; WooCommerce's Save button
+ * is hidden on the tab. The old address, admin.php?page=punchout-woocommerce,
+ * is no longer a registered page: a user who may manage WooCommerce is sent to
+ * the same screen in the tab, and anyone else is refused by WordPress as before.
  */
 final class Page {
 
+	/** The plugin's slug, and the old admin page's (admin.php?page=punchout-woocommerce, before 0.5.3). */
 	public const SLUG = 'punchout-woocommerce';
 	public const CAP  = 'manage_woocommerce';
 
+	/** The WooCommerce settings tab (admin.php?page=wc-settings&tab=punchout). */
+	public const TAB = 'punchout';
+
+	/** WooCommerce's settings page. */
+	private const SETTINGS_PAGE = 'wc-settings';
+
+	/** The tab's sections, in order; '' is Settings. */
+	private const SECTIONS = [ '', 'partners', 'log', 'docs' ];
+
 	/** Sentinel so the stored secret never round-trips through the form. */
 	public const SECRET_MASK = '__pow_unchanged__';
+
+	/** Whether this request's save has already reported on "Pages a visit may also open" (WordPress may sanitise twice). */
+	private bool $open_pages_reported = false;
 
 	public function __construct(
 		private Settings $settings,
@@ -62,8 +84,119 @@ final class Page {
 
 	public function register(): void {
 		add_filter( 'option_page_capability_pow_settings_group', static fn() => self::CAP );
-		add_action( 'admin_menu', [ $this, 'add_menu' ] );
+		add_filter( 'woocommerce_settings_tabs_array', [ $this, 'add_tab' ], 50 );
+		add_action( 'woocommerce_sections_' . self::TAB, [ $this, 'render_sections' ] );
+		add_action( 'woocommerce_settings_' . self::TAB, [ $this, 'hide_save_button' ] );
+		add_action( 'woocommerce_after_settings_' . self::TAB, [ $this, 'render' ] );
+		add_action( 'admin_page_access_denied', [ $this, 'redirect_legacy_page' ] );
 		add_action( 'admin_init', [ $this, 'register_settings' ] );
+	}
+
+	/**
+	 * The address of a screen in the tab: $section is '' or 'settings' (Settings), 'partners' (Customers), 'log' or
+	 * 'docs' (Integration docs); $extra are further query arguments, in order.
+	 *
+	 * @param array<string, int|string> $extra
+	 */
+	public static function url( string $section = '', array $extra = [] ): string {
+		$args = [ 'page' => self::SETTINGS_PAGE, 'tab' => self::TAB ];
+		if ( '' !== $section && 'settings' !== $section ) {
+			$args['section'] = $section;
+		}
+
+		return admin_url( 'admin.php?' . http_build_query( $args + $extra, '', '&', PHP_QUERY_RFC1738 ) );
+	}
+
+	/** Whether this admin request is the PunchOut tab. */
+	public static function is_screen(): bool {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing.
+		return self::SETTINGS_PAGE === ( $_GET['page'] ?? null ) && self::TAB === ( $_GET['tab'] ?? null );
+	}
+
+	/** The open section of the tab: one of SECTIONS. */
+	private static function section(): string {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing.
+		$section = isset( $_GET['section'] ) && is_string( $_GET['section'] ) ? sanitize_key( wp_unslash( $_GET['section'] ) ) : '';
+
+		return in_array( $section, self::SECTIONS, true ) ? $section : '';
+	}
+
+	/**
+	 * WooCommerce's settings tabs with "PunchOut" after Payments (the PunchOut payment method's own settings link
+	 * here), or last when there is no Payments tab.
+	 *
+	 * @param mixed $tabs Tab slug => label.
+	 * @return mixed
+	 */
+	public function add_tab( mixed $tabs ): mixed {
+		if ( ! is_array( $tabs ) ) {
+			return $tabs;
+		}
+
+		$label    = __( 'PunchOut', 'punchout-woocommerce' );
+		$position = array_search( 'checkout', array_keys( $tabs ), true );
+
+		if ( false === $position ) {
+			$tabs[ self::TAB ] = $label;
+			return $tabs;
+		}
+
+		return array_slice( $tabs, 0, $position + 1, true ) + [ self::TAB => $label ] + array_slice( $tabs, $position + 1, null, true );
+	}
+
+	/** The tab's four screens as WooCommerce's section links. */
+	public function render_sections(): void {
+		$labels  = [
+			''         => __( 'Settings', 'punchout-woocommerce' ),
+			'partners' => __( 'Customers', 'punchout-woocommerce' ),
+			'log'      => __( 'Log', 'punchout-woocommerce' ),
+			'docs'     => __( 'Integration docs', 'punchout-woocommerce' ),
+		];
+		$current = self::section();
+		$links   = [];
+
+		foreach ( $labels as $section => $label ) {
+			$links[] = sprintf(
+				'<li><a href="%s"%s>%s</a></li>',
+				esc_url( self::url( $section ) ),
+				$section === $current ? ' class="current"' : '',
+				esc_html( $label )
+			);
+		}
+
+		echo '<ul class="subsubsub">' . implode( ' | ', $links ) . '</ul><br class="clear" />'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped above.
+	}
+
+	/** Each screen keeps its own forms and buttons, so WooCommerce's Save button is not shown on the tab. */
+	public function hide_save_button(): void {
+		$GLOBALS['hide_save_button'] = true;
+	}
+
+	/**
+	 * The old admin page, admin.php?page=punchout-woocommerce (before 0.5.3), for a user who may manage WooCommerce:
+	 * the same screen in the tab, with its `tab` as the section and every other plain query argument kept. Runs on
+	 * WordPress's `admin_page_access_denied`, which fires because the old page is no longer registered; anyone else
+	 * gets WordPress's refusal, as before.
+	 */
+	public function redirect_legacy_page(): void {
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- read-only routing: a redirect, nothing changes.
+		if ( self::SLUG !== ( $_GET['page'] ?? null ) || ! current_user_can( self::CAP ) ) {
+			return;
+		}
+
+		$section = isset( $_GET['tab'] ) && is_string( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : '';
+		$extra   = [];
+
+		foreach ( $_GET as $key => $value ) {
+			if ( in_array( $key, [ 'page', 'tab', 'section' ], true ) || ! is_string( $key ) || ! is_scalar( $value ) ) {
+				continue;
+			}
+			$extra[ sanitize_key( $key ) ] = sanitize_text_field( wp_unslash( (string) $value ) );
+		}
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
+
+		wp_safe_redirect( self::url( in_array( $section, self::SECTIONS, true ) ? $section : '', $extra ) );
+		exit;
 	}
 
 	/**
@@ -146,17 +279,6 @@ final class Page {
 		return $user_id;
 	}
 
-	public function add_menu(): void {
-		add_submenu_page(
-			'woocommerce',
-			__( 'PunchOut', 'punchout-woocommerce' ),
-			__( 'PunchOut', 'punchout-woocommerce' ),
-			self::CAP,
-			self::SLUG,
-			[ $this, 'render' ]
-		);
-	}
-
 	/* ---------------------------------------------------------------------
 	 * Settings API
 	 * ------------------------------------------------------------------ */
@@ -207,13 +329,13 @@ final class Page {
 			'visit_pages'          => [
 				__( 'Other pages in a visit', 'punchout-woocommerce' ),
 				'select',
-				__( 'Which pages outside the shop a buyer may open during a visit. Every page: nothing is closed (the behaviour before 0.5.2). Shop pages only: products, the shop, product categories, tags, attributes and brands, search, the cart, checkout and the My Account pages the connection ticks stay open, and so do the landing page, the state page, the terms and privacy pages checkout links to, pages holding [punchout_state], [punchout_abandon_button] or [punchout_cart_exits], and the pages listed below; any other page, post or archive sends the buyer to the landing page with a notice. Administrators and shop managers are never sent away.', 'punchout-woocommerce' ),
+				__( 'Which pages outside the shop a buyer may open during a visit. Every page: nothing is closed (the behaviour before 0.5.2). Shop pages only: products, the shop, product categories, tags, attributes and brands, the product search, the cart, checkout and the My Account pages the connection ticks stay open, and so do the landing page, the state page, the terms and privacy pages checkout links to, and the pages listed below; any other page, post or archive sends the buyer to the landing page with a notice, whatever the request method, and any other search becomes the product search. Administrators and shop managers are never sent away.', 'punchout-woocommerce' ),
 				[
 					\POW\Settings::VISIT_PAGES_ALL  => __( 'Every page (default)', 'punchout-woocommerce' ),
 					\POW\Settings::VISIT_PAGES_SHOP => __( 'Shop pages only, plus the pages listed', 'punchout-woocommerce' ),
 				],
 			],
-			'visit_open_pages'     => [ __( 'Pages a visit may also open', 'punchout-woocommerce' ), 'text', __( 'With shop pages only: page IDs a visit may open besides the shop, separated by commas (for example 12, 345). Any other post ID works the same way. Ignored with every page open.', 'punchout-woocommerce' ) ],
+			'visit_open_pages'     => [ __( 'Pages a visit may also open', 'punchout-woocommerce' ), 'text', __( 'With shop pages only: page IDs a visit may open besides the shop, separated by commas (for example 12, 345). Any other post ID works the same way, and so does a page holding [punchout_abandon_button] or [punchout_cart_exits], which opens only when listed here. Saving says what it dropped and which listed page is not published yet. Ignored with every page open.', 'punchout-woocommerce' ) ],
 			'abandon_button_label' => [ __( 'Cancel button label', 'punchout-woocommerce' ), 'text', __( 'Text on the control that ends the session with no items. Blank uses the default: “Cancel and return”.', 'punchout-woocommerce' ) ],
 			'checkout_button_label' => [ __( 'Checkout button label', 'punchout-woocommerce' ), 'text', __( 'During a visit, text on the cart’s proceed button and the Cart widget’s checkout button, which open checkout with PunchOut as the only payment method. Blank uses the default: “Proceed to checkout”.', 'punchout-woocommerce' ) ],
 			'visit_saved_addresses_only' => [ __( 'Saved addresses only in a visit', 'punchout-woocommerce' ), 'checkbox', __( 'During a visit, checkout offers only the delivery addresses saved on the connection’s account: an address book’s “add new” choice is removed, the address fields are not editable (the chosen saved address fills them), and a delivery address that is not a saved one is refused. An account with no saved delivery address takes what checkout posts. On by default.', 'punchout-woocommerce' ) ],
@@ -226,7 +348,7 @@ final class Page {
 			'account_tab'          => [
 				__( 'Punchout integration tab in My Account', 'punchout-woocommerce' ),
 				'select',
-				__( 'Who sees the tab with the connection’s setup-XML download (and the reset, where a connection allows it). The tab never shows inside a punchout visit. With nobody, administrators hand out the setup XML from the Integration docs tab.', 'punchout-woocommerce' ),
+				__( 'Who sees the tab with the connection’s setup-XML download (and the reset, where a connection allows it). The tab never shows inside a punchout visit. With nobody, administrators hand out the setup XML from Integration docs (above).', 'punchout-woocommerce' ),
 				[
 					\POW\Settings::ACCOUNT_TAB_OWNERS   => __( 'Accounts bound to a connection (default)', 'punchout-woocommerce' ),
 					\POW\Settings::ACCOUNT_TAB_EVERYONE => __( 'Every signed-in account (the behaviour before 0.5.2)', 'punchout-woocommerce' ),
@@ -339,7 +461,7 @@ final class Page {
 			'enabled'              => ( isset( $input['enabled'] ) && 'yes' === $input['enabled'] ) ? 'yes' : 'no',
 			'landing_page_id'      => max( 0, (int) ( $input['landing_page_id'] ?? 0 ) ),
 			'visit_pages'          => in_array( $input['visit_pages'] ?? null, \POW\Settings::VISIT_PAGE_MODES, true ) ? (string) $input['visit_pages'] : \POW\Settings::VISIT_PAGES_ALL,
-			'visit_open_pages'     => implode( ',', \POW\Settings::page_ids( $input['visit_open_pages'] ?? '' ) ),
+			'visit_open_pages'     => $this->open_pages( $input['visit_open_pages'] ?? '' ),
 			'abandon_button_label' => sanitize_text_field( (string) ( $input['abandon_button_label'] ?? '' ) ),
 			'checkout_button_label' => \POW\Settings::sanitise_label( $input['checkout_button_label'] ?? '' ),
 			'visit_saved_addresses_only' => ( isset( $input['visit_saved_addresses_only'] ) && 'yes' === $input['visit_saved_addresses_only'] ) ? 'yes' : 'no',
@@ -368,24 +490,76 @@ final class Page {
 		];
 	}
 
+	/**
+	 * "Pages a visit may also open" as saved: every positive whole ID once, in the order typed (as in 0.5.2). Since
+	 * 0.5.3 the save says what it dropped (entries that are not IDs) and which kept IDs a visit cannot open yet (no
+	 * page or post has the ID, or it is not published), as one warning under the settings form.
+	 */
+	private function open_pages( mixed $raw ): string {
+		$entries = \POW\Settings::page_id_entries( $raw );
+		$closed  = [];
+
+		foreach ( $entries['ids'] as $id ) {
+			$status = function_exists( 'get_post_status' ) ? get_post_status( $id ) : 'publish';
+			if ( 'publish' !== $status ) {
+				$closed[] = false === $status
+					/* translators: %d: a page ID no page or post has. */
+					? sprintf( __( '%d (no page or post has this ID)', 'punchout-woocommerce' ), $id )
+					/* translators: 1: a page ID, 2: its status, for example draft. */
+					: sprintf( __( '%1$d (%2$s)', 'punchout-woocommerce' ), $id, (string) $status );
+			}
+		}
+
+		$report = [];
+		if ( [] !== $entries['rejected'] ) {
+			$report[] = sprintf(
+				/* translators: %s: the entries dropped, each in quotes. */
+				__( 'dropped %s, which are not page IDs.', 'punchout-woocommerce' ),
+				implode( ', ', array_map( static fn( string $entry ): string => '“' . $entry . '”', $entries['rejected'] ) )
+			);
+		}
+		if ( [] !== $closed ) {
+			$report[] = sprintf(
+				/* translators: %s: the kept IDs a visit cannot open yet, each with its reason. */
+				__( 'kept %s, but a visit cannot open them until each is a published page or post.', 'punchout-woocommerce' ),
+				implode( ', ', $closed )
+			);
+		}
+
+		if ( [] !== $report && ! $this->open_pages_reported && function_exists( 'add_settings_error' ) ) {
+			$this->open_pages_reported = true;
+			add_settings_error(
+				\POW\Settings::OPTION_KEY,
+				'pow_visit_open_pages',
+				__( 'Pages a visit may also open:', 'punchout-woocommerce' ) . ' ' . implode( ' ', $report ),
+				'warning'
+			);
+		}
+
+		return implode( ',', $entries['ids'] );
+	}
+
 	/* ---------------------------------------------------------------------
 	 * Rendering
 	 * ------------------------------------------------------------------ */
 
+	/**
+	 * The open section, after WooCommerce's settings form. The wrapper's class keeps WooCommerce's "leave this page?"
+	 * prompt (it watches every field on a settings page) off these forms, which save themselves.
+	 */
 	public function render(): void {
 		Transport::require_https();
 		if ( ! current_user_can( self::CAP ) ) {
 			wp_die( esc_html__( 'You do not have permission to access this page.', 'punchout-woocommerce' ) );
 		}
 
-		$tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'settings'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- tab routing only.
+		$section = self::section();
 
-		echo '<div class="wrap"><h1>' . esc_html__( 'PunchOut for WooCommerce', 'punchout-woocommerce' ) . '</h1>';
+		echo '<div class="pow-admin wc-settings-prevent-change-event">';
 
 		$this->render_notices();
-		$this->render_tabs( $tab );
 
-		switch ( $tab ) {
+		switch ( $section ) {
 			case 'partners':
 				$this->render_partners();
 				break;
@@ -402,39 +576,9 @@ final class Page {
 		echo '</div>';
 	}
 
-	private function tab_url( string $tab, array $extra = [] ): string {
-		return add_query_arg(
-			array_merge(
-				[
-					'page' => self::SLUG,
-					'tab'  => $tab,
-				],
-				$extra
-			),
-			admin_url( 'admin.php' )
-		);
-	}
-
-	private function render_tabs( string $active ): void {
-		$tabs = [
-			'settings' => __( 'Settings', 'punchout-woocommerce' ),
-			'partners' => __( 'Customers', 'punchout-woocommerce' ),
-			'log'      => __( 'Log', 'punchout-woocommerce' ),
-			'docs'     => __( 'Integration docs', 'punchout-woocommerce' ),
-		];
-
-		echo '<nav class="nav-tab-wrapper">';
-
-		foreach ( $tabs as $slug => $label ) {
-			printf(
-				'<a href="%s" class="nav-tab %s">%s</a>',
-				esc_url( $this->tab_url( $slug ) ),
-				$slug === $active ? 'nav-tab-active' : '',
-				esc_html( $label )
-			);
-		}
-
-		echo '</nav>';
+	/** @param array<string, int|string> $extra */
+	private function tab_url( string $section, array $extra = [] ): string {
+		return self::url( $section, $extra );
 	}
 
 	/**
@@ -458,6 +602,10 @@ final class Page {
 	}
 
 	private function render_settings(): void {
+		// The notices options.php leaves for the redirect back here: "Settings saved." and the reports of a save.
+		if ( function_exists( 'settings_errors' ) ) {
+			settings_errors();
+		}
 		echo '<form method="post" action="' . esc_url( admin_url( 'options.php' ) ) . '">';
 		settings_fields( 'pow_settings_group' );
 		do_settings_sections( self::SLUG );
@@ -524,9 +672,9 @@ final class Page {
 
 	private function action_form( int $partner_id, string $action, string $nonce, string $label, string $confirm = '' ): void {
 		$confirmation = '' !== $confirm ? ' onsubmit="return confirm(' . esc_attr( (string) wp_json_encode( $confirm ) ) . ')"' : '';
-		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"' . $confirmation . '>';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"' . $confirmation . '>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $confirmation is a fixed attribute around esc_attr().
 		echo '<input type="hidden" name="action" value="pow_' . esc_attr( $action ) . '" />';
-		printf( '<input type="hidden" name="partner" value="%d" />', $partner_id );
+		echo '<input type="hidden" name="partner" value="' . esc_attr( (string) $partner_id ) . '" />';
 		wp_nonce_field( 'pow_' . $nonce . '_' . $partner_id );
 		echo '<p><button type="submit" class="button">' . esc_html( $label ) . '</button></p></form>';
 	}
@@ -725,7 +873,7 @@ final class Page {
 			if ( 0 === $partner->owner_user_id ) {
 				echo '<p>' . esc_html__( 'Select the ordinary WooCommerce customer account this customer\'s buyers will shop as, by user ID. It must exist, be an ordinary customer with no administrative capability, and own no other connection. Group and price it yourself, once, in whatever pricing or visibility plugin you use — the plugin never creates, renames or deletes users and never copies addresses. Until an account is bound, this connection refuses PunchOutSetupRequest with cXML Status 500.', 'punchout-woocommerce' ) . '</p>';
 				echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '"><input type="hidden" name="action" value="pow_associate_partner" />';
-				printf( '<input type="hidden" name="partner" value="%d" />', $partner->id );
+				echo '<input type="hidden" name="partner" value="' . esc_attr( (string) $partner->id ) . '" />';
 				wp_nonce_field( 'pow_associate_' . $partner->id );
 				echo '<p><label>' . esc_html__( 'Store account user ID', 'punchout-woocommerce' ) . ' <input type="number" name="owner_user_id" min="1" required /></label></p>';
 				submit_button( __( 'Bind store account', 'punchout-woocommerce' ) );
@@ -1081,13 +1229,13 @@ final class Page {
 		);
 		echo '</p>';
 
-		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within templates/docs/.
-		echo ( new \POW\Docs\Page(
+		$docs = ( new \POW\Docs\Page(
 			$this->settings,
 			$this->registry,
 			new RateLimiter( \POW\Docs\Page::self_test_limit( $this->settings->int( 'rate_limit_per_min' ) ) ),
 			$this->audit
 		) )->render( true );
+		echo $docs; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- template output, escaped within templates/docs/.
 	}
 
 	/* ---------------------------------------------------------------------
@@ -1102,7 +1250,7 @@ final class Page {
 		// phpcs:enable
 
 		echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '">';
-		echo '<input type="hidden" name="page" value="' . esc_attr( self::SLUG ) . '" /><input type="hidden" name="tab" value="log" />';
+		echo '<input type="hidden" name="page" value="' . esc_attr( self::SETTINGS_PAGE ) . '" /><input type="hidden" name="tab" value="' . esc_attr( self::TAB ) . '" /><input type="hidden" name="section" value="log" />';
 		echo '<label>' . esc_html__( 'Customer:', 'punchout-woocommerce' ) . ' <select name="partner"><option value="0">' . esc_html__( 'All', 'punchout-woocommerce' ) . '</option>';
 
 		foreach ( $this->registry->all() as $partner ) {

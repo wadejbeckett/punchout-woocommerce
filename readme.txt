@@ -1,10 +1,10 @@
 === PunchOut for WooCommerce ===
 Contributors: noiz
 Tags: punchout, cxml, procurement, b2b, woocommerce
-Requires at least: 6.4
+Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.2
-Stable tag: 0.5.2
+Stable tag: 0.5.3
 License: AGPLv3 or later
 License URI: https://www.gnu.org/licenses/agpl-3.0.html
 
@@ -33,9 +33,9 @@ PunchOut for WooCommerce lets enterprise buyers "punch out" from their procureme
 1. Upload the `punchout-woocommerce` folder to `/wp-content/plugins/`, or install the zip via Plugins > Add New > Upload.
 2. Activate the plugin. WooCommerce 11.1+ must be active: a punchout visit gets its own WooCommerce session row by standing on session-handler internals this release was verified against on 11.1, and it refuses the visit rather than guess on an older one.
 3. (Recommended) Add a sealing key to `wp-config.php` before storing any customer secrets: run `wp punchout generate-key` and paste the line it prints.
-4. Configure at **WooCommerce > PunchOut**: add a customer.
+4. Configure at **WooCommerce → Settings → PunchOut** (beside Payments; the PunchOut payment method's own settings link there): add a customer under Customers.
 5. Create (or pick) the one WooCommerce customer account that customer's buyers will shop as, put it in whatever pricing or visibility group it should have, and bind it to the connection. A connection with no bound account refuses `PunchOutSetupRequest` with cXML Status 500.
-6. Flip the master switch on the Settings tab.
+6. Flip the master switch under Settings in that tab.
 7. Give the buyer's admin your setup URL (`https://your-store.example/punchout/setup`), your To/From identities and the generated shared secret.
 
 == Frequently Asked Questions ==
@@ -65,6 +65,17 @@ To the URL the buyer's system supplies in each setup request (`BrowserFormPost`)
 One. You create one ordinary WooCommerce customer account per connection, group and price it yourself once, and bind it on the connection screen. Every buyer at that customer punches in as that account through a single-use StartPage link and sees exactly what it sees. The plugin never creates, renames or deletes users. Each punchout visit still gets its own basket, delivery selection and quote order, and the buyer's name and e-mail from the cXML request are recorded on the visit and stamped on the quote.
 
 == Changelog ==
+
+= 0.5.3 =
+* The admin screens moved from the WooCommerce > PunchOut menu item to their own tab, **WooCommerce → Settings → PunchOut**, beside Payments: Settings, Customers (connections, binding, activation, delivery book), Log and Integration docs are the tab's sections. The PunchOut payment method's settings (Settings → Payments → PunchOut) carry a heading that links to the tab. Every form, nonce, capability and admin-post action is unchanged; WooCommerce's own Save button is hidden on the tab, since each screen keeps its own. The old address (`admin.php?page=punchout-woocommerce`, with its `tab`) takes a user who may manage WooCommerce to the same screen in the tab; anyone else is refused by WordPress as before.
+* Inside a visit, the My Account dashboard's second sentence names the account pages the visit can open (the connection's ticked pages, by their menu labels and links) instead of WooCommerce's text about recent orders, addresses and the password, whose pages a visit opens only when ticked. With no such page there is no sentence; the greeting and the dashboard hooks are unchanged.
+* "Shop pages only": a search for everything (`?s=` without `post_type=product`) in a visit now goes to the shop's product search with the same words (`?s=…&post_type=product`), so it lists only products; no notice, since nothing asked for is closed. The product search itself is never judged. The filter `punchout_visit_page_open` (object `null`) can open it.
+* "Shop pages only": a non-GET request (POST, PUT and so on) to a page outside the shop is judged like a GET and sent to the landing page with the same notice; before, only GET and HEAD were judged.
+* "Shop pages only": a page opens because the store chose it, never because of the shortcodes it holds. Open by construction are the landing page, the state page, the terms and privacy pages checkout links to; a page holding `[punchout_abandon_button]`, `[punchout_cart_exits]` or `[punchout_state]` that is none of these opens only when listed under "Pages a visit may also open". The rule no longer reads page content.
+* "Pages a visit may also open": a save keeps every whole ID as before and now says what it dropped (entries that are not IDs) and which kept IDs a visit cannot open yet (no page or post has the ID, or it is not published), as one warning above the settings form (`Settings::page_id_entries()`). The settings screen shows WordPress's "Settings saved." notice again.
+* Back after Submit: the page that posts the cart posts itself, so the browser's Back from the purchasing system skips it and asks for checkout again; with the cart sent and emptied, WooCommerce then showed an empty cart, as if the visit could be entered again. Now the cart or checkout asked for by the browser the cart was sent from (the keyed sent marker the handoff leaves names a visit that returned), while its cart is empty, goes to the Sent state: the state page when one is chosen, else `/punchout/sent` (`Http\EndedVisit`). A cart filled since, and every other page, open as before.
+* Requires at least WordPress 6.5 (was 6.4). WordPress Plugin Check reports no errors: escaping and file functions follow WordPress's own (`wp_parse_url()`, `wp_strip_all_tags()`, `wp_delete_file()`), and the plugin's table names and fixed exception texts carry documented exemptions.
+* No schema change (10). No setting added or removed.
 
 = 0.5.2 =
 * New setting "Punchout integration tab in My Account" (`account_tab`): "Accounts bound to a connection (default)", "Every signed-in account (the behaviour before 0.5.2)" or "Nobody (administrators hand out the setup XML from Integration docs)". The tab was built for the self-service application flow retired in 0.4.0; by default it now shows only to an account a connection is bound to, whatever the connection's status, so retail, trade and staff accounts no longer see it or its no-connection state. The menu item, the page, the setup-XML download and the opt-in reset all follow the setting (`Account\IntegrationTab::actor()`); an owner lookup that fails, or an account two connections name, sees nothing; a GET of the tab's address by an account it is not shown to lands on the account dashboard. The tab still never shows inside a visit.

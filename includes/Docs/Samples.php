@@ -50,6 +50,7 @@ final class Samples {
 	}
 
 	public static function setup_request(): string {
+		// phpcs:ignore PluginCheck.CodeAnalysis.Heredoc.NotAllowed -- a fixed cXML sample with no interpolation, kept readable as the document it shows.
 		return <<<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE cXML SYSTEM "http://xml.cxml.org/schemas/cXML/1.2.008/cXML.dtd">

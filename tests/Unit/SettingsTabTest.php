@@ -157,7 +157,7 @@ final class SettingsTabTest extends TestCase {
 		foreach ( [ 'README.md', 'docs/getting-started.md', 'docs/README.md' ] as $doc ) {
 			$text = (string) file_get_contents( $root . '/' . $doc );
 			self::assertStringContainsString( 'WooCommerce → Settings → PunchOut', $text, $doc . ' names the new place' );
-			self::assertDoesNotMatchRegularExpression( '/WooCommerce (?:>|→|&gt;) PunchOut/', $text, $doc . ' no longer names the old menu' );
+			self::assertDoesNotMatchRegularExpression( '/WooCommerce (?:>|→|▸|&gt;) PunchOut/', $text, $doc . ' no longer names the old menu' );
 		}
 	}
 }

@@ -28,6 +28,10 @@ defined( 'ABSPATH' ) || exit;
  * with that redirect, so it happens once and the browser is an ordinary guest afterwards. A return whose handoff
  * page was never served is sent to that page first, and keeps the cookie, because the page is served only to it.
  *
+ * Since 0.5.3 the browser a cart was sent from (the handoff page cleared its login cookie and left the keyed sent
+ * marker) is sent to the Sent state when it asks for the cart or checkout with an empty cart, with or without a state
+ * page: Back after Submit skips the self-posting handoff page and would otherwise land on an empty guest cart.
+ *
  * The cookie is read, never trusted: it only names a login token, and only a visit row recording that exact token
  * (Store::find_login_any_status) counts. A cookie that names no visit (the account holder's own password login, for
  * example) changes nothing, and nothing changes while no state page is chosen. Checkout\LateSubmit applies the same
@@ -61,7 +65,10 @@ final class EndedVisit {
 		if ( ! in_array( $method, [ 'GET', 'HEAD' ], true ) || wp_doing_ajax() || is_user_logged_in() ) { return null; }
 		try {
 			$page = StatePage::for_site();
-			if ( 0 === $page->page_id() || $page->is_state_request() || null !== $this->plugin->current_session() ) { return null; }
+			if ( $page->is_state_request() || null !== $this->plugin->current_session() ) { return null; }
+			$sent = $this->sent_browser_target();
+			if ( null !== $sent ) { return $sent; }
+			if ( 0 === $page->page_id() ) { return null; }
 			$found = self::from_cookie( $this->sessions );
 			if ( null === $found || ! self::over( $found[0] ) ) { return null; }
 			[ $visit, $token ] = $found;
@@ -75,6 +82,28 @@ final class EndedVisit {
 			// Nothing proven: the request carries on as it would have.
 			return null;
 		}
+	}
+
+	/**
+	 * 0.5.3: the cart or checkout, asked for by the browser a cart was sent from, while its cart is empty: the Sent
+	 * state (the state page, else /punchout/sent), cookies untouched. Serving the handoff page clears the login cookie
+	 * and leaves the sent marker (Checkout\Handoff::SENT_MARKER); that page posts itself, so the browser's Back skips
+	 * it and lands on checkout, which with the emptied cart would send the buyer on to an empty guest cart, as if the
+	 * visit could be entered again. The marker is keyed, and only a visit row that returned counts. A cart filled since
+	 * (the browser shopping on as a guest) opens as usual, and so does every other page.
+	 *
+	 * @return array{0: string, 1: bool}|null
+	 */
+	private function sent_browser_target(): ?array {
+		$on_cart = ( function_exists( 'is_cart' ) && is_cart() ) || ( function_exists( 'is_checkout' ) && is_checkout() );
+		if ( ! $on_cart ) { return null; }
+		$marker = $_COOKIE[ Handoff::SENT_MARKER ] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- parsed and keyed by marked_visit().
+		$id     = is_string( $marker ) ? Handoff::marked_visit( $marker ) : 0;
+		$visit  = $id > 0 ? $this->sessions->find( $id ) : null;
+		if ( null === $visit || Session::RETURNED !== $visit->status ) { return null; }
+		$cart = function_exists( 'WC' ) ? WC()->cart : null;
+		if ( is_object( $cart ) && method_exists( $cart, 'is_empty' ) && ! $cart->is_empty() ) { return null; }
+		return [ Handoff::sent_url(), false ];
 	}
 
 	/**

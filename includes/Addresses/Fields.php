@@ -126,7 +126,7 @@ final class Fields {
 	 * route left to accept an editor POST on.
 	 */
 	private function route(): bool {
-		return is_admin() && ( $_GET['page'] ?? null ) === Page::SLUG && current_user_can( Page::CAP );
+		return is_admin() && Page::is_screen() && current_user_can( Page::CAP );
 	}
 
 	private function native_fields( int $partner_id, string $country, array $address ): string {

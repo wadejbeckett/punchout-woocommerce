@@ -28,6 +28,9 @@ use POW\Support\Ip;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception messages here are never output: callers
+// log them or answer with their own fixed, escaped text.
+
 /**
  * Handles PunchOutSetupRequest and ProfileRequest (scope §3).
  *

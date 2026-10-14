@@ -155,7 +155,7 @@ final class DeliveryData {
 	public static function method_label( array $delivery ): string {
 		$labels = [];
 		foreach ( $delivery['rates'] ?? [] as $rate ) {
-			$label = trim( (string) preg_replace( '/\s+/u', ' ', html_entity_decode( strip_tags( (string) ( $rate['label'] ?? '' ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) );
+			$label = trim( (string) preg_replace( '/\s+/u', ' ', html_entity_decode( wp_strip_all_tags( (string) ( $rate['label'] ?? '' ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) );
 			if ( '' !== $label ) { $labels[] = $label; }
 		}
 		return implode( '; ', $labels );

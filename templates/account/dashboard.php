@@ -4,9 +4,12 @@
  *
  * WooCommerce's own myaccount/dashboard.php (template version 4.4.0) without
  * the "not you?" sentence and its logout link: in a visit, logging out ends
- * the visit and deletes its basket. Everything else is WooCommerce's, in
- * WooCommerce's words, and the same dashboard hooks fire, so content other
- * plugins add to the dashboard still shows. Used only inside a visit
+ * the visit and deletes its basket. Since 0.5.3 its second sentence names the
+ * account pages the visit can open (the account menu's items, which in a visit
+ * are the connection's ticked pages) instead of WooCommerce's orders,
+ * addresses and password pages, which a visit opens only when ticked; with no
+ * such page there is no sentence. The same dashboard hooks fire, so content
+ * other plugins add to the dashboard still shows. Used only inside a visit
  * (Account\VisitDashboard); outside one, WooCommerce's or the theme's
  * dashboard renders as usual.
  *
@@ -20,11 +23,6 @@
 
 defined( 'ABSPATH' ) || exit;
 
-$allowed_html = [
-	'a' => [
-		'href' => [],
-	],
-];
 ?>
 
 <p>
@@ -37,22 +35,29 @@ $allowed_html = [
 	?>
 </p>
 
+<?php
+// The account pages this visit can open, as the account menu lists them (inside a visit the menu holds only the pages
+// the connection ticked), without the dashboard itself and the pages that never open in a visit, logout among them.
+$pow_open_pages = [];
+foreach ( wc_get_account_menu_items() as $pow_endpoint => $pow_label ) {
+	if ( in_array( (string) $pow_endpoint, array_merge( [ \POW\Account\VisitEndpoints::DASHBOARD ], \POW\Account\VisitEndpoints::NEVER_OPEN ), true ) ) {
+		continue;
+	}
+	$pow_open_pages[] = '<a href="' . esc_url( wc_get_account_endpoint_url( (string) $pow_endpoint ) ) . '">' . esc_html( (string) $pow_label ) . '</a>';
+}
+?>
+
+<?php if ( [] !== $pow_open_pages ) : ?>
 <p>
 	<?php
-	/* translators: 1: Orders URL 2: Address URL 3: Account URL. */
-	$dashboard_desc = __( 'From your account dashboard you can view your <a href="%1$s">recent orders</a>, manage your <a href="%2$s">billing address</a>, and <a href="%3$s">edit your password and account details</a>.', 'woocommerce' );
-	if ( wc_shipping_enabled() ) {
-		/* translators: 1: Orders URL 2: Addresses URL 3: Account URL. */
-		$dashboard_desc = __( 'From your account dashboard you can view your <a href="%1$s">recent orders</a>, manage your <a href="%2$s">shipping and billing addresses</a>, and <a href="%3$s">edit your password and account details</a>.', 'woocommerce' );
-	}
 	printf(
-		wp_kses( $dashboard_desc, $allowed_html ),
-		esc_url( wc_get_endpoint_url( 'orders' ) ),
-		esc_url( wc_get_endpoint_url( 'edit-address' ) ),
-		esc_url( wc_get_endpoint_url( 'edit-account' ) )
+		/* translators: %s: links to the account pages the visit can open, as a list. */
+		esc_html__( 'From your account dashboard you can open %s.', 'punchout-woocommerce' ),
+		wp_sprintf_l( '%l', $pow_open_pages ) // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- each link escaped above.
 	);
 	?>
 </p>
+<?php endif; ?>
 
 <?php
 	/**

@@ -147,7 +147,7 @@ final class StartEndpoint {
 
 		echo '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><title>';
 		echo esc_html__( 'Open the catalog', 'punchout-woocommerce' );
-		echo '</title><style>' . self::STYLE . '</style></head><body>';
+		echo '</title><style>' . self::STYLE . '</style></head><body>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- a fixed stylesheet constant, named by hash in the page's policy.
 		echo '<form method="post" action="' . esc_url( $action ) . '" id="pow-start-form" data-pow-start="' . ( $click ? 'click' : 'auto' ) . '"><p>' . esc_html( $copy ) . '</p>';
 		echo '<button type="submit">' . esc_html( self::button_label( $this->settings ) ) . '</button></form>';
 		if ( '' !== $script ) { echo '<script>' . $script . '</script>'; } // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the plugin's own file, named by hash in the policy.

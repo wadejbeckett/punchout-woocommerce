@@ -35,6 +35,8 @@ namespace {
 			return compact( 'username', 'expiration', 'token', 'hmac', 'scheme' );
 		}
 	}
+	// WooCommerce's checkout answer, read from the same flag the route guard suite sets (whichever file defines it first).
+	if ( ! function_exists( 'is_checkout' ) ) { function is_checkout(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['checkout'] ?? false ); } }
 	if ( ! function_exists( 'get_user_by' ) ) {
 		function get_user_by( string $field, $value ) { return 'login' === $field && 'buyer-account' === $value ? (object) [ 'ID' => 20 ] : false; }
 	}
@@ -62,7 +64,7 @@ namespace {
 
 	final class EndedVisitTest extends TestCase {
 		private const PAGE = 314;
-		private const GLOBALS = [ 'pow_test_options', 'pow_test_posts', 'pow_test_query', 'pow_test_current_user_id', 'pow_test_doing_ajax', 'pow_test_transients', 'pow_test_orders', 'pow_test_login_token' ];
+		private const GLOBALS = [ 'pow_test_options', 'pow_test_posts', 'pow_test_query', 'pow_test_current_user_id', 'pow_test_doing_ajax', 'pow_test_transients', 'pow_test_orders', 'pow_test_login_token', 'pow_test_wc', 'pow_route_guard_test' ];
 		private array $saved = [];
 		private array $request = [];
 		private EndedVisitStore $store;
@@ -150,6 +152,55 @@ namespace {
 			$this->store->broken = false;
 			$GLOBALS['pow_test_options'][ Settings::OPTION_KEY ] = [];
 			self::assertNull( $this->guard()->target(), 'No state page: nothing changes' );
+		}
+
+		/** The sent marker a served handoff page leaves in its browser, for visit $id. */
+		private static function marker( int $id ): string {
+			$method = new ReflectionMethod( Handoff::class, 'marker' );
+			$method->setAccessible( true );
+			return (string) $method->invoke( null, $id );
+		}
+
+		/**
+		 * 0.5.3: after Submit the handoff page clears the login cookie and posts the cart, and the browser's Back skips
+		 * that self-posting page, landing on checkout. With the cart already emptied WooCommerce sent the browser on to
+		 * an empty guest cart. The cart and checkout, asked for by the browser the cart was sent from (the sent marker
+		 * names a returned visit) while its cart is empty, now go to the Sent state, so the post-Submit state cannot be
+		 * entered again; with or without a state page.
+		 */
+		public function test_back_after_submit_lands_on_sent_not_on_the_cart(): void {
+			$this->store->rows[43] = [ 'id' => 43, 'partner_id' => 5, 'user_id' => 20, 'status' => 'returned', 'wp_session_token' => 'login-b', 'order_id' => 502, 'expires' => gmdate( 'Y-m-d H:i:s', time() - 60 ) ];
+			$_COOKIE = [ Handoff::SENT_MARKER => self::marker( 43 ) ];
+			WC()->cart = new class() { public bool $empty = true; public function is_empty(): bool { return $this->empty; } };
+			$GLOBALS['pow_route_guard_test']['checkout'] = true;
+			$GLOBALS['pow_test_query'] = [ 'page' => 9 ];
+			self::assertSame( [ 'https://shop.example.test/visit/?pow_state=sent', false ], $this->guard()->target(), 'Back to checkout: the Sent state page' );
+			$GLOBALS['pow_route_guard_test']['checkout'] = false;
+			$GLOBALS['pow_test_query'] = [ 'page' => 8, 'cart' => true ];
+			self::assertSame( [ 'https://shop.example.test/visit/?pow_state=sent', false ], $this->guard()->target(), 'and the cart' );
+			$GLOBALS['pow_test_options'][ Settings::OPTION_KEY ] = [];
+			self::assertSame( [ 'https://shop.example.test/punchout/sent', false ], $this->guard()->target(), 'Without a state page, the plain Sent page' );
+			$GLOBALS['pow_test_options'][ Settings::OPTION_KEY ] = [ 'state_page_id' => self::PAGE ];
+
+			WC()->cart->empty = false;
+			self::assertNull( $this->guard()->target(), 'A cart filled since (the browser shops on as a guest) opens' );
+			WC()->cart->empty = true;
+			$GLOBALS['pow_test_query'] = [ 'page' => 7 ];
+			self::assertNull( $this->guard()->target(), 'Any other page opens as before' );
+			$GLOBALS['pow_test_query'] = [ 'page' => 8, 'cart' => true ];
+			$_COOKIE = [ Handoff::SENT_MARKER => '43.' . str_repeat( '0', 32 ) ];
+			self::assertNull( $this->guard()->target(), 'A forged marker proves nothing' );
+			$this->store->rows[43]['status'] = 'closed';
+			$_COOKIE = [ Handoff::SENT_MARKER => self::marker( 43 ) ];
+			self::assertNull( $this->guard()->target(), 'A visit that did not return' );
+			$this->store->rows[43]['status'] = 'returned';
+			$GLOBALS['pow_test_current_user_id'] = 20;
+			self::assertNull( $this->guard()->target(), 'A signed-in request (the account holder\'s own login)' );
+			unset( $GLOBALS['pow_test_current_user_id'] );
+			$_SERVER['REQUEST_METHOD'] = 'POST';
+			self::assertNull( $this->guard()->target(), 'A POST (a late Submit is Checkout\\LateSubmit\'s)' );
+			$_SERVER['REQUEST_METHOD'] = 'GET';
+			self::assertSame( [ 'https://shop.example.test/visit/?pow_state=sent', false ], $this->guard()->target(), 'The marker is kept: Back again lands there again' );
 		}
 
 		public function test_whether_a_visit_is_over_and_in_which_state(): void {

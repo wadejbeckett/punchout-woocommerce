@@ -404,7 +404,7 @@ final class Plugin {
 
 		$screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
 
-		if ( null === $screen || false === strpos( (string) $screen->id, 'punchout' ) ) {
+		if ( ! AdminPage::is_screen() && ( null === $screen || false === strpos( (string) $screen->id, 'punchout' ) ) ) {
 			return;
 		}
 

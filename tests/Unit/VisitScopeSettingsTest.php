@@ -92,9 +92,9 @@ namespace {
 
 		public function test_the_visit_pages_settings_save_clean(): void {
 			$admin = $this->admin();
-			$saved = $admin->sanitize_settings( [ 'visit_pages' => 'shop', 'visit_open_pages' => ' 53061, 12 12,abc -4 0 53062' ] );
+			$saved = $admin->sanitize_settings( [ 'visit_pages' => 'shop', 'visit_open_pages' => ' 345, 12 12,abc -4 0 346' ] );
 			self::assertSame( 'shop', $saved['visit_pages'] );
-			self::assertSame( '53061,12,53062', $saved['visit_open_pages'], 'Positive whole IDs, each once, in the order given' );
+			self::assertSame( '345,12,346', $saved['visit_open_pages'], 'Positive whole IDs, each once, in the order given' );
 			$empty = $admin->sanitize_settings( [ 'visit_pages' => 'SHOP', 'visit_open_pages' => [ '5' ] ] );
 			self::assertSame( 'all', $empty['visit_pages'], 'Anything else saves as the default' );
 			self::assertSame( '5', $empty['visit_open_pages'] );
@@ -136,10 +136,10 @@ namespace {
 		}
 
 		public function test_the_list_reader_names_the_entries_it_cannot_read(): void {
-			self::assertSame( [ 'ids' => [ 12, 53061, 7 ], 'rejected' => [ 'abc', '-3', '0', '1.5' ] ], Settings::page_id_entries( ' 12, 53061 ,, 7 12 abc -3 0 1.5 abc' ) );
+			self::assertSame( [ 'ids' => [ 12, 345, 7 ], 'rejected' => [ 'abc', '-3', '0', '1.5' ] ], Settings::page_id_entries( ' 12, 345 ,, 7 12 abc -3 0 1.5 abc' ) );
 			self::assertSame( [ 'ids' => [ 4, 5 ], 'rejected' => [ 'x' ] ], Settings::page_id_entries( [ '4', 5, 'x', 4 ] ) );
 			self::assertSame( [ 'ids' => [], 'rejected' => [] ], Settings::page_id_entries( null ) );
-			self::assertSame( [ 12, 53061, 7 ], Settings::page_ids( ' 12, 53061 ,, 7 12 abc -3 0' ), 'page_ids() is the IDs alone, as before' );
+			self::assertSame( [ 12, 345, 7 ], Settings::page_ids( ' 12, 345 ,, 7 12 abc -3 0' ), 'page_ids() is the IDs alone, as before' );
 		}
 
 		/** The 0.5.2 changelog entry names both settings and the filter (the release itself is checked in SettingsTabTest). */

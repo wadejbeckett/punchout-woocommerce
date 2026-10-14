@@ -139,7 +139,7 @@ final class Attachment {
 
 	private static function remove_dir( string $dir ): void {
 		if ( ! is_dir( $dir ) ) { return; }
-		foreach ( glob( $dir . '/{,.}*', GLOB_BRACE ) ?: [] as $entry ) { if ( is_file( $entry ) ) { @unlink( $entry ); } }
-		@rmdir( $dir );
+		foreach ( glob( $dir . '/{,.}*', GLOB_BRACE ) ?: [] as $entry ) { if ( is_file( $entry ) ) { wp_delete_file( $entry ); } }
+		@rmdir( $dir ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir, WordPress.PHP.NoSilencedErrors.Discouraged -- removes the plugin's own emptied directory; a failure leaves an empty directory behind.
 	}
 }

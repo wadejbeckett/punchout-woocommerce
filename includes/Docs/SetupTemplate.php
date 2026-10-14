@@ -55,7 +55,7 @@ final class SetupTemplate {
 		if ( ! in_array( $mode, [ 'test', 'production' ], true ) ) {
 			throw new \DomainException( 'Invalid setup template deployment mode.' );
 		}
-		$scheme = strtolower( (string) parse_url( $supplier_url, PHP_URL_SCHEME ) );
+		$scheme = strtolower( (string) wp_parse_url( $supplier_url, PHP_URL_SCHEME ) );
 		if ( ! filter_var( $supplier_url, FILTER_VALIDATE_URL ) || ( 'https' !== $scheme && ! ( $allow_http && 'http' === $scheme ) ) ) {
 			throw new \DomainException( 'Invalid supplier setup URL.' );
 		}

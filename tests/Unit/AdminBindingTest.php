@@ -97,7 +97,7 @@ namespace {
 		}
 
 		private function screen( array $query = [] ): string {
-			$_GET = [ 'tab' => 'partners' ] + $query;
+			$_GET = [ 'page' => 'wc-settings', 'tab' => 'punchout', 'section' => 'partners' ] + $query;
 			ob_start();
 			try { $this->page()->render(); return (string) ob_get_contents(); }
 			finally { ob_end_clean(); }

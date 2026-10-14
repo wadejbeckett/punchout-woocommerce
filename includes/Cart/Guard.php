@@ -184,7 +184,7 @@ final class Guard {
 			if ( ! $this->sessions->update( $session->id, [ 'cart_ready' => 1 ] ) ) {
 				// Do not accept additions that the next request would clear again.
 				wp_die(
-					__( 'Your catalog cart could not be initialized. Please try again.', 'punchout-woocommerce' ),
+					esc_html__( 'Your catalog cart could not be initialized. Please try again.', 'punchout-woocommerce' ),
 					'',
 					[ 'response' => 503 ]
 				);

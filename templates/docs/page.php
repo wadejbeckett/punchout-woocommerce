@@ -229,7 +229,7 @@ defined( 'ABSPATH' ) || exit;
 		printf(
 			/* translators: %d: setup requests allowed per minute. */
 			esc_html__( 'The setup endpoint accepts %d requests per minute per connection and source address. Over that, it answers cXML Status 550 and nothing else happens; back off and retry. Tell us in advance if a load test needs the limit raised.', 'punchout-woocommerce' ),
-			\POW\Http\RateLimiter::public_limit( (int) $rate_limit, 30 )
+			(int) \POW\Http\RateLimiter::public_limit( (int) $rate_limit, 30 )
 		);
 		?>
 	</p>

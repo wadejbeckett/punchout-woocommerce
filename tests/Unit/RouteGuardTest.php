@@ -1630,12 +1630,12 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 	}
 
 	public function test_the_list_of_pages_reads_ids_in_any_spelling(): void {
-		self::assertSame( [ 12, 53061, 7 ], POW\Settings::page_ids( ' 12, 53061 ,, 7 12 abc -3 0' ) );
+		self::assertSame( [ 12, 345, 7 ], POW\Settings::page_ids( ' 12, 345 ,, 7 12 abc -3 0' ) );
 		self::assertSame( [ 4, 5 ], POW\Settings::page_ids( [ '4', 5, 'x', 4 ] ) );
 		self::assertSame( [], POW\Settings::page_ids( null ) );
-		$GLOBALS['pow_test_options'] = [ POW\Settings::OPTION_KEY => [ 'visit_pages' => 'shop', 'visit_open_pages' => '12,53062' ] ];
+		$GLOBALS['pow_test_options'] = [ POW\Settings::OPTION_KEY => [ 'visit_pages' => 'shop', 'visit_open_pages' => '12,346' ] ];
 		self::assertSame( 'shop', ( new POW\Settings() )->visit_pages() );
-		self::assertSame( [ 12, 53062 ], ( new POW\Settings() )->visit_open_pages() );
+		self::assertSame( [ 12, 346 ], ( new POW\Settings() )->visit_open_pages() );
 		$GLOBALS['pow_test_options'] = [ POW\Settings::OPTION_KEY => [ 'visit_pages' => 'SHOP' ] ];
 		self::assertSame( 'all', ( new POW\Settings() )->visit_pages(), 'Anything but the exact value reads as the default' );
 	}

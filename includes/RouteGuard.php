@@ -40,7 +40,11 @@ defined( 'ABSPATH' ) || exit;
  * The one store-wide question (0.5.2) is which other pages a visit may open:
  * every page (the default), or only the shop's own pages and the pages the
  * store lists (Settings::visit_pages(), visit_open_pages(); the pure rule is
- * visit_page_open(), the filter `punchout_visit_page_open` runs last).
+ * visit_page_open(), the filter `punchout_visit_page_open` runs last). Since
+ * 0.5.3 that rule judges every request method, a search for everything becomes
+ * the shop's product search, and a page opens by what the store chose (the
+ * landing, state, terms and privacy pages, or a listed one), never by the
+ * shortcodes it holds.
  */
 final class RouteGuard {
 
@@ -171,18 +175,26 @@ final class RouteGuard {
 		}
 
 		// 0.5.2: with "Other pages in a visit" set to shop pages only, a page outside the shop sends the buyer to
-		// the landing page, with the same notice as every closed page.
+		// the landing page, with the same notice as every closed page. 0.5.3: a search for everything is sent to the
+		// shop's product search instead, with the same words and no notice, since nothing the buyer asked for is
+		// closed.
 		if ( $this->page_refused( $visit ) ) {
+			if ( ! empty( $this->page_request()['search'] ) ) {
+				wp_safe_redirect( self::product_search_url( (string) ( function_exists( 'get_query_var' ) ? get_query_var( 's', '' ) : '' ) ), 302 );
+				exit;
+			}
 			$this->redirect_to_landing();
 			return;
 		}
 	}
 
+	/** The shop's product search for $terms (0.5.3): WooCommerce's own results for `?s=…&post_type=product`. */
+	public static function product_search_url( string $terms ): string {
+		return home_url( '/' ) . '?' . http_build_query( [ 's' => $terms, 'post_type' => 'product' ], '', '&', PHP_QUERY_RFC1738 );
+	}
+
 	/** Filter over whether a page outside the shop opens in a visit (0.5.2): bool $open, the queried object, Session $visit. */
 	public const PAGE_OPEN_FILTER = 'punchout_visit_page_open';
-
-	/** The plugin's own shortcodes whose pages a visit needs: the state, the cancel control, the checkout link. */
-	private const VISIT_SHORTCODES = [ Http\StatePage::SHORTCODE, 'punchout_abandon_button', 'punchout_cart_exits' ];
 
 	/**
 	 * Whether this request is a page outside the shop that its visit may not open (0.5.2).
@@ -220,8 +232,8 @@ final class RouteGuard {
 
 	/**
 	 * The main query as the page rule reads it: WordPress's and WooCommerce's answers, each false where the function
-	 * is missing, the page's ID (a single page or post, or the blog index's own page) and whether it is one of the
-	 * visit's own pages (landing, state, terms, privacy, or one holding the plugin's visit shortcodes).
+	 * is missing, the page's ID (a single page or post, or the blog index's own page), whether it is one of the
+	 * visit's own pages (landing, state, terms, privacy) and whether a search is the product search.
 	 *
 	 * @return array<string, bool|int>
 	 */
@@ -239,65 +251,65 @@ final class RouteGuard {
 			$id         = $posts_page > 0 && (int) get_queried_object_id() === $posts_page ? $posts_page : 0;
 		}
 
+		$search = $is( 'is_search' );
+
 		return [
 			'front'    => $is( 'is_front_page' ),
 			'feed'     => $is( 'is_feed' ),
-			'search'   => $is( 'is_search' ),
+			'search'   => $search,
+			// The product search the shop answers; also when the shop's archive cannot (so the redirect never loops).
+			'product_search' => $search && function_exists( 'get_query_var' ) && 'product' === get_query_var( 'post_type', '' ),
 			'missing'  => $is( 'is_404' ),
 			'shop'     => $is( 'is_shop' ) || $is( 'is_product_taxonomy' ) || $is( 'is_product' ) || $is( 'is_cart' ) || $is( 'is_checkout' ) || $is( 'is_account_page' ),
 			'singular' => $singular,
 			'archive'  => $is( 'is_archive' ) || $home,
 			'id'       => $id,
-			'plugin'   => $this->visit_own_page( $id, $singular ),
+			'plugin'   => $this->visit_own_page( $id ),
 		];
 	}
 
-	/** The landing, state, terms or privacy page, a page drawing a state, or a page holding the plugin's visit shortcodes. */
-	private function visit_own_page( int $id, bool $singular ): bool {
+	/**
+	 * The visit's own pages: the landing page and the state page the plugin sends the buyer to, and the terms and
+	 * privacy pages checkout links to. Chosen in settings, never found by what a page holds (0.5.3): a page holding
+	 * [punchout_abandon_button], [punchout_cart_exits] or [punchout_state] opens when it is one of these or is listed
+	 * under "Pages a visit may also open".
+	 */
+	private function visit_own_page( int $id ): bool {
 		$own = [
 			$this->settings->int( 'landing_page_id' ),
 			$this->settings->int( 'state_page_id' ),
 			function_exists( 'wc_terms_and_conditions_page_id' ) ? (int) wc_terms_and_conditions_page_id() : 0,
 			function_exists( 'wc_privacy_policy_page_id' ) ? (int) wc_privacy_policy_page_id() : (int) get_option( 'wp_page_for_privacy_policy', 0 ),
 		];
-		if ( $id > 0 && in_array( $id, $own, true ) ) {
-			return true;
-		}
-		if ( ! $singular || ! function_exists( 'get_queried_object' ) || ! function_exists( 'has_shortcode' ) ) {
-			return false;
-		}
-		$post    = get_queried_object();
-		$content = is_object( $post ) && isset( $post->post_content ) ? (string) $post->post_content : '';
-		foreach ( self::VISIT_SHORTCODES as $shortcode ) {
-			if ( '' !== $content && has_shortcode( $content, $shortcode ) ) {
-				return true;
-			}
-		}
 
-		return false;
+		return $id > 0 && in_array( $id, $own, true );
 	}
 
 	/**
-	 * Pure rule for the pages a visit may open (0.5.2).
+	 * Pure rule for the pages a visit may open (0.5.2; 0.5.3).
 	 *
 	 * Null when the request is not judged, so it opens and the filter is not asked: no visit, a visit that is not
-	 * active, an administrator or shop manager, a method other than GET or HEAD, the front page (its own redirect),
-	 * a feed, a search, a missing page, one of the shop's own pages (`shop`), one of the visit's own pages
-	 * (`plugin`), or a request that is neither a single post or page nor an archive. Otherwise whether it opens
-	 * before the filter: with $mode 'shop', only a single page or post (or the blog index's page) whose `id` is in
-	 * $open_ids; with any other $mode, every page.
+	 * active, an administrator or shop manager, the front page (its own redirect), a feed, a missing page, one of the
+	 * shop's own pages (`shop`), the product search (`product_search`), one of the visit's own pages (`plugin`), or a
+	 * request that is neither a search, a single post or page nor an archive. Otherwise whether it opens before the
+	 * filter: with $mode 'shop', only a single page or post (or the blog index's page) whose `id` is in $open_ids, and
+	 * never another search; with any other $mode, every page. Every request method is judged alike (0.5.3: before,
+	 * only GET and HEAD were); $method stays in the signature for callers.
 	 *
-	 * @param array<string, bool|int> $request  Facts: front, feed, search, missing, shop, plugin, singular, archive (bool), id (int).
+	 * @param array<string, bool|int> $request  Facts: front, feed, search, product_search, missing, shop, plugin, singular, archive (bool), id (int).
 	 * @param list<int>               $open_ids The pages the store lists.
 	 */
 	public static function visit_page_open( string $mode, string $method, ?Session $visit, bool $privileged, array $request, array $open_ids ): ?bool {
-		if ( null === $visit || Session::ACTIVE !== $visit->status || $privileged || ! in_array( strtoupper( $method ), [ 'GET', 'HEAD' ], true ) ) {
+		if ( null === $visit || Session::ACTIVE !== $visit->status || $privileged ) {
 			return null;
 		}
-		foreach ( [ 'front', 'feed', 'search', 'missing', 'shop', 'plugin' ] as $never_judged ) {
+		foreach ( [ 'front', 'feed', 'missing', 'shop', 'product_search', 'plugin' ] as $never_judged ) {
 			if ( ! empty( $request[ $never_judged ] ) ) {
 				return null;
 			}
+		}
+		if ( ! empty( $request['search'] ) ) {
+			return Settings::VISIT_PAGES_SHOP !== $mode;
 		}
 		if ( empty( $request['singular'] ) && empty( $request['archive'] ) ) {
 			return null;
@@ -360,7 +372,7 @@ final class RouteGuard {
 	/** Same host (case-insensitive) and path (trailing slash ignored); scheme and query are ignored. */
 	private static function same_place( string $a, string $b ): bool {
 		$place = static function ( string $url ): string {
-			$parts = parse_url( $url );
+			$parts = wp_parse_url( $url );
 			if ( ! is_array( $parts ) ) { return $url; }
 			return strtolower( (string) ( $parts['host'] ?? '' ) ) . '|' . rtrim( (string) ( $parts['path'] ?? '' ), '/' );
 		};
@@ -957,7 +969,7 @@ final class RouteGuard {
 		$order  = $order instanceof \WC_Order ? $order : null;
 		$method = null !== $order ? (string) $order->get_payment_method() : '';
 		if ( $this->checkout_refused( $method, $order ) ) {
-			throw new \Exception( $this->checkout_refused_message( $method ) );
+			throw new \Exception( $this->checkout_refused_message( $method ) ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- fixed plugin text; WooCommerce escapes it where it shows it (notices, Store API JSON).
 		}
 	}
 
@@ -1172,9 +1184,9 @@ final class RouteGuard {
 		if ( is_numeric( $order ) ) { $order = wc_get_order( (int) $order ); }
 		if ( $this->checkout_blocked_for_visit( $order instanceof \WC_Order ? $order : null ) ) {
 			if ( class_exists( \Automattic\WooCommerce\StoreApi\Exceptions\RouteException::class ) ) {
-				throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', $this->checkout_blocked_message(), 403 );
+				throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException( 'pow_requisition_only', $this->checkout_blocked_message(), 403 ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- fixed plugin text; WooCommerce escapes it where it shows it (notices, Store API JSON).
 			}
-			throw new \Exception( $this->checkout_blocked_message() );
+			throw new \Exception( $this->checkout_blocked_message() ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- fixed plugin text; WooCommerce escapes it where it shows it (notices, Store API JSON).
 		}
 	}
 

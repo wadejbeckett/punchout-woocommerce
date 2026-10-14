@@ -408,16 +408,16 @@ final class Actions {
 		header( 'Cache-Control: no-store, private, max-age=0', true );
 		header( 'Referrer-Policy: no-referrer', true );
 		$html = '<p>' . esc_html( $text ) . '</p><p><strong>' . esc_html__( 'Shared secret (shown once — copy it now):', 'punchout-woocommerce' ) . '</strong></p><p><code>' . esc_html( $secret ) . '</code></p>';
-		$html .= '<p><a href="' . esc_url( add_query_arg( [ 'page' => Page::SLUG, 'tab' => 'partners' ], admin_url( 'admin.php' ) ) ) . '">' . esc_html__( 'Return to customers', 'punchout-woocommerce' ) . '</a></p>';
+		$html .= '<p><a href="' . esc_url( Page::url( 'partners' ) ) . '">' . esc_html__( 'Return to customers', 'punchout-woocommerce' ) . '</a></p>';
 		try {
-			wp_die( $html, esc_html__( 'PunchOut connection credentials', 'punchout-woocommerce' ), [ 'response' => 200 ] );
+			wp_die( $html, esc_html__( 'PunchOut connection credentials', 'punchout-woocommerce' ), [ 'response' => 200 ] ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $html is built from esc_html() and esc_url() above.
 		} finally {
 			remove_filter( 'nocache_headers', $no_store, PHP_INT_MAX );
 		}
 	}
 
 	/**
-	 * Store the one-shot notice and bounce back to the admin tab.
+	 * Store the one-shot notice and bounce back to the screen $tab names in WooCommerce > Settings > PunchOut.
 	 *
 	 * @param array<string, int|string> $extra Extra query args.
 	 * @return never
@@ -432,18 +432,7 @@ final class Actions {
 			60
 		);
 
-		wp_safe_redirect(
-			add_query_arg(
-				array_merge(
-					[
-						'page' => Page::SLUG,
-						'tab'  => $tab,
-					],
-					$extra
-				),
-				admin_url( 'admin.php' )
-			)
-		);
+		wp_safe_redirect( Page::url( $tab, $extra ) );
 		exit;
 	}
 

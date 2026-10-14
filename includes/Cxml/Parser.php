@@ -12,6 +12,9 @@ namespace POW\Cxml;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception messages here are never output: callers
+// log them or answer with their own fixed, escaped text.
+
 /**
  * DOM-based parser for PunchOutSetupRequest / ProfileRequest documents,
  * hardened per scope §7/§9.6:

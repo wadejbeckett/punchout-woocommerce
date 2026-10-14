@@ -14,6 +14,9 @@ use POW\Account\VisitEndpoints;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception messages here are never output: callers
+// log them or answer with their own fixed, escaped text.
+
 /**
  * One configured customer connection (buyer-side tenant).
  *

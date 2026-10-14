@@ -341,20 +341,36 @@ class Settings {
 
 	/**
 	 * A list of page IDs as typed: separated by commas or white space (or already a list); each a positive whole
-	 * number, kept once, in the order given; anything else is dropped.
+	 * number, kept once, in the order given; anything else is dropped (page_id_entries() names what).
 	 *
 	 * @return list<int>
 	 */
 	public static function page_ids( mixed $raw ): array {
-		$parts = is_array( $raw ) ? $raw : ( is_string( $raw ) ? ( preg_split( '/[\s,]+/', $raw ) ?: [] ) : [] );
-		$ids   = [];
+		return self::page_id_entries( $raw )['ids'];
+	}
+
+	/**
+	 * page_ids() and the entries it drops (0.5.3): `ids` as page_ids() reads them, `rejected` every non-empty entry
+	 * that is not a positive whole number, trimmed, once each, in the order given.
+	 *
+	 * @return array{ids: list<int>, rejected: list<string>}
+	 */
+	public static function page_id_entries( mixed $raw ): array {
+		$parts    = is_array( $raw ) ? $raw : ( is_string( $raw ) ? ( preg_split( '/[\s,]+/', $raw ) ?: [] ) : [] );
+		$ids      = [];
+		$rejected = [];
 		foreach ( $parts as $part ) {
 			if ( is_int( $part ) ) { $part = (string) $part; }
-			if ( ! is_string( $part ) || 1 !== preg_match( '/\A[1-9][0-9]{0,18}\z/', trim( $part ) ) ) { continue; }
-			$id = (int) trim( $part );
+			$part = is_string( $part ) ? trim( $part ) : '';
+			if ( '' === $part ) { continue; }
+			if ( 1 !== preg_match( '/\A[1-9][0-9]{0,18}\z/', $part ) ) {
+				if ( ! in_array( $part, $rejected, true ) ) { $rejected[] = $part; }
+				continue;
+			}
+			$id = (int) $part;
 			if ( $id > 0 && ! in_array( $id, $ids, true ) ) { $ids[] = $id; }
 		}
-		return $ids;
+		return [ 'ids' => $ids, 'rejected' => $rejected ];
 	}
 
 	/** True when the StartPage link waits for one real click instead of submitting itself (0.4.23; off by default). */

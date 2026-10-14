@@ -16,6 +16,9 @@ use POW\Logger;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- exception messages here are never output: callers
+// log them or answer with their own fixed, escaped text.
+
 /** The primary order remains authoritative; this handler never saves it or requests synchronization. */
 final class QuoteCompatibility {
 
