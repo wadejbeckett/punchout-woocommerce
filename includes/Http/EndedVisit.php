@@ -89,14 +89,16 @@ final class EndedVisit {
 	 * state (the state page, else /punchout/sent), cookies untouched. Serving the handoff page clears the login cookie
 	 * and leaves the sent marker (Checkout\Handoff::SENT_MARKER); that page posts itself, so the browser's Back skips
 	 * it and lands on checkout, which with the emptied cart would send the buyer on to an empty guest cart, as if the
-	 * visit could be entered again. The marker is keyed, and only a visit row that returned counts. A cart filled since
-	 * (the browser shopping on as a guest) opens as usual, and so does every other page.
+	 * visit could be entered again. The marker is keyed, and only a visit row that returned counts; a later visit or a
+	 * Cancel and return in the same browser drops it (Handoff::forget_marker()). A cart filled since (the browser
+	 * shopping on as a guest), WooCommerce's order-received and order-pay pages and every other page open as usual.
 	 *
 	 * @return array{0: string, 1: bool}|null
 	 */
 	private function sent_browser_target(): ?array {
 		$on_cart = ( function_exists( 'is_cart' ) && is_cart() ) || ( function_exists( 'is_checkout' ) && is_checkout() );
-		if ( ! $on_cart ) { return null; }
+		// The plain cart and checkout only: order-received and order-pay are the browser's own later guest orders.
+		if ( ! $on_cart || ( function_exists( 'is_wc_endpoint_url' ) && ( is_wc_endpoint_url( 'order-received' ) || is_wc_endpoint_url( 'order-pay' ) ) ) ) { return null; }
 		$marker = $_COOKIE[ Handoff::SENT_MARKER ] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- parsed and keyed by marked_visit().
 		$id     = is_string( $marker ) ? Handoff::marked_visit( $marker ) : 0;
 		$visit  = $id > 0 ? $this->sessions->find( $id ) : null;

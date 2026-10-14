@@ -125,6 +125,10 @@ abstract class TestCase {
 		self::check( 0 === preg_match( $pattern, $string ), $message ?: 'Failed asserting that a string does not match ' . $pattern );
 	}
 
+	public static function assertArrayNotHasKey( string|int $key, mixed $array, string $message = '' ): void {
+		self::check( is_array( $array ) && ! array_key_exists( $key, $array ), $message ?: 'Failed asserting that array does not have the key ' . self::export( $key ) );
+	}
+
 	public static function assertNotContains( mixed $needle, mixed $haystack, string $message = '' ): void {
 		self::check( is_iterable( $haystack ) && ! in_array( $needle, is_array( $haystack ) ? $haystack : iterator_to_array( $haystack ), true ), $message ?: 'Failed asserting that iterable does not contain ' . self::export( $needle ) );
 	}

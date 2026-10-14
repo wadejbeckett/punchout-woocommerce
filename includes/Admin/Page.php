@@ -506,7 +506,7 @@ final class Page {
 					/* translators: %d: a page ID no page or post has. */
 					? sprintf( __( '%d (no page or post has this ID)', 'punchout-woocommerce' ), $id )
 					/* translators: 1: a page ID, 2: its status, for example draft. */
-					: sprintf( __( '%1$d (%2$s)', 'punchout-woocommerce' ), $id, (string) $status );
+					: sprintf( __( '%1$d (%2$s)', 'punchout-woocommerce' ), $id, esc_html( (string) $status ) );
 			}
 		}
 
@@ -515,7 +515,8 @@ final class Page {
 			$report[] = sprintf(
 				/* translators: %s: the entries dropped, each in quotes. */
 				__( 'dropped %s, which are not page IDs.', 'punchout-woocommerce' ),
-				implode( ', ', array_map( static fn( string $entry ): string => '“' . $entry . '”', $entries['rejected'] ) )
+				// WordPress prints a settings notice as HTML: what was typed is escaped.
+				implode( ', ', array_map( static fn( string $entry ): string => '“' . esc_html( $entry ) . '”', $entries['rejected'] ) )
 			);
 		}
 		if ( [] !== $closed ) {

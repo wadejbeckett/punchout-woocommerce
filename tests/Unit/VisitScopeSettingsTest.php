@@ -125,6 +125,11 @@ namespace {
 			self::assertStringContainsString( 'cannot open', $message, 'saying a visit cannot open them yet' );
 			self::assertDoesNotMatchRegularExpression( '/\\b12\\b/', $message, 'A published page is not mentioned' );
 
+			$GLOBALS['pow_test_settings_errors'] = [];
+			$this->admin()->sanitize_settings( [ 'visit_pages' => 'shop', 'visit_open_pages' => '12,<img/src=x/onerror=alert(1)>' ] );
+			self::assertStringNotContainsString( '<img', $GLOBALS['pow_test_settings_errors'][0][2] ?? '', 'WordPress prints the notice as HTML: what was typed is escaped' );
+			self::assertStringContainsString( '&lt;img', $GLOBALS['pow_test_settings_errors'][0][2] ?? '' );
+			$GLOBALS['pow_test_settings_errors'] = [ $errors[0] ];
 			$admin->sanitize_settings( [ 'visit_pages' => 'shop', 'visit_open_pages' => '12, abc' ] );
 			self::assertCount( 1, $GLOBALS['pow_test_settings_errors'], 'WordPress may sanitise a new option twice in one save: the notice is added once' );
 

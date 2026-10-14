@@ -278,6 +278,19 @@ final class Handoff {
 		echo $kept['markup']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- the handoff template, escaped within.
 	}
 
+	/**
+	 * Drop this browser's sent marker (0.5.3): a visit signed in later, or a Cancel and return, is not the visit that
+	 * sent, so the marker must not speak for it (Http\EndedVisit, Checkout\LateSubmit). Nothing is sent when the
+	 * request carries no marker.
+	 */
+	public static function forget_marker(): void {
+		if ( ! isset( $_COOKIE[ self::SENT_MARKER ] ) ) { return; }
+		unset( $_COOKIE[ self::SENT_MARKER ] );
+		if ( function_exists( 'wc_setcookie' ) ) {
+			wc_setcookie( self::SENT_MARKER, '', time() - 3600, is_ssl(), true );
+		}
+	}
+
 	/** The visit the sent marker cookie of this request names (its key checked), else 0. */
 	private static function marker_in_request(): int {
 		$marker = $_COOKIE[ self::SENT_MARKER ] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- parsed and keyed by marked_visit().

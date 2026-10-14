@@ -261,6 +261,7 @@ final class ReturnEndpoint {
 		}
 
 		wp_clear_auth_cookie();
+		Handoff::forget_marker();
 		$this->audit_best_effort( 'return_replayed', [ 'partner_id' => $visit->partner_id, 'session_id' => $visit->id, 'user_id' => $visit->user_id, 'direction' => 'out', 'result' => 'ok' ] );
 		self::html_headers( 200 );
 		Handoff::send_page_headers( $kept['markup'], $visit->browser_form_post_url );
@@ -354,6 +355,8 @@ final class ReturnEndpoint {
 	 */
 	private function teardown( int $user_id, Session $session ): void {
 		wp_clear_auth_cookie();
+		// 0.5.3: nothing was sent from this visit, so an earlier visit's sent marker must not answer for it.
+		Handoff::forget_marker();
 
 		if ( function_exists( 'WC' ) && null !== WC()->cart ) {
 			WC()->cart->empty_cart( true );

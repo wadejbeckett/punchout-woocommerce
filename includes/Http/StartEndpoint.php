@@ -225,6 +225,8 @@ final class StartEndpoint {
 							// reuses the entry written above instead of writing the
 							// shared session_tokens row a second time.
 							wp_set_auth_cookie( $user->ID, false, '', $wp_token );
+							// 0.5.3: a marker an earlier visit's cart left in this browser does not speak for this visit.
+							\POW\Checkout\Handoff::forget_marker();
 							$logged_in = true;
 						} finally { remove_filter( 'auth_cookie_expiration', $ttl_filter, 999 ); }
 					} catch ( \Throwable $e ) {

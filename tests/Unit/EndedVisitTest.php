@@ -37,6 +37,7 @@ namespace {
 	}
 	// WooCommerce's checkout answer, read from the same flag the route guard suite sets (whichever file defines it first).
 	if ( ! function_exists( 'is_checkout' ) ) { function is_checkout(): bool { return (bool) ( $GLOBALS['pow_route_guard_test']['checkout'] ?? false ); } }
+	if ( ! function_exists( 'is_wc_endpoint_url' ) ) { function is_wc_endpoint_url( string $endpoint = '' ): bool { return '' !== $endpoint && $endpoint === ( $GLOBALS['pow_route_guard_test']['endpoint'] ?? '' ); } }
 	if ( ! function_exists( 'get_user_by' ) ) {
 		function get_user_by( string $field, $value ) { return 'login' === $field && 'buyer-account' === $value ? (object) [ 'ID' => 20 ] : false; }
 	}
@@ -201,6 +202,33 @@ namespace {
 			self::assertNull( $this->guard()->target(), 'A POST (a late Submit is Checkout\\LateSubmit\'s)' );
 			$_SERVER['REQUEST_METHOD'] = 'GET';
 			self::assertSame( [ 'https://shop.example.test/visit/?pow_state=sent', false ], $this->guard()->target(), 'The marker is kept: Back again lands there again' );
+
+			// The browser's own later guest order: WooCommerce's order-received and order-pay pages are checkout pages too.
+			$GLOBALS['pow_test_query'] = [ 'page' => 9 ];
+			$GLOBALS['pow_route_guard_test']['checkout'] = true;
+			foreach ( [ 'order-received', 'order-pay' ] as $endpoint ) {
+				$GLOBALS['pow_route_guard_test']['endpoint'] = $endpoint;
+				self::assertNull( $this->guard()->target(), $endpoint . ' is never replaced by the Sent state' );
+			}
+			$GLOBALS['pow_route_guard_test']['endpoint'] = '';
+		}
+
+		/** A later visit, or a Cancel and return, in the same browser is not the visit that sent: the marker goes. */
+		public function test_a_new_visit_or_cancel_and_return_drops_the_sent_marker(): void {
+			$GLOBALS['pow_test_cookies_set'] = [];
+			$_COOKIE = [ Handoff::SENT_MARKER => self::marker( 43 ) ];
+			Handoff::forget_marker();
+			self::assertArrayNotHasKey( Handoff::SENT_MARKER, $_COOKIE, 'Gone for the rest of this request' );
+			$set = $GLOBALS['pow_test_cookies_set'][0] ?? [];
+			self::assertSame( [ Handoff::SENT_MARKER, '' ], [ $set['name'] ?? null, $set['value'] ?? null ], 'and expired in the browser' );
+			self::assertTrue( ( $set['expire'] ?? PHP_INT_MAX ) < time() );
+			$GLOBALS['pow_test_cookies_set'] = [];
+			Handoff::forget_marker();
+			self::assertSame( [], $GLOBALS['pow_test_cookies_set'], 'Nothing to drop: no cookie is sent' );
+			$root = dirname( __DIR__, 2 );
+			self::assertStringContainsString( 'Handoff::forget_marker()', (string) file_get_contents( $root . '/includes/Http/StartEndpoint.php' ), 'A start link that signs a new visit in drops it' );
+			self::assertGreaterThan( 1, substr_count( (string) file_get_contents( $root . '/includes/Http/ReturnEndpoint.php' ), 'Handoff::forget_marker()' ), 'Cancel and return (and its replay) drop it' );
+			unset( $GLOBALS['pow_test_cookies_set'] );
 		}
 
 		public function test_whether_a_visit_is_over_and_in_which_state(): void {
