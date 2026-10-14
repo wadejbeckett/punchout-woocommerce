@@ -110,7 +110,7 @@ final class CompanyAddressAccessTest extends TestCase {
 		// own route is the admin connection screen and the suite's default
 		// actor is the shop manager who reaches it.
 		$GLOBALS['pow_fields_test'] = [ 'account' => false, 'endpoint' => 'punchout-integration', 'admin' => true, 'hooks' => [], 'private' => 0, 'countries' => [], 'fields' => [], 'fields_fail' => false ];
-		$_POST = []; $_GET = [ 'page' => 'punchout-woocommerce' ]; $_SERVER['REQUEST_METHOD'] = 'GET';
+		$_POST = []; $_GET = [ 'page' => 'wc-settings', 'tab' => 'punchout', 'section' => 'partners' ]; $_SERVER['REQUEST_METHOD'] = 'GET';
 		Countries::$unavailable = false; Countries::$country_removed = false; Countries::$company_required = false;
 		Customer::$data = [ 20 => [ 'shipping' => $this->address(), 'billing' => $this->address() + [ 'email' => 'private@example.test' ] ] ]; Customer::$loaded = []; Customer::$fail = false; Customer::$missing = false; Customer::$on_read = null;
 		$registry = new Registry( new Secrets( str_repeat( 'k', 32 ) ) ); $this->visits = new Current(); $this->book = new CompanyBook( $registry, new Audit(), $this->visits );
@@ -176,7 +176,9 @@ final class CompanyAddressAccessTest extends TestCase {
 		$this->post(); $_SERVER['REQUEST_METHOD'] = 'GET'; $this->fields->handle();
 		$_SERVER['REQUEST_METHOD'] = 'POST'; $GLOBALS['pow_fields_test']['admin'] = false; $GLOBALS['pow_fields_test']['account'] = true; $this->fields->handle();
 		$GLOBALS['pow_fields_test']['admin'] = true; $GLOBALS['pow_fields_test']['account'] = false; $_GET['page'] = 'other'; $this->fields->handle();
-		$_GET['page'] = 'punchout-woocommerce'; $GLOBALS['pow_test_current_user_id'] = 20; $this->fields->handle(); self::assertSame( [], $this->db->writes );
+		$_GET = [ 'page' => 'wc-settings', 'tab' => 'checkout' ]; $this->fields->handle();
+		$_GET = [ 'page' => 'punchout-woocommerce' ]; $this->fields->handle();
+		$_GET = [ 'page' => 'wc-settings', 'tab' => 'punchout', 'section' => 'partners' ]; $GLOBALS['pow_test_current_user_id'] = 20; $this->fields->handle(); self::assertSame( [], $this->db->writes );
 	}
 	public function test_nonce_binds_action_partner_key_and_type_for_every_mutation(): void {
 		$a = $this->seed();
@@ -317,7 +319,7 @@ final class CompanyAddressAccessTest extends TestCase {
 	}
 	public function test_admin_wiring_renders_editor_and_connection_forms_without_nesting(): void {
 		$this->seed(); [ , $page ] = $this->wiring(); $GLOBALS['pow_test_current_user_id'] = 30;
-		$_GET = [ 'page' => 'punchout-woocommerce', 'tab' => 'partners', 'action' => 'edit', 'partner' => '12' ];
+		$_GET = [ 'page' => 'wc-settings', 'tab' => 'punchout', 'section' => 'partners', 'action' => 'edit', 'partner' => '12' ];
 		ob_start(); try { $page->render(); $html = ob_get_contents(); } finally { ob_end_clean(); }
 		// The bound store account, its book and the identity form are three siblings.
 		foreach ( [ 'PRIVATE-DEPOT', 'value="pow_save_partner"', 'name="pow_address_partner" value="12"', 'Store account buyers shop as', 'Store account: #20', 'delivery book' ] as $text ) { self::assertStringContainsString( $text, $html ); }

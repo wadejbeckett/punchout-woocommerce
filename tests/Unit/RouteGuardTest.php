@@ -1467,11 +1467,20 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertTrue( $rule( [ 'archive' => true ], 'all' ) );
 		self::assertTrue( $rule( [ 'archive' => true, 'id' => self::ALLOWED ] ), 'The blog index is its page: on the list, it opens' );
 
-		foreach ( [ 'front', 'feed', 'search', 'missing', 'shop', 'plugin' ] as $open ) {
+		foreach ( [ 'front', 'feed', 'missing', 'shop', 'plugin' ] as $open ) {
 			self::assertNull( $rule( $page + [ $open => true ] ), $open . ' is never judged' );
 		}
 		self::assertNull( $rule( [] ), 'Neither a single page nor an archive (an endpoint of the site\'s own) is not judged' );
-		self::assertNull( $rule( $page, 'shop', 'POST' ), 'A form posted to a page is not judged' );
+		foreach ( [ 'POST', 'PUT', 'DELETE', 'OPTIONS', 'patch' ] as $method ) {
+			self::assertFalse( $rule( $page, 'shop', $method ), $method . ' to a page is judged like a GET (0.5.3)' );
+			self::assertTrue( $rule( [ 'singular' => true, 'id' => self::ALLOWED ], 'shop', $method ), $method . ' to a listed page opens like a GET' );
+		}
+		// 0.5.3: a search is judged. The shop's own product search is a shop page; any other search lists what the shop
+		// pages only setting closes, so with shop pages only it is refused (guard() sends it to the product search).
+		self::assertFalse( $rule( [ 'search' => true ] ), 'A search for everything is refused with shop pages only' );
+		self::assertTrue( $rule( [ 'search' => true ], 'all' ), 'and opens with every page' );
+		self::assertNull( $rule( [ 'search' => true, 'product_search' => true ] ), 'The product search is never judged' );
+		self::assertNull( $rule( [ 'search' => true, 'shop' => true ] ), 'nor a search the shop answers' );
 		self::assertNull( $rule( $page, 'shop', 'GET', $this->visit( self::VISIT, 'ordered' ) ), 'Only an active visit' );
 		self::assertNull( POW\RouteGuard::visit_page_open( 'shop', 'GET', null, false, $page, [] ), 'Outside a visit nothing is judged' );
 		self::assertNull( $rule( $page, 'shop', 'GET', null, true ), 'An administrator or shop manager is never judged' );
@@ -1515,13 +1524,12 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 			'a product'                    => [ 'product' => true, 'page' => 500 ],
 			'a product category, tag, attribute or brand' => [ 'product_taxonomy' => true, 'archive' => true ],
 			'the cart'                     => [ 'cart' => true, 'page' => 501 ],
-			'search'                       => [ 'search' => true ],
+			'the product search'           => [ 'search' => true, 'shop' => true, 'archive' => true, 'vars' => [ 's' => 'mugs', 'post_type' => 'product' ] ],
+			'a product search the shop does not answer' => [ 'search' => true, 'vars' => [ 's' => 'mugs', 'post_type' => 'product' ] ],
 			'a missing page'               => [ '404' => true ],
 			'a feed'                       => [ 'feed' => true, 'archive' => true ],
 			'the landing page'             => [ 'page' => self::LANDING ],
 			'the state page'               => [ 'page' => self::STATE ],
-			'a page drawing a state'       => [ 'page' => self::SHORTCODE ],
-			'a page holding the visit\'s own buttons' => [ 'page' => self::LEAVE ],
 			'the privacy page checkout links to' => [ 'page' => self::PRIVACY ],
 			'the terms page checkout links to'   => [ 'page' => self::TERMS ],
 			'a page on the list'           => [ 'page' => self::ALLOWED ],
@@ -1537,12 +1545,13 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertNull( $this->page( $this->visit(), [ 'home' => true, 'page' => self::ALLOWED, 'singular' => false ] ), 'a blog index on the list opens' );
 	}
 
-	public function test_with_shop_pages_only_nothing_changes_outside_an_active_visit_or_for_a_post(): void {
+	public function test_with_shop_pages_only_nothing_changes_outside_an_active_visit_or_for_a_privileged_account(): void {
 		$this->site( [ 'visit_pages' => 'shop' ] );
 		self::assertNull( $this->page( null, [ 'page' => self::ABOUT ] ), 'An ordinary shopper, the bound account outside a visit included' );
 		self::assertNull( $this->page( $this->visit( self::VISIT, 'ordered' ), [ 'page' => self::ABOUT ] ), 'A visit that has left active' );
-		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ], 'POST' ), 'A form posted to a page' );
+		self::assertNull( $this->page( $this->visit( self::VISIT, 'ordered' ), [ 'page' => self::ABOUT ], 'POST' ), 'A form a visit that has left active posts to a page' );
 		$GLOBALS['pow_test_users'][ self::ACCOUNT ]->allcaps['manage_woocommerce'] = true;
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ], 'POST' ), 'A form an administrator posts' );
 		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ] ), 'An administrator or shop manager' );
 	}
 
@@ -1562,6 +1571,62 @@ final class RouteGuardTest extends PHPUnit\Framework\TestCase {
 		self::assertNotNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ] ), 'With every page open, code can still close one' );
 		self::assertNull( $this->page( null, [ 'page' => self::ABOUT ] ), 'never outside a visit' );
 		self::assertSame( 'punchout_visit_page_open', POW\RouteGuard::PAGE_OPEN_FILTER );
+	}
+
+	/** 0.5.3: a form posted to a closed page is refused as its GET is, to the landing page with the same notice. */
+	public function test_with_shop_pages_only_a_form_posted_to_a_closed_page_is_refused_like_a_get(): void {
+		$this->site( [ 'visit_pages' => 'shop', 'visit_open_pages' => (string) self::ALLOWED ] );
+		WC()->session = new stdClass();
+		foreach ( [ 'POST', 'PUT', 'DELETE' ] as $method ) {
+			$GLOBALS['pow_route_guard_test']['notices'] = [];
+			$redirect = $this->page( $this->visit(), [ 'page' => self::ABOUT ], $method );
+			self::assertNotNull( $redirect, $method . ' to a closed page is refused' );
+			self::assertSame( 'https://shop.example.test/catalogue/', $redirect->url );
+			self::assertSame( 302, $redirect->status, 'A 302: the browser follows it with a GET of the landing page' );
+			self::assertCount( 1, $this->notices(), 'with the refusal notice' );
+		}
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ALLOWED ], 'POST' ), 'A form posted to a listed page goes through' );
+		self::assertNull( $this->page( $this->visit(), [ 'cart' => true, 'page' => 501 ], 'POST' ), 'and so does one posted to the cart' );
+		$this->site();
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::ABOUT ], 'POST' ), 'With every page open, nothing changes' );
+	}
+
+	/** 0.5.3: a search in a visit with shop pages only lists products: the buyer is sent to the shop's product search. */
+	public function test_with_shop_pages_only_a_search_for_everything_becomes_the_product_search(): void {
+		$this->site( [ 'visit_pages' => 'shop' ] );
+		WC()->session = new stdClass();
+		$redirect = $this->page( $this->visit(), [ 'search' => true, 'vars' => [ 's' => 'blue mugs & caps' ] ] );
+		self::assertNotNull( $redirect, 'A search that would list posts and pages is not answered in a visit' );
+		self::assertSame( 'https://shop.example.test/?s=blue+mugs+%26+caps&post_type=product', $redirect->url, 'It becomes the shop\'s product search, same words' );
+		self::assertSame( 302, $redirect->status );
+		self::assertSame( [], $this->notices(), 'Nothing was refused, so no notice' );
+		$redirect = $this->page( $this->visit(), [ 'search' => true, 'vars' => [ 's' => '', 'post_type' => 'post' ] ] );
+		self::assertSame( 'https://shop.example.test/?s=&post_type=product', $redirect?->url, 'Another post type, or no words, the same' );
+		self::assertNull( $this->page( $this->visit(), [ 'search' => true, 'vars' => [ 's' => 'mugs', 'post_type' => 'product' ] ] ), 'The product search itself is never sent round again' );
+		self::assertNull( $this->page( $this->visit(), [ 'search' => true, 'shop' => true, 'archive' => true ] ), 'nor a search the shop answers' );
+		self::assertNull( $this->page( null, [ 'search' => true, 'vars' => [ 's' => 'mugs' ] ] ), 'Outside a visit search is untouched' );
+		$GLOBALS['pow_test_filters'][ POW\RouteGuard::PAGE_OPEN_FILTER ] = static fn( bool $open, mixed $object ): bool => null === $object;
+		self::assertNull( $this->page( $this->visit(), [ 'search' => true, 'vars' => [ 's' => 'mugs' ] ] ), 'The page filter can open it' );
+		unset( $GLOBALS['pow_test_filters'][ POW\RouteGuard::PAGE_OPEN_FILTER ] );
+		$this->site();
+		self::assertNull( $this->page( $this->visit(), [ 'search' => true, 'vars' => [ 's' => 'mugs' ] ] ), 'With every page open, search is untouched' );
+	}
+
+	/** 0.5.3: a page holding the plugin's shortcodes opens because the store chose it, not because of what it holds. */
+	public function test_with_shop_pages_only_a_page_holding_the_plugins_shortcodes_opens_only_when_chosen(): void {
+		$this->site( [ 'visit_pages' => 'shop' ] );
+		WC()->session = new stdClass();
+		self::assertNotNull( $this->page( $this->visit(), [ 'page' => self::LEAVE ] ), 'A page holding the cancel control and the cart exits is not opened by its content' );
+		self::assertNotNull( $this->page( $this->visit(), [ 'page' => self::SHORTCODE ] ), 'nor one drawing a state that is not the state page' );
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::STATE ] ), 'The state page opens: the plugin sends the buyer there' );
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::LANDING ] ), 'and so does the landing page' );
+		$this->site( [ 'visit_pages' => 'shop', 'visit_open_pages' => self::LEAVE . ',' . self::SHORTCODE ] );
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::LEAVE ] ), 'Listed, it opens' );
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::SHORTCODE ] ) );
+		$this->site( [ 'visit_pages' => 'shop', 'state_page_id' => self::SHORTCODE ] );
+		self::assertNull( $this->page( $this->visit(), [ 'page' => self::SHORTCODE ] ), 'Chosen as the state page, it opens' );
+		$source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/includes/RouteGuard.php' );
+		self::assertStringNotContainsString( 'has_shortcode', $source, 'The page rule does not read page content' );
 	}
 
 	public function test_the_list_of_pages_reads_ids_in_any_spelling(): void {

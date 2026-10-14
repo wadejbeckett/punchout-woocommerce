@@ -13,6 +13,7 @@ declare( strict_types = 1 );
 namespace {
 	if ( ! function_exists( 'register_setting' ) ) { function register_setting( string $group, string $name, array $args = [] ): void {} }
 	if ( ! function_exists( 'add_settings_section' ) ) { function add_settings_section( string $id, string $title, mixed $callback, string $page ): void {} }
+	if ( ! function_exists( 'add_settings_error' ) ) { function add_settings_error( string $setting, string $code, string $message, string $type = 'error' ): void { $GLOBALS['pow_test_settings_errors'][] = [ $setting, $code, $message, $type ]; } }
 	if ( ! function_exists( 'add_settings_field' ) ) { function add_settings_field( string $id, string $title, mixed $callback, string $page, string $section = 'default', array $args = [] ): void { $GLOBALS['pow_test_settings_fields'][ $id ] = $args; } }
 
 	use PHPUnit\Framework\TestCase;
@@ -22,7 +23,7 @@ namespace {
 		private array $saved = [];
 
 		protected function setUp(): void {
-			foreach ( [ 'pow_test_filters', 'pow_test_options', 'pow_test_settings_fields' ] as $key ) {
+			foreach ( [ 'pow_test_filters', 'pow_test_options', 'pow_test_settings_fields', 'pow_test_posts', 'pow_test_settings_errors' ] as $key ) {
 				$this->saved[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 				unset( $GLOBALS[ $key ] );
 			}
@@ -100,16 +101,53 @@ namespace {
 			self::assertSame( [ 'all', '' ], [ $admin->sanitize_settings( [] )['visit_pages'], $admin->sanitize_settings( [] )['visit_open_pages'] ] );
 		}
 
-		/** The release: 0.5.2 everywhere, with a changelog entry naming both settings and the filter. */
-		public function test_the_release_is_0_5_2_everywhere_and_the_changelog_names_the_new_settings(): void {
-			$root   = dirname( __DIR__, 2 );
-			$main   = (string) file_get_contents( $root . '/punchout-woocommerce.php' );
-			$readme = (string) file_get_contents( $root . '/readme.txt' );
-			self::assertMatchesRegularExpression( '/^ \* Version:\s+0\.5\.2$/m', $main );
-			self::assertMatchesRegularExpression( "/^const VERSION\s+= '0\.5\.2';$/m", $main );
-			self::assertMatchesRegularExpression( '/^Stable tag: 0\.5\.2$/m', $readme );
-			$changelog = substr( $readme, (int) strpos( $readme, '== Changelog ==' ) );
-			self::assertMatchesRegularExpression( '/\A== Changelog ==\s+= 0\.5\.2 =/', $changelog, 'The newest changelog entry is 0.5.2' );
+		/** 0.5.3: "Pages a visit may also open" says what a save dropped, and which kept page cannot open yet. */
+		public function test_the_pages_list_reports_what_a_save_dropped_and_what_cannot_open_yet(): void {
+			$GLOBALS['pow_test_posts'] = [
+				12 => [ 'status' => 'publish' ],
+				40 => [ 'status' => 'draft' ],
+				41 => [ 'status' => 'private' ],
+			];
+			$GLOBALS['pow_test_settings_errors'] = [];
+			$admin = $this->admin();
+			$saved = $admin->sanitize_settings( [ 'visit_pages' => 'shop', 'visit_open_pages' => '12, abc, 40, -4, 0, 99999, 12 ,41' ] );
+			self::assertSame( '12,40,99999,41', $saved['visit_open_pages'], 'Every whole ID is kept, in the order given, as before: only what is not an ID is dropped' );
+			$errors = $GLOBALS['pow_test_settings_errors'];
+			self::assertCount( 1, $errors, 'One notice for the field' );
+			[ $setting, $code, $message, $type ] = $errors[0];
+			self::assertSame( [ Settings::OPTION_KEY, 'pow_visit_open_pages', 'warning' ], [ $setting, $code, $type ] );
+			self::assertStringContainsString( 'Pages a visit may also open', $message, 'It names the field' );
+			foreach ( [ '“abc”', '“-4”', '“0”' ] as $dropped ) { self::assertStringContainsString( $dropped, $message, 'It names what is not a page ID: ' . $dropped ); }
+			self::assertStringContainsString( 'dropped', $message );
+			self::assertMatchesRegularExpression( '/\\b99999\\b/', $message, 'It names a kept ID with no page or post behind it' );
+			self::assertMatchesRegularExpression( '/\\b40\\b/', $message, 'and kept pages that are not published' );
+			self::assertMatchesRegularExpression( '/\\b41\\b/', $message );
+			self::assertStringContainsString( 'cannot open', $message, 'saying a visit cannot open them yet' );
+			self::assertDoesNotMatchRegularExpression( '/\\b12\\b/', $message, 'A published page is not mentioned' );
+
+			$admin->sanitize_settings( [ 'visit_pages' => 'shop', 'visit_open_pages' => '12, abc' ] );
+			self::assertCount( 1, $GLOBALS['pow_test_settings_errors'], 'WordPress may sanitise a new option twice in one save: the notice is added once' );
+
+			$GLOBALS['pow_test_settings_errors'] = [];
+			$this->admin()->sanitize_settings( [ 'visit_pages' => 'shop', 'visit_open_pages' => ' 12 ,12' ] );
+			$this->admin()->sanitize_settings( [ 'visit_pages' => 'all', 'visit_open_pages' => '' ] );
+			self::assertSame( [], $GLOBALS['pow_test_settings_errors'], 'A clean list says nothing' );
+			unset( $GLOBALS['pow_test_posts'], $GLOBALS['pow_test_settings_errors'] );
+		}
+
+		public function test_the_list_reader_names_the_entries_it_cannot_read(): void {
+			self::assertSame( [ 'ids' => [ 12, 53061, 7 ], 'rejected' => [ 'abc', '-3', '0', '1.5' ] ], Settings::page_id_entries( ' 12, 53061 ,, 7 12 abc -3 0 1.5 abc' ) );
+			self::assertSame( [ 'ids' => [ 4, 5 ], 'rejected' => [ 'x' ] ], Settings::page_id_entries( [ '4', 5, 'x', 4 ] ) );
+			self::assertSame( [ 'ids' => [], 'rejected' => [] ], Settings::page_id_entries( null ) );
+			self::assertSame( [ 12, 53061, 7 ], Settings::page_ids( ' 12, 53061 ,, 7 12 abc -3 0' ), 'page_ids() is the IDs alone, as before' );
+		}
+
+		/** The 0.5.2 changelog entry names both settings and the filter (the release itself is checked in SettingsTabTest). */
+		public function test_the_0_5_2_changelog_names_the_new_settings(): void {
+			$root      = dirname( __DIR__, 2 );
+			$readme    = (string) file_get_contents( $root . '/readme.txt' );
+			$changelog = substr( $readme, (int) strpos( $readme, '= 0.5.2 =' ) );
+			self::assertStringStartsWith( '= 0.5.2 =', $changelog );
 			$entry = substr( $changelog, 0, (int) strpos( $changelog, '= 0.5.1 =' ) );
 			foreach ( [ '`account_tab`', '`visit_pages`', '`visit_open_pages`', 'punchout_visit_page_open', 'Punchout integration tab in My Account', 'Other pages in a visit', 'Pages a visit may also open' ] as $named ) {
 				self::assertStringContainsString( $named, $entry, 'The 0.5.2 changelog names ' . $named );

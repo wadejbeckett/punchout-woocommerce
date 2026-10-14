@@ -84,7 +84,11 @@ final class VisitLockdownNative {
 		++$this->failed; echo 'FAIL ' . $label . "\n";
 	}
 
+	/** Where the last caught redirect pointed. */
+	private string $last_redirect = '';
+
 	public function catch_redirect( string $location ): string {
+		$this->last_redirect = $location;
 		throw new VisitLockdownRedirect( $location );
 	}
 
@@ -102,10 +106,12 @@ final class VisitLockdownNative {
 	 *
 	 * @param array<string, string> $query
 	 */
-	private function page_refused( POW\RouteGuard $guard, array $query ): bool {
+	private function page_refused( POW\RouteGuard $guard, array $query, string $method = 'GET' ): bool {
 		global $wp, $wp_actions;
-		$saved = [ $_GET, $_SERVER['REQUEST_URI'] ?? null, $_SERVER['QUERY_STRING'] ?? null ];
+		$saved = [ $_GET, $_SERVER['REQUEST_URI'] ?? null, $_SERVER['QUERY_STRING'] ?? null, $_SERVER['REQUEST_METHOD'] ?? null ];
 		$_GET  = $query;
+		$_SERVER['REQUEST_METHOD'] = $method;
+		$this->last_redirect       = '';
 		$_SERVER['QUERY_STRING'] = http_build_query( $_GET );
 		$_SERVER['REQUEST_URI']  = '/?' . $_SERVER['QUERY_STRING'];
 		$GLOBALS['wp_the_query'] = new WP_Query();
@@ -130,7 +136,8 @@ final class VisitLockdownNative {
 		} finally {
 			if ( null === $wp_ran ) { unset( $wp_actions['wp'] ); } else { $wp_actions['wp'] = $wp_ran; }
 			$fresh();
-			[ $_GET, $uri, $query_string ] = $saved;
+			[ $_GET, $uri, $query_string, $request_method ] = $saved;
+			if ( null === $request_method ) { unset( $_SERVER['REQUEST_METHOD'] ); } else { $_SERVER['REQUEST_METHOD'] = $request_method; }
 			if ( null === $uri ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $uri; }
 			if ( null === $query_string ) { unset( $_SERVER['QUERY_STRING'] ); } else { $_SERVER['QUERY_STRING'] = $query_string; }
 		}
@@ -154,6 +161,7 @@ final class VisitLockdownNative {
 		$news    = $make( 'Lockdown news', 'post' );
 		$state   = $make( 'Lockdown state', 'page', '[punchout_state]' );
 		$privacy = $make( 'Lockdown privacy' );
+		$buttons = $make( 'Lockdown buttons', 'page', '[punchout_abandon_button] [punchout_cart_exits]' );
 		$term    = wp_insert_term( 'Lockdown category ' . $suffix, 'product_cat' );
 		if ( is_wp_error( $term ) ) { throw new RuntimeException( 'Visit-pages fixture category could not be created.' ); }
 		$category = (string) get_term( (int) $term['term_id'], 'product_cat' )->slug;
@@ -163,7 +171,7 @@ final class VisitLockdownNative {
 		$guard          = fn(): POW\RouteGuard => new POW\RouteGuard( POW\Plugin::instance(), $this->registry, new POW\Settings() );
 		try {
 			update_option( 'wp_page_for_privacy_policy', $privacy );
-			update_option( POW\Settings::OPTION_KEY, array_replace( is_array( $settings ) ? $settings : [], [ 'visit_pages' => 'shop', 'visit_open_pages' => (string) $listed ] ) );
+			update_option( POW\Settings::OPTION_KEY, array_replace( is_array( $settings ) ? $settings : [], [ 'visit_pages' => 'shop', 'visit_open_pages' => (string) $listed, 'state_page_id' => $state ] ) );
 			pow_native_enter_visit( $first );
 			$shop = $guard();
 			$this->check( $this->page_refused( $shop, [ 'page_id' => (string) $about ] ), 'shop pages only: an ordinary page is refused inside a visit' );
@@ -172,9 +180,13 @@ final class VisitLockdownNative {
 			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $listed ] ), 'shop pages only: a listed page opens' );
 			$this->check( ! $this->page_refused( $shop, [ 'post_type' => 'product' ] ), 'shop pages only: the shop opens' );
 			$this->check( ! $this->page_refused( $shop, [ 'product_cat' => $category ] ), 'shop pages only: a product category opens' );
-			$this->check( ! $this->page_refused( $shop, [ 's' => 'lockdown' ] ), 'shop pages only: search opens' );
+			$this->check( ! $this->page_refused( $shop, [ 's' => 'lockdown', 'post_type' => 'product' ] ), 'shop pages only: the product search opens' );
+			$this->check( $this->page_refused( $shop, [ 's' => 'lockdown' ] ) && str_contains( $this->last_redirect, 'post_type=product' ) && str_contains( $this->last_redirect, 's=lockdown' ), 'shop pages only: a search for everything becomes the product search (0.5.3)' );
+			$this->check( $this->page_refused( $shop, [ 'page_id' => (string) $about ], 'POST' ), 'shop pages only: a form posted to an ordinary page is refused like a GET (0.5.3)' );
+			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $listed ], 'POST' ), 'shop pages only: a form posted to a listed page goes through' );
+			$this->check( $this->page_refused( $shop, [ 'page_id' => (string) $buttons ] ), 'shop pages only: a page holding the cancel control is not opened by its content (0.5.3)' );
 			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) wc_get_page_id( 'cart' ) ] ), 'shop pages only: the cart opens' );
-			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $state ] ), 'shop pages only: a page drawing the visit\'s state opens' );
+			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $state ] ), 'shop pages only: the state page opens' );
 			$this->check( ! $this->page_refused( $shop, [ 'page_id' => (string) $privacy ] ), 'shop pages only: the privacy page checkout links to opens' );
 			pow_native_leave_visit( $this->account );
 			$this->check( ! $this->page_refused( $guard(), [ 'page_id' => (string) $about ] ), 'shop pages only: the bound account outside a visit opens the same page' );
@@ -539,7 +551,7 @@ final class VisitLockdownNative {
 	/** The connection's edit form as the fixture administrator sees it, from WooCommerce's live endpoint map. */
 	private function connection_form(): string {
 		$saved = $_GET;
-		$_GET  = [ 'page' => POW\Admin\Page::SLUG, 'tab' => 'partners', 'action' => 'edit', 'partner' => (string) $this->partner->id ];
+		$_GET  = [ 'page' => 'wc-settings', 'tab' => POW\Admin\Page::TAB, 'section' => 'partners', 'action' => 'edit', 'partner' => (string) $this->partner->id ];
 		wp_set_current_user( $this->admin );
 		ob_start();
 		try {
@@ -580,7 +592,8 @@ final class VisitLockdownNative {
 			woocommerce_account_content();
 			return (string) ob_get_clean();
 		} finally {
-			[ $_GET, $uri, $query_string ] = $saved;
+			[ $_GET, $uri, $query_string, $request_method ] = $saved;
+			if ( null === $request_method ) { unset( $_SERVER['REQUEST_METHOD'] ); } else { $_SERVER['REQUEST_METHOD'] = $request_method; }
 			if ( null === $uri ) { unset( $_SERVER['REQUEST_URI'] ); } else { $_SERVER['REQUEST_URI'] = $uri; }
 			if ( null === $query_string ) { unset( $_SERVER['QUERY_STRING'] ); } else { $_SERVER['QUERY_STRING'] = $query_string; }
 		}

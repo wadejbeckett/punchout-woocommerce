@@ -638,6 +638,13 @@ if ( ! function_exists( 'is_404' ) ) {
 	function is_404(): bool { return (bool) ( $GLOBALS['pow_test_query']['404'] ?? false ); } // phpcs:ignore
 }
 
+if ( ! function_exists( 'get_query_var' ) ) {
+	/** The main query's variables (0.5.3, the search a visit may run): pow_test_query['vars'][ name ], else $default. */
+	function get_query_var( string $query_var, mixed $default_value = '' ): mixed { // phpcs:ignore
+		return $GLOBALS['pow_test_query']['vars'][ $query_var ] ?? $default_value;
+	}
+}
+
 if ( ! function_exists( 'has_shortcode' ) ) {
 	/** WordPress's answer for a plain shortcode: the tag opens a shortcode in the content. */
 	function has_shortcode( string $content, string $tag ): bool { // phpcs:ignore

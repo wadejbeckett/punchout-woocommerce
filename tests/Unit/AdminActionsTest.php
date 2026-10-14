@@ -19,7 +19,7 @@ final class AdminActionsTest extends TestCase {
  protected function tearDown(): void {foreach($this->saved as $k=>[$exists,$v]){if($exists)$GLOBALS[$k]=$v;else unset($GLOBALS[$k]);}}
  private function seed(array $extra=[]): void {$this->db->rows=[array_replace(['id'=>20,'owner_user_id'=>7,'name'=>'Example Company','status'=>'pending','from_domain'=>'NetworkID','from_identity'=>'BUYER','sender_domain'=>'NetworkID','sender_identity'=>'BUYER','to_domain'=>'NetworkID','to_identity'=>'STORE','mode'=>'requisition_only','deployment_mode'=>'test','return_encoding'=>'base64','cxml_version'=>'1.2.008','secret_current'=>'','secret_previous'=>'','company_profile'=>'{"book":"preserve"}'],$extra)];}
  private function call(string $method): AdminResponse {self::assertTrue(method_exists($this->actions,$method),'Admin action missing: '.$method);try{$this->actions->$method();}catch(AdminResponse $r){return $r;}throw new RuntimeException('Handler did not finish');}
- private function page(array $query=[]): string {$_GET=['tab'=>'partners']+$query;ob_start();try{(new Page(new POW\Settings(),$this->registry,$this->audit))->render();return ob_get_contents();}finally{ob_end_clean();}}
+ private function page(array $query=[]): string {$_GET=['page'=>'wc-settings','tab'=>'punchout','section'=>'partners']+$query;ob_start();try{(new Page(new POW\Settings(),$this->registry,$this->audit))->render();return ob_get_contents();}finally{ob_end_clean();}}
  private function secret(AdminResponse $r): string {preg_match('#<code>([^<]+)</code>#',$r->html,$m);$s=html_entity_decode($m[1]??'',ENT_QUOTES);self::assertTrue(strlen($s)>20,'Expected a credential only in the direct response');return $s;}
  private function no_storage(string $s): void {self::assertFalse(str_contains(json_encode([$this->db->writes,$this->audit->events,$GLOBALS['pow_test_transients']??[],$GLOBALS['pow_test_mail']??[],$GLOBALS['pow_test_options']??[],$GLOBALS['pow_test_user_meta']??[]]),$s),'Plaintext escaped response lifetime');}
  public function test_pending_save_ignores_forged_state_and_secret_and_still_can_approve(): void {
@@ -55,6 +55,13 @@ final class AdminActionsTest extends TestCase {
  public function test_active_list_actions_are_post_forms_with_no_mutation_links(): void {$this->call('approve_partner');$html=$this->page();self::assertStringContainsString('value="pow_rotate_partner"',$html);self::assertStringNotContainsString('admin-post.php?',$html);self::assertStringContainsString('method="post"',$html);}
  public function test_malformed_input_is_refused_before_any_lookup_or_write(): void {$_POST['name']=[];$r=$this->call('save_partner');self::assertSame(400,$r->args['response']);self::assertSame([],$this->db->writes);}
  public function test_saving_forged_owner_field_cannot_claim_or_transfer(): void {foreach([0,7] as $owner){$this->seed(['owner_user_id'=>$owner]);$_POST+=$this->db->rows[0];$_POST['owner_user_id']='99';$this->call('save_partner');self::assertSame($owner,$this->registry->find(20)->owner_user_id);}}
+
+ /** 0.5.3: every handler returns to the Customers section of WooCommerce > Settings > PunchOut; nonces, capability and POST rules unchanged. */
+ public function test_handlers_return_to_the_customers_section_of_the_settings_tab(): void {
+  $_POST+=$this->db->rows[0];$r=$this->call('save_partner');self::assertSame('https://shop.example.test/wp-admin/admin.php?page=wc-settings&tab=punchout&section=partners',$r->args['redirect']);
+  $r=$this->call('approve_partner');self::assertStringContainsString('href="https://shop.example.test/wp-admin/admin.php?page=wc-settings&amp;tab=punchout&amp;section=partners"',$r->html,'The one-time secret page links back to the tab');
+  $html=$this->page(['action'=>'edit','partner'=>'20']);self::assertStringNotContainsString('page=punchout-woocommerce',$html,'No link to the old screen');self::assertStringNotContainsString('nav-tab-wrapper',$html,'WooCommerce draws the tabs');self::assertStringContainsString('wc-settings-prevent-change-event',$html,'WooCommerce\'s leave-page warning stays off the plugin\'s own forms');
+ }
 
  public function test_native_response_cannot_replace_explicit_no_store_header(): void {$this->call('approve_partner');$headers=array_values(array_filter($GLOBALS['pow_admin_test']['headers'],fn($h)=>str_starts_with($h,'Cache-Control:')));self::assertSame('Cache-Control: no-store, private, max-age=0',end($headers));}
 

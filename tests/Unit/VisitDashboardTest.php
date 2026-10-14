@@ -21,6 +21,16 @@ if ( ! class_exists( 'WP_User' ) ) {
 if ( ! function_exists( 'wp_kses' ) ) { function wp_kses( string $text, mixed $allowed_html ): string { return $text; } }
 if ( ! function_exists( 'wc_shipping_enabled' ) ) { function wc_shipping_enabled(): bool { return true; } }
 if ( ! function_exists( 'wc_get_endpoint_url' ) ) { function wc_get_endpoint_url( string $endpoint, string $value = '', string $permalink = '' ): string { return 'https://shop.example.test/my-account/' . $endpoint . '/'; } }
+if ( ! function_exists( 'wc_get_account_menu_items' ) ) { function wc_get_account_menu_items(): array { return $GLOBALS['pow_visit_dashboard_menu'] ?? [ 'dashboard' => 'Dashboard', 'orders' => 'Orders', 'customer-logout' => 'Log out' ]; } }
+if ( ! function_exists( 'wc_get_account_endpoint_url' ) ) { function wc_get_account_endpoint_url( string $endpoint ): string { return 'https://shop.example.test/my-account/' . ( 'dashboard' === $endpoint ? '' : $endpoint . '/' ); } }
+if ( ! function_exists( 'wp_sprintf_l' ) ) {
+	/** WordPress's %l list in English: "A", "A and B", "A, B, and C". */
+	function wp_sprintf_l( string $pattern, array $args ): string {
+		if ( count( $args ) < 3 ) { return implode( ' and ', $args ); }
+		$last = array_pop( $args );
+		return implode( ', ', $args ) . ', and ' . $last;
+	}
+}
 if ( ! function_exists( 'do_action' ) ) { function do_action( string $hook, mixed ...$args ): void { $GLOBALS['pow_visit_dashboard_actions'][] = $hook; } }
 
 /** A session store that cannot answer. */
@@ -37,7 +47,7 @@ final class VisitDashboardTest extends PHPUnit\Framework\TestCase {
 	private array $saved = [];
 
 	protected function setUp(): void {
-		foreach ( [ 'pow_test_current_user_id', 'pow_test_filters', 'pow_visit_dashboard_actions' ] as $key ) {
+		foreach ( [ 'pow_test_current_user_id', 'pow_test_filters', 'pow_visit_dashboard_actions', 'pow_visit_dashboard_menu' ] as $key ) {
 			$this->saved[ $key ] = [ array_key_exists( $key, $GLOBALS ), $GLOBALS[ $key ] ?? null ];
 			unset( $GLOBALS[ $key ] );
 		}
@@ -124,13 +134,46 @@ final class VisitDashboardTest extends PHPUnit\Framework\TestCase {
 		self::assertStringContainsString( 'Hello <strong>Acme &lt;Buyer&gt;</strong>', $html, 'The greeting names the account, escaped' );
 		self::assertStringNotContainsString( 'log out', strtolower( $html ) );
 		self::assertStringNotContainsString( 'logout', $html );
-		self::assertStringContainsString( 'href="https://shop.example.test/my-account/orders/"', $html, 'The rest of WooCommerce\'s dashboard text is kept' );
+		self::assertStringContainsString( 'href="https://shop.example.test/my-account/orders/"', $html, 'A page the visit may open is named' );
 		self::assertSame( [ 'woocommerce_account_dashboard', 'woocommerce_before_my_account', 'woocommerce_after_my_account' ], $GLOBALS['pow_visit_dashboard_actions'] ?? [], 'Content other plugins add to the dashboard still shows' );
 
 		$source = (string) file_get_contents( $this->own() );
 		foreach ( [ 'wc_logout_url', 'wp_logout_url', 'customer-logout', 'Log out' ] as $needle ) {
 			self::assertStringNotContainsString( $needle, $source, 'The template never builds a logout link: ' . $needle );
 		}
+	}
+
+	/** The dashboard's text and its links, as the plugin's copy renders them for an account menu of $menu. */
+	private function rendered( array $menu ): string {
+		$GLOBALS['pow_visit_dashboard_menu'] = $menu;
+		$current_user = new WP_User( 20, 'Example Buyer' );
+		ob_start();
+		include $this->own();
+		return (string) ob_get_clean();
+	}
+
+	/**
+	 * 0.5.3: inside a visit the dashboard's sentence names the account pages the visit can open, from the account menu
+	 * (which in a visit holds only the connection's ticked pages), not WooCommerce's orders, addresses and password
+	 * pages, which a visit cannot open unless they are ticked.
+	 */
+	public function test_the_dashboard_sentence_names_only_the_pages_the_visit_opens(): void {
+		$html = $this->rendered( [ 'dashboard' => 'Dashboard', 'bulkorder' => 'Bulk order' ] );
+		self::assertStringContainsString( 'From your account dashboard you can open <a href="https://shop.example.test/my-account/bulkorder/">Bulk order</a>.', $html );
+		foreach ( [ 'orders/', 'edit-address', 'edit-account', 'password', 'billing', 'Dashboard</a>' ] as $absent ) {
+			self::assertStringNotContainsString( $absent, $html, 'Not offered: ' . $absent );
+		}
+
+		$html = $this->rendered( [ 'dashboard' => 'Dashboard', 'orders' => 'Orders', 'edit-address' => 'Addresses', 'bulkorder' => 'Quick <order>', 'customer-logout' => 'Log out' ] );
+		self::assertStringContainsString( 'you can open <a href="https://shop.example.test/my-account/orders/">Orders</a>, <a href="https://shop.example.test/my-account/edit-address/">Addresses</a>, and <a href="https://shop.example.test/my-account/bulkorder/">Quick &lt;order&gt;</a>.', $html, 'Each ticked page by its menu label, escaped, in menu order' );
+		self::assertStringNotContainsString( 'Log out', $html, 'Logout is never offered' );
+
+		$html = $this->rendered( [ 'dashboard' => 'Dashboard' ] );
+		self::assertStringNotContainsString( 'you can open', $html, 'Nothing else opens: no sentence at all' );
+		self::assertStringContainsString( 'Hello <strong>Example Buyer</strong>', $html, 'The greeting stays' );
+
+		$source = (string) file_get_contents( $this->own() );
+		self::assertStringNotContainsString( "wc_get_endpoint_url( 'orders' )", $source, 'WooCommerce\'s fixed links are gone from the visit\'s copy' );
 	}
 
 	public function test_the_swap_is_registered_last_on_the_filter_that_runs_every_render(): void {
