@@ -355,9 +355,12 @@ final class Builder {
 	 * Collapse any newlines/tabs in a text value to single spaces — D365's
 	 * REPLACENEWLINE workaround flag exists because supplier documents with
 	 * newlines inside element content break its handling (scope §9.6).
+	 * The other C0 controls are dropped: XML 1.0 cannot carry them even as
+	 * character references, so one in a name or SKU would make the whole
+	 * document malformed. Byte-wise, so multibyte UTF-8 is never touched.
 	 */
 	private function flatten( string $text ): string {
-		return trim( (string) preg_replace( '/[\r\n\t]+/', ' ', $text ) );
+		return trim( (string) preg_replace( '/[\r\n\t]+/', ' ', (string) preg_replace( '/[\x00-\x08\x0B\x0C\x0E-\x1F]/', '', $text ) ) );
 	}
 
 	/**

@@ -169,7 +169,8 @@ final class OrderMessage {
 			$unit_cents = (int) round( $line_cents / $quantity );
 			$total     += (int) round( $unit_cents * $quantity );
 
-			$name = PoomMapper::line_name( $product->get_name(), self::variation( $item, $product ) );
+			// Names and attribute terms are stored HTML-escaped ("&amp;"); the DOM escapes once more, so decode first.
+			$name = trim( (string) preg_replace( self::NOT_XML, '', html_entity_decode( PoomMapper::line_name( $product->get_name(), self::variation( $item, $product ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' ) ) );
 
 			$items[] = [
 				'quantity'         => $quantity,

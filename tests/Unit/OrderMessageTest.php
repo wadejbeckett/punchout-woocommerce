@@ -207,6 +207,17 @@ namespace {
 			self::assertSame( '200|205', $item['aux_id'] );
 		}
 
+		public function test_a_name_stored_with_html_entities_reaches_the_wire_as_plain_text(): void {
+			// WordPress stores a term name "Black & White" as "Black &amp; White" (and a title saved without
+			// unfiltered_html the same way); the DOM would escape it again and the buyer's line would read "&amp;".
+			$GLOBALS['pow_test_attribute_terms'] = [ 'pa_colour' => [ 'bw' => 'Black &amp; White' ] ];
+			$variation = new OrderMessageVariation( 206, 'Tom &amp; Co&#8217;s shirt', 'SHIRT-BW', [ 'attribute_pa_colour' => 'bw' ] );
+			$order = new OrderMessageOrder( [ new OrderMessageItem( $variation, 1, '15.00', 200, 206 ) ] );
+			$item  = $this->args( $order )['items'][0];
+			self::assertSame( 'Tom & Co’s shirt - Black & White', $item['short_name'] );
+			self::assertSame( $item['short_name'], $item['description'] );
+		}
+
 		public function test_ship_to_is_the_orders_shipping_address_while_the_connection_sends_it(): void {
 			$args = $this->args();
 			self::assertTrue( $args['emit_ship_to'] );
