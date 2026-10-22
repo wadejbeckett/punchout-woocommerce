@@ -524,3 +524,13 @@ The supplier implements company-owned addresses, explicit delivery confirmation 
 4. **Destination, code and notes:** enable each mapping independently and verify consumed values, including the repeated per-merchandise-line `DeliveryInstructions` policy. An address code is a reference, not a registration request.
 5. **Freight, units and currency:** verify one freight charge, merchandise-plus-freight arithmetic, accepted UOM/classification and the explicitly omitted unavailable estimate. Do not infer acceptance from the absence of a parse error.
 6. **Catalogue-restriction plugins**: the add-to-cart guard is WooCommerce's own visibility and purchasability chain, applied to the bound account — whatever decides what that account may see decides what a visit may add, and the plugin offers no seam of its own to widen or narrow it. Whether a specific third-party restriction setup filters every leak surface (search, direct URL, REST) is a site-deployment test, not a plugin guarantee — verify on staging with a contract-priced catalogue, signed in as the bound account, before onboarding a buyer whose pricing is confidential.
+
+## Support this project
+
+PunchOut for WooCommerce is free software from Noiz. If it is useful to you, the main way to support its development is a donation in Monero (XMR):
+
+```text
+44BtMn9izxH8mK2yFbSdY6Di7TNobkLbnHdZ6gZQjukCME5vsNhtPRtH4TcVkDHKHLhSpAJbsjv8gCdYuSZVMpXgMkUC1hV
+```
+
+You can also help by reporting bugs, sending fixes or starring the repository.
