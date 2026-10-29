@@ -254,7 +254,7 @@ namespace {
 		/** The binding rule changed: a visit leaves through checkout, so no current document says checkout is blocked in a visit. */
 		public function test_no_current_document_keeps_the_old_no_checkout_rule(): void {
 			$root    = self::root();
-			$files   = array_merge( array_filter( [ $root . '/AGENTS.md' ], 'is_file' ), [ $root . '/README.md', $root . '/tests/README.md', $root . '/includes/Docs/Reference.php', $root . '/templates/docs/page.php' ], glob( $root . '/docs/*.md' ) ?: [] );
+			$files   = array_merge( array_filter( [ $root . '/CLAUDE.md' ], 'is_file' ), [ $root . '/README.md', $root . '/tests/README.md', $root . '/includes/Docs/Reference.php', $root . '/templates/docs/page.php' ], glob( $root . '/docs/*.md' ) ?: [] );
 			$readme  = (string) file_get_contents( $root . '/readme.txt' );
 			$current = [ 'readme.txt (description and FAQ)' => substr( $readme, 0, (int) strpos( $readme, '== Changelog ==' ) ) ];
 			foreach ( $files as $file ) { $current[ substr( $file, strlen( $root ) + 1 ) ] = (string) file_get_contents( $file ); }
